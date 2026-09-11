@@ -124,6 +124,8 @@ export interface RunRecord {
   graph: DagGraph;
   state: RunState;
   cwd: string;
+  /** Owning Space (multi-project isolation) */
+  spaceId?: string;
   workspaceId?: string;
   nodes: Record<string, NodeRunRecord>;
   startedAt: string;

@@ -11,7 +11,7 @@ import type {
 import { renderPromptTemplate, topoSort, validateDag } from '@paneflow/shared';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
-import type { Store } from './store.js';
+import { Store } from './store.js';
 
 export interface EngineOptions {
   workspaceLabelPrefix: string;
@@ -62,10 +62,17 @@ export class Engine {
     private readonly store: Store,
     private readonly opts: EngineOptions,
   ) {
-    // surface past runs (from disk) in listings immediately after boot
-    for (const run of store.listRuns()) {
-      this.runs.set(run.runId, run);
+    // surface past runs (from disk, across all spaces) in listings after boot
+    for (const space of Store.listSpaces(store.root)) {
+      for (const run of new Store(store.root, space.id).listRuns()) {
+        this.runs.set(run.runId, run);
+      }
     }
+  }
+
+  /** Space-scoped store for persistence of a given run. */
+  private storeFor(run: RunRecord): Store {
+    return run.spaceId ? new Store(this.store.root, run.spaceId) : this.store;
   }
 
   onChange(listener: RunListener): () => void {
@@ -104,7 +111,7 @@ export class Engine {
     return reclaimed;
   }
 
-  async startRun(graph: DagGraph, cwd: string): Promise<RunRecord> {
+  async startRun(graph: DagGraph, cwd: string, spaceId?: string): Promise<RunRecord> {
     const issues = validateDag(graph);
     const errors = issues.filter((i) => i.level === 'error');
     if (errors.length) {
@@ -133,6 +140,7 @@ export class Engine {
       graph: structuredClone(graph),
       state: 'running',
       cwd,
+      ...(spaceId ? { spaceId } : {}),
       nodes,
       startedAt: new Date().toISOString(),
     };
@@ -634,7 +642,7 @@ export class Engine {
 
   private persistAndNotify(run: RunRecord): void {
     try {
-      this.store.saveRun(run);
+      this.storeFor(run).saveRun(run);
     } catch {
       // never let persistence break a live run
     }

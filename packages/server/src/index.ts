@@ -31,6 +31,7 @@ async function main(): Promise<void> {
     store,
     ops,
     herdrSocketPath: config.herdrSocketPath,
+    dataDir: config.dataDir,
   });
 
   await app.listen({ port: config.port, host: '127.0.0.1' });

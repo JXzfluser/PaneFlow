@@ -260,6 +260,9 @@ export const useStore = create<PfStore>((set, get) => ({
 
   applyRun: (run) => {
     const s0 = get();
+    // ignore runs from other spaces (engine broadcasts globally)
+    const mySpace = localStorage.getItem('pf-space') || 'default';
+    if (run.spaceId && run.spaceId !== mySpace) return;
     const prev = s0.runs[run.runId];
     const isActive = s0.activeRunId === null || s0.activeRunId === run.runId;
     set((s) => ({ runs: { ...s.runs, [run.runId]: run } }));

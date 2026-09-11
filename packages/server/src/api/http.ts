@@ -4,7 +4,8 @@ import fastifyWebsocket from '@fastify/websocket';
 import type { DagGraph } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
-import type { Store } from '../orchestrate/store.js';
+import { Store } from '../orchestrate/store.js';
+import type { SpaceProfile } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 
 export const AGENT_KINDS = [
@@ -32,12 +33,50 @@ export interface HttpDeps {
   store: Store;
   ops: HerdrOps;
   herdrSocketPath: string;
+  /** dataDir root — Space stores are derived from it */
+  dataDir: string;
+}
+
+const DEFAULT_SPACE = 'default';
+
+function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
+  const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
+  return new Store(deps.dataDir, space);
 }
 
 export async function buildHttpServer(deps: HttpDeps) {
   const app = Fastify({ logger: false });
   await app.register(cors, { origin: true });
   await app.register(fastifyWebsocket);
+
+  // -- spaces ---------------------------------------------------------------
+
+  app.get('/api/spaces', async () => ({ spaces: Store.listSpaces(deps.dataDir) }));
+
+  app.post<{ Body: { id: string; name: string } }>('/api/spaces', async (req, reply) => {
+    const { id, name } = req.body;
+    if (!/^[a-zA-Z0-9_-]{1,32}$/.test(id ?? '')) {
+      return reply.code(400).send({ error: '空间 ID 只能包含字母/数字/-/_（≤32 字符）' });
+    }
+    if (!name?.trim()) return reply.code(400).send({ error: '缺少空间名称' });
+    return reply.code(201).send(Store.createSpace(deps.dataDir, id, name.trim()));
+  });
+
+  app.get<{ Params: { id: string } }>('/api/spaces/:id', async (req, reply) => {
+    const store = spaceStore(deps, req.params.id);
+    return store.readProfile();
+  });
+
+  app.put<{ Params: { id: string }; Body: Partial<SpaceProfile> }>(
+    '/api/spaces/:id',
+    async (req, reply) => {
+      const store = spaceStore(deps, req.params.id);
+      const profile = store.readProfile();
+      const next = { ...profile, ...req.body, id: req.params.id };
+      store.writeProfile(next);
+      return next;
+    },
+  );
 
   // -- health ---------------------------------------------------------------
 
@@ -54,47 +93,50 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   // -- graphs (templates) -----------------------------------------------------
 
-  app.get('/api/graphs', async () => ({ graphs: deps.store.listGraphs() }));
+  app.get<{ Querystring: { space?: string } }>('/api/graphs', async (req) => ({
+    graphs: spaceStore(deps, req.query.space).listGraphs(),
+  }));
 
-  app.get<{ Params: { id: string } }>('/api/graphs/:id', async (req, reply) => {
-    const g = deps.store.getGraph(req.params.id);
+  app.get<{ Params: { id: string }; Querystring: { space?: string } }>('/api/graphs/:id', async (req, reply) => {
+    const g = spaceStore(deps, req.query.space).getGraph(req.params.id);
     if (!g) return reply.code(404).send({ error: 'not found' });
     return g;
   });
 
-  app.post<{ Body: { graph: DagGraph } }>('/api/graphs', async (req, reply) => {
+  app.post<{ Body: { graph: DagGraph }; Querystring: { space?: string } }>('/api/graphs', async (req, reply) => {
     const { graph } = req.body;
-    deps.store.saveGraph(graph);
+    spaceStore(deps, req.query.space).saveGraph(graph);
     return reply.code(201).send(graph);
   });
 
-  app.put<{ Params: { id: string }; Body: { graph: DagGraph } }>(
+  app.put<{ Params: { id: string }; Body: { graph: DagGraph }; Querystring: { space?: string } }>(
     '/api/graphs/:id',
     async (req, reply) => {
       const { graph } = req.body;
       if (graph.name !== req.params.id) {
         return reply.code(400).send({ error: 'graph.name 与 URL id 不一致' });
       }
-      deps.store.saveGraph(graph);
+      spaceStore(deps, req.query.space).saveGraph(graph);
       return graph;
     },
   );
 
-  app.delete<{ Params: { id: string } }>('/api/graphs/:id', async (req, reply) => {
-    const ok = deps.store.deleteGraph(req.params.id);
+  app.delete<{ Params: { id: string }; Querystring: { space?: string } }>('/api/graphs/:id', async (req, reply) => {
+    const ok = spaceStore(deps, req.query.space).deleteGraph(req.params.id);
     return { deleted: ok };
   });
 
   // -- runs -------------------------------------------------------------------
 
-  app.post<{ Body: { graph?: DagGraph; graphId?: string; cwd: string } }>(
+  app.post<{ Body: { graph?: DagGraph; graphId?: string; cwd: string; variables?: Record<string, string> }; Querystring: { space?: string } }>(
     '/api/runs',
     async (req, reply) => {
       const { graph: inlineGraph, graphId, cwd } = req.body;
-      const graph = inlineGraph ?? (graphId ? deps.store.getGraph(graphId) : undefined);
+      const store = spaceStore(deps, req.query.space);
+      const graph = inlineGraph ?? (graphId ? store.getGraph(graphId) : undefined);
       if (!graph) return reply.code(400).send({ error: '缺少 graph 或 graphId' });
       try {
-        const run = await deps.engine.startRun(graph, cwd);
+        const run = await deps.engine.startRun(graph, cwd, req.query.space);
         return reply.code(201).send({ runId: run.runId, run });
       } catch (err) {
         return reply.code(400).send({ error: (err as Error).message });
@@ -174,7 +216,7 @@ export async function buildHttpServer(deps: HttpDeps) {
   app.post('/api/sync/push', async (req, reply) => {
     const cfg = loadSyncConfig();
     if (!cfg) return reply.code(400).send({ error: syncUnavailableReason() });
-    const sync = new GithubSync(cfg, deps.store);
+    const sync = new GithubSync(cfg, spaceStore(deps, (req.query as { space?: string }).space));
     // async, non-blocking: return immediately, results land in the run log
     void sync
       .pushAll()
@@ -191,7 +233,7 @@ export async function buildHttpServer(deps: HttpDeps) {
     const cfg = loadSyncConfig();
     if (!cfg) return reply.code(400).send({ error: syncUnavailableReason() });
     try {
-      const sync = new GithubSync(cfg, deps.store);
+      const sync = new GithubSync(cfg, spaceStore(deps, (req.query as { space?: string }).space));
       const r = await sync.pullAll();
       return { imported: r.imported, failed: r.failed };
     } catch (err) {

@@ -2,7 +2,22 @@ import type { DagGraph, NodeRunRecord, RunRecord } from '@paneflow/shared';
 
 const BASE = '';
 
-async function json<T>(method: string, path: string, body?: unknown): Promise<T> {
+let currentSpace = localStorage.getItem('pf-space') || 'default';
+
+export function setSpace(id: string): void {
+  currentSpace = id;
+  localStorage.setItem('pf-space', id);
+}
+
+export function getSpace(): string {
+  return currentSpace;
+}
+
+async function json<T>(method: string, path: string, body?: unknown, opts?: { raw?: boolean }): Promise<T> {
+  if (!opts?.raw) {
+    const sep = path.includes('?') ? '&' : '?';
+    path += `${sep}space=${encodeURIComponent(currentSpace)}`;
+  }
   const r = await fetch(BASE + path, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -35,6 +50,8 @@ export const api = {
   syncStatus: () => json<{ configured: boolean; repo: string | null }>('GET', '/api/sync/status'),
   syncPush: () => json<{ started: boolean }>('POST', '/api/sync/push'),
   syncPull: () => json<{ imported: string[]; failed: { file: string; error: string }[] }>('POST', '/api/sync/pull'),
+  listSpaces: () => json<{ spaces: { id: string; name: string }[] }>('GET', '/api/spaces', undefined, { raw: true }),
+  createSpace: (id: string, name: string) => json<unknown>('POST', '/api/spaces', { id, name }, { raw: true }),
 };
 
 export interface WsRunMessage {
