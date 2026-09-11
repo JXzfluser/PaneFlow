@@ -26,11 +26,21 @@ export function Canvas() {
   const onEdgesChange = useStore((s) => s.onEdgesChange);
   const onConnect = useStore((s) => s.onConnect);
   const select = useStore((s) => s.select);
+  const theme = useStore((s) => s.theme);
 
   const onPaneClick = useCallback(() => select(null), [select]);
 
   return (
     <div className="canvas-wrap">
+      {nodes.length === 0 && (
+        <div className="canvas-empty">
+          <div className="big">画布还是空的</div>
+          <div className="steps">
+            ① 顶栏设置流水线工作目录　② 从左侧点击添加「开始 → Agent → 结束」节点<br />
+            ③ 从节点右侧圆点拖线连接　④ 点「? 指南」看完整教程
+          </div>
+        </div>
+      )}
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -44,7 +54,7 @@ export function Canvas() {
         deleteKeyCode={['Backspace', 'Delete']}
         proOptions={{ hideAttribution: true }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="#1d2430" />
+        <Background variant={BackgroundVariant.Dots} gap={18} size={1} color={theme === 'light' ? '#ccd2da' : '#1d2430'} />
         <Controls showInteractive={false} />
         <MiniMap
           pannable

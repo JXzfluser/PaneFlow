@@ -4,12 +4,18 @@ import { Engine } from './orchestrate/engine.js';
 import { Store } from './orchestrate/store.js';
 import { buildHttpServer } from './api/http.js';
 import { loadConfig } from './config.js';
+import { seedBuiltinTemplates } from './orchestrate/builtin-templates.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const client = new HerdrClient({ socketPath: config.herdrSocketPath });
   const ops = new RealHerdrOps(client);
   const store = new Store(config.dataDir);
+  const seeded = seedBuiltinTemplates(
+    (id) => store.getGraph(id),
+    (g) => store.saveGraph(g),
+  );
+  if (seeded.length) console.log(`[paneflow] 内置场景模板已就绪：${seeded.length} 个`);
   const engine = new Engine(ops, store, {
     workspaceLabelPrefix: config.workspaceLabelPrefix,
     reconcileIntervalMs: config.reconcileIntervalMs,

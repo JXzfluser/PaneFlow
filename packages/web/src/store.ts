@@ -12,6 +12,25 @@ import {
 import type { DagGraph, DagNode, DagNodeType, NodeRunState, RunRecord } from '@paneflow/shared';
 import { validateDag } from '@paneflow/shared';
 
+export type ThemeName = 'dark' | 'light' | 'ocean';
+
+export const THEMES: { id: ThemeName; label: string }[] = [
+  { id: 'dark', label: '暗夜工程' },
+  { id: 'light', label: '清爽浅色' },
+  { id: 'ocean', label: '深海蓝' },
+];
+
+function applyTheme(theme: ThemeName): void {
+  document.documentElement.dataset.theme = theme;
+}
+
+function initialTheme(): ThemeName {
+  const saved = localStorage.getItem('pf-theme') as ThemeName | null;
+  const t = saved && THEMES.some((x) => x.id === saved) ? saved : 'dark';
+  applyTheme(t);
+  return t;
+}
+
 export interface PfNodeData extends Record<string, unknown> {
   dagNode: DagNode;
   runState?: NodeRunState;
@@ -40,7 +59,9 @@ interface PfStore {
   cwd: string;
   agentKinds: string[];
   templateList: DagGraph[];
+  theme: ThemeName;
 
+  setTheme: (theme: ThemeName) => void;
   setCwd: (cwd: string) => void;
   setHealth: (herdrOk: boolean | null, wsOk: boolean) => void;
   setAgentKinds: (kinds: string[]) => void;
@@ -67,10 +88,11 @@ interface PfStore {
 let nodeSeq = 1;
 
 function dagToRf(graph: DagGraph): { nodes: PfNode[]; edges: Edge[] } {
-  const nodes = graph.nodes.map((n, i) => ({
+  const positioned = autoLayout(graph);
+  const nodes = graph.nodes.map((n) => ({
     id: n.id,
     type: n.type,
-    position: n.position ?? { x: 80 + (i % 4) * 240, y: 60 + Math.floor(i / 4) * 140 },
+    position: n.position ?? positioned[n.id] ?? { x: 80, y: 80 },
     data: { dagNode: n },
   }));
   const edges = graph.edges.map((e) => ({
@@ -80,6 +102,56 @@ function dagToRf(graph: DagGraph): { nodes: PfNode[]; edges: Edge[] } {
     animated: false,
   }));
   return { nodes, edges };
+}
+
+/**
+ * Hierarchical fallback layout for graphs whose saved positions are missing
+ * or collapsed (e.g. templates authored elsewhere): topological depth on x,
+ * vertically centred branches on y.
+ */
+function autoLayout(graph: DagGraph): Record<string, { x: number; y: number }> {
+  const ids = graph.nodes.map((n) => n.id);
+  const hasSpread = (() => {
+    const pos = graph.nodes.filter((n) => n.position);
+    if (pos.length < ids.length || pos.length === 0) return false;
+    const xs = pos.map((n) => n.position!.x);
+    return Math.max(...xs) - Math.min(...xs) >= Math.max(240, ids.length * 12);
+  })();
+  const out: Record<string, { x: number; y: number }> = {};
+  if (hasSpread) {
+    for (const n of graph.nodes) out[n.id] = n.position ?? { x: 80, y: 80 };
+    return out;
+  }
+  // longest-path depth per node
+  const depth: Record<string, number> = {};
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  for (const n of graph.nodes) {
+    const stack: { id: string; d: number }[] = [{ id: n.id, d: 0 }];
+    while (stack.length) {
+      const { id, d } = stack.pop()!;
+      if ((depth[id] ?? -1) >= d) continue;
+      depth[id] = d;
+      for (const e of graph.edges) if (e.source === id) stack.push({ id: e.target, d: d + 1 });
+    }
+  }
+  const byDepth = new Map<number, string[]>();
+  for (const id of ids) {
+    const d = depth[id] ?? 0;
+    if (!byDepth.has(d)) byDepth.set(d, []);
+    byDepth.get(d)!.push(id);
+  }
+  const LEVEL_W = 300;
+  const ROW_H = 130;
+  for (const [d, levelIds] of byDepth) {
+    levelIds.forEach((id, i) => {
+      const width = byId.get(id)!.type === 'agent' ? 220 : 150;
+      out[id] = {
+        x: 60 + d * LEVEL_W,
+        y: 320 + (i - (levelIds.length - 1) / 2) * ROW_H - width / 4,
+      };
+    });
+  }
+  return out;
 }
 
 export const useStore = create<PfStore>((set, get) => ({
@@ -95,6 +167,13 @@ export const useStore = create<PfStore>((set, get) => ({
   cwd: '',
   agentKinds: ['opencode'],
   templateList: [],
+  theme: initialTheme(),
+
+  setTheme: (theme) => {
+    localStorage.setItem('pf-theme', theme);
+    applyTheme(theme);
+    set({ theme });
+  },
 
   setCwd: (cwd) => set({ cwd }),
   setHealth: (herdrOk, wsOk) => set({ herdrOk, wsOk }),
@@ -182,10 +261,12 @@ export const useStore = create<PfStore>((set, get) => ({
   },
 
   applyRun: (run) => {
-    const isActive = get().activeRunId === null || get().activeRunId === run.runId;
+    const s0 = get();
+    const prev = s0.runs[run.runId];
+    const isActive = s0.activeRunId === null || s0.activeRunId === run.runId;
     set((s) => ({ runs: { ...s.runs, [run.runId]: run } }));
     if (!isActive) return;
-    if (get().activeRunId === null && run.state === 'running') set({ activeRunId: run.runId });
+    if (s0.activeRunId === null && run.state === 'running') set({ activeRunId: run.runId });
     // mirror run state onto canvas nodes
     set((s) => ({
       nodes: s.nodes.map((n) => {
@@ -202,11 +283,13 @@ export const useStore = create<PfStore>((set, get) => ({
         };
       }),
     }));
+    // log terminal states exactly once per run (WS replays must not spam)
     const finished = ['completed', 'failed', 'cancelled'].includes(run.state);
-    if (finished) {
+    const alreadyLogged = prev && ['completed', 'failed', 'cancelled'].includes(prev.state);
+    if (finished && !alreadyLogged) {
       get().log(
         run.state === 'completed' ? 'info' : 'error',
-        `流水线 ${run.runId} ${run.state === 'completed' ? '已完成 ✅' : run.state === 'failed' ? '失败 ❌' : '已取消'}`,
+        `流水线 ${run.runId} ${run.state === 'completed' ? '已完成 ✅' : run.state === 'failed' ? '失败 ❌' : '已取消'}（耗时 ${((new Date(run.finishedAt ?? Date.now()).getTime() - new Date(run.startedAt).getTime()) / 1000).toFixed(0)} 秒）`,
       );
     }
   },

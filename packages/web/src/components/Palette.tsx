@@ -23,8 +23,14 @@ export function Palette() {
       <button className="pal-item" onClick={() => add('agent')}>⚙ Agent 节点</button>
       <h4>模板</h4>
       {(graphs ?? []).map((g) => (
-        <button key={g.name} className="pal-item" onClick={() => loadGraph(g)}>
-          📋 {g.name}
+        <button
+          key={g.name}
+          className="pal-item"
+          title={g.metadata.description || g.name}
+          onClick={() => loadGraph(g)}
+        >
+          {g.name.startsWith('builtin-') ? '📦' : '📋'}{' '}
+          {g.name.replace(/^builtin-/, '').replace(/-/g, ' ')}
         </button>
       ))}
       {(graphs ?? []).length === 0 && <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>暂无已保存模板</div>}
