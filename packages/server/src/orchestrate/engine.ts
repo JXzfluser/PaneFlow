@@ -328,6 +328,7 @@ export class Engine {
 
       if (!abort) {
         for (const id of [...pending]) {
+          if (!pending.has(id)) continue; // removed by expansion in this same pass
           const node = graph.nodes.find((n) => n.id === id)!;
           let st = predStatus(id);
           if (node.type === 'fanin') {
@@ -349,7 +350,25 @@ export class Engine {
           }
 
           if (node.type !== 'agent') {
-            // start / end / fanout are structural markers
+            // start / end are structural markers; fanout may expand dynamically
+            if (node.type === 'fanout' && node.config.expand) {
+              const exp = node.config.expand;
+              const artifact = blackboard.get(exp.from);
+              let cur: unknown = artifact as unknown;
+              for (const seg of exp.field.split('.')) {
+                if (cur === null || typeof cur !== 'object') break;
+                cur = (cur as Record<string, unknown>)[seg];
+              }
+              const items = Array.isArray(cur) ? cur : null;
+              if (!items?.length) {
+                mark(id, 'failed', `动态扇出未取到数组：{{${exp.from}.${exp.field}}}`);
+                fail();
+                continue;
+              }
+              mark(id, 'done');
+              this.expandFanout(run, node.id, items, pending, blackboard);
+              continue;
+            }
             if (node.type === 'fanin') {
               const preds = graph.edges.filter((e) => e.target === id && edgeActive(e)).map((e) => e.source);
               const failedCount = preds.filter((p) => outcomes.get(p) === 'failed').length;
@@ -398,9 +417,18 @@ export class Engine {
       if (inflight.size) {
         await Promise.race(inflight.values());
       } else if (pending.size && !abort && !this.cancels.has(run.runId)) {
-        // nothing running and nothing ready → cannot make progress (defensive;
-        // cycles are rejected at validation time)
-        break;
+        // exit only when no pending node can progress (expansion may have just
+        // added ready nodes; genuine stalls cannot happen for valid DAGs)
+        const canProgress = [...pending].some((id) => {
+          const node = graph.nodes.find((n) => n.id === id)!;
+          let st = predStatus(id);
+          if (node.type === 'fanin') {
+            const preds = graph.edges.filter((e) => e.target === id).map((e) => e.source);
+            st = preds.every((p) => outcomes.get(p)) ? 'ready' : 'wait';
+          }
+          return st !== 'wait';
+        });
+        if (!canProgress) break;
       } else if (!pending.size && !inflight.size) {
         break;
       }
@@ -618,6 +646,60 @@ export class Engine {
       }
     }
     return null;
+  }
+
+  /**
+   * B14 动态扇出：为 items 的每个元素克隆 fanout 的直接后继（分支模板），
+   * 克隆节点内 {{item.field}} 注入元素字段（嵌套字段 JSON 序列化）。原后继节点
+   * 标记 skipped 并注明展开数量；下游（fanin）改接克隆节点。
+   */
+  private expandFanout(
+    run: RunRecord,
+    fanoutId: string,
+    items: unknown[],
+    pending: Set<string>,
+    blackboard: Map<string, Artifact>,
+  ): void {
+    const succIds = run.graph.edges.filter((e) => e.source === fanoutId).map((e) => e.target);
+    for (const succId of succIds) {
+      const orig = run.graph.nodes.find((n) => n.id === succId);
+      if (!orig) continue;
+      const origOut = run.graph.edges.filter((e) => e.source === succId);
+      run.graph.edges = run.graph.edges.filter((e) => e.source !== fanoutId || e.target !== succId);
+      run.graph.edges = run.graph.edges.filter((e) => e.source !== succId);
+      items.forEach((item, i) => {
+        const rec0: Record<string, unknown> =
+          item && typeof item === 'object' ? (item as Record<string, unknown>) : { value: item };
+        const cid = `${succId}__${i + 1}`;
+        const clone = structuredClone(orig);
+        clone.id = cid;
+        const sub = (str: string): string =>
+          str.replace(/\{\{\s*item\.([a-zA-Z0-9_.-]+)\s*\}\}/g, (whole, keyPath: string) => {
+            let v: unknown = rec0;
+            for (const seg of keyPath.split('.')) {
+              if (v === null || typeof v !== 'object') return whole;
+              v = (v as Record<string, unknown>)[seg];
+            }
+            if (v === undefined) return whole;
+            return typeof v === 'string' ? v : JSON.stringify(v);
+          });
+        clone.label = sub(`${orig.label} · ${String(rec0.name ?? i + 1)}`);
+        clone.config.prompt = clone.config.prompt ? sub(clone.config.prompt) : clone.config.prompt;
+        clone.config.cwd = clone.config.cwd ? sub(clone.config.cwd) : clone.config.cwd;
+        run.graph.nodes.push(clone);
+        run.nodes[cid] = { nodeId: cid, state: 'pending', attempts: 0 };
+        run.graph.edges.push({ id: `e-${fanoutId}-${cid}`, source: fanoutId, target: cid });
+        for (const e of origOut) {
+          run.graph.edges.push({ id: `e-${cid}-${e.target}`, source: cid, target: e.target });
+        }
+        pending.add(cid);
+      });
+      if (pending.has(succId)) pending.delete(succId);
+      const rec = run.nodes[succId]!;
+      rec.state = 'skipped';
+      rec.error = `分支模板已展开为 ${items.length} 个实例`;
+      this.persistAndNotify(run);
+    }
   }
 
   /** Resolve role defaults: agentKind from role when node omits it. */

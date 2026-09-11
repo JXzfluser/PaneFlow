@@ -23,6 +23,11 @@ export interface DagNodeConfig {
   /** done 后检查门禁（全部通过才算完成；对齐 flow-engine 检查语义） */
   checks?: CheckSpec[];
   /**
+   * 动态扇出（fanout 节点专用）：完成后从上游 artifact 的数组字段展开，
+   * 为每个元素克隆本节点的直接后继（分支模板），克隆节点内可用 {{item.*}}。
+   */
+  expand?: { from: string; field: string };
+  /**
    * 澄清循环（grilling 编排化）：节点完成后读取 artifact.aligned；非 'true' 时
    * 进入问答回合（审批卡片展示 extra.questions），人类回答作为补充指令再跑一轮，
    * 直到 aligned=true（approve=强制放行）或轮次耗尽。

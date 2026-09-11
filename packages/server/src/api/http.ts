@@ -216,6 +216,9 @@ export async function buildHttpServer(deps: HttpDeps) {
         if (n.type === 'agent' && !agentKind) warnings.push(`节点 ${id}（${n.label}）未配置 Agent 类型（角色也未提供默认值）`);
         const nodeCwd = n.config.cwd ? `${cwd}/${n.config.cwd}` : cwd;
         const checks = n.config.checks ?? [];
+        if (n.type === 'fanout' && n.config.expand) {
+          warnings.push(`动态扇出 ${id}：运行时按 {{${n.config.expand.from}.${n.config.expand.field}}} 展开分支（预演无法确定实例数）`);
+        }
         return {
           id,
           type: n.type,

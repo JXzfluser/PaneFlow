@@ -520,6 +520,93 @@ describe('Engine (serial DAG)', () => {
     expect(final.nodes['impl']!.error).toContain('澄清循环');
   });
 
+  it('dynamic fanout expands clones from upstream artifact array', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    // planner agent produces tasks array; then a fanout with expand clones dev per task
+    const graph: DagGraph = {
+      version: 1,
+      name: 'expand-test',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        {
+          id: 'plan',
+          type: 'agent',
+          label: '拆分',
+          config: { agentKind: 'fake', prompt: '拆分任务' },
+        },
+        { id: 'fork', type: 'fanout', label: '动态展开', config: { expand: { from: 'plan', field: 'tasks' } } },
+        {
+          id: 'dev',
+          type: 'agent',
+          label: '开发 {{item.name}}',
+          config: { agentKind: 'fake', prompt: '实现 {{item.name}}（{{item.brief}}），cwd 约定 {{item.repo}}' },
+        },
+        { id: 'merge', type: 'fanin', label: '汇总', config: {} },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'plan' },
+        { id: 'e2', source: 'plan', target: 'fork' },
+        { id: 'e3', source: 'fork', target: 'dev' },
+        { id: 'e4', source: 'dev', target: 'merge' },
+        { id: 'e5', source: 'merge', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    ops.onPrompt = (target, text) => {
+      if (target.includes('plan')) {
+        fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+        fs.writeFileSync(
+          path.join(cwd, '.herdr/artifacts/plan.json'),
+          JSON.stringify({
+            tasks: [
+              { name: '接口改造', repo: 'service-order', brief: '订单接口' },
+              { name: '页面改版', repo: 'web-portal', brief: '下单页' },
+            ],
+          }),
+        );
+      }
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    // two clones ran, original dev skipped as template
+    expect(run.nodes['dev__1']!.state).toBe('done');
+    expect(run.nodes['dev__2']!.state).toBe('done');
+    expect(run.nodes['dev']!.state).toBe('skipped');
+    // {{item.*}} injected into prompts
+    const dev1 = ops.prompts.find((p) => p.target.includes('dev__1'))!;
+    expect(dev1.text).toContain('接口改造');
+    expect(dev1.text).toContain('service-order');
+    // fanin waited for both clones
+    expect(run.nodes['merge']!.state).toBe('done');
+    expect(run.nodes['end']!.state).toBe('done');
+  });
+
+  it('dynamic fanout fails when upstream yields no array', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph: DagGraph = {
+      version: 1,
+      name: 'expand-fail',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'plan', type: 'agent', label: '拆分', config: { agentKind: 'fake', prompt: '拆' } },
+        { id: 'fork', type: 'fanout', label: '动态展开', config: { expand: { from: 'plan', field: 'tasks' } } },
+        { id: 'dev', type: 'agent', label: '开发', config: { agentKind: 'fake', prompt: 'x' } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'plan' },
+        { id: 'e2', source: 'plan', target: 'fork' },
+        { id: 'e3', source: 'fork', target: 'dev' },
+        { id: 'e4', source: 'dev', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['fork']!.error).toContain('动态扇出');
+  });
+
   it('recoverOrphans reclaims workspaces from previous dead runs', async () => {
     await ops.createWorkspace('paneflow-deadbeef', '/tmp');
     await ops.createWorkspace('unrelated', '/tmp');
