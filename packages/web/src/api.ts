@@ -31,7 +31,14 @@ async function json<T>(method: string, path: string, body?: unknown, opts?: { ra
 }
 
 export const api = {
-  health: () => json<{ ok: boolean; herdrOk: boolean; herdrSocket: string; agentKinds: string[] }>('GET', '/api/health'),
+  health: () => json<{
+    ok: boolean;
+    herdrOk: boolean;
+    herdrVersion: string | null;
+    herdrSocket: string;
+    agentKinds: string[];
+    env: { nodeVersion: string; agentsInstalled: string[]; agentsMissing: string[] };
+  }>('GET', '/api/health'),
   listGraphs: () => json<{ graphs: DagGraph[] }>('GET', '/api/graphs'),
   saveGraph: (graph: DagGraph) => json<DagGraph>('POST', '/api/graphs', { graph }),
   deleteGraph: (id: string) => json<{ deleted: boolean }>('DELETE', `/api/graphs/${encodeURIComponent(id)}`),

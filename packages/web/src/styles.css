@@ -254,3 +254,15 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .tpl-item:hover .tpl-ops { display: flex; }
 .tpl-item .tpl-ops button { padding: 1px 5px; font-size: 10px; border-radius: 4px; background: var(--panel); }
 .tpl-item:hover .tpl-load { color: var(--accent); }
+
+/* env wizard */
+.wiz-step { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.wiz-head { display: flex; align-items: center; gap: 8px; }
+.wiz-head .badge { margin-left: auto; }
+.wiz-cmd {
+  position: relative; background: var(--sunken); border: 1px solid var(--border);
+  border-radius: 6px; padding: 9px 70px 9px 10px; margin: 8px 0 4px;
+  font-size: 12px; white-space: pre-wrap; word-break: break-all;
+}
+.wiz-copy { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); padding: 2px 8px; font-size: 11px; }
+.wiz-note { color: var(--text-dim); font-size: 11.5px; margin: 4px 0 0; }

@@ -7,6 +7,7 @@ import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
 import type { SpaceProfile } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
+import { detectInstalledAgents } from './env-check.js';
 
 export const AGENT_KINDS = [
   'opencode',
@@ -82,13 +83,27 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   app.get('/api/health', async () => {
     let herdrOk = false;
+    let herdrVersion: string | null = null;
     try {
-      await deps.ops.ping();
+      const pong = (await deps.ops.ping()) as { version?: string } | undefined;
       herdrOk = true;
+      herdrVersion = pong?.version ?? null;
     } catch {
       herdrOk = false;
     }
-    return { ok: true, herdrOk, herdrSocket: deps.herdrSocketPath, agentKinds: AGENT_KINDS };
+    const agentsInstalled = herdrOk ? await detectInstalledAgents([...AGENT_KINDS]) : [];
+    return {
+      ok: true,
+      herdrOk,
+      herdrVersion,
+      herdrSocket: deps.herdrSocketPath,
+      agentKinds: AGENT_KINDS,
+      env: {
+        nodeVersion: process.version,
+        agentsInstalled,
+        agentsMissing: AGENT_KINDS.filter((k) => !agentsInstalled.includes(k)),
+      },
+    };
   });
 
   // -- graphs (templates) -----------------------------------------------------

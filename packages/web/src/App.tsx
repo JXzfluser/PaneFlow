@@ -7,6 +7,7 @@ import { PropertyPanel } from './components/PropertyPanel.jsx';
 import { Console } from './components/Console.jsx';
 import { Guide } from './components/Guide.jsx';
 import { RunDialog } from './components/RunDialog.jsx';
+import { EnvWizard } from './components/EnvWizard.jsx';
 
 let healthLogged = false; // dedupe across StrictMode double-mounts
 
@@ -31,6 +32,7 @@ export function App() {
 
   const [guideOpen, setGuideOpen] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
+  const [wizard, setWizard] = useState<{ herdrOk: boolean; herdrVersion: string | null; env: { nodeVersion: string; agentsInstalled: string[]; agentsMissing: string[] }; agentKinds: string[] } | null>(null);
   const activeRun = activeRunId ? runs[activeRunId] : null;
   const running = activeRun?.state === 'running';
 
@@ -57,6 +59,9 @@ export function App() {
           healthLogged = true;
           log(h.herdrOk ? 'info' : 'error', `Herdr ${h.herdrOk ? '已连接' : '不可达'}：${h.herdrSocket}`);
           log('info', '提示：第一次使用？点右上角「? 指南」查看五步上手教程');
+        }
+        if (!h.herdrOk || h.env.agentsInstalled.length === 0) {
+          if (!localStorage.getItem('pf-wizard-dismissed')) setWizard(h);
         }
       })
       .catch((e) => log('error', `后端不可达：${String(e)}`));
@@ -194,6 +199,15 @@ export function App() {
         <PropertyPanel />
       </div>
       <Console />
+      {wizard && (
+        <EnvWizard
+          health={wizard}
+          onDone={() => {
+            localStorage.setItem('pf-wizard-dismissed', '1');
+            setWizard(null);
+          }}
+        />
+      )}
       {runDialogOpen && (
         <RunDialog
           graph={toGraph()}
