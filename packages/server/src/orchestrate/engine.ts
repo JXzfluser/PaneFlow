@@ -66,9 +66,26 @@ export class Engine {
     private readonly store: Store,
     private readonly opts: EngineOptions,
   ) {
-    // surface past runs (from disk, across all spaces) in listings after boot
+    // surface past runs (from disk, across all spaces) in listings after boot.
+    // Runs persisted as 'running' belong to a dead process — their workspaces
+    // were reclaimed by the orphan sweep; mark them interrupted.
     for (const space of Store.listSpaces(store.root)) {
       for (const run of new Store(store.root, space.id).listRuns()) {
+        if (run.state === 'running') {
+          run.state = 'failed';
+          run.finishedAt = run.finishedAt ?? new Date().toISOString();
+          for (const rec of Object.values(run.nodes)) {
+            if (['working', 'blocked', 'queued', 'starting', 'retrying'].includes(rec.state)) {
+              rec.state = 'failed';
+              rec.error = '服务重启，运行中断';
+            }
+          }
+          try {
+            new Store(store.root, space.id).saveRun(run);
+          } catch {
+            // best-effort persistence
+          }
+        }
         this.runs.set(run.runId, run);
       }
     }
