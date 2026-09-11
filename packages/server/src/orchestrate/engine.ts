@@ -206,7 +206,8 @@ export class Engine {
   // -- execution ----------------------------------------------------------------
 
   private async execute(run: RunRecord, order: string[]): Promise<void> {
-    const label = `${this.opts.workspaceLabelPrefix}${run.runId}`;
+    // readable workspace name: paneflow-<space>-<runId> (sweep prefix preserved)
+    const label = `${this.opts.workspaceLabelPrefix}${run.spaceId ?? 'default'}-${run.runId}`;
     const ws = await this.ops.createWorkspace(label, run.cwd, this.opts.paneEnv ?? {});
     run.workspaceId = ws.workspaceId;
     this.rootPanes.set(run.runId, ws.rootPaneId);

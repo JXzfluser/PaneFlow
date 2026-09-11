@@ -1,9 +1,51 @@
+import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
 import { api } from '../api.js';
+
+function useBrowserNotify(): [boolean, () => void] {
+  const [on, setOn] = useState(() => localStorage.getItem('pf-notify-browser') === '1');
+  const enable = () => {
+    if (!on && 'Notification' in window) {
+      void Notification.requestPermission().then((perm) => {
+        if (perm === 'granted') {
+          localStorage.setItem('pf-notify-browser', '1');
+          setOn(true);
+        }
+      });
+    } else {
+      localStorage.setItem('pf-notify-browser', on ? '0' : '1');
+      setOn(!on);
+    }
+  };
+  return [on, enable];
+}
+
+/** Global browser notifications on blocked/completed/failed (deduped). */
+export function useRunNotifications(): void {
+  const runs = useStore((s) => s.runs);
+  useEffect(() => {
+    if (localStorage.getItem('pf-notify-browser') !== '1' || !('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    for (const r of Object.values(runs)) {
+      const blocked = Object.values(r.nodes).filter((n) => n.state === 'blocked');
+      const key = (ev: string) => `pf-ntf-${r.runId}-${ev}`;
+      if (blocked.length && !sessionStorage.getItem(key('blocked'))) {
+        sessionStorage.setItem(key('blocked'), '1');
+        new Notification(`PaneFlow ⛔ 等待审批`, { body: `${r.dagName}（${r.runId}）：${blocked.map((n) => n.nodeId).join('、')}` });
+      }
+      if (['completed', 'failed'].includes(r.state) && !sessionStorage.getItem(key(r.state))) {
+        sessionStorage.setItem(key(r.state), '1');
+        new Notification(`PaneFlow ${r.state === 'completed' ? '✅ 已完成' : '❌ 失败'}`, { body: `${r.dagName}（${r.runId}）` });
+      }
+    }
+  }, [runs]);
+}
 
 /** 运行中心（B9 第一版）：全部空间的运行总览、进度、操作。 */
 export function RunsCenter() {
   const runs = useStore((s) => s.runs);
+  const [notifyOn, toggleNotify] = useBrowserNotify();
+  useRunNotifications();
   const setActiveRun = useStore((s) => s.setActiveRun);
   const setView = useStore((s) => s.setView);
   const log = useStore((s) => s.log);
@@ -32,7 +74,14 @@ export function RunsCenter() {
       <div className="runs-status">
         <span><b>{runningCount}</b> 运行中</span>
         <span className={blockedCount ? 'runs-alert' : ''}><b>{blockedCount}</b> 待审批</span>
-        <span style={{ color: 'var(--text-dim)' }}>共 {list.length} 条历史（当前空间 + 全部空间）</span>
+        <span style={{ color: 'var(--text-dim)' }}>共 {list.length} 条历史</span>
+        <button
+          onClick={toggleNotify}
+          title="浏览器系统通知：等待审批/完成/失败时提醒（多流水线并行时不必盯屏）"
+          style={notifyOn ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : undefined}
+        >
+          {notifyOn ? '🔔 通知开' : '🔔 通知关'}
+        </button>
       </div>
       {list.length === 0 && <div className="runs-empty">还没有运行记录。去「编」视图搭建流水线并运行。</div>}
       {list.map((r) => {
