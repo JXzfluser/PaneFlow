@@ -384,6 +384,62 @@ describe('Engine (serial DAG)', () => {
     expect(ops.maxConcurrent).toBe(2);
   });
 
+  it('checks gate: file-exists and command pass on success, fail on violation', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    graph.nodes[1]!.config.checks = [
+      { type: 'file-exists', path: 'ok.txt' },
+      { type: 'command', run: 'echo gate-ok | grep gate-ok' },
+    ];
+    // agent writes ok.txt as part of its "work"
+    ops.onPrompt = () => fs.writeFileSync(path.join(cwd, 'ok.txt'), '1');
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    // now without the file → check fails → run failed
+    fs.rmSync(path.join(cwd, 'ok.txt'));
+    engine = new Engine(ops, store, OPTS);
+    ops.onPrompt = () => {};
+    const run2 = await runToCompletion(graph, cwd);
+    expect(run2.state).toBe('failed');
+    expect(run2.nodes['impl']!.error).toContain('文件不存在');
+  });
+
+  it('checks gate: regex match against a file', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    graph.nodes[1]!.config.checks = [{ type: 'regex', file: 'report.md', pattern: 'PASS' }];
+    ops.onPrompt = () => fs.writeFileSync(path.join(cwd, 'report.md'), 'result: PASS');
+    const ok = await runToCompletion(graph, cwd);
+    expect(ok.state).toBe('completed');
+    fs.writeFileSync(path.join(cwd, 'report.md'), 'result: FAIL');
+    engine = new Engine(ops, store, OPTS);
+    ops.onPrompt = () => {}; // second run leaves the FAIL file in place
+    const bad = await runToCompletion(graph, cwd);
+    expect(bad.state).toBe('failed');
+    expect(bad.nodes['impl']!.error).toContain('不匹配');
+  });
+
+  it('checks gate: manual check routes through the approval flow', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    graph.nodes[1]!.config.checks = [{ type: 'manual', prompt: '冒烟通过？' }];
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    // reject → node fails
+    await engine.approve(run.runId, 'impl', { action: 'reject' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(engine.getRun(run.runId)!.state).toBe('failed');
+    expect(engine.getRun(run.runId)!.nodes['impl']!.error).toContain('人工检查未通过');
+    // second run: approve → completes
+    engine = new Engine(ops, store, OPTS);
+    const run2 = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run2.runId, 'impl'));
+    await engine.approve(run2.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run2.runId)!.state !== 'running');
+    expect(engine.getRun(run2.runId)!.state).toBe('completed');
+    expect(engine.getRun(run2.runId)!.nodes['impl']!.blockedPrompt).toBeUndefined();
+  });
+
   it('recoverOrphans reclaims workspaces from previous dead runs', async () => {
     await ops.createWorkspace('paneflow-deadbeef', '/tmp');
     await ops.createWorkspace('unrelated', '/tmp');

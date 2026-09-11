@@ -20,6 +20,8 @@ export interface DagNodeConfig {
   prompt?: string;
   /** Working directory for this node's pane; empty = pipeline default cwd */
   cwd?: string;
+  /** done 后检查门禁（全部通过才算完成；对齐 flow-engine 检查语义） */
+  checks?: CheckSpec[];
   /** Retries before the node is considered failed (default 0) */
   retryCount?: number;
   /** Hard per-node execution timeout in ms (0 = unlimited) */
@@ -41,6 +43,12 @@ export interface DagNodeConfig {
   /** Result-file path relative to the node cwd (default '.herdr/artifact.json') */
   artifactFile?: string;
 }
+
+export type CheckSpec =
+  | { type: 'file-exists'; path: string }
+  | { type: 'command'; run: string; timeoutMs?: number }
+  | { type: 'regex'; file: string; pattern: string }
+  | { type: 'manual'; prompt: string };
 
 export interface DagNode {
   id: string;
@@ -117,6 +125,8 @@ export type NodeRunState =
 export interface NodeRunRecord {
   nodeId: string;
   state: NodeRunState;
+  /** manual 检查的提问文本（审批卡片展示） */
+  blockedPrompt?: string;
   paneId?: string;
   agentName?: string;
   agentStatus?: AgentStatus;

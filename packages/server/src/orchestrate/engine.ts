@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import type {
   AgentStatus,
   DagNodeConfig,
@@ -497,12 +498,69 @@ export class Engine {
       rec.artifact = artifact;
       blackboard.set(nodeId, artifact);
       this.persistAndNotify(run);
+
+      // checks gate: all configured checks must pass for the node to be done
+      const checkFail = await this.runChecks(run, rec, nodeId, nodeCwdOf(run, cfg));
+      if (checkFail) return checkFail;
+
+      this.persistAndNotify(run);
       return 'ok';
     } catch (err) {
       return (err as Error).message;
     } finally {
       unsub?.();
     }
+  }
+
+  /** Evaluate node check gates; returns an error message on failure, null when all pass. */
+  private async runChecks(
+    run: RunRecord,
+    rec: NodeRunRecord,
+    nodeId: string,
+    nodeCwd: string,
+  ): Promise<string | null> {
+    const node = run.graph.nodes.find((n) => n.id === nodeId)!;
+    const checks = node.config.checks ?? [];
+    for (const c of checks) {
+      if (this.cancels.has(run.runId)) return '已取消';
+      if (c.type === 'file-exists') {
+        const p = path.resolve(nodeCwd, c.path);
+        if (!fs.existsSync(p)) return `检查未通过：文件不存在 ${c.path}`;
+      } else if (c.type === 'regex') {
+        const p = path.resolve(nodeCwd, c.file);
+        let content: string;
+        try {
+          content = fs.readFileSync(p, 'utf8');
+        } catch {
+          return `检查未通过：无法读取 ${c.file}`;
+        }
+        if (!new RegExp(c.pattern).test(content)) return `检查未通过：${c.file} 不匹配 /${c.pattern}/`;
+      } else if (c.type === 'command') {
+        const res = await execFileAsync('sh', ['-c', c.run], {
+          cwd: nodeCwd,
+          timeout: Math.min(600_000, Math.max(5_000, c.timeoutMs ?? 120_000)),
+        }).then(() => null).catch((err: { message?: string }) => `检查未通过：命令失败 — ${(err.message ?? '').slice(0, 300)}`);
+        if (res) return res;
+      } else if (c.type === 'manual') {
+        // human gate: reuse the approval flow with the check prompt
+        rec.state = 'blocked';
+        rec.blockedPrompt = c.prompt;
+        this.persistAndNotify(run);
+        const action = await new Promise<ApprovalAction>((resolve) => {
+          this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
+        });
+        rec.blockedPrompt = undefined;
+        if (this.cancels.has(run.runId)) return '已取消';
+        if (action.action === 'reject') return `人工检查未通过：${c.prompt}`;
+        if (action.action === 'input' && action.text) {
+          // informational input recorded into the artifact
+          rec.artifact = { ...rec.artifact, extra: { ...rec.artifact?.extra, 人工反馈: action.text }, source: rec.artifact?.source ?? 'empty', finishedAt: new Date().toISOString() };
+        }
+        rec.state = 'done';
+        this.persistAndNotify(run);
+      }
+    }
+    return null;
   }
 
   /** Resolve role defaults: agentKind from role when node omits it. */
@@ -705,4 +763,21 @@ function paneIdOf(rec: NodeRunRecord): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function nodeCwdOf(run: RunRecord, cfg: DagNodeConfig): string {
+  return cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
+}
+
+function execFileAsync(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; timeout: number },
+): Promise<{ stdout: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, opts, (err, stdout) => {
+      if (err) reject(err);
+      else resolve({ stdout: String(stdout) });
+    });
+  });
 }
