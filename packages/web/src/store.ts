@@ -29,6 +29,8 @@ function initialTheme(): ThemeName {
   applyTheme(t);
   return t;
 }
+export type AppView = 'orchestrate' | 'runs' | 'settings';
+
 export interface PfNodeData extends Record<string, unknown> {
   dagNode: DagNode;
   runState?: NodeRunState;
@@ -58,7 +60,9 @@ interface PfStore {
   agentKinds: string[];
   templateList: DagGraph[];
   theme: ThemeName;
+  view: AppView;
 
+  setView: (view: AppView) => void;
   setTheme: (theme: ThemeName) => void;
   setCwd: (cwd: string) => void;
   setHealth: (herdrOk: boolean | null, wsOk: boolean) => void;
@@ -166,6 +170,12 @@ export const useStore = create<PfStore>((set, get) => ({
   agentKinds: ['opencode'],
   templateList: [],
   theme: initialTheme(),
+  view: (localStorage.getItem('pf-view') as AppView) || 'orchestrate',
+
+  setView: (view) => {
+    localStorage.setItem('pf-view', view);
+    set({ view });
+  },
 
   setTheme: (theme) => {
     localStorage.setItem('pf-theme', theme);

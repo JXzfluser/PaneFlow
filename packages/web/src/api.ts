@@ -30,7 +30,19 @@ async function json<T>(method: string, path: string, body?: unknown, opts?: { ra
   return (await r.json()) as T;
 }
 
+/** Raw JSON request with the current space context skipped (for non-space endpoints). */
+const rawJson = <T>(method: string, path: string, body?: unknown): Promise<T> =>
+  fetch(path, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(async (r) => {
+    if (!r.ok) throw new Error(`${method} ${path} → ${r.status}`);
+    return (await r.json()) as T;
+  });
+
 export const api = {
+  request: rawJson,
   health: () => json<{
     ok: boolean;
     herdrOk: boolean;
