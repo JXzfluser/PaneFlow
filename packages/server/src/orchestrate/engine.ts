@@ -6,6 +6,7 @@ import type {
   AgentStatus,
   DagNodeConfig,
   Artifact,
+  DagEdge,
   DagGraph,
   NodeRunRecord,
   RunRecord,
@@ -281,11 +282,31 @@ export class Engine {
             resolve();
           }));
 
-    const predStatus = (id: string): 'ready' | 'wait' | 'skip' => {
-      const preds = graph.edges.filter((e) => e.target === id).map((e) => e.source);
+    /** 条件边剪枝：无条件恒真；上游未落定视为有效；上游落定后按 artifact 断言 */
+    const edgeActive = (e: DagEdge): boolean => {
+      const c = e.condition;
+      if (!c) return true;
+      const artifact = blackboard.get(e.source);
+      if (!artifact) return outcomes.has(e.source) ? false : true; // skipped/failed source → pruned
+      let cur: unknown = artifact as unknown;
+      for (const seg of c.field.split('.')) {
+        if (cur === null || typeof cur !== 'object') return c.exists === false;
+        cur = (cur as Record<string, unknown>)[seg];
+      }
+      if (c.exists !== undefined) return c.exists ? cur !== undefined : cur === undefined;
+      const v = cur === undefined || cur === null ? '' : String(cur);
+      if (c.equals !== undefined) return v === c.equals;
+      if (c.notEquals !== undefined) return v !== c.notEquals;
+      return true;
+    };
+
+    const predStatus = (id: string): 'ready' | 'wait' | 'skip' | 'nolink' => {
+      const edgesIn = graph.edges.filter((e) => e.target === id);
+      const activeEdges = edgesIn.filter((e) => edgeActive(e));
+      if (edgesIn.length > 0 && activeEdges.length === 0) return 'nolink';
       let anyFailed = false;
-      for (const p of preds) {
-        const o = outcomes.get(p);
+      for (const e of activeEdges) {
+        const o = outcomes.get(e.source);
         if (!o) return 'wait';
         if (o === 'failed') anyFailed = true;
       }
@@ -309,14 +330,18 @@ export class Engine {
           const node = graph.nodes.find((n) => n.id === id)!;
           let st = predStatus(id);
           if (node.type === 'fanin') {
-            // the barrier waits for ALL branches and then judges failures itself
-            const preds = graph.edges.filter((e) => e.target === id).map((e) => e.source);
+            // the barrier waits for ALL active branches and then judges failures itself
+            const preds = graph.edges.filter((e) => e.target === id && edgeActive(e)).map((e) => e.source);
             st = preds.every((p) => outcomes.get(p)) ? 'ready' : 'wait';
           }
           if (st === 'wait') continue;
           pending.delete(id);
           const rec = run.nodes[id]!;
 
+          if (st === 'nolink') {
+            mark(id, 'skipped', '入边条件均未满足');
+            continue;
+          }
           if (st === 'skip') {
             mark(id, 'skipped', '上游分支失败');
             continue;
@@ -325,7 +350,7 @@ export class Engine {
           if (node.type !== 'agent') {
             // start / end / fanout are structural markers
             if (node.type === 'fanin') {
-              const preds = graph.edges.filter((e) => e.target === id).map((e) => e.source);
+              const preds = graph.edges.filter((e) => e.target === id && edgeActive(e)).map((e) => e.source);
               const failedCount = preds.filter((p) => outcomes.get(p) === 'failed').length;
               const requireAll = node.config.requireAll ?? true;
               if (failedCount > 0 && requireAll) {

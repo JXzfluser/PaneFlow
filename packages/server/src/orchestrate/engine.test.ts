@@ -440,6 +440,40 @@ describe('Engine (serial DAG)', () => {
     expect(engine.getRun(run2.runId)!.nodes['impl']!.blockedPrompt).toBeUndefined();
   });
 
+  it('conditional edges: unmatched condition prunes downstream without skip contagion', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = twoNodeGraph();
+    // design writes aligned:false → impl edge pruned → impl skipped; end reachable? end's pred is impl (skipped) → skipped too
+    graph.nodes[1]!.config.checks = [];
+    ops.onPrompt = (target) => {
+      if (target.startsWith('pf-') && ops.prompts.length === 1) {
+        fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, '.herdr/artifacts/design.json'), JSON.stringify({ aligned: 'false' }));
+      }
+    };
+    graph.edges.find((e) => e.source === 'design' && e.target === 'impl')!.condition = { field: 'aligned', equals: 'true' };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['design']!.state).toBe('done');
+    expect(run.nodes['impl']!.state).toBe('skipped');
+    expect(run.nodes['impl']!.error).toContain('条件');
+  });
+
+  it('conditional edges: matched condition runs normally', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = twoNodeGraph();
+    ops.onPrompt = (target) => {
+      if (target.startsWith('pf-') && ops.prompts.length === 1) {
+        fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, '.herdr/artifacts/design.json'), JSON.stringify({ aligned: 'true' }));
+      }
+    };
+    graph.edges.find((e) => e.source === 'design' && e.target === 'impl')!.condition = { field: 'aligned', equals: 'true' };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['impl']!.state).toBe('done');
+  });
+
   it('recoverOrphans reclaims workspaces from previous dead runs', async () => {
     await ops.createWorkspace('paneflow-deadbeef', '/tmp');
     await ops.createWorkspace('unrelated', '/tmp');

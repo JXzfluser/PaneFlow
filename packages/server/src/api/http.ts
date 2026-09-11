@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag } from '@paneflow/shared';
 import type { DagGraph } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
@@ -183,6 +184,59 @@ export async function buildHttpServer(deps: HttpDeps) {
     const ok = spaceStore(deps, req.query.space).deleteGraph(req.params.id);
     return { deleted: ok };
   });
+
+  // -- dry-run（B12 预演：展开变量、静态评估条件边、输出最终拓扑） -------------
+
+  app.post<{ Body: { graph: DagGraph; cwd: string; variables?: Record<string, string> } }>(
+    '/api/dry-run',
+    async (req, reply) => {
+      const { graph: rawGraph, cwd, variables } = req.body;
+      if (!rawGraph) return reply.code(400).send({ error: '缺少 graph' });
+      const applied = applyVariables(rawGraph, variables);
+      if (applied.missing.length) {
+        return reply.code(400).send({ error: `缺少必填参数：${applied.missing.join('、')}` });
+      }
+      const graph = applied.graph;
+      const issues = validateDag(graph).filter((i) => i.level === 'error');
+      if (issues.length) return reply.code(400).send({ error: issues.map((i) => i.message).join('；') });
+      const roles = loadRoles(deps.dataDir);
+      let rootCwd: string | undefined;
+      try {
+        rootCwd = spaceStore(deps, (req.query as { space?: string }).space).readProfile().rootCwd;
+      } catch {
+        rootCwd = undefined;
+      }
+      const order = topoSort(graph.nodes.map((n) => n.id), graph.edges)!;
+      const warnings: string[] = [];
+      const nodes = order.map((id) => {
+        const n = graph.nodes.find((x) => x.id === id)!;
+        const role = n.config.role ? roles.find((r) => r.id === n.config.role) : undefined;
+        if (n.config.role && !role) warnings.push(`节点 ${id} 引用的角色 ${n.config.role} 不存在`);
+        const agentKind = n.config.agentKind ?? role?.agentKind ?? (n.type === 'agent' ? undefined : undefined);
+        if (n.type === 'agent' && !agentKind) warnings.push(`节点 ${id}（${n.label}）未配置 Agent 类型（角色也未提供默认值）`);
+        const nodeCwd = n.config.cwd ? `${cwd}/${n.config.cwd}` : cwd;
+        const checks = n.config.checks ?? [];
+        return {
+          id,
+          type: n.type,
+          label: n.label,
+          role: role?.name ?? null,
+          agentKind: agentKind ?? null,
+          cwd: n.type === 'agent' ? nodeCwd : null,
+          promptPreview: n.config.prompt ? renderPromptTemplate(n.config.prompt, () => '（运行时注入）').slice(0, 200) : null,
+          checks: checks.map((c) => (c.type === 'command' ? `command: ${c.run}` : c.type === 'regex' ? `regex: ${c.file} ~ /${c.pattern}/` : c.type === 'manual' ? `manual: ${c.prompt}` : `file: ${(c as { path: string }).path}`)),
+          conventions: rootCwd ?? null,
+        };
+      });
+      const edges = graph.edges.map((e) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        condition: e.condition ? `${e.condition.field}${e.condition.equals !== undefined ? ` == ${e.condition.equals}` : ''}${e.condition.notEquals !== undefined ? ` != ${e.condition.notEquals}` : ''}${e.condition.exists !== undefined ? (e.condition.exists ? ' 存在' : ' 不存在') : ''}（运行时评估）` : null,
+      }));
+      return { nodes, edges, warnings, variables: applied.graph.variables ?? [] };
+    },
+  );
 
   // -- runs -------------------------------------------------------------------
 

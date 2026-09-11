@@ -63,6 +63,19 @@ export interface DagEdge {
   id: string;
   source: string;
   target: string;
+  /**
+   * 条件边：对上游节点 artifact 的断言，运行时不满足即剪枝（下游按依赖缺失处理）。
+   * field 支持 artifact 深层路径（如 aligned / extra.status）。
+   */
+  condition?: EdgeCondition;
+}
+
+export interface EdgeCondition {
+  field: string;
+  equals?: string;
+  notEquals?: string;
+  /** 字段存在即通过 */
+  exists?: boolean;
 }
 
 export interface DagGraph {

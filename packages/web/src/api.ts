@@ -70,6 +70,12 @@ export const api = {
   syncStatus: () => json<{ configured: boolean; repo: string | null }>('GET', '/api/sync/status'),
   syncPush: () => json<{ started: boolean }>('POST', '/api/sync/push'),
   syncPull: () => json<{ imported: string[]; failed: { file: string; error: string }[] }>('POST', '/api/sync/pull'),
+  dryRun: (graph: DagGraph, cwd: string, variables?: Record<string, string>) =>
+    json<{
+      nodes: { id: string; type: string; label: string; role: string | null; agentKind: string | null; cwd: string | null; promptPreview: string | null; checks: string[]; conventions: string | null }[];
+      edges: { id: string; source: string; target: string; condition: string | null }[];
+      warnings: string[];
+    }>('POST', '/api/dry-run', { graph, cwd, ...(variables ? { variables } : {}) }),
   listSpaces: () => json<{ spaces: { id: string; name: string }[] }>('GET', '/api/spaces', undefined, { raw: true }),
   createSpace: (id: string, name: string) => json<unknown>('POST', '/api/spaces', { id, name }, { raw: true }),
 };
