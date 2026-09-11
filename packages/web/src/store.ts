@@ -12,12 +12,11 @@ import {
 import type { DagGraph, DagNode, DagNodeType, NodeRunState, RunRecord } from '@paneflow/shared';
 import { validateDag } from '@paneflow/shared';
 
-export type ThemeName = 'dark' | 'light' | 'ocean';
+export type ThemeName = 'dark' | 'light';
 
-export const THEMES: { id: ThemeName; label: string }[] = [
-  { id: 'dark', label: '暗夜工程' },
-  { id: 'light', label: '清爽浅色' },
-  { id: 'ocean', label: '深海蓝' },
+export const THEMES: { id: ThemeName; label: string; icon: string }[] = [
+  { id: 'dark', label: '暗夜', icon: '🌙' },
+  { id: 'light', label: '浅色', icon: '☀️' },
 ];
 
 function applyTheme(theme: ThemeName): void {
@@ -30,7 +29,6 @@ function initialTheme(): ThemeName {
   applyTheme(t);
   return t;
 }
-
 export interface PfNodeData extends Record<string, unknown> {
   dagNode: DagNode;
   runState?: NodeRunState;
