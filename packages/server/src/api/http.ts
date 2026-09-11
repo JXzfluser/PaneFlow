@@ -5,6 +5,7 @@ import type { DagGraph } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import type { Store } from '../orchestrate/store.js';
+import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 
 export const AGENT_KINDS = [
   'opencode',
@@ -162,6 +163,41 @@ export async function buildHttpServer(deps: HttpDeps) {
       return { text };
     },
   );
+
+  // -- GitHub 沉淀（可选，弱依赖，异步非阻塞） ---------------------------------
+
+  app.get('/api/sync/status', async () => {
+    const cfg = loadSyncConfig();
+    return { configured: cfg !== null, repo: cfg?.repo ?? null, dir: cfg?.dir ?? null };
+  });
+
+  app.post('/api/sync/push', async (req, reply) => {
+    const cfg = loadSyncConfig();
+    if (!cfg) return reply.code(400).send({ error: syncUnavailableReason() });
+    const sync = new GithubSync(cfg, deps.store);
+    // async, non-blocking: return immediately, results land in the run log
+    void sync
+      .pushAll()
+      .then((r) =>
+        console.log(
+          `[sync] push 完成: ${r.pushed.length} 个模板已沉淀${r.failed.length ? `，失败 ${r.failed.length}: ${r.failed.map((f) => `${f.file}(${f.error})`).join('；')}` : ''}`,
+        ),
+      )
+      .catch((err) => console.error('[sync] push 异常:', (err as Error).message));
+    return { started: true };
+  });
+
+  app.post('/api/sync/pull', async (req, reply) => {
+    const cfg = loadSyncConfig();
+    if (!cfg) return reply.code(400).send({ error: syncUnavailableReason() });
+    try {
+      const sync = new GithubSync(cfg, deps.store);
+      const r = await sync.pullAll();
+      return { imported: r.imported, failed: r.failed };
+    } catch (err) {
+      return reply.code(502).send({ error: (err as Error).message });
+    }
+  });
 
   // -- websocket broadcast ------------------------------------------------------
 

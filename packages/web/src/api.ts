@@ -32,6 +32,9 @@ export const api = {
     json<{ sent: string[] }>('POST', `/api/runs/${runId}/nodes/${nodeId}/keys`, { keys }),
   nodeInput: (runId: string, nodeId: string, text: string) =>
     json<{ sent: boolean }>('POST', `/api/runs/${runId}/nodes/${nodeId}/input`, { text }),
+  syncStatus: () => json<{ configured: boolean; repo: string | null }>('GET', '/api/sync/status'),
+  syncPush: () => json<{ started: boolean }>('POST', '/api/sync/push'),
+  syncPull: () => json<{ imported: string[]; failed: { file: string; error: string }[] }>('POST', '/api/sync/pull'),
 };
 
 export interface WsRunMessage {

@@ -35,6 +35,12 @@ pnpm dev:web        # 启动画布开发服务（http://127.0.0.1:4311，代理 
 | `PF_MAX_PANES` | `8` | 全局并行 Pane 上限 |
 | `PF_PANE_ENV` | 空 | 注入流水线 workspace 的环境变量（`K=V,K2=V2`），如 `OPENCODE_DISABLE_AUTOUPDATE=1,PI_DISABLE_UPDATE_CHECK=1` |
 | `PF_WORKSPACE_PREFIX` | `paneflow-` | 流水线 workspace 标签前缀（自动回收依据） |
+| `PF_GITHUB_REPO` | 空 | 启用 GitHub 模板沉淀（`owner/name`） |
+| `PF_GITHUB_TOKEN` | 空 | GitHub PAT（需 Contents 读写权限；只从环境变量读取，永不入库/入日志） |
+| `PF_GITHUB_BRANCH` | `main` | 沉淀分支 |
+| `PF_GITHUB_DIR` | `templates` | 沉淀目录 |
+
+配置后顶栏出现「☁️ 沉淀 / ⬇️ 拉取」：沉淀把本地全部模板异步推送到仓库 `templates/*.json`；拉取反向合并到本地。默认关闭，断网不影响任何核心功能。
 
 ## 核心机制
 

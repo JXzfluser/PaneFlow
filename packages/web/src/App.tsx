@@ -107,6 +107,38 @@ export function App() {
           style={{ width: 260 }}
         />
         <button onClick={saveTemplate}>💾 保存模板</button>
+        <button
+          title="把本地模板沉淀到 GitHub（需配置 PF_GITHUB_REPO/TOKEN）"
+          onClick={async () => {
+            try {
+              const st = await api.syncStatus();
+              if (!st.configured) {
+                log('warn', `GitHub 沉淀未启用：${st.repo ?? '缺少环境变量 PF_GITHUB_REPO / PF_GITHUB_TOKEN'}`);
+                return;
+              }
+              await api.syncPush();
+              log('info', `模板沉淀已启动（异步推送到 ${st.repo} 的 templates/ 目录）`);
+            } catch (e) {
+              log('error', `沉淀失败：${(e as Error).message}`);
+            }
+          }}
+        >
+          ☁️ 沉淀
+        </button>
+        <button
+          title="从 GitHub 拉取模板到本地"
+          onClick={async () => {
+            try {
+              const r = await api.syncPull();
+              setTemplates((await api.listGraphs()).graphs);
+              log('info', `已拉取 ${r.imported.length} 个云端模板${r.failed.length ? `，失败 ${r.failed.length}` : ''}`);
+            } catch (e) {
+              log('error', `拉取失败：${(e as Error).message}`);
+            }
+          }}
+        >
+          ⬇️ 拉取
+        </button>
         <button onClick={() => { void api.listGraphs().then((r) => setTemplates(r.graphs)); }}>🔄</button>
         {!running && <button className="primary" onClick={() => void run()}>▶ 运行</button>}
         {running && <button className="danger" onClick={() => void stop()}>⏹ 停止</button>}
