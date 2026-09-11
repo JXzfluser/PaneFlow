@@ -8,6 +8,7 @@ import { Store } from '../orchestrate/store.js';
 import type { SpaceProfile } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { detectInstalledAgents } from './env-check.js';
+import { notify, readNotifySettings, writeNotifySettings, type NotifySettings } from './notifier.js';
 
 export const AGENT_KINDS = [
   'opencode',
@@ -49,6 +50,26 @@ export async function buildHttpServer(deps: HttpDeps) {
   const app = Fastify({ logger: false });
   await app.register(cors, { origin: true });
   await app.register(fastifyWebsocket);
+
+  // -- notification settings -------------------------------------------------
+
+  app.get('/api/notify/settings', async () => {
+    const s = readNotifySettings(deps.dataDir);
+    return { ...s, feishuWebhook: s.feishuWebhook ? '(已配置)' : '' };
+  });
+
+  app.put<{ Body: NotifySettings }>('/api/notify/settings', async (req, reply) => {
+    const { feishuWebhook, notifyEvents } = req.body ?? {};
+    if (feishuWebhook !== undefined && feishuWebhook !== '' && !/^https:\/\/(open\.feishu\.cn|open\.larksuite\.com)\//.test(feishuWebhook)) {
+      return reply.code(400).send({ error: 'webhook 必须是飞书开放平台地址（open.feishu.cn / open.larksuite.com）' });
+    }
+    const next: NotifySettings = {
+      ...(feishuWebhook ? { feishuWebhook } : {}),
+      ...(notifyEvents ? { notifyEvents } : {}),
+    };
+    writeNotifySettings(deps.dataDir, next);
+    return { saved: true };
+  });
 
   // -- spaces ---------------------------------------------------------------
 
@@ -259,6 +280,25 @@ export async function buildHttpServer(deps: HttpDeps) {
   // -- websocket broadcast ------------------------------------------------------
 
   const clients = new Set<{ socket: { send: (s: string) => void } }>();
+  const notified = new Set<string>();
+  deps.engine.onChange((run) => {
+    // outbound notifications on state transitions (deduped per run+event)
+    const events: ('blocked' | 'completed' | 'failed')[] = [];
+    if (Object.values(run.nodes).some((n) => n.state === 'blocked')) events.push('blocked');
+    if (run.state === 'completed') events.push('completed');
+    if (run.state === 'failed') events.push('failed');
+    for (const ev of events) {
+      const key = `${run.runId}:${ev}`;
+      if (notified.has(key)) continue;
+      notified.add(key);
+      const blocked = Object.values(run.nodes).filter((n) => n.state === 'blocked').map((n) => n.nodeId);
+      notify(
+        deps.dataDir,
+        ev,
+        `${run.dagName}（run ${run.runId}）${ev === 'blocked' ? `节点 ${blocked.join('、')} 等待人工审批` : ''}`,
+      );
+    }
+  });
   const push = (payload: unknown): void => {
     const line = JSON.stringify(payload);
     for (const c of clients) {
