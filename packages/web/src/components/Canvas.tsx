@@ -54,7 +54,7 @@ export function Canvas() {
         deleteKeyCode={['Backspace', 'Delete']}
         proOptions={{ hideAttribution: true }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={18} size={1} color={theme === 'light' ? '#ccd2da' : '#1d2430'} />
+        <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color={theme === 'light' ? '#ddd6c4' : '#373227'} />
         <Controls showInteractive={false} />
         <MiniMap
           pannable

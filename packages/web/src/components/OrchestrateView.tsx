@@ -63,7 +63,6 @@ export function OrchestrateView() {
   return (
     <>
       <div className="topbar">
-        <span className="brand">PaneFlow</span>
         <div className="tb-group" title="当前画布的模板">
           <input className="gname" value={graphName} onChange={(e) => renameGraph(e.target.value)} placeholder="模板名" style={{ width: 160 }} />
           <button onClick={saveTemplate}>💾 保存模板</button>

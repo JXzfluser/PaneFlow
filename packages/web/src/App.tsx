@@ -17,6 +17,8 @@ export function App() {
   const setTemplates = useStore((s) => s.setTemplates);
   const setCwd = useStore((s) => s.setCwd);
 
+  const theme = useStore((s) => s.theme);
+  const setTheme = useStore((s) => s.setTheme);
   const [guideOpen, setGuideOpen] = useState(false);
   const [wizard, setWizard] = useState<{
     herdrOk: boolean;
@@ -61,10 +63,16 @@ export function App() {
       <div className="app-main-col">
         <div className="topbar topbar-global">
           <span className="brand" style={{ fontSize: 14 }}>PaneFlow</span>
-          <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-            {view === 'orchestrate' ? '编排画布' : view === 'runs' ? '运行中心' : '设置'}
+          <span className="view-eyebrow">
+            {view === 'orchestrate' ? 'ORCHESTRATE · 编排画布' : view === 'runs' ? 'RUNS · 运行中心' : 'SETTINGS · 设置'}
           </span>
           <div className="spacer" />
+          <button
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            title={theme === 'dark' ? '切到浅色' : '切到暗夜'}
+          >
+            {theme === 'dark' ? '🌙' : '☀️'}
+          </button>
           <button onClick={() => setGuideOpen(true)} title="使用指南">? 指南</button>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>v0.2.0</span>
         </div>
