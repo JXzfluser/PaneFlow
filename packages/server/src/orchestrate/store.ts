@@ -6,9 +6,13 @@ export interface SpaceProfile {
   id: string;
   name: string;
   createdAt: string;
-  /** 主仓根（Space 属性，A2 骨架字段；P1 项目档案在此基础上扩展） */
+  /** 主仓根（仓库/文档/技能发现的基准路径） */
   rootCwd?: string;
   description?: string;
+  /** 约定文档（相对主仓根，运行时注入 Agent 上下文） */
+  conventionFiles?: string[];
+  /** 技能清单（相对主仓根） */
+  skills?: string[];
 }
 
 export const DEFAULT_SPACE = 'default';

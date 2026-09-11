@@ -7,6 +7,8 @@ interface SpaceProfile {
   createdAt: string;
   rootCwd?: string;
   description?: string;
+  conventionFiles?: string[];
+  skills?: string[];
 }
 
 /** 设置视图（B8 骨架 + B10 预置）：空间管理 / 项目档案 / 出站通知 / 环境。 */
@@ -16,6 +18,7 @@ export function SettingsView() {
   const [profile, setProfile] = useState<SpaceProfile | null>(null);
   const [notify, setNotify] = useState<{ feishuWebhook: string; notifyEvents?: string[] }>({ feishuWebhook: '' });
   const [env, setEnv] = useState<{ herdrOk: boolean; herdrVersion: string | null; env: { agentsInstalled: string[] } } | null>(null);
+  const [discover, setDiscover] = useState<{ markdowns: string[]; skills: string[] } | null>(null);
 
   useEffect(() => {
     if (spaceId !== 'default') {
@@ -80,6 +83,85 @@ export function SettingsView() {
               onChange={(e) => setProfile((p) => (p ? { ...p, rootCwd: e.target.value } : p))}
               placeholder="/home/user/work/my-project"
             />
+            <button
+              style={{ marginTop: 8 }}
+              onClick={() =>
+                void fetch(`/api/fs/discover?root=${encodeURIComponent(profile?.rootCwd ?? '')}`)
+                  .then((r) => r.json())
+                  .then((d) => {
+                    if (d.error) {
+                      log('error', d.error);
+                      return;
+                    }
+                    setDiscover({ markdowns: d.markdowns ?? [], skills: d.skills ?? [] });
+                    // auto-select conventions on first discovery
+                    setProfile((p) =>
+                      p
+                        ? {
+                            ...p,
+                            conventionFiles: p.conventionFiles ?? (d.markdowns ?? []).filter((f: string) => /AGENTS|CLAUDE/i.test(f)),
+                            skills: p.skills ?? [],
+                          }
+                        : p,
+                    );
+                  })
+              }
+            >
+              🔍 发现约定文档与技能
+            </button>
+            {discover && (
+              <div style={{ display: 'flex', gap: 18, marginTop: 8, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <label>约定文档（勾选 = 运行时注入）</label>
+                  <div style={{ maxHeight: 140, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 6 }}>
+                    {discover.markdowns.map((f) => (
+                      <label key={f} style={{ display: 'block', fontSize: 11.5 }}>
+                        <input
+                          type="checkbox"
+                          checked={(profile?.conventionFiles ?? []).includes(f)}
+                          onChange={(e) =>
+                            setProfile((p) =>
+                              p
+                                ? {
+                                    ...p,
+                                    conventionFiles: e.target.checked
+                                      ? [...(p.conventionFiles ?? []), f]
+                                      : (p.conventionFiles ?? []).filter((x) => x !== f),
+                                  }
+                                : p,
+                            )
+                          }
+                        />{' '}
+                        {f}
+                      </label>
+                    ))}
+                    {discover.markdowns.length === 0 && <span style={{ color: 'var(--text-dim)' }}>未发现 markdown</span>}
+                  </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <label>技能（skills/ 目录）</label>
+                  <div style={{ maxHeight: 140, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 6 }}>
+                    {discover.skills.map((f) => (
+                      <label key={f} style={{ display: 'block', fontSize: 11.5 }}>
+                        <input
+                          type="checkbox"
+                          checked={(profile?.skills ?? []).includes(f)}
+                          onChange={(e) =>
+                            setProfile((p) =>
+                              p
+                                ? { ...p, skills: e.target.checked ? [...(p.skills ?? []), f] : (p.skills ?? []).filter((x) => x !== f) }
+                                : p,
+                            )
+                          }
+                        />{' '}
+                        {f}
+                      </label>
+                    ))}
+                    {discover.skills.length === 0 && <span style={{ color: 'var(--text-dim)' }}>未发现技能</span>}
+                  </div>
+                </div>
+              </div>
+            )}
             <label>描述</label>
             <input
               value={profile?.description ?? ''}

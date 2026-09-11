@@ -9,6 +9,7 @@ import type { SpaceProfile } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { detectInstalledAgents } from './env-check.js';
 import { notify, readNotifySettings, writeNotifySettings, type NotifySettings } from './notifier.js';
+import { registerFsRoutes } from './fs-routes.js';
 
 export const AGENT_KINDS = [
   'opencode',
@@ -50,6 +51,7 @@ export async function buildHttpServer(deps: HttpDeps) {
   const app = Fastify({ logger: false });
   await app.register(cors, { origin: true });
   await app.register(fastifyWebsocket);
+  registerFsRoutes(app);
 
   // -- notification settings -------------------------------------------------
 
