@@ -54,8 +54,8 @@ export const api = {
   listGraphs: () => json<{ graphs: DagGraph[] }>('GET', '/api/graphs'),
   saveGraph: (graph: DagGraph) => json<DagGraph>('POST', '/api/graphs', { graph }),
   deleteGraph: (id: string) => json<{ deleted: boolean }>('DELETE', `/api/graphs/${encodeURIComponent(id)}`),
-  startRun: (graph: DagGraph, cwd: string, variables?: Record<string, string>) =>
-    json<{ runId: string; run: RunRecord }>('POST', '/api/runs', { graph, cwd, ...(variables ? { variables } : {}) }),
+  startRun: (graph: DagGraph, cwd: string, variables?: Record<string, string>, issueId?: string) =>
+    json<{ runId: string; run: RunRecord }>('POST', '/api/runs', { graph, cwd, ...(variables ? { variables } : {}), ...(issueId ? { issueId } : {}) }),
   stopRun: (runId: string) => json<{ stopping: boolean }>('POST', `/api/runs/${runId}/stop`),
   getRun: (runId: string) => json<RunRecord>('GET', `/api/runs/${runId}`),
   listRuns: () => json<{ runs: RunRecord[] }>('GET', '/api/runs'),

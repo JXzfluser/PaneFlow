@@ -86,6 +86,31 @@ export function PropertyPanel() {
             </div>
           </div>
 
+          <label>澄清循环（grilling：artifact.aligned≠true 时人机问答，适合需求对齐类节点）</label>
+          <div className="row">
+            <div>
+              <select
+                value={cfg.clarify ? 'on' : 'off'}
+                onChange={(e) => set({ clarify: e.target.value === 'on' ? { maxRounds: 3 } : undefined })}
+              >
+                <option value="off">关闭</option>
+                <option value="on">开启</option>
+              </select>
+            </div>
+            <div>
+              {cfg.clarify && (
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={cfg.clarify.maxRounds ?? 3}
+                  onChange={(e) => set({ clarify: { maxRounds: Math.max(1, Number(e.target.value) || 3) } })}
+                  title="最大问答轮次"
+                />
+              )}
+            </div>
+          </div>
+
           <label>失败策略</label>
           <select value={cfg.onFail ?? 'abort'} onChange={(e) => set({ onFail: e.target.value as 'abort' | 'continue' })}>
             <option value="abort">终止流水线</option>

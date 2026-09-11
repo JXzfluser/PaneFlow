@@ -115,7 +115,7 @@ export class Engine {
     return reclaimed;
   }
 
-  async startRun(graph: DagGraph, cwd: string, spaceId?: string, variables?: Record<string, string>): Promise<RunRecord> {
+  async startRun(graph: DagGraph, cwd: string, spaceId?: string, variables?: Record<string, string>, issueId?: string): Promise<RunRecord> {
     const applied = applyVariables(graph, variables);
     if (applied.missing.length) {
       throw new Error(`缺少必填参数：${applied.missing.join('、')}`);
@@ -150,6 +150,7 @@ export class Engine {
       state: 'running',
       cwd,
       ...(spaceId ? { spaceId } : {}),
+      ...(issueId ? { issueId } : {}),
       nodes,
       startedAt: new Date().toISOString(),
     };
@@ -523,6 +524,37 @@ export class Engine {
       rec.artifact = artifact;
       blackboard.set(nodeId, artifact);
       this.persistAndNotify(run);
+
+      // clarify loop (grilling): artifact.aligned !== 'true' → Q&A rounds
+      if (cfg.clarify) {
+        const maxRounds = Math.max(1, cfg.clarify.maxRounds ?? 3);
+        for (let round = 1; ; round++) {
+          const aligned = String(rec.artifact?.aligned ?? 'true');
+          if (aligned === 'true' || aligned === '1') break;
+          if (round > maxRounds) return `澄清循环 ${maxRounds} 轮后仍未对齐（aligned=${aligned}）`;
+          const questions = (rec.artifact?.extra?.questions as string[] | undefined) ?? [];
+          rec.state = 'blocked';
+          rec.blockedPrompt = questions.length ? questions.map((q, i) => `${i + 1}. ${q}`).join('\n') : 'Agent 有疑问，请补充信息（aligned 未通过）';
+          this.persistAndNotify(run);
+          const action = await new Promise<ApprovalAction>((resolve) => {
+            this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
+          });
+          rec.blockedPrompt = undefined;
+          if (this.cancels.has(run.runId)) return '已取消';
+          if (action.action === 'reject') return '澄清被人工终止';
+          if (action.action === 'approve') break; // 强制放行
+          if (action.action === 'input' && action.text) {
+            // answers become a follow-up turn; artifact re-extracted for the next aligned check
+            await this.promptAndSettle(run, rec, agentName, action.text, timeoutMs);
+            const tail = await this.ops.readOutput(agentName, 80).catch(() => '');
+            rec.artifact = await this.extractArtifact(nodeId, cfg.artifactFile ?? defaultArtifactFile(nodeId), run, tail);
+            blackboard.set(nodeId, rec.artifact);
+            this.persistAndNotify(run);
+          }
+        }
+        rec.state = 'done';
+        this.persistAndNotify(run);
+      }
 
       // checks gate: all configured checks must pass for the node to be done
       const checkFail = await this.runChecks(run, rec, nodeId, nodeCwdOf(run, cfg));

@@ -22,6 +22,12 @@ export interface DagNodeConfig {
   cwd?: string;
   /** done 后检查门禁（全部通过才算完成；对齐 flow-engine 检查语义） */
   checks?: CheckSpec[];
+  /**
+   * 澄清循环（grilling 编排化）：节点完成后读取 artifact.aligned；非 'true' 时
+   * 进入问答回合（审批卡片展示 extra.questions），人类回答作为补充指令再跑一轮，
+   * 直到 aligned=true（approve=强制放行）或轮次耗尽。
+   */
+  clarify?: { maxRounds?: number };
   /** Retries before the node is considered failed (default 0) */
   retryCount?: number;
   /** Hard per-node execution timeout in ms (0 = unlimited) */
@@ -112,6 +118,8 @@ export interface Artifact {
   errors?: string[];
   /** Anything else, agent-defined */
   extra?: Record<string, unknown>;
+  /** 澄清循环约定字段：'true' 表示已对齐（Agent 按结果约定写入） */
+  aligned?: string;
   /** Raw terminal output snapshot at completion (fallback when file missing) */
   outputTail?: string;
   /** Whether this artifact came from the result file or the output fallback */
@@ -155,6 +163,8 @@ export type RunState = 'running' | 'completed' | 'failed' | 'cancelled';
 export interface RunRecord {
   runId: string;
   dagName: string;
+  /** 关联需求 Issue（可检索/展示） */
+  issueId?: string;
   graph: DagGraph;
   state: RunState;
   cwd: string;

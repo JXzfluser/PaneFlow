@@ -91,7 +91,7 @@ export function RunsCenter() {
         return (
           <div key={r.runId} className="run-card">
             <div className="run-card-head">
-              <b>#{r.runId}</b> <span>{r.dagName}</span>
+              <b>{r.issueId ? `#${r.issueId}` : `#${r.runId}`}</b> <span>{r.dagName}</span>
               <span className={`badge ${r.state === 'completed' ? 'done' : r.state === 'failed' ? 'failed' : r.state === 'running' ? 'working' : ''}`}>
                 {r.state === 'running' ? '运行中' : r.state === 'completed' ? '完成 ✅' : r.state === 'failed' ? '失败 ❌' : '已取消'}
               </span>

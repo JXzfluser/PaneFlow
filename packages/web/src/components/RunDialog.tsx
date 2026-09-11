@@ -27,6 +27,7 @@ export function RunDialog({
     return init;
   });
   const [busy, setBusy] = useState(false);
+  const [issueId, setIssueId] = useState('');
   const [preview, setPreview] = useState<DryRunResult | null>(null);
 
   const missing = variables.filter((v) => v.required && !values[v.key]?.trim());
@@ -57,7 +58,7 @@ export function RunDialog({
     }
     setBusy(true);
     try {
-      const { run } = await api.startRun(graph, cwd.trim(), values);
+      const { run } = await api.startRun(graph, cwd.trim(), values, issueId.trim() || undefined);
       onStarted(run.runId);
       log('info', `流水线已启动：${run.runId}`);
       onClose();
@@ -82,6 +83,15 @@ export function RunDialog({
           placeholder="/tmp/my-project"
           style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
           autoFocus
+        />
+        <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: 12, margin: '10px 0 4px' }}>
+          关联 Issue（可选，用于运行中心检索与展示）
+        </label>
+        <input
+          value={issueId}
+          onChange={(e) => setIssueId(e.target.value)}
+          placeholder="如 162"
+          style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
         />
         {variables.length > 0 && (
           <>

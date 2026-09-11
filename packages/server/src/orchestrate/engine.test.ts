@@ -474,6 +474,52 @@ describe('Engine (serial DAG)', () => {
     expect(run.nodes['impl']!.state).toBe('done');
   });
 
+  it('clarify loop: unaligned artifact triggers Q&A, answer resolves it', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    graph.nodes[1]!.config.clarify = { maxRounds: 3 };
+    let round = 0;
+    ops.onPrompt = (target, text) => {
+      round += 1;
+      fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+      if (round === 1) {
+        // first turn: not aligned, asks questions
+        fs.writeFileSync(path.join(cwd, '.herdr/artifacts/impl.json'), JSON.stringify({ aligned: 'false', extra: { questions: ['验收标准是什么？'] } }));
+        void text;
+      } else {
+        // answered turn: aligned
+        fs.writeFileSync(path.join(cwd, '.herdr/artifacts/impl.json'), JSON.stringify({ aligned: 'true', summary: `已按回答处理（第${round}轮）` }));
+      }
+    };
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    expect(run.nodes['impl']!.blockedPrompt).toContain('验收标准');
+    // answer as input → agent reruns → aligned=true → completes
+    await engine.approve(run.runId, 'impl', { action: 'input', text: '验收标准：修复后测试全绿' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    expect(ops.prompts.length).toBe(2); // original + answer turn
+  });
+
+  it('clarify loop: rounds exhaustion fails the node', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    graph.nodes[1]!.config.clarify = { maxRounds: 1 };
+    ops.onPrompt = () => {
+      fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+      fs.writeFileSync(path.join(cwd, '.herdr/artifacts/impl.json'), JSON.stringify({ aligned: 'false' }));
+    };
+    const run = await engine.startRun(graph, cwd);
+    // round 1 blocked → approve as input (still unaligned) → exhausted
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'input', text: '再想想' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('failed');
+    expect(final.nodes['impl']!.error).toContain('澄清循环');
+  });
+
   it('recoverOrphans reclaims workspaces from previous dead runs', async () => {
     await ops.createWorkspace('paneflow-deadbeef', '/tmp');
     await ops.createWorkspace('unrelated', '/tmp');
