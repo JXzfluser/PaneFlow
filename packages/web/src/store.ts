@@ -25,7 +25,7 @@ function applyTheme(theme: ThemeName): void {
 
 function initialTheme(): ThemeName {
   const saved = localStorage.getItem('pf-theme') as ThemeName | null;
-  const t = saved && THEMES.some((x) => x.id === saved) ? saved : 'dark';
+  const t = saved && THEMES.some((x) => x.id === saved) ? saved : 'light'; // D5: 亮色为默认
   applyTheme(t);
   return t;
 }

@@ -26,7 +26,7 @@
 [data-theme='light'] {
   --bg: #f6f8fa;
   --panel: #ffffff;
-  --panel-2: #eff2f6;
+  --panel-2: #f0f3f7;
   --border: #d5dbe2;
   --text: #1f2328;
   --text-dim: #6a737d;
@@ -266,3 +266,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .wiz-copy { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); padding: 2px 8px; font-size: 11px; }
 .wiz-note { color: var(--text-dim); font-size: 11.5px; margin: 4px 0 0; }
+
+/* light-theme polish: airy cards */
+[data-theme='light'] .pf-node { box-shadow: 0 1px 3px rgba(31,35,40,0.08); }
+[data-theme='light'] .modal, [data-theme='light'] .console, [data-theme='light'] .topbar,
+[data-theme='light'] .palette, [data-theme='light'] .props { box-shadow: 0 1px 2px rgba(31,35,40,0.04); }
