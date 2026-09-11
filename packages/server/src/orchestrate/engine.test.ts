@@ -106,6 +106,10 @@ function fanoutGraph(): DagGraph {
   };
 }
 
+function graph(name: string, _description: string, nodes: DagGraph['nodes'], edges: DagGraph['edges']): DagGraph {
+  return { version: 1, name, nodes, edges, metadata: { createdAt: '', updatedAt: '' } };
+}
+
 let ops: FakeHerdrOps;
 let store: Store;
 let dataDir: string;
@@ -362,6 +366,22 @@ describe('Engine (serial DAG)', () => {
     expect(run.state).toBe('completed');
     expect(ops.prompts[0]!.text).toContain('.herdr/artifacts/impl.json');
     expect(ops.prompts[0]!.text).toContain('summary');
+  });
+
+  it('global pane pool caps across concurrent runs', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    engine = new Engine(ops, store, { ...OPTS, maxConcurrentPanes: 2 });
+    ops.promptDelayMs = 150;
+    const g = fanoutGraph();
+    // two overlapping runs of the same 3-branch graph; per-run cap would allow 4 concurrent
+    const r1 = await engine.startRun(g, cwd);
+    const r2 = await engine.startRun(graph('fanout-test', 'second', g.nodes, g.edges), cwd);
+    await waitFor(() =>
+      engine.getRun(r1.runId)!.state !== 'running' && engine.getRun(r2.runId)!.state !== 'running',
+    );
+    expect(engine.getRun(r1.runId)!.state).toBe('completed');
+    expect(engine.getRun(r2.runId)!.state).toBe('completed');
+    expect(ops.maxConcurrent).toBe(2);
   });
 
   it('recoverOrphans reclaims workspaces from previous dead runs', async () => {

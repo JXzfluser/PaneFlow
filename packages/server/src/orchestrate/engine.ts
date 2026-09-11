@@ -53,6 +53,9 @@ export class Engine {
   private readonly cancels = new Set<string>();
   private readonly blockedWaiters = new Map<string, (action: ApprovalAction) => void>();
   private reconcileTimer: NodeJS.Timeout | null = null;
+  /** Cross-run pane semaphore: the cap holds across ALL concurrent pipelines. */
+  private readonly paneSlots: { acquired: number } = { acquired: 0 };
+  private readonly paneWaiters: (() => void)[] = [];
 
   constructor(
     private readonly ops: HerdrOps,
@@ -245,6 +248,22 @@ export class Engine {
     const capacity = Math.max(1, this.opts.maxConcurrentPanes ?? 8);
     let abort = false;
 
+    const releaseSlot = (): void => {
+      this.paneSlots.acquired = Math.max(0, this.paneSlots.acquired - 1);
+      const next = this.paneWaiters.shift();
+      if (next) next();
+    };
+    const waitSlot = (): Promise<void> =>
+      this.paneSlots.acquired < capacity
+        ? new Promise<void>((resolve) => {
+            this.paneSlots.acquired += 1;
+            resolve();
+          })
+        : new Promise<void>((resolve) => this.paneWaiters.push(() => {
+            this.paneSlots.acquired += 1;
+            resolve();
+          }));
+
     const predStatus = (id: string): 'ready' | 'wait' | 'skip' => {
       const preds = graph.edges.filter((e) => e.target === id).map((e) => e.source);
       let anyFailed = false;
@@ -302,24 +321,28 @@ export class Engine {
             continue;
           }
 
-          if (inflight.size >= capacity) break; // concurrency full — resume after a completion
-          const launch = this.runAgentNode(run, id, blackboard)
-            .then((res) => {
-              inflight.delete(id);
-              if (res === 'abort') {
-                mark(id, 'failed', undefined);
+          if (this.paneSlots.acquired >= capacity) break; // global pool full — resume after any release
+          const launch = waitSlot().then(() =>
+            this.runAgentNode(run, id, blackboard)
+              .then((res) => {
+                inflight.delete(id);
+                releaseSlot();
+                if (res === 'abort') {
+                  mark(id, 'failed', undefined);
+                  abort = true;
+                  fail();
+                } else {
+                  mark(id, res === 'done' ? 'done' : 'failed', res === 'failed' ? run.nodes[id]!.error : undefined);
+                }
+              })
+              .catch((err) => {
+                inflight.delete(id);
+                releaseSlot();
+                mark(id, 'failed', (err as Error).message);
                 abort = true;
                 fail();
-              } else {
-                mark(id, res === 'done' ? 'done' : 'failed', res === 'failed' ? run.nodes[id]!.error : undefined);
-              }
-            })
-            .catch((err) => {
-              inflight.delete(id);
-              mark(id, 'failed', (err as Error).message);
-              abort = true;
-              fail();
-            });
+              }),
+          );
           inflight.set(id, launch);
         }
       }
