@@ -243,3 +243,14 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .modal td, .modal th { border: 1px solid var(--border); padding: 5px 9px; font-size: 12px; text-align: left; }
 .modal th { color: var(--text-dim); font-weight: 500; }
 .st-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: baseline; }
+
+/* template item with hover ops */
+.tpl-item { position: relative; margin: 4px 0; }
+.tpl-item .tpl-load { width: 100%; text-align: left; padding-right: 64px; }
+.tpl-item .tpl-ops {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: none; gap: 2px;
+}
+.tpl-item:hover .tpl-ops { display: flex; }
+.tpl-item .tpl-ops button { padding: 1px 5px; font-size: 10px; border-radius: 4px; background: var(--panel); }
+.tpl-item:hover .tpl-load { color: var(--accent); }

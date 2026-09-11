@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, getSpace, setSpace } from '../api.js';
 import { useStore } from '../store.js';
-import type { DagNodeType } from '@paneflow/shared';
+import type { DagGraph, DagNodeType } from '@paneflow/shared';
 
 export function Palette() {
   const addNode = useStore((s) => s.addNode);
@@ -42,6 +42,69 @@ export function Palette() {
     addNode(type, { x: innerWidth / 2 - 350 + Math.random() * 60, y: innerHeight / 2 - 220 + Math.random() * 60 });
   };
 
+  const refresh = () => api.listGraphs().then((r) => setTemplates(r.graphs));
+
+  // -- template operations -----------------------------------------------------
+
+  const tplName = (g: DagGraph) => g.name.replace(/^builtin-/, '').replace(/-/g, ' ');
+
+  const duplicate = async (g: DagGraph) => {
+    const name = window.prompt(`复制「${g.name}」为：`, `${g.name}-copy`);
+    if (!name) return;
+    try {
+      await api.saveGraph({ ...structuredClone(g), name });
+      await refresh();
+      log('info', `已复制为「${name}」`);
+    } catch (e) {
+      log('error', `复制失败：${(e as Error).message}`);
+    }
+  };
+
+  const rename = async (g: DagGraph) => {
+    const name = window.prompt('新模板名', g.name);
+    if (!name || name === g.name) return;
+    try {
+      await api.saveGraph({ ...structuredClone(g), name });
+      await api.deleteGraph(g.name);
+      await refresh();
+      log('info', `已重命名为「${name}」`);
+    } catch (e) {
+      log('error', `重命名失败：${(e as Error).message}`);
+    }
+  };
+
+  const remove = async (g: DagGraph) => {
+    if (!window.confirm(`删除模板「${g.name}」？（画布不受影响）`)) return;
+    try {
+      await api.deleteGraph(g.name);
+      await refresh();
+      log('info', `模板「${g.name}」已删除`);
+    } catch (e) {
+      log('error', `删除失败：${(e as Error).message}`);
+    }
+  };
+
+  const exportTpl = (g: DagGraph) => {
+    const blob = new Blob([JSON.stringify(g, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${g.name}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const importTpl = async (file: File) => {
+    try {
+      const graph = JSON.parse(await file.text()) as DagGraph;
+      if (graph?.version !== 1 || !Array.isArray(graph.nodes)) throw new Error('不是有效的 PaneFlow 模板');
+      await api.saveGraph(graph);
+      await refresh();
+      log('info', `已导入模板「${graph.name}」`);
+    } catch (e) {
+      log('error', `导入失败：${(e as Error).message}`);
+    }
+  };
+
   return (
     <div className="palette">
       <h4>
@@ -72,17 +135,34 @@ export function Palette() {
       <button className="pal-item" onClick={() => add('fanin')}>⑀ 汇总 Fan-in</button>
       <h4>核心</h4>
       <button className="pal-item" onClick={() => add('agent')}>⚙ Agent 节点</button>
-      <h4>模板</h4>
+      <h4>
+        模板
+        <label title="导入模板 JSON" style={{ float: 'right', fontSize: 11, cursor: 'pointer', color: 'var(--text-dim)' }}>
+          导入
+          <input
+            type="file"
+            accept=".json,application/json"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void importTpl(f);
+              e.currentTarget.value = '';
+            }}
+          />
+        </label>
+      </h4>
       {(graphs ?? []).map((g) => (
-        <button
-          key={g.name}
-          className="pal-item"
-          title={g.metadata.description || g.name}
-          onClick={() => loadGraph(g)}
-        >
-          {g.name.startsWith('builtin-') ? '📦' : '📋'}{' '}
-          {g.name.replace(/^builtin-/, '').replace(/-/g, ' ')}
-        </button>
+        <div key={g.name} className="tpl-item">
+          <button className="pal-item tpl-load" title={g.metadata.description || g.name} onClick={() => loadGraph(g)}>
+            {g.name.startsWith('builtin-') ? '📦' : '📋'} {tplName(g)}
+          </button>
+          <div className="tpl-ops">
+            <button title="复制另存" onClick={() => void duplicate(g)}>复制</button>
+            <button title="重命名" onClick={() => void rename(g)}>改名</button>
+            <button title="导出 JSON" onClick={() => exportTpl(g)}>导出</button>
+            <button className="danger" title="删除" onClick={() => void remove(g)}>删</button>
+          </div>
+        </div>
       ))}
       {(graphs ?? []).length === 0 && <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>当前空间暂无模板</div>}
     </div>
