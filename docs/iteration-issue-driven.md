@@ -178,3 +178,32 @@ P0 各项 0.5–2 天；P1 为产品形态主战场；P2 治理增强。
 1. 亮色默认主题 → **确认**（D5）
 2. Space 纯个人工具语义 → **确认**；远程协作诉求由 §6 微信/飞书通道分析承接（D9）
 3. 同仓并发 worktree 隔离 → **确认**（D8）
+
+## 10. 开发执行计划（已确认：P0+P1 全量，逐功能推送）
+
+事实勘察结论（开发前）：
+- `herdr server agent-manifests` 输出全部 Agent kind 及版本/状态 → 环境自检数据源可靠（辅以 `command -v` 检测本地二进制）；
+- `herdr worktree create/list/open/remove` 可用 → D8 成立；
+- `variables` 尚未实现；当前存储为扁平 templates/ + runs/，Space 需重构 + 一次性自动迁移。
+
+### 执行顺序（依赖驱动）
+
+**Phase A · 地基（P0）**
+1. 全局并发池：Engine 级信号量替换 schedule 内 per-run 计数
+2. Space + 存储重构：`spaces/<id>/{templates,runs,profile.json}` + 全局 settings.json；boot 时旧扁平数据自动迁入 default 空间
+3. 模板变量 + 运行参数表单：`DagGraph.variables[]` 声明式；渲染时先做 `{{var}}` 替换（变量优先、黑板引用其后），可注入 prompt/cwd 等全部字符串字段；运行对话框按声明生成表单
+4. 模板操作 UI：复制另存/重命名/删除（确认）/导出 JSON/导入（拖拽或选择）
+5. 环境自检 + 欢迎向导：`/api/health` 扩展（herdr 版本/Agent 清单+本地安装检测）；首次访问三步向导卡（安装命令复制+重检）
+6. 亮色默认 + token 微调（组件级卡片化随 Phase B 信息架构一并做）
+7. 出站通知：settings.json（feishuWebhook/notifyEvents）+ blocked/完成/失败推送卡片 + `--host 0.0.0.0` 访问令牌说明
+
+**Phase B · 产品形态（P1）**
+8. 左导航 + 三视图信息架构（编排/运行/设置）
+9. 运行中心 + workspace 可读命名 `pf-{space}-{issue}` + 浏览器通知
+10. 项目档案 + 全局角色库（settings 视图；角色继承/覆盖）
+11. checks 检查 gate（file-exists/command/regex/manual；manual 复用审批卡片）
+12. 条件边 + Dry-Run 预演
+13. 澄清循环节点 + run.issueId
+14. 动态扇出 expandFrom（按任务数组克隆分支节点）
+
+设计取舍备查：变量与黑板引用同用 `{{}}` 语法——变量先替换（声明式、无歧义），其余按节点引用解析；条件边在画布上以虚线+标签呈现，属性面板点选边编辑；checks 失败计入节点失败语义（重试/onFail 照常）。
