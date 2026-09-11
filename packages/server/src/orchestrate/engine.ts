@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
   AgentStatus,
+  DagNodeConfig,
   Artifact,
   DagGraph,
   NodeRunRecord,
@@ -12,6 +13,7 @@ import { applyVariables, renderPromptTemplate, topoSort, validateDag } from '@pa
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
+import { buildConventionBlock, loadRoles, type Role } from './roles.js';
 
 export interface EngineOptions {
   workspaceLabelPrefix: string;
@@ -426,7 +428,7 @@ export class Engine {
       const paneId = await this.ops.splitPane(run.workspaceId!, rootPane, nodeCwd);
       rec.paneId = paneId;
       rec.agentName = agentName;
-      await this.ops.startAgent(paneId, agentName, cfg.agentKind!, cfg.agentArgs ?? [], this.opts.agentStartTimeoutMs);
+      await this.ops.startAgent(paneId, agentName, this.resolveAgentKind(run, cfg), cfg.agentArgs ?? [], this.opts.agentStartTimeoutMs);
       await this.ops.waitAgent(agentName, ['idle'], this.opts.agentReadyTimeoutMs);
     } catch (err) {
       return `启动失败：${(err as Error).message}`;
@@ -456,8 +458,9 @@ export class Engine {
         this.resolveBlackboardRef(blackboard, refId, refPath),
       );
       const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
+      const { block, agentKind } = this.resolveContext(run, cfg);
       const prompt = this.withArtifactConvention(
-        rendered,
+        `${block}${rendered}`,
         path.join(nodeCwd, cfg.artifactFile ?? defaultArtifactFile(nodeId)),
       );
       let status = await this.promptAndSettle(run, rec, agentName, prompt, timeoutMs);
@@ -500,6 +503,40 @@ export class Engine {
     } finally {
       unsub?.();
     }
+  }
+
+  /** Resolve role defaults: agentKind from role when node omits it. */
+  private resolveAgentKind(run: RunRecord, cfg: DagNodeConfig): string {
+    if (cfg.agentKind) return cfg.agentKind;
+    const role = this.roleById(run, cfg.role);
+    if (role?.agentKind) return role.agentKind;
+    return 'opencode';
+  }
+
+  private roleById(run: RunRecord, roleId: string | undefined): Role | undefined {
+    if (!roleId) return undefined;
+    return loadRoles(this.store.root).find((r) => r.id === roleId);
+  }
+
+  /** Convention block from the space profile + role prePrompt, prepended to prompts. */
+  private resolveContext(run: RunRecord, cfg: DagNodeConfig): { block: string; agentKind?: string } {
+    const parts: string[] = [];
+    const role = this.roleById(run, cfg.role);
+    if (role?.prePrompt) parts.push(`${role.prePrompt}\n`);
+    try {
+      const profile = this.storeFor(run).readProfile();
+      const block = buildConventionBlock(profile.rootCwd, profile.conventionFiles, (p) => {
+        try {
+          return fs.readFileSync(p, 'utf8');
+        } catch {
+          return null;
+        }
+      });
+      if (block) parts.push(block);
+    } catch {
+      // profile unreadable — proceed without conventions
+    }
+    return { block: parts.join('\n'), agentKind: role?.agentKind };
   }
 
   /** Submit a prompt and wait for the turn to settle (server-side wait + poll). */

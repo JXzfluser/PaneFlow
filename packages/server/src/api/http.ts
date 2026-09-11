@@ -10,6 +10,7 @@ import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync
 import { detectInstalledAgents } from './env-check.js';
 import { notify, readNotifySettings, writeNotifySettings, type NotifySettings } from './notifier.js';
 import { registerFsRoutes } from './fs-routes.js';
+import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
 
 export const AGENT_KINDS = [
   'opencode',
@@ -52,6 +53,25 @@ export async function buildHttpServer(deps: HttpDeps) {
   await app.register(cors, { origin: true });
   await app.register(fastifyWebsocket);
   registerFsRoutes(app);
+
+  // -- global roles library ----------------------------------------------------
+
+  app.get('/api/roles', async () => ({ roles: loadRoles(deps.dataDir) }));
+
+  app.put<{ Body: { roles: Role[] } }>('/api/roles', async (req, reply) => {
+    const roles = req.body?.roles;
+    if (!Array.isArray(roles)) return reply.code(400).send({ error: 'roles 必须是数组' });
+    const ids = new Set<string>();
+    for (const r of roles) {
+      if (!/^[a-zA-Z0-9_-]{1,32}$/.test(r.id ?? '')) {
+        return reply.code(400).send({ error: `角色 ID 非法：${r.id}` });
+      }
+      if (ids.has(r.id)) return reply.code(400).send({ error: `角色 ID 重复：${r.id}` });
+      ids.add(r.id);
+    }
+    saveRoles(deps.dataDir, roles);
+    return { saved: roles.length };
+  });
 
   // -- notification settings -------------------------------------------------
 

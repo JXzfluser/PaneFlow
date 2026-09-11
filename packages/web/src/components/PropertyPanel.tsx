@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
 
 export function PropertyPanel() {
@@ -5,6 +6,10 @@ export function PropertyPanel() {
   const nodes = useStore((s) => s.nodes);
   const updateNodeConfig = useStore((s) => s.updateNodeConfig);
   const agentKinds = useStore((s) => s.agentKinds);
+  const [roles, setRoles] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    void fetch('/api/roles').then((r) => r.json()).then((d) => setRoles(d.roles ?? []));
+  }, []);
 
   const node = nodes.find((n) => n.id === selectedNodeId);
   if (!node) {
@@ -40,7 +45,15 @@ export function PropertyPanel() {
 
       {isAgent && (
         <>
-          <label>Agent 类型（herdr kind）</label>
+          <label>角色（全局角色库，继承默认 Agent 类型与前置提示）</label>
+          <select value={cfg.role ?? ''} onChange={(e) => set({ role: e.target.value || undefined })}>
+            <option value="">（无角色）</option>
+            {roles.map((r) => (
+              <option key={r.id} value={r.id}>{r.name}</option>
+            ))}
+          </select>
+
+          <label>Agent 类型（herdr kind，未选角色时必填）</label>
           <select value={cfg.agentKind ?? ''} onChange={(e) => set({ agentKind: e.target.value })}>
             <option value="" disabled>选择…</option>
             {agentKinds.map((k) => (

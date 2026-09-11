@@ -7,6 +7,8 @@ import type { AgentStatus } from './states.js';
 export type DagNodeType = 'start' | 'agent' | 'fanout' | 'fanin' | 'end';
 
 export interface DagNodeConfig {
+  /** 全局角色库的角色 id（继承 agentKind 默认与 prePrompt） */
+  role?: string;
   /** Herdr agent kind, e.g. claude | codex | opencode | pi | kimi ... */
   agentKind?: string;
   /** Extra argv passed to the agent after `--` at `agent start` */

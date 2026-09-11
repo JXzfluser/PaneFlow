@@ -1,5 +1,64 @@
 import { useEffect, useState } from 'react';
 import { api, getSpace } from '../api.js';
+
+interface Role {
+  id: string;
+  name: string;
+  agentKind?: string;
+  prePrompt?: string;
+}
+
+function RolesEditor() {
+  const log = useStore((s) => s.log);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [agentKinds, setAgentKinds] = useState<string[]>([]);
+  useEffect(() => {
+    void fetch('/api/roles').then((r) => r.json()).then((d) => setRoles(d.roles ?? []));
+    void api.health().then((h) => setAgentKinds(h.agentKinds));
+  }, []);
+  const save = (next: Role[]) => {
+    setRoles(next);
+    void fetch('/api/roles', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roles: next }),
+    }).then(async (r) => {
+      if (!r.ok) log('error', (await r.json()).error ?? `HTTP ${r.status}`);
+      else log('info', '角色库已保存');
+    });
+  };
+  const patch = (idx: number, part: Partial<Role>) =>
+    setRoles((rs) => rs.map((r, i) => (i === idx ? { ...r, ...part } : r)));
+  return (
+    <>
+      {roles.map((r, i) => (
+        <div key={r.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 8 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={r.name} onChange={(e) => patch(i, { name: e.target.value })} placeholder="角色名" style={{ flex: 1 }} />
+            <select value={r.agentKind ?? ''} onChange={(e) => patch(i, { agentKind: e.target.value || undefined })} style={{ width: 140 }}>
+              <option value="">（默认 Agent）</option>
+              {agentKinds.map((k) => <option key={k} value={k}>{k}</option>)}
+            </select>
+            <button className="danger" onClick={() => save(roles.filter((x) => x.id !== r.id))}>删</button>
+          </div>
+          <textarea
+            value={r.prePrompt ?? ''}
+            onChange={(e) => patch(i, { prePrompt: e.target.value })}
+            placeholder="角色前置提示（渲染在节点指令之前），如：你是后端开发工程师，遵守团队分支与提交规范…"
+            style={{ width: '100%', minHeight: 56, marginTop: 8, background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: 6, font: 'inherit' }}
+          />
+        </div>
+      ))}
+      <button
+        onClick={() =>
+          save([...roles, { id: `role-${Date.now().toString(36)}`, name: `角色 ${roles.length + 1}` }])
+        }
+      >
+        + 新增角色
+      </button>
+    </>
+  );
+}
 import { useStore } from '../store.js';
 interface SpaceProfile {
   id: string;
@@ -201,6 +260,14 @@ export function SettingsView() {
           ))}
         </div>
         <button onClick={() => void saveNotify()}>保存通知设置</button>
+      </div>
+
+      <div className="settings-card">
+        <h3>全局角色库</h3>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11.5, margin: '0 0 8px' }}>
+          角色供画布 Agent 节点选择：继承默认 Agent 类型与前置提示。约定文档在上方「项目档案」按空间配置。
+        </p>
+        <RolesEditor />
       </div>
 
       <div className="settings-card">
