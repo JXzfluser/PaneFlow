@@ -8,7 +8,7 @@ import type {
   NodeRunRecord,
   RunRecord,
 } from '@paneflow/shared';
-import { renderPromptTemplate, topoSort, validateDag } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag } from '@paneflow/shared';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
@@ -111,7 +111,12 @@ export class Engine {
     return reclaimed;
   }
 
-  async startRun(graph: DagGraph, cwd: string, spaceId?: string): Promise<RunRecord> {
+  async startRun(graph: DagGraph, cwd: string, spaceId?: string, variables?: Record<string, string>): Promise<RunRecord> {
+    const applied = applyVariables(graph, variables);
+    if (applied.missing.length) {
+      throw new Error(`缺少必填参数：${applied.missing.join('、')}`);
+    }
+    graph = applied.graph;
     const issues = validateDag(graph);
     const errors = issues.filter((i) => i.level === 'error');
     if (errors.length) {

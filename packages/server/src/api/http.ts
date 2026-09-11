@@ -136,7 +136,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       const graph = inlineGraph ?? (graphId ? store.getGraph(graphId) : undefined);
       if (!graph) return reply.code(400).send({ error: '缺少 graph 或 graphId' });
       try {
-        const run = await deps.engine.startRun(graph, cwd, req.query.space);
+        const run = await deps.engine.startRun(graph, cwd, req.query.space, req.body.variables);
         return reply.code(201).send({ runId: run.runId, run });
       } catch (err) {
         return reply.code(400).send({ error: (err as Error).message });

@@ -6,6 +6,7 @@ import { Palette } from './components/Palette.jsx';
 import { PropertyPanel } from './components/PropertyPanel.jsx';
 import { Console } from './components/Console.jsx';
 import { Guide } from './components/Guide.jsx';
+import { RunDialog } from './components/RunDialog.jsx';
 
 let healthLogged = false; // dedupe across StrictMode double-mounts
 
@@ -29,6 +30,7 @@ export function App() {
   const setTheme = useStore((s) => s.setTheme);
 
   const [guideOpen, setGuideOpen] = useState(false);
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
   const activeRun = activeRunId ? runs[activeRunId] : null;
   const running = activeRun?.state === 'running';
 
@@ -73,23 +75,13 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const run = async () => {
+  const run = () => {
     const issues = graphIssues();
     if (issues.length) {
       log('error', `无法启动：${issues.join('；')}`);
       return;
     }
-    if (!cwd.trim()) {
-      log('error', '请先在顶栏设置流水线工作目录');
-      return;
-    }
-    try {
-      const { run: rec } = await api.startRun(toGraph(), cwd.trim());
-      setActiveRun(rec.runId);
-      log('info', `流水线已启动：${rec.runId}`);
-    } catch (e) {
-      log('error', `启动失败：${(e as Error).message}`);
-    }
+    setRunDialogOpen(true);
   };
 
   const stop = async () => {
@@ -167,7 +159,7 @@ export function App() {
             style={{ width: 190 }}
           />
           {!running ? (
-            <button className="primary" onClick={() => void run()}>▶ 运行</button>
+            <button className="primary" onClick={run}>▶ 运行</button>
           ) : (
             <button className="danger" onClick={() => void stop()}>⏹ 停止</button>
           )}
@@ -202,6 +194,13 @@ export function App() {
         <PropertyPanel />
       </div>
       <Console />
+      {runDialogOpen && (
+        <RunDialog
+          graph={toGraph()}
+          onClose={() => setRunDialogOpen(false)}
+          onStarted={(runId) => setActiveRun(runId)}
+        />
+      )}
       {guideOpen && <Guide onClose={() => setGuideOpen(false)} />}
     </div>
   );

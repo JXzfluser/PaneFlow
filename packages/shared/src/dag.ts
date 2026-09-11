@@ -65,6 +65,15 @@ export interface DagGraph {
     updatedAt: string;
     description?: string;
   };
+  /** Declared run-time parameters (rendered into all string fields before execution) */
+  variables?: TemplateVariable[];
+}
+
+export interface TemplateVariable {
+  key: string;
+  label: string;
+  required?: boolean;
+  default?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,4 +293,42 @@ export function renderPromptTemplate(
     const value = resolve(nodeId, path);
     return value === undefined ? whole : value;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Template variables: declared run-time parameters, substituted before any
+// blackboard rendering. `{{key}}` is replaced in every string field of the
+// graph (prompts, cwd, labels, descriptions). Declared variables take
+// precedence — node artifact references use `{{nodeId.field}}` and never
+// collide because variable keys must not match node ids (validated below).
+// ---------------------------------------------------------------------------
+
+export function applyVariables(
+  graph: DagGraph,
+  values: Record<string, string> | undefined,
+): { graph: DagGraph; missing: string[] } {
+  const declared = graph.variables ?? [];
+  const missing = declared.filter((v) => v.required && !values?.[v.key]).map((v) => v.label || v.key);
+  const clone: DagGraph = structuredClone(graph);
+  if (!declared.length || missing.length) return { graph: clone, missing };
+
+  const resolved: Record<string, string> = {};
+  for (const v of declared) {
+    resolved[v.key] = values?.[v.key] ?? v.default ?? '';
+  }
+  const substitute = (s: string): string =>
+    s.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*\}\}/g, (whole, key: string) =>
+      key in resolved ? resolved[key]! : whole,
+    );
+  const walk = (o: unknown): unknown => {
+    if (typeof o === 'string') return substitute(o);
+    if (Array.isArray(o)) return o.map(walk);
+    if (o && typeof o === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(o)) out[k] = walk(v);
+      return out;
+    }
+    return o;
+  };
+  return { graph: walk(clone) as DagGraph, missing };
 }

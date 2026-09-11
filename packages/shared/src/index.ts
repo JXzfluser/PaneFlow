@@ -9,10 +9,12 @@ export type {
   NodeRunState,
   RunRecord,
   NodeRunRecord,
+  TemplateVariable,
 } from './dag.js';
 export {
   validateDag,
   topoSort,
   upstreamOf,
   renderPromptTemplate,
+  applyVariables,
 } from './dag.js';
