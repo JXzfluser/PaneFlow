@@ -59,25 +59,10 @@ body {
 /* top bar */
 .topbar {
   display: flex; align-items: center; gap: 2px;
-  min-height: 36px; padding: 0 10px;
+  height: 46px; padding: 0 10px;
   background: var(--panel); border-bottom: 1px solid var(--border);
-  flex-shrink: 0; position: relative;
+  flex-shrink: 0;
 }
-.topbar.collapsed { gap: 8px; }
-.tb-resize {
-  position: absolute; left: 0; right: 0; bottom: -3px; height: 6px;
-  cursor: row-resize; z-index: 5;
-}
-.tb-resize::after {
-  content: ''; position: absolute; left: 50%; top: 2px; transform: translateX(-50%);
-  width: 36px; height: 2px; border-radius: 2px; background: var(--border);
-  transition: background 0.15s;
-}
-.tb-resize:hover::after { background: var(--accent); }
-.theme-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-.theme-seg button { border: none; border-radius: 0; padding: 4px 9px; font-size: 12px; }
-.theme-seg button + button { border-left: 1px solid var(--border); }
-.theme-seg button.active { background: var(--primary-bg); color: var(--accent); }
 .tb-group { display: flex; align-items: center; gap: 6px; padding: 0 10px; border-right: 1px solid var(--border); }
 .tb-group:last-of-type { border-right: none; }
 .topbar .brand { font-weight: 700; color: var(--accent); letter-spacing: 0.5px; padding-right: 6px; white-space: nowrap; }
@@ -111,10 +96,24 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .canvas-wrap { flex: 1; min-width: 0; position: relative; }
 
 .console {
-  height: 240px; background: var(--panel); border-top: 1px solid var(--border);
+  background: var(--panel); border-top: 1px solid var(--border);
   display: flex; flex-direction: column; flex-shrink: 0;
+  position: relative;
 }
-.console-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); }
+.console-resize {
+  position: absolute; left: 0; right: 0; top: -3px; height: 6px;
+  cursor: row-resize; z-index: 5;
+}
+.console-resize::after {
+  content: ''; position: absolute; left: 50%; top: 2px; transform: translateX(-50%);
+  width: 36px; height: 2px; border-radius: 2px; background: var(--border);
+  transition: background 0.15s;
+}
+.console-resize:hover::after { background: var(--accent); }
+.console-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); align-items: center; }
+.console-tabs .tabs-end { margin-left: auto; display: flex; gap: 4px; padding-bottom: 4px; }
+.console-tabs .tabs-end button { padding: 3px 9px; font-size: 11px; color: var(--text-dim); }
+.console.collapsed .console-tabs { border-bottom: none; }
 .console-tabs button {
   border: none; border-bottom: 2px solid transparent; border-radius: 0;
   background: transparent; color: var(--text-dim); padding: 6px 12px;

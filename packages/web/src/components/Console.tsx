@@ -4,6 +4,13 @@ import { useStore } from '../store.js';
 
 type Tab = 'console' | 'approval' | 'terminal' | 'summary';
 
+const CONSOLE_MIN = 120;
+const CONSOLE_MAX_RATIO = 0.75;
+
+function clampConsoleHeight(h: number): number {
+  return Math.min(Math.round(window.innerHeight * CONSOLE_MAX_RATIO), Math.max(CONSOLE_MIN, Math.round(h)));
+}
+
 export function Console() {
   const logs = useStore((s) => s.logs);
   const runs = useStore((s) => s.runs);
@@ -13,6 +20,43 @@ export function Console() {
   const [terminal, setTerminal] = useState('');
   const [terminalNode, setTerminalNode] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('pf-console-collapsed') === '1');
+  const [height, setHeight] = useState(() =>
+    clampConsoleHeight(Number(localStorage.getItem('pf-console-height')) || 240),
+  );
+
+  const toggleCollapsed = () => {
+    setCollapsed((v) => {
+      localStorage.setItem('pf-console-collapsed', v ? '0' : '1');
+      return !v;
+    });
+  };
+
+  const onConsoleResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = height;
+    let last = startH;
+    const move = (ev: MouseEvent) => {
+      last = clampConsoleHeight(startH + (startY - ev.clientY));
+      setHeight(last);
+    };
+    const up = () => {
+      localStorage.setItem('pf-console-height', String(last));
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
+
+  const switchTab = (t: Tab) => {
+    setTab(t);
+    if (collapsed) {
+      setCollapsed(false);
+      localStorage.setItem('pf-console-collapsed', '0');
+    }
+  };
 
   const run = activeRunId ? runs[activeRunId] : null;
   const blockedNodes = run
@@ -50,7 +94,21 @@ export function Console() {
   }, [tab, run, terminalNode]);
 
   return (
-    <div className="console">
+    <div
+      className={`console${collapsed ? ' collapsed' : ''}`}
+      style={collapsed ? undefined : { height }}
+    >
+      {!collapsed && (
+        <div
+          className="console-resize"
+          title="拖拽调整控制台高度 · 双击复位"
+          onMouseDown={onConsoleResize}
+          onDoubleClick={() => {
+            setHeight(240);
+            localStorage.setItem('pf-console-height', '240');
+          }}
+        />
+      )}
       <div className="console-tabs">
         {(
           [
@@ -60,11 +118,17 @@ export function Console() {
             ['summary', '产物汇总'],
           ] as [Tab, string][]
         ).map(([id, label]) => (
-          <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
+          <button key={id} className={tab === id && !collapsed ? 'active' : ''} onClick={() => switchTab(id)}>
             {label}
           </button>
         ))}
+        <div className="tabs-end">
+          <button onClick={toggleCollapsed} title={collapsed ? '展开控制台' : '收起控制台，画布空间更大（点任意标签页也会展开）'}>
+            {collapsed ? '⌃ 控制台' : '⌄ 收起'}
+          </button>
+        </div>
       </div>
+      {!collapsed && (
       <div className="console-body" ref={bodyRef}>
         {tab === 'console' &&
           logs.map((l, i) => (
@@ -92,6 +156,7 @@ export function Console() {
           <SummaryView />
         )}
       </div>
+      )}
     </div>
   );
 }
