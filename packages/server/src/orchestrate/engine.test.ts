@@ -1,0 +1,375 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { DagGraph } from '@paneflow/shared';
+import { Engine } from './engine.js';
+import type { ApprovalAction, EngineOptions } from './engine.js';
+import { Store } from './store.js';
+
+import { FakeHerdrOps } from './fake-ops.js';
+
+const OPTS: EngineOptions = {
+  workspaceLabelPrefix: 'paneflow-',
+  reconcileIntervalMs: 60_000, // effectively off in tests
+  defaultNodeTimeoutMs: 1_200,
+  agentStartTimeoutMs: 5_000,
+  agentReadyTimeoutMs: 5_000,
+};
+
+function serialGraph(): DagGraph {
+  return {
+    version: 1,
+    name: 'serial-test',
+    nodes: [
+      { id: 'start', type: 'start', label: '开始', config: {} },
+      {
+        id: 'impl',
+        type: 'agent',
+        label: '实现',
+        config: { agentKind: 'fake', prompt: '实现功能。参考 {{design.artifact.summary}}' },
+      },
+      { id: 'end', type: 'end', label: '结束', config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'impl' },
+      { id: 'e2', source: 'impl', target: 'end' },
+    ],
+    metadata: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  };
+}
+
+function twoNodeGraph(): DagGraph {
+  return {
+    version: 1,
+    name: 'chain-test',
+    nodes: [
+      { id: 'start', type: 'start', label: '开始', config: {} },
+      {
+        id: 'design',
+        type: 'agent',
+        label: '设计',
+        config: {
+          agentKind: 'fake',
+          prompt: '设计',
+          // agents write their artifact via the engine's file convention in real
+          // life; here extraction falls back to output tail
+        },
+      },
+      {
+        id: 'impl',
+        type: 'agent',
+        label: '实现',
+        config: { agentKind: 'fake', prompt: '根据 {{design.artifact.summary}} 实现' },
+      },
+      { id: 'end', type: 'end', label: '结束', config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'design' },
+      { id: 'e2', source: 'design', target: 'impl' },
+      { id: 'e3', source: 'impl', target: 'end' },
+    ],
+    metadata: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  };
+}
+
+function fanoutGraph(): DagGraph {
+  const agent = (id: string, label: string): DagGraph['nodes'][number] => ({
+    id,
+    type: 'agent' as const,
+    label,
+    config: { agentKind: 'fake', prompt: `${label} 的任务` },
+  });
+  return {
+    version: 1,
+    name: 'fanout-test',
+    nodes: [
+      { id: 'start', type: 'start', label: '开始', config: {} },
+      { id: 'split', type: 'fanout', label: '并行', config: {} },
+      agent('fa', '分支A'),
+      agent('fb', '分支B'),
+      agent('fc', '分支C'),
+      { id: 'merge', type: 'fanin', label: '汇总', config: {} },
+      { id: 'end', type: 'end', label: '结束', config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'split' },
+      { id: 'e2', source: 'split', target: 'fa' },
+      { id: 'e3', source: 'split', target: 'fb' },
+      { id: 'e4', source: 'split', target: 'fc' },
+      { id: 'e5', source: 'fa', target: 'merge' },
+      { id: 'e6', source: 'fb', target: 'merge' },
+      { id: 'e7', source: 'fc', target: 'merge' },
+      { id: 'e8', source: 'merge', target: 'end' },
+    ],
+    metadata: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  };
+}
+
+let ops: FakeHerdrOps;
+let store: Store;
+let dataDir: string;
+let engine: Engine;
+
+beforeEach(() => {
+  ops = new FakeHerdrOps();
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-engine-'));
+  store = new Store(dataDir);
+  engine = new Engine(ops, store, OPTS);
+});
+
+function waitFor(predicate: () => boolean, timeoutMs = 8000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => {
+      if (predicate()) return resolve();
+      if (Date.now() - t0 > timeoutMs) return reject(new Error('condition not met in time'));
+      setTimeout(tick, 10);
+    };
+    tick();
+  });
+}
+
+async function runToCompletion(graph: DagGraph, cwd: string) {
+  const run = await engine.startRun(graph, cwd);
+  await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+  return engine.getRun(run.runId)!;
+}
+
+describe('Engine (serial DAG)', () => {
+  it('runs a serial pipeline and cleans up the workspace', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['impl']!.state).toBe('done');
+    expect(run.nodes['start']!.state).toBe('done');
+    // workspace reclaimed
+    expect(ops.closedWorkspaces).toHaveLength(1);
+    expect(ops.workspaces.size).toBe(0);
+    // exactly one prompt submitted
+    expect(ops.prompts).toHaveLength(1);
+  });
+
+  it('passes upstream artifacts into downstream prompts via the blackboard', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    // design writes a result file (artifact convention) before settling
+    const designDir = cwd;
+    ops.onPrompt = (target) => {
+      if (target.startsWith('pf-') && ops.prompts.length === 1) {
+        fs.mkdirSync(path.join(designDir, '.herdr/artifacts'), { recursive: true });
+        fs.writeFileSync(
+          path.join(designDir, '.herdr/artifacts/design.json'),
+          JSON.stringify({ summary: '采用模块化设计' }),
+        );
+      }
+    };
+    const run = await runToCompletion(twoNodeGraph(), cwd);
+    expect(run.state).toBe('completed');
+    // downstream prompt got the upstream summary interpolated
+    const implPrompt = ops.prompts.find((p) => p.text.includes('实现'));
+    expect(implPrompt?.text).toContain('采用模块化设计');
+    // upstream artifact came from the result file
+    expect(run.nodes['design']!.artifact?.source).toBe('file');
+    expect(run.nodes['design']!.artifact?.summary).toBe('采用模块化设计');
+  });
+
+  it('falls back to terminal output tail when no result file exists', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    const artifact = run.nodes['impl']!.artifact;
+    expect(artifact?.source).toBe('output-fallback');
+    expect(artifact?.outputTail).toContain('FAKE OUTPUT TAIL');
+  });
+
+  it('routes blocked agents through human approval and resumes on approve', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'blocked'), 10);
+    };
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+
+    const approved = await engine.approve(run.runId, 'impl', { action: 'approve' });
+    expect(approved).toBe(true);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    // approve sent the default key
+    expect(ops.sentKeys).toEqual([{ target: ops.agents.keys().next().value!, keys: ['enter'] }]);
+  });
+
+  it('marks the node failed when the human rejects the approval', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'blocked'), 10);
+    };
+    const run = await engine.startRun(serialGraph(), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'reject' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('failed');
+    expect(final.nodes['impl']!.state).toBe('failed');
+  });
+
+  it('retries a failing node up to retryCount then completes via onFail=continue', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    graph.nodes[1]!.config.retryCount = 1;
+    graph.nodes[1]!.config.onFail = 'continue';
+    ops.onPrompt = (target) => {
+      // agent errors out: working → unknown (unclearable) → treated as failure
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'unknown'), 10);
+    };
+    const run = await runToCompletion(graph, cwd);
+    // two attempts made
+    expect(run.nodes['impl']!.attempts).toBe(2);
+    // onFail=continue → pipeline completes, end node done
+    expect(run.state).toBe('completed');
+  });
+
+  it('aborts remaining nodes when onFail=abort and the node fails', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = twoNodeGraph();
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'unknown'), 10);
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['design']!.state).toBe('failed');
+    expect(run.nodes['impl']!.state).toBe('skipped');
+  });
+
+  it('stopRun cancels a running pipeline and reclaims the workspace', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = (target) => {
+      // never settles: keep working until cancelled
+      ops.setStatus(target, 'working');
+    };
+    const run = await engine.startRun(serialGraph(), cwd);
+    await waitFor(() => run.nodes['impl']!.state === 'working');
+    expect(engine.stopRun(run.runId)).toBe(true);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('cancelled');
+    expect(ops.workspaces.size).toBe(0);
+  });
+
+  it('rejects invalid DAGs before touching Herdr', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const bad = serialGraph();
+    bad.edges.push({ id: 'e9', source: 'impl', target: 'start' }); // cycle
+    await expect(engine.startRun(bad, cwd)).rejects.toThrow(/DAG 校验失败/);
+    expect(ops.workspaces.size).toBe(0);
+  });
+
+  it('rejects fanin nodes that carry onFail config', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const g = serialGraph();
+    g.nodes.splice(1, 0, { id: 'fi', type: 'fanin', label: '汇总', config: { onFail: 'continue' } });
+    g.edges.push({ id: 'e8', source: 'start', target: 'fi' });
+    await expect(engine.startRun(g, cwd)).rejects.toThrow(/requireAll/);
+  });
+
+  it('runs fan-out branches truly in parallel and merges at fan-in', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = fanoutGraph();
+    ops.promptDelayMs = 150; // observable overlap window
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    // all three branches actually ran concurrently
+    expect(ops.maxConcurrent).toBe(3);
+    expect(run.nodes['fa']!.state).toBe('done');
+    expect(run.nodes['fb']!.state).toBe('done');
+    expect(run.nodes['fc']!.state).toBe('done');
+    expect(run.nodes['merge']!.state).toBe('done');
+    expect(run.nodes['end']!.state).toBe('done');
+  });
+
+  it('respects the global pane concurrency cap', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = fanoutGraph();
+    ops.promptDelayMs = 150;
+    engine = new Engine(ops, store, { ...OPTS, maxConcurrentPanes: 2 });
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    expect(ops.maxConcurrent).toBe(2);
+  });
+
+  it('strict fan-in fails the merge when a branch fails', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = fanoutGraph();
+    graph.nodes.find((n) => n.id === 'fb')!.config.onFail = 'continue';
+    ops.onPrompt = (target) => {
+      if (target.includes('fb')) {
+        ops.setStatus(target, 'working');
+        setTimeout(() => ops.setStatus(target, 'unknown'), 10); // unresolvable → fail
+      }
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['fb']!.state).toBe('failed');
+    expect(run.nodes['merge']!.state).toBe('failed');
+    expect(run.nodes['end']!.state).toBe('skipped');
+    // healthy branch still completed its own work
+    expect(run.nodes['fa']!.state).toBe('done');
+  });
+
+  it('lenient fan-in (requireAll=false) completes with a failed branch', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = fanoutGraph();
+    graph.nodes.find((n) => n.id === 'fb')!.config.onFail = 'continue';
+    graph.nodes.find((n) => n.id === 'merge')!.config.requireAll = false;
+    ops.onPrompt = (target) => {
+      if (target.includes('fb')) {
+        ops.setStatus(target, 'working');
+        setTimeout(() => ops.setStatus(target, 'unknown'), 10);
+      }
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['fb']!.state).toBe('failed');
+    expect(run.nodes['merge']!.state).toBe('done');
+    expect(run.nodes['end']!.state).toBe('done');
+  });
+
+  it('skips downstream nodes of a failed branch while others continue', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = fanoutGraph();
+    graph.nodes.push({ id: 'chain-a', type: 'agent', label: 'A下游', config: { agentKind: 'fake', prompt: '下游' } });
+    graph.edges.push({ id: 'e20', source: 'fa', target: 'chain-a' });
+    graph.edges.push({ id: 'e21', source: 'chain-a', target: 'merge' });
+    graph.nodes.find((n) => n.id === 'fa')!.config.onFail = 'continue';
+    ops.onPrompt = (target) => {
+      if (target.includes('fa')) {
+        ops.setStatus(target, 'working');
+        setTimeout(() => ops.setStatus(target, 'unknown'), 10);
+      }
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.nodes['chain-a']!.state).toBe('skipped');
+    expect(run.nodes['fb']!.state).toBe('done');
+  });
+
+  it('appends the artifact convention to prompts that lack it', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.state).toBe('completed');
+    expect(ops.prompts[0]!.text).toContain('.herdr/artifacts/impl.json');
+    expect(ops.prompts[0]!.text).toContain('summary');
+  });
+
+  it('recoverOrphans reclaims workspaces from previous dead runs', async () => {
+    await ops.createWorkspace('paneflow-deadbeef', '/tmp');
+    await ops.createWorkspace('unrelated', '/tmp');
+    const reclaimed = await engine.recoverOrphans();
+    expect(reclaimed).toHaveLength(1);
+    expect(ops.workspaces.has('w2')).toBe(true);
+    expect(ops.workspaces.has('w1')).toBe(false);
+  });
+});

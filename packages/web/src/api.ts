@@ -1,0 +1,77 @@
+import type { DagGraph, NodeRunRecord, RunRecord } from '@paneflow/shared';
+
+const BASE = '';
+
+async function json<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const r = await fetch(BASE + path, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) {
+    const err = (await r.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `${method} ${path} → ${r.status}`);
+  }
+  return (await r.json()) as T;
+}
+
+export const api = {
+  health: () => json<{ ok: boolean; herdrOk: boolean; herdrSocket: string; agentKinds: string[] }>('GET', '/api/health'),
+  listGraphs: () => json<{ graphs: DagGraph[] }>('GET', '/api/graphs'),
+  saveGraph: (graph: DagGraph) => json<DagGraph>('POST', '/api/graphs', { graph }),
+  deleteGraph: (id: string) => json<{ deleted: boolean }>('DELETE', `/api/graphs/${encodeURIComponent(id)}`),
+  startRun: (graph: DagGraph, cwd: string) => json<{ runId: string; run: RunRecord }>('POST', '/api/runs', { graph, cwd }),
+  stopRun: (runId: string) => json<{ stopping: boolean }>('POST', `/api/runs/${runId}/stop`),
+  getRun: (runId: string) => json<RunRecord>('GET', `/api/runs/${runId}`),
+  listRuns: () => json<{ runs: RunRecord[] }>('GET', '/api/runs'),
+  approve: (runId: string, nodeId: string, body: { action: 'approve' | 'reject' | 'input'; keys?: string[]; text?: string }) =>
+    json<{ delivered: boolean }>('POST', `/api/runs/${runId}/nodes/${nodeId}/approve`, body),
+  nodeLog: (runId: string, nodeId: string, lines = 200) =>
+    json<{ text: string }>('GET', `/api/runs/${runId}/nodes/${nodeId}/log?lines=${lines}`),
+  nodeKeys: (runId: string, nodeId: string, keys: string[]) =>
+    json<{ sent: string[] }>('POST', `/api/runs/${runId}/nodes/${nodeId}/keys`, { keys }),
+  nodeInput: (runId: string, nodeId: string, text: string) =>
+    json<{ sent: boolean }>('POST', `/api/runs/${runId}/nodes/${nodeId}/input`, { text }),
+};
+
+export interface WsRunMessage {
+  type: 'run';
+  run: RunRecord;
+}
+
+export function connectWs(onRun: (run: RunRecord) => void, onStatus: (ok: boolean) => void): () => void {
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let retryMs = 1000;
+  const open = () => {
+    if (closed) return;
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => {
+      retryMs = 1000;
+      onStatus(true);
+    };
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data as string) as WsRunMessage;
+        if (msg.type === 'run') onRun(msg.run);
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    ws.onclose = () => {
+      onStatus(false);
+      if (!closed) {
+        setTimeout(open, retryMs);
+        retryMs = Math.min(retryMs * 2, 10_000);
+      }
+    };
+  };
+  open();
+  return () => {
+    closed = true;
+    ws?.close();
+  };
+}
+
+export type { NodeRunRecord, RunRecord, DagGraph };

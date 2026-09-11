@@ -1,0 +1,21 @@
+{
+  "name": "paneflow",
+  "private": true,
+  "version": "0.1.0",
+  "description": "PaneFlow — deterministic multi-agent DAG orchestration on Herdr terminal panes",
+  "scripts": {
+    "typecheck": "tsc -b packages/shared packages/server",
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "smoke": "tsx scripts/smoke.ts",
+    "dev:server": "tsx packages/server/src/index.ts",
+    "dev:web": "pnpm --filter @paneflow/web dev",
+    "build": "pnpm --filter @paneflow/web build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "packageManager": "pnpm@10.28.0"
+}
