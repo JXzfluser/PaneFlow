@@ -389,7 +389,7 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   // -- 智能下发（Smart Dispatch） ----------------------------------------------
 
-  app.post<{ Body: { task: string; issueId?: string; cwd?: string }; Querystring: { space?: string } }>(
+  app.post<{ Body: { task: string; issueId?: string; cwd?: string; preview?: boolean }; Querystring: { space?: string } }>(
     '/api/dispatch',
     async (req, reply) => {
       const task = String(req.body?.task ?? '').trim();
@@ -413,6 +413,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         cwd,
         templateList,
         rootCwd,
+        preview: req.body.preview === true,
       });
       const run = await deps.engine.startRun(graph, cwd, req.query.space, { task }, req.body.issueId);
       return { runId: run.runId };

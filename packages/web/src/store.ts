@@ -31,7 +31,16 @@ function initialTheme(): ThemeName {
   applyTheme(t);
   return t;
 }
-export type AppView = 'orchestrate' | 'runs' | 'settings';
+export type AppView = 'tasks' | 'orchestrate' | 'runs' | 'settings';
+
+/** 视图白名单 + 存储键：改默认落地页时递增版本号，让老用户也吃到新默认（A2） */
+const VIEW_KEY = 'pf-view-v2';
+const VIEWS: AppView[] = ['tasks', 'orchestrate', 'runs', 'settings'];
+
+function initialView(): AppView {
+  const saved = localStorage.getItem(VIEW_KEY) as AppView | null;
+  return saved && VIEWS.includes(saved) ? saved : 'tasks';
+}
 
 export type { PfNodeData, PfNode, PfEdgeData } from './graph-serialization.js';
 export type PfEdge = Edge<PfEdgeData>;
@@ -60,10 +69,14 @@ interface PfStore {
   templateList: DagGraph[];
   theme: ThemeName;
   view: AppView;
+  /** 当前项目空间（响应式镜像 localStorage 的 pf-space，D4） */
+  space: string;
   graphVariables: TemplateVariable[];
   graphMeta: GraphMeta;
 
   setView: (view: AppView) => void;
+  /** 切换项目空间：更新 api 上下文 + 刷新模板 + 清空画布 */
+  switchSpace: (id: string) => void;
   setTheme: (theme: ThemeName) => void;
   setGraphVariables: (v: TemplateVariable[]) => void;
   setGraphMeta: (m: GraphMeta) => void;
@@ -71,6 +84,8 @@ interface PfStore {
   setHealth: (herdrOk: boolean | null, wsOk: boolean) => void;
   setAgentKinds: (kinds: string[]) => void;
   setTemplates: (graphs: DagGraph[]) => void;
+  /** 批量并入运行记录（任务视图挂载时拉历史；按当前空间过滤） */
+  mergeRuns: (records: RunRecord[]) => void;
   log: (level: ConsoleLog['level'], text: string) => void;
   select: (id: string | null) => void;
   selectEdge: (id: string | null) => void;
@@ -83,6 +98,8 @@ interface PfStore {
   onConnect: (conn: Connection) => void;
 
   addNode: (type: DagNodeType, position: { x: number; y: number }) => void;
+  /** 空态一键骨架：开始 → Agent → 结束（连好线），给完全的新手一个立刻能跑的起点 */
+  scaffoldStarter: () => void;
   updateNodeConfig: (nodeId: string, patch: Partial<DagNode['config']>) => void;
   renameGraph: (name: string) => void;
   loadGraph: (graph: DagGraph) => void;
@@ -114,13 +131,30 @@ export const useStore = create<PfStore>((set, get) => ({
   agentKinds: ['opencode'],
   templateList: [],
   theme: initialTheme(),
-  view: (localStorage.getItem('pf-view') as AppView) || 'orchestrate',
+  view: initialView(),
+  space: getSpace(),
   graphVariables: [],
   graphMeta: {},
 
   setView: (view) => {
-    localStorage.setItem('pf-view', view);
+    localStorage.setItem(VIEW_KEY, view);
     set({ view });
+  },
+
+  switchSpace: (id) => {
+    if (id === get().space) return;
+    setApiSpace(id);
+    set({
+      space: id,
+      nodes: [],
+      edges: [],
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      activeRunId: null,
+      runs: {},
+    });
+    void api.listGraphs().then((r) => set({ templateList: r.graphs }));
+    get().log('info', `已切换空间 → ${id}`);
   },
 
   setGraphVariables: (graphVariables) => set({ graphVariables }),
@@ -136,6 +170,16 @@ export const useStore = create<PfStore>((set, get) => ({
   setHealth: (herdrOk, wsOk) => set({ herdrOk, wsOk }),
   setAgentKinds: (agentKinds) => set({ agentKinds }),
   setTemplates: (templateList) => set({ templateList }),
+  mergeRuns: (records) =>
+    set((s) => {
+      const mySpace = localStorage.getItem('pf-space') || 'default';
+      const next = { ...s.runs };
+      for (const r of records) {
+        if (r.spaceId && r.spaceId !== mySpace) continue; // 别的空间的运行不进本视图
+        next[r.runId] = r;
+      }
+      return { runs: next };
+    }),
   log: (level, text) =>
     set((s) => ({
       logs: [...s.logs.slice(-400), { ts: new Date().toLocaleTimeString(), level, text }],
@@ -215,6 +259,39 @@ export const useStore = create<PfStore>((set, get) => ({
     };
     set((s) => ({ nodes: [...s.nodes, { id, type, position, data: { dagNode } }], canvasDirty: true }));
     set({ selectedNodeId: id });
+  },
+
+  scaffoldStarter: () => {
+    if (get().nodes.length) return;
+    const seq = nodeSeq++;
+    const y = 250;
+    const mk = (id: string, type: DagNodeType, label: string, x: number, config: DagNode['config']): PfNode => ({
+      id,
+      type,
+      position: { x, y },
+      data: { dagNode: { id, type, label, position: { x, y }, config } },
+    });
+    const agentId = `agent-${seq}`;
+    set({
+      nodes: [
+        mk('start', 'start', '开始', 80, {}),
+        mk(agentId, 'agent', `Agent ${seq}`, 400, {
+          agentKind: get().agentKinds[0],
+          prompt: '',
+          retryCount: 0,
+          timeoutMs: 0,
+          onFail: 'abort',
+        }),
+        mk('end', 'end', '结束', 760, {}),
+      ],
+      edges: [
+        { id: `e-start-${agentId}`, source: 'start', target: agentId },
+        { id: `e-${agentId}-end`, source: agentId, target: 'end' },
+      ],
+      selectedNodeId: agentId,
+      canvasDirty: true,
+    });
+    get().log('info', '已搭好「开始 → Agent → 结束」：点中间的节点填 Agent 类型和任务指令就能跑');
   },
 
   updateNodeConfig: (nodeId, patch) =>
@@ -302,6 +379,7 @@ export const useStore = create<PfStore>((set, get) => ({
     const targetSpace = run.spaceId || 'default';
     if (getSpace() !== targetSpace) {
       setApiSpace(targetSpace);
+      set({ space: targetSpace });
       void api.listGraphs().then((r) => set({ templateList: r.graphs }));
     }
     // 载入该 run 的图（画布显示这条流水线本身，而非当前画布残留）

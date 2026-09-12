@@ -8,6 +8,12 @@ export interface DispatchOptions {
   templateList: { name: string; description?: string }[];
   /** 空间主仓根（给 Planner 的上下文） */
   rootCwd?: string;
+  /**
+   * 编排预告（A3）：Planner 选完骨架后停在人工门禁上，等用户确认再执行。
+   * 开启时 planner 节点的 onFail 会切成 abort —— 用户「取消」= 拒绝门禁，
+   * 该节点失败并终止整条下发；否则仅靠 onFail=continue 会照常路由下去。
+   */
+  preview?: boolean;
 }
 
 const MAX_TASK_LEN = 4000;
@@ -57,7 +63,17 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
           prompt: plannerPrompt,
           clarify: { maxRounds: 2 },
           retryCount: 1,
-          onFail: 'continue', // planner 失败时 route 的兜底模板仍会执行
+          onFail: opts.preview ? 'abort' : 'continue', // 非预告模式：planner 失败时 route 的兜底模板仍会执行
+          ...(opts.preview
+            ? {
+                checks: [
+                  {
+                    type: 'manual' as const,
+                    prompt: '编排预告：确认步骤计划后放行执行；拒绝则终止本次下发。',
+                  },
+                ],
+              }
+            : {}),
         },
       },
       {
