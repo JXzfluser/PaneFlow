@@ -1,6 +1,25 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
-import type { EdgeCondition } from '@paneflow/shared';
+import type { DagNode, EdgeCondition } from '@paneflow/shared';
+
+type NodeConfig = DagNode['config'];
+
+/**
+ * 「高级设置」里已配置的项（B1）：用于折叠区计数徽标 + 切节点时自动展开。
+ * 只看有实际取值的高级字段，默认值（abort / 0 / 空）不算。
+ */
+function advancedItems(cfg: NodeConfig): string[] {
+  const out: string[] = [];
+  if ((cfg.retryCount ?? 0) > 0) out.push('重试');
+  if ((cfg.timeoutMs ?? 0) > 0) out.push('超时');
+  if (cfg.clarify) out.push('澄清循环');
+  if (cfg.env && Object.keys(cfg.env).length > 0) out.push('环境变量');
+  if (cfg.checks && cfg.checks.length > 0) out.push('检查门禁');
+  if (cfg.onFail && cfg.onFail !== 'abort') out.push('失败策略');
+  if (cfg.approveKeys && cfg.approveKeys.length > 0) out.push('放行按键');
+  if (cfg.cwd) out.push('工作目录');
+  return out;
+}
 
 export function PropertyPanel() {
   const selectedEdgeId = useStore((s) => s.selectedEdgeId);
@@ -89,9 +108,15 @@ function NodePropertyPanel() {
   const updateNodeConfig = useStore((s) => s.updateNodeConfig);
   const agentKinds = useStore((s) => s.agentKinds);
   const [roles, setRoles] = useState<{ id: string; name: string }[]>([]);
+  const [advOpen, setAdvOpen] = useState(false);
   useEffect(() => {
     void fetch('/api/roles').then((r) => r.json()).then((d) => setRoles(d.roles ?? []));
   }, []);
+  // 切换选中节点时重置折叠态：已配过高级项就展开，否则默认收起（B1）
+  useEffect(() => {
+    const n = useStore.getState().nodes.find((x) => x.id === selectedNodeId);
+    setAdvOpen(advancedItems(n?.data.dagNode.config ?? {}).length > 0);
+  }, [selectedNodeId]);
 
   const node = nodes.find((n) => n.id === selectedNodeId);
   if (!node) {
@@ -108,6 +133,7 @@ function NodePropertyPanel() {
   const isPipeline = node.data.dagNode.type === 'pipeline';
   const isFanout = node.data.dagNode.type === 'fanout';
   const set = (patch: Parameters<typeof updateNodeConfig>[1]) => updateNodeConfig(node.id, patch);
+  const advItems = advancedItems(cfg);
 
   return (
     <div className="props">
@@ -137,7 +163,7 @@ function NodePropertyPanel() {
             ))}
           </select>
 
-          <label>Agent 类型（herdr kind，未选角色时必填）</label>
+          <label>Agent 类型（herdr kind，未选角色时必填）<span className="req-mark">*</span></label>
           <select value={cfg.agentKind ?? ''} onChange={(e) => set({ agentKind: e.target.value })}>
             <option value="" disabled>选择…</option>
             {agentKinds.map((k) => (
@@ -145,7 +171,7 @@ function NodePropertyPanel() {
             ))}
           </select>
 
-          <label>任务指令（prompt）</label>
+          <label>任务指令（prompt）<span className="req-mark">*</span></label>
           <textarea
             placeholder={'要完成的任务。可引用上游产物：{{nodeId.artifact.summary}} 或 {{nodeId.output}}'}
             value={cfg.prompt ?? ''}
@@ -153,6 +179,20 @@ function NodePropertyPanel() {
           />
           <div className="hint">系统会自动附加「结果写入 .herdr/artifact.json」的交接约定。</div>
 
+          <button
+            className="adv-toggle"
+            onClick={() => setAdvOpen((v) => !v)}
+            title="重试 / 超时 / 澄清循环 / 环境变量 / 检查门禁 / 失败策略 / 放行按键 / 独立工作目录"
+          >
+            <span>{advOpen ? '▾' : '▸'}</span>
+            <span>高级设置</span>
+            {advItems.length > 0 && (
+              <span className="adv-badge" title={`已配置：${advItems.join('、')}`}>
+                已配置 {advItems.length} 项
+              </span>
+            )}
+          </button>
+          <div className="adv-body" data-open={advOpen ? '1' : '0'}>
           <div className="row">
             <div>
               <label>重试次数</label>
@@ -265,6 +305,11 @@ function NodePropertyPanel() {
               set({ approveKeys: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })
             }
           />
+
+          <label>独立工作目录（相对流水线目录，可空）</label>
+          <input value={cfg.cwd ?? ''} onChange={(e) => set({ cwd: e.target.value })} />
+          <div className="hint">留空则与流水线工作目录一致。</div>
+          </div>
         </>
       )}
 
@@ -347,8 +392,13 @@ function NodePropertyPanel() {
         </>
       )}
 
-      <label>独立工作目录（相对流水线目录，可空）</label>
-      <input value={cfg.cwd ?? ''} onChange={(e) => set({ cwd: e.target.value })} />
+      {!isAgent && (
+        <>
+          <label>独立工作目录（相对流水线目录，可空）</label>
+          <input value={cfg.cwd ?? ''} onChange={(e) => set({ cwd: e.target.value })} />
+          <div className="hint">留空则与流水线工作目录一致。</div>
+        </>
+      )}
     </div>
   );
 }

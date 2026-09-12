@@ -29,6 +29,8 @@ export function Canvas() {
   const select = useStore((s) => s.select);
   const selectEdge = useStore((s) => s.selectEdge);
   const theme = useStore((s) => s.theme);
+  const setView = useStore((s) => s.setView);
+  const scaffoldStarter = useStore((s) => s.scaffoldStarter);
 
   const onPaneClick = useCallback(() => select(null), [select]);
 
@@ -36,10 +38,18 @@ export function Canvas() {
     <div className="canvas-wrap">
       {nodes.length === 0 && (
         <div className="canvas-empty">
-          <div className="big">画布还是空的</div>
+          <div className="big">这块画布还是空的</div>
           <div className="steps">
-            ① 顶栏设置流水线工作目录　② 从左侧点击添加「开始 → Agent → 结束」节点<br />
-            ③ 从节点右侧圆点拖线连接　④ 点「? 指南」看完整教程
+            先想清楚「要做什么」，不用先学会画图。
+          </div>
+          <div className="empty-actions">
+            <button className="primary" onClick={() => setView('tasks')}>
+              ✎ 描述需求，自动编排
+            </button>
+            <button onClick={scaffoldStarter}>⚙ 一键搭好骨架</button>
+          </div>
+          <div className="steps hint">
+            从左侧「模板」载入骨架也行；想改结构就在这儿拖拽连线，完整教程在右上角「? 指南」。
           </div>
         </div>
       )}

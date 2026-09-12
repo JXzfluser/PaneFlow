@@ -1,13 +1,16 @@
 import { useState } from 'react';
-import { api, connectWs } from '../api.js';
+import { api } from '../api.js';
 import { graphIssues, useStore } from '../store.js';
 import { Canvas } from './Canvas.jsx';
+import { StepList } from './StepList.jsx';
 import { Palette } from './Palette.jsx';
 import { PropertyPanel } from './PropertyPanel.jsx';
 import { Console } from './Console.jsx';
 import { RunDialog } from './RunDialog.jsx';
-import { DispatchDialog } from './DispatchDialog.jsx';
 import { VariablesEditor } from './VariablesEditor.jsx';
+
+type PaneMode = 'list' | 'canvas';
+const PANE_KEY = 'pf-pane-mode';
 
 export function OrchestrateView() {
   const graphName = useStore((s) => s.graphName);
@@ -21,20 +24,31 @@ export function OrchestrateView() {
   const setActiveRun = useStore((s) => s.setActiveRun);
   const cwd = useStore((s) => s.cwd);
   const setCwd = useStore((s) => s.setCwd);
-  const setAgentKinds = useStore((s) => s.setAgentKinds);
   const setTemplates = useStore((s) => s.setTemplates);
   const setView = useStore((s) => s.setView);
 
   const [runDialogOpen, setRunDialogOpen] = useState(false);
-  const [dispatchOpen, setDispatchOpen] = useState(false);
   const [varsOpen, setVarsOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [paneMode, setPaneMode] = useState<PaneMode>(() =>
+    localStorage.getItem(PANE_KEY) === 'canvas' ? 'canvas' : 'list',
+  );
   const activeRun = activeRunId ? runs[activeRunId] : null;
   const running = activeRun?.state === 'running';
+
+  const switchPane = (mode: PaneMode) => {
+    localStorage.setItem(PANE_KEY, mode);
+    setPaneMode(mode);
+  };
 
   const run = () => {
     const issues = graphIssues();
     if (issues.length) {
       log('error', `无法启动：${issues.join('；')}`);
+      return;
+    }
+    if (!cwd.trim()) {
+      log('error', '请先填写流水线工作目录（须已存在），或到「设 · 设置」配置空间主仓根');
       return;
     }
     setRunDialogOpen(true);
@@ -65,75 +79,74 @@ export function OrchestrateView() {
     }
   };
 
+  const syncPush = async () => {
+    try {
+      const st = await api.syncStatus();
+      if (!st.configured) {
+        log('warn', 'GitHub 沉淀未启用：需配置 PF_GITHUB_REPO / PF_GITHUB_TOKEN');
+        return;
+      }
+      await api.syncPush();
+      log('info', `模板沉淀已启动（异步推送到 ${st.repo}）`);
+    } catch (e) {
+      log('error', `沉淀失败：${(e as Error).message}`);
+    }
+  };
+
+  const syncPull = async () => {
+    try {
+      const r = await api.syncPull();
+      setTemplates((await api.listGraphs()).graphs);
+      log('info', `已拉取 ${r.imported.length} 个云端模板${r.failed.length ? `，失败 ${r.failed.length}` : ''}`);
+    } catch (e) {
+      log('error', `拉取失败：${(e as Error).message}`);
+    }
+  };
+
   return (
     <>
       <div className="topbar">
         <div className="tb-group" title="当前画布的模板">
-          <input className="gname" value={graphName} onChange={(e) => renameGraph(e.target.value)} placeholder="模板名" style={{ width: 160 }} />
+          <input className="gname" value={graphName} onChange={(e) => renameGraph(e.target.value)} placeholder="模板名" style={{ width: 150 }} />
           <button onClick={saveTemplate} title="保存模板（用左侧模板名）">💾</button>
         </div>
+
         <div className="tb-group">
-          <button className="primary" title="一句任务描述，自动路由/生成编排并执行" onClick={() => setDispatchOpen(true)}>🎯 下发任务</button>
-          <button title="模板变量（运行参数表单的声明）" onClick={() => setVarsOpen((v) => !v)}>⎇ 变量</button>
-        </div>
-        <div className="tb-group" title="GitHub 模板沉淀（可选，需服务端配置）">
-          <button
-            title="沉淀：本地模板推送到 GitHub templates/"
-            onClick={async () => {
-              try {
-                const st = await api.syncStatus();
-                if (!st.configured) {
-                  log('warn', 'GitHub 沉淀未启用：需配置 PF_GITHUB_REPO / PF_GITHUB_TOKEN');
-                  return;
-                }
-                await api.syncPush();
-                log('info', `模板沉淀已启动（异步推送到 ${st.repo}）`);
-              } catch (e) {
-                log('error', `沉淀失败：${(e as Error).message}`);
-              }
-            }}
-          >
-            ☁️
-          </button>
-          <button
-            title="拉取：从 GitHub 合并模板到本地"
-            onClick={async () => {
-              try {
-                const r = await api.syncPull();
-                setTemplates((await api.listGraphs()).graphs);
-                log('info', `已拉取 ${r.imported.length} 个云端模板${r.failed.length ? `，失败 ${r.failed.length}` : ''}`);
-              } catch (e) {
-                log('error', `拉取失败：${(e as Error).message}`);
-              }
-            }}
-          >
-            ⬇️
+          <button className="primary" title="回到「任务」：一句话描述需求，自动编排（可先看编排预告）" onClick={() => setView('tasks')}>
+            ✎ 描述需求
           </button>
         </div>
+
+        <div className="tb-group pane-switch" title="同一份编排的两种看法：清单给人读，画布给结构改">
+          <button className={paneMode === 'list' ? 'on' : ''} onClick={() => switchPane('list')}>清单</button>
+          <button className={paneMode === 'canvas' ? 'on' : ''} onClick={() => switchPane('canvas')}>画布</button>
+        </div>
+
         <div className="tb-group" title="流水线运行">
           <input
-            className="gname"
+            className={`gname${cwd ? '' : ' needs-attn'}`}
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
-            placeholder="流水线工作目录"
-            title="流水线工作目录（须已存在）"
-            style={{ width: 190 }}
+            placeholder="流水线工作目录（必填）"
+            title={cwd ? '流水线工作目录' : '尚未设置：填一个已存在的本地目录，或到「设 · 设置」配置空间主仓根'}
+            style={{ width: 180 }}
           />
           {!running ? (
             <button className="primary" onClick={run}>▶ 运行</button>
           ) : (
             <button className="danger" onClick={() => void stop()} title="停止流水线">⏹</button>
           )}
-          <button onClick={clearCanvas} title="清空画布">🧹</button>
         </div>
+
         <div className="spacer" />
+
         <div className="tb-status">
           {activeRunId && (
             <select
+              className="sm run-picker"
               value={activeRunId}
               onChange={(e) => openRun(e.target.value)}
               title="切换查看历史运行"
-              style={{ background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', maxWidth: 230 }}
             >
               {Object.values(runs).map((r) => (
                 <option key={r.runId} value={r.runId}>
@@ -142,22 +155,47 @@ export function OrchestrateView() {
               ))}
             </select>
           )}
-          <button onClick={() => setView('runs')} title="打开运行中心（多流水线总览）">🕘 迏行中心</button>
+          <div className="tb-more">
+            <button title="更多（变量 / 云端沉淀 / 清空）" onClick={() => setMoreOpen((v) => !v)}>
+              ⋯ 更多
+            </button>
+            {moreOpen && (
+              <>
+                <div className="tb-more-backdrop" onClick={() => setMoreOpen(false)} />
+                <div className="tb-more-menu">
+                  <button
+                    className={varsOpen ? 'on' : ''}
+                    onClick={() => {
+                      setVarsOpen((v) => !v);
+                      setMoreOpen(false);
+                    }}
+                  >
+                    ⎇ 模板变量
+                  </button>
+                  <button onClick={() => { void syncPush(); setMoreOpen(false); }}>☁️ 沉淀到 GitHub</button>
+                  <button onClick={() => { void syncPull(); setMoreOpen(false); }}>⬇️ 从 GitHub 拉取</button>
+                  <button
+                    onClick={() => {
+                      clearCanvas();
+                      setMoreOpen(false);
+                    }}
+                  >
+                    🧹 清空画布
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+          <button onClick={() => setView('runs')} title="打开运行中心（多流水线总览）">🕘 运行中心</button>
         </div>
       </div>
       {varsOpen && <VariablesEditor />}
       <div className="main">
         <Palette />
-        <Canvas />
+        {paneMode === 'list' ? <StepList /> : <Canvas />}
         <PropertyPanel />
       </div>
       <Console />
-      {dispatchOpen && (
-        <DispatchDialog
-          onClose={() => setDispatchOpen(false)}
-          onDispatched={() => setView('runs')}
-        />
-      )}
       {runDialogOpen && (
         <RunDialog
           graph={toGraph()}

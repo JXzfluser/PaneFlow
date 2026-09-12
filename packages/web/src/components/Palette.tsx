@@ -1,7 +1,18 @@
-import { useEffect, useState } from 'react';
-import { api, getSpace, setSpace } from '../api.js';
+import { useState } from 'react';
+import { api } from '../api.js';
 import { useStore } from '../store.js';
 import type { DagGraph, DagNodeType } from '@paneflow/shared';
+import { PromptModal, type ModalRequest } from './PromptModal.jsx';
+import { isBuiltinTemplate, templateLabel } from '../template-labels.js';
+
+/** 模板名前端校验：只挡空名与路径分隔符，字符集仍由用户自由决定。 */
+const validateTplName = (v: string): string | null => {
+  const name = v.trim();
+  if (!name) return '名称不能为空';
+  if (/[/\\]/.test(name)) return '名称不能包含 / 或 \\';
+  if (name.length > 80) return '名称过长（≤80 字符）';
+  return null;
+};
 
 export function Palette() {
   const addNode = useStore((s) => s.addNode);
@@ -9,33 +20,8 @@ export function Palette() {
   const loadGraph = useStore((s) => s.loadGraph);
   const setTemplates = useStore((s) => s.setTemplates);
   const log = useStore((s) => s.log);
-  const space = getSpace();
-  const [spaces, setSpaces] = useState<{ id: string; name: string }[]>([{ id: 'default', name: '默认空间' }]);
-
-  useEffect(() => {
-    void api.listSpaces().then((r) => setSpaces(r.spaces));
-  }, []);
-
-  const switchSpace = async (id: string) => {
-    if (id === space) return;
-    setSpace(id);
-    const r = await api.listGraphs();
-    setTemplates(r.graphs);
-    useStore.setState({ nodes: [], edges: [], selectedNodeId: null, activeRunId: null, runs: {} });
-    log('info', `已切换空间 → ${id}`);
-  };
-
-  const newSpace = async () => {
-    const id = window.prompt('新空间 ID（字母/数字/-/_）');
-    if (!id) return;
-    const name = window.prompt('空间名称', id) || id;
-    try {
-      await api.createSpace(id, name);
-      await switchSpace(id);
-    } catch (e) {
-      log('error', `创建空间失败：${(e as Error).message}`);
-    }
-  };
+  const [modal, setModal] = useState<ModalRequest | null>(null);
+  const [advOpen, setAdvOpen] = useState(false);
 
   const add = (type: DagNodeType) => {
     const { innerWidth, innerHeight } = window;
@@ -46,43 +32,50 @@ export function Palette() {
 
   // -- template operations -----------------------------------------------------
 
-  const tplName = (g: DagGraph) => g.name.replace(/^builtin-/, '').replace(/-/g, ' ');
+  const duplicate = (g: DagGraph) =>
+    setModal({
+      title: '复制模板',
+      message: `以「${templateLabel(g.name, g.metadata.description).title}」为蓝本另存为新模板。`,
+      fields: [
+        { key: 'name', label: '新模板名', defaultValue: `${g.name}-copy`, validate: validateTplName },
+      ],
+      confirmText: '复制',
+      onSubmit: async ({ name }) => {
+        const next = (name ?? '').trim();
+        await api.saveGraph({ ...structuredClone(g), name: next });
+        await refresh();
+        log('info', `已复制为「${next}」`);
+      },
+    });
 
-  const duplicate = async (g: DagGraph) => {
-    const name = window.prompt(`复制「${g.name}」为：`, `${g.name}-copy`);
-    if (!name) return;
-    try {
-      await api.saveGraph({ ...structuredClone(g), name });
-      await refresh();
-      log('info', `已复制为「${name}」`);
-    } catch (e) {
-      log('error', `复制失败：${(e as Error).message}`);
-    }
-  };
+  const rename = (g: DagGraph) =>
+    setModal({
+      title: '重命名模板',
+      message: `当前 ID：${g.name}`,
+      fields: [{ key: 'name', label: '新模板名', defaultValue: g.name, validate: validateTplName }],
+      confirmText: '重命名',
+      onSubmit: async ({ name }) => {
+        const next = (name ?? '').trim();
+        if (!next || next === g.name) return; // 未改动，直接关闭
+        await api.saveGraph({ ...structuredClone(g), name: next });
+        await api.deleteGraph(g.name);
+        await refresh();
+        log('info', `已重命名为「${next}」`);
+      },
+    });
 
-  const rename = async (g: DagGraph) => {
-    const name = window.prompt('新模板名', g.name);
-    if (!name || name === g.name) return;
-    try {
-      await api.saveGraph({ ...structuredClone(g), name });
-      await api.deleteGraph(g.name);
-      await refresh();
-      log('info', `已重命名为「${name}」`);
-    } catch (e) {
-      log('error', `重命名失败：${(e as Error).message}`);
-    }
-  };
-
-  const remove = async (g: DagGraph) => {
-    if (!window.confirm(`删除模板「${g.name}」？（画布不受影响）`)) return;
-    try {
-      await api.deleteGraph(g.name);
-      await refresh();
-      log('info', `模板「${g.name}」已删除`);
-    } catch (e) {
-      log('error', `删除失败：${(e as Error).message}`);
-    }
-  };
+  const remove = (g: DagGraph) =>
+    setModal({
+      title: '删除模板',
+      message: `确认删除模板「${templateLabel(g.name, g.metadata.description).title}」（${g.name}）？画布不受影响。`,
+      confirmText: '删除',
+      danger: true,
+      onSubmit: async () => {
+        await api.deleteGraph(g.name);
+        await refresh();
+        log('info', `模板「${g.name}」已删除`);
+      },
+    });
 
   const exportTpl = (g: DagGraph) => {
     const blob = new Blob([JSON.stringify(g, null, 2)], { type: 'application/json' });
@@ -107,35 +100,8 @@ export function Palette() {
 
   return (
     <div className="palette">
-      <h4>
-        空间
-        <button
-          onClick={() => void newSpace()}
-          title="新建项目空间（模板与运行记录互相隔离）"
-          style={{ float: 'right', padding: '0 7px', fontSize: 11 }}
-        >
-          +
-        </button>
-      </h4>
-      <select
-        value={space}
-        onChange={(e) => void switchSpace(e.target.value)}
-        style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', marginBottom: 8 }}
-        title="项目空间：模板与运行记录的隔离边界"
-      >
-        {spaces.map((sp) => (
-          <option key={sp.id} value={sp.id}>{sp.name}</option>
-        ))}
-      </select>
-      <h4>基础节点</h4>
-      <button className="pal-item" onClick={() => add('start')}>▶ 开始</button>
-      <button className="pal-item" onClick={() => add('end')}>■ 结束</button>
-      <h4>编排节点</h4>
-      <button className="pal-item" onClick={() => add('fanout')}>⑂ 并行 Fan-out</button>
-      <button className="pal-item" onClick={() => add('fanin')}>⑀ 汇总 Fan-in</button>
-      <h4>核心</h4>
-      <button className="pal-item" onClick={() => add('agent')}>⚙ Agent 节点</button>
-      <button className="pal-item" onClick={() => add('pipeline')}>⇢ 子流水线</button>
+      <div className="pal-hint">推荐路径：从「模板」载入一个骨架，再按需改。</div>
+
       <h4>
         模板
         <label title="导入模板 JSON" style={{ float: 'right', fontSize: 11, cursor: 'pointer', color: 'var(--text-dim)' }}>
@@ -152,20 +118,70 @@ export function Palette() {
           />
         </label>
       </h4>
-      {(graphs ?? []).map((g) => (
-        <div key={g.name} className="tpl-item">
-          <button className="pal-item tpl-load" title={g.metadata.description || g.name} onClick={() => loadGraph(g)}>
-            {g.name.startsWith('builtin-') ? '📦' : '📋'} {tplName(g)}
-          </button>
-          <div className="tpl-ops">
-            <button title="复制另存" onClick={() => void duplicate(g)}>⧉</button>
-            <button title="重命名" onClick={() => void rename(g)}>✎</button>
-            <button title="导出 JSON" onClick={() => exportTpl(g)}>⤓</button>
-            <button className="danger" title="删除" onClick={() => void remove(g)}>🗑</button>
+      {(graphs ?? []).map((g) => {
+        const label = templateLabel(g.name, g.metadata.description);
+        return (
+          <div key={g.name} className="tpl-item">
+            <button
+              className="pal-item tpl-load"
+              title={`${label.title}\n${label.use}\n\n模板 ID：${g.name}`}
+              onClick={() => loadGraph(g)}
+            >
+              <span className="tpl-title">
+                {isBuiltinTemplate(g.name) ? '📦' : '📋'} {label.title}
+              </span>
+              {label.use && <span className="tpl-use">{label.use}</span>}
+            </button>
+            <div className="tpl-ops">
+              <button title="复制另存" onClick={() => duplicate(g)}>⧉</button>
+              <button title="重命名" onClick={() => rename(g)}>✎</button>
+              <button title="导出 JSON" onClick={() => exportTpl(g)}>⤓</button>
+              <button className="danger" title="删除" onClick={() => remove(g)}>🗑</button>
+            </div>
           </div>
-        </div>
-      ))}
-      {(graphs ?? []).length === 0 && <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>当前空间暂无模板</div>}
+        );
+      })}
+      {(graphs ?? []).length === 0 && (
+        <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>当前空间暂无模板</div>
+      )}
+
+      <h4>核心</h4>
+      <button className="pal-item" onClick={() => add('agent')} title="一个 Agent 节点 = 一个独立终端 Pane，在这里写任务指令">
+        ⚙ Agent 节点
+      </button>
+      <button className="pal-item" onClick={() => add('pipeline')} title="调用另一条模板作为子流水线">
+        ⇢ 子流水线
+      </button>
+
+      <h4>基础节点</h4>
+      <button className="pal-item" onClick={() => add('start')}>▶ 开始</button>
+      <button className="pal-item" onClick={() => add('end')}>■ 结束</button>
+
+      <h4>
+        高级节点
+        <button className="pal-collapse" onClick={() => setAdvOpen((v) => !v)} title="扇出 / 扇入：需要并行时才用">
+          {advOpen ? '▾' : '▸'}
+        </button>
+      </h4>
+      {advOpen && (
+        <>
+          <button
+            className="pal-item"
+            onClick={() => add('fanout')}
+            title="Fan-out：一个节点分出多条线，下游真实并行"
+          >
+            ⑂ 同时做几件事
+          </button>
+          <button
+            className="pal-item"
+            onClick={() => add('fanin')}
+            title="Fan-in：多条线汇入，等上游全部完成再往下走"
+          >
+            ⑀ 等全部做完
+          </button>
+        </>
+      )}
+      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </div>
   );
 }
