@@ -1,6 +1,71 @@
 import { useEffect, useState } from 'react';
 import { api, getSpace } from '../api.js';
 
+function GatewayCard() {
+  const log = useStore((s) => s.log);
+  const [g, setG] = useState({ baseUrl: '', freeModel: 'auto/best-free', enabled: false, keyConfigured: false });
+  const [apiKey, setApiKey] = useState('');
+  const [testing, setTesting] = useState<string>('');
+  useEffect(() => {
+    void fetch('/api/gateway').then((r) => r.json()).then(setG);
+  }, []);
+  const save = async () => {
+    try {
+      await fetch('/api/gateway', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          baseUrl: g.baseUrl,
+          freeModel: g.freeModel,
+          enabled: g.enabled,
+          ...(apiKey ? { apiKey } : {}),
+        }),
+      }).then(async (r) => {
+        if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+      });
+      log('info', '模型网关已保存（新启动的 Agent Pane 生效）');
+    } catch (e) {
+      log('error', `保存失败：${(e as Error).message}`);
+    }
+  };
+  const test = async () => {
+    setTesting('检测中…');
+    await save();
+    const r = await fetch('/api/gateway/test', { method: 'POST' }).then((x) => x.json());
+    setTesting(r.ok ? `✓ 连通，${r.models} 个模型` : `✗ ${r.error ?? '失败'}`);
+  };
+  return (
+    <>
+      <label>网关地址</label>
+      <input
+        value={g.baseUrl}
+        onChange={(e) => setG((x) => ({ ...x, baseUrl: e.target.value }))}
+        placeholder="http://localhost:20128"
+      />
+      <label>API Key {g.keyConfigured && <span style={{ color: 'var(--ok)' }}>（已配置，留空保持不变）</span>}</label>
+      <input
+        type="password"
+        value={apiKey}
+        onChange={(e) => setApiKey(e.target.value)}
+        placeholder={g.keyConfigured ? '••••••••' : 'sk-…'}
+      />
+      <label>免费档模型 id（注入 ANTHROPIC_MODEL 等）</label>
+      <input
+        value={g.freeModel}
+        onChange={(e) => setG((x) => ({ ...x, freeModel: e.target.value }))}
+        placeholder="auto/best-free"
+      />
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10 }}>
+        <label style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+          <input type="checkbox" checked={g.enabled} onChange={(e) => setG((x) => ({ ...x, enabled: e.target.checked }))} /> 启用注入
+        </label>
+        <button onClick={() => void test()}>{testing || '🔍 测试连通'}</button>
+        <button className="primary" onClick={() => void save()}>保存</button>
+      </div>
+    </>
+  );
+}
+
 interface Role {
   id: string;
   name: string;
@@ -285,6 +350,14 @@ export function SettingsView() {
           角色供画布 Agent 节点选择：继承默认 Agent 类型与前置提示。约定文档在上方「项目档案」按空间配置。
         </p>
         <RolesEditor />
+      </div>
+
+      <div className="settings-card">
+        <h3>模型网关（OmniRoute 等）</h3>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11.5, margin: '0 0 8px' }}>
+          配置后每个 Agent Pane 自动注入 OPENAI_*/ANTHROPIC_* 网关变量——模型请求统一走网关（免费档/自动切换由网关负责）。
+        </p>
+        <GatewayCard />
       </div>
 
       <div className="settings-card">

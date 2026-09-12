@@ -16,6 +16,7 @@ import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
 import { buildConventionBlock, loadRoles, type Role } from './roles.js';
+import { buildGatewayEnv } from '../api/gateway.js';
 
 export interface EngineOptions {
   workspaceLabelPrefix: string;
@@ -532,8 +533,8 @@ export class Engine {
     try {
       const rootPane = this.rootPanes.get(run.runId)!;
       const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
-      // env 合并：全局 < 角色 < 节点（节点级用于把 Agent 指向模型网关等）
-      let paneEnv: Record<string, string> = { ...(this.opts.paneEnv ?? {}) };
+      // env 合并：全局 < 模型网关 < 角色 < 节点
+      let paneEnv: Record<string, string> = { ...(this.opts.paneEnv ?? {}), ...buildGatewayEnv(this.store.root) };
       const role = this.roleById(run, cfg.role);
       if (role?.env) paneEnv = { ...paneEnv, ...role.env };
       if (cfg.env) paneEnv = { ...paneEnv, ...cfg.env };

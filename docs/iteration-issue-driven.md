@@ -179,6 +179,14 @@ routing_fallbacks: [main]
 
 Agent 端只需把 base_url 指向网关、模型名写 `main`——单模型超时/限流时网关自动换供应商，PaneFlow 侧零改动。**收尾说明**：Agent 对网关 env 的具体变量名因 kind 而异（claude=ANTHROPIC_*、opencode=OPENCODE_*/OPENAI_*、pi=pi 配置），节点 env 注入的正是这层适配点。
 
+**已落地（OmniRoute 实测接入 ✅）**：
+
+- 设置页新增「模型网关」卡片：网关地址 / API Key（写后回显脱敏）/ 免费档模型 id / 启用开关 / 连通测试（列出模型数）；配置持久化 `<dataDir>/gateway.json`
+- 引擎注入：每个 Agent Pane 自动获得 `OPENAI_API_BASE/KEY`、`ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL` 等全套网关变量（合并序：全局 < 网关 < 角色 < 节点）
+- 实测：OmniRoute `localhost:20128`，484 个模型含 `auto/best-free`、`auto/coding:free` 免费档；claude Agent 经 `ANTHROPIC_BASE_URL` 直连网关真实跑通流水线（请求被路由到免费模型，快照完整）
+- 内置模板默认 Agent 类型从 pi 切换为 claude（走网关最稳的接入路径）
+- 安全：gateway.json 存于本机数据目录，API Key 永不入库不入 git，读取回显脱敏
+
 ## 8. 全局角色库（D1，不变）
 
 设置页「角色库」：角色 = 默认 agentKind + 约定文档集 + 前置/后置动作 + 检查集 + 提示词骨架；项目档案/Space 只做引用+覆盖。画布节点 = 名称 + 角色 + 仓库 + 提示词。

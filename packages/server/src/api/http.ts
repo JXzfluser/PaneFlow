@@ -10,6 +10,7 @@ import type { SpaceProfile } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { detectInstalledAgents } from './env-check.js';
 import { notify, readNotifySettings, writeNotifySettings, type NotifySettings } from './notifier.js';
+import { readGateway, writeGateway, buildGatewayEnv, type ModelGatewaySettings } from './gateway.js';
 import { registerFsRoutes } from './fs-routes.js';
 import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
 
@@ -72,6 +73,50 @@ export async function buildHttpServer(deps: HttpDeps) {
     }
     saveRoles(deps.dataDir, roles);
     return { saved: roles.length };
+  });
+
+  // -- model gateway ----------------------------------------------------------
+
+  app.get('/api/gateway', async () => {
+    const g = readGateway(deps.dataDir);
+    return {
+      baseUrl: g.baseUrl ?? '',
+      freeModel: g.freeModel ?? '',
+      enabled: g.enabled ?? false,
+      keyConfigured: Boolean(g.apiKey),
+    };
+  });
+
+  app.put<{ Body: ModelGatewaySettings }>('/api/gateway', async (req, reply) => {
+    const { baseUrl, apiKey, freeModel, enabled } = req.body ?? {};
+    if (baseUrl && !/^https?:\/\//.test(baseUrl)) {
+      return reply.code(400).send({ error: 'baseUrl 必须以 http(s):// 开头' });
+    }
+    const cur = readGateway(deps.dataDir);
+    const next: ModelGatewaySettings = {
+      baseUrl: baseUrl ?? cur.baseUrl,
+      // 空 key = 保留已存值（避免回显泄露）
+      apiKey: apiKey || cur.apiKey,
+      freeModel: freeModel ?? cur.freeModel,
+      enabled: enabled ?? cur.enabled ?? Boolean(baseUrl && apiKey),
+    };
+    writeGateway(deps.dataDir, next);
+    return { saved: true, enabled: next.enabled };
+  });
+
+  app.post('/api/gateway/test', async () => {
+    const env = buildGatewayEnv(deps.dataDir);
+    if (!env.OPENAI_API_BASE) return { ok: false, error: '网关未配置或未启用' };
+    try {
+      const res = await fetch(`${env.OPENAI_API_BASE}/models`, {
+        headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      const body = (await res.json()) as { data?: unknown[] };
+      return { ok: res.ok, models: body.data?.length ?? 0 };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
   });
 
   // -- notification settings -------------------------------------------------
