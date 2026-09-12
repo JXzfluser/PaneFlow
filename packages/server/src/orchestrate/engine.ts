@@ -595,7 +595,24 @@ export class Engine {
           ];
         }
       }
-      await this.ops.startAgent(paneId, agentName, kind, startArgs, this.opts.agentStartTimeoutMs);
+      // shell 首帧未就绪时短暂退避重试（新 pane 的 zsh 初始化在大仓库 cwd 下可能秒级延迟）
+      let started = false;
+      let startError = 'unknown';
+      for (let st = 0; ; st++) {
+        try {
+          await this.ops.startAgent(paneId, agentName, kind, startArgs, this.opts.agentStartTimeoutMs);
+          started = true;
+          break;
+        } catch (e) {
+          startError = (e as Error).message;
+          if (st < 2 && /pane_busy|available shell/i.test(startError)) {
+            await sleep(1500 * (st + 1));
+            continue;
+          }
+          return `启动失败：${startError}`;
+        }
+      }
+      if (!started) return `启动失败：${startError}`;
       // 启动等待含人工闸门：冷启动慢→继续等；启动对话框 blocked→审批卡片
       await this.waitReadyWithGate(run, rec, agentName, cfg);
     } catch (err) {

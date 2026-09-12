@@ -6,6 +6,7 @@ import { Palette } from './Palette.jsx';
 import { PropertyPanel } from './PropertyPanel.jsx';
 import { Console } from './Console.jsx';
 import { RunDialog } from './RunDialog.jsx';
+import { DispatchDialog } from './DispatchDialog.jsx';
 
 export function OrchestrateView() {
   const graphName = useStore((s) => s.graphName);
@@ -24,6 +25,7 @@ export function OrchestrateView() {
   const setView = useStore((s) => s.setView);
 
   const [runDialogOpen, setRunDialogOpen] = useState(false);
+  const [dispatchOpen, setDispatchOpen] = useState(false);
   const activeRun = activeRunId ? runs[activeRunId] : null;
   const running = activeRun?.state === 'running';
 
@@ -67,6 +69,9 @@ export function OrchestrateView() {
         <div className="tb-group" title="当前画布的模板">
           <input className="gname" value={graphName} onChange={(e) => renameGraph(e.target.value)} placeholder="模板名" style={{ width: 160 }} />
           <button onClick={saveTemplate} title="保存模板（用左侧模板名）">💾</button>
+        </div>
+        <div className="tb-group">
+          <button className="primary" title="一句任务描述，自动路由/生成编排并执行" onClick={() => setDispatchOpen(true)}>🎯 下发任务</button>
         </div>
         <div className="tb-group" title="GitHub 模板沉淀（可选，需服务端配置）">
           <button
@@ -143,6 +148,12 @@ export function OrchestrateView() {
         <PropertyPanel />
       </div>
       <Console />
+      {dispatchOpen && (
+        <DispatchDialog
+          onClose={() => setDispatchOpen(false)}
+          onDispatched={() => setView('runs')}
+        />
+      )}
       {runDialogOpen && (
         <RunDialog
           graph={toGraph()}

@@ -29,6 +29,7 @@ interface UpdateIssueBody {
   body: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
+import { buildDispatchGraph } from './dispatch.js';
 import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
 
 export const AGENT_KINDS = [
@@ -322,6 +323,38 @@ export async function buildHttpServer(deps: HttpDeps) {
     const ok = spaceStore(deps, req.query.space).deleteGraph(req.params.id);
     return { deleted: ok };
   });
+
+  // -- 智能下发（Smart Dispatch） ----------------------------------------------
+
+  app.post<{ Body: { task: string; issueId?: string; cwd?: string }; Querystring: { space?: string } }>(
+    '/api/dispatch',
+    async (req, reply) => {
+      const task = String(req.body?.task ?? '').trim();
+      if (!task) return reply.code(400).send({ error: '缺少任务描述' });
+      const store0 = spaceStore(deps, req.query.space);
+      let rootCwd: string | undefined;
+      try {
+        rootCwd = store0.readProfile().rootCwd;
+      } catch {
+        rootCwd = undefined;
+      }
+      const cwd = String(req.body.cwd ?? '').trim() || rootCwd;
+      if (!cwd) return reply.code(400).send({ error: '缺少工作目录（空间未配置 rootCwd 且未指定）' });
+      const templateList = store0
+        .listGraphs()
+        .filter((g) => g.name !== 'builtin-issue-triage')
+        .map((g) => ({ name: g.name, description: g.metadata.description }));
+      const graph = buildDispatchGraph({
+        task,
+        issueId: req.body.issueId,
+        cwd,
+        templateList,
+        rootCwd,
+      });
+      const run = await deps.engine.startRun(graph, cwd, req.query.space, { task }, req.body.issueId);
+      return { runId: run.runId };
+    },
+  );
 
   // -- dry-run（B12 预演：展开变量、静态评估条件边、输出最终拓扑） -------------
 

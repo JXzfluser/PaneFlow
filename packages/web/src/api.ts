@@ -76,6 +76,8 @@ export const api = {
       edges: { id: string; source: string; target: string; condition: string | null }[];
       warnings: string[];
     }>('POST', '/api/dry-run', { graph, cwd, ...(variables ? { variables } : {}) }),
+  dispatch: (task: string, cwd: string, issueId?: string) =>
+    json<{ runId: string }>('POST', '/api/dispatch', { task, cwd, ...(issueId ? { issueId } : {}) }),
   listSpaces: () => json<{ spaces: { id: string; name: string }[] }>('GET', '/api/spaces', undefined, { raw: true }),
   createSpace: (id: string, name: string) => json<unknown>('POST', '/api/spaces', { id, name }, { raw: true }),
 };
