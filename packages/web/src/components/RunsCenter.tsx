@@ -2,6 +2,13 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
 import { api } from '../api.js';
 
+function nodeDuration(r: NonNullable<ReturnType<typeof useStore.getState>['runs'][string]>, nodeId: string): number | null {
+  const rec = r.nodes[nodeId];
+  if (!rec?.startedAt) return null;
+  const end = rec.finishedAt ? new Date(rec.finishedAt).getTime() : Date.now();
+  return Math.round((end - new Date(rec.startedAt).getTime()) / 1000);
+}
+
 function useBrowserNotify(): [boolean, () => void] {
   const [on, setOn] = useState(() => localStorage.getItem('pf-notify-browser') === '1');
   const enable = () => {
@@ -97,6 +104,23 @@ export function RunsCenter() {
               </span>
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{elapsed}s</span>
               <div className="run-card-ops">
+                <button title="导出完整记录 JSON" onClick={() => {
+                  const a = document.createElement('a');
+                  a.href = `/api/runs/${r.runId}/export`;
+                  a.download = `${r.runId}.json`;
+                  a.click();
+                }}>⤓</button>
+                {r.state !== 'running' && (
+                  <button title="归档（移出主列表，记录保留）" onClick={() => {
+                    void fetch(`/api/runs/${r.runId}/archive`, { method: 'POST' }).then(() => {
+                      useStore.setState((s) => {
+                        const runs = { ...s.runs };
+                        delete runs[r.runId];
+                        return { ...s, runs };
+                      });
+                    });
+                  }}>📦</button>
+                )}
                 <button title="在画布中打开" onClick={() => { openRun(r.runId); setView('orchestrate'); }}>↗</button>
                 {r.state === 'running' && <button className="danger" title="停止" onClick={() => void stop(r.runId)}>⏹</button>}
               </div>

@@ -261,6 +261,17 @@ export interface RunRecord {
   nodes: Record<string, NodeRunRecord>;
   startedAt: string;
   finishedAt?: string;
+  /** 运行事件时间线（R5.3：状态变迁/重试/子运行/审批的留档） */
+  events?: RunEvent[];
+  /** R5.1 归档标记（归档后移出运行中心主列表，记录保留可检索） */
+  archived?: boolean;
+}
+
+export interface RunEvent {
+  at: string;
+  type: 'node' | 'run' | 'child' | 'approval' | 'snapshot';
+  nodeId?: string;
+  text: string;
 }
 
 // ---------------------------------------------------------------------------

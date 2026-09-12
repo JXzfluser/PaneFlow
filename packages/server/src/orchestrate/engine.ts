@@ -138,6 +138,11 @@ export class Engine {
     return this.runs.get(runId);
   }
 
+  /** R5.1 归档后从内存移除（记录已落盘 archive/） */
+  evictRun(runId: string): void {
+    this.runs.delete(runId);
+  }
+
   /** Boot-time sweep: reclaim leftover workspaces from dead previous runs. */
   async recoverOrphans(): Promise<string[]> {
     const reclaimed: string[] = [];
@@ -402,6 +407,7 @@ export class Engine {
       rec.state = outcome;
       if (error !== undefined) rec.error = error;
       rec.finishedAt = rec.finishedAt ?? new Date().toISOString();
+      this.recordEvent(run, 'node', id, `${outcome}${error ? `：${error}` : ''}`);
       this.persistAndNotify(run);
     };
 
@@ -714,6 +720,7 @@ export class Engine {
       // convention so the agent knows the hand-off contract, then submit
       rec.state = 'working';
       rec.startedAt = rec.startedAt ?? new Date().toISOString();
+      this.recordEvent(run, 'node', nodeId, '指令已提交');
       this.persistAndNotify(run);
       const rendered = renderPromptTemplate(cfg.prompt ?? '', (refId, refPath) =>
         this.resolveBlackboardRef(blackboard, refId, refPath),
@@ -845,6 +852,7 @@ export class Engine {
         // human gate: reuse the approval flow with the check prompt
         rec.state = 'blocked';
         rec.blockedPrompt = c.prompt;
+        this.recordEvent(run, 'approval', nodeId, `人工检查：${c.prompt}`);
         this.persistAndNotify(run);
         const action = await new Promise<ApprovalAction>((resolve) => {
           this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
@@ -1275,6 +1283,15 @@ export class Engine {
         }
       }
     }
+  }
+
+  /** R5.3 事件时间线：关键状态变迁留档（随 run 持久化，上限 500 条） */
+  private recordEvent(run: RunRecord, type: 'node' | 'run' | 'child' | 'approval' | 'snapshot', nodeId: string | undefined, text: string): void {
+    const events = (run.events ??= []);
+    const last = events[events.length - 1];
+    if (last && last.type === type && last.nodeId === nodeId && last.text === text) return; // 去重
+    events.push({ at: new Date().toISOString(), type, nodeId, text });
+    if (events.length > 500) events.splice(0, events.length - 500);
   }
 
   private persistAndNotify(run: RunRecord): void {

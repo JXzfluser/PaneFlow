@@ -480,6 +480,33 @@ export async function buildHttpServer(deps: HttpDeps) {
     return run;
   });
 
+  // R5.3 事件时间线
+  app.get<{ Params: { id: string } }>('/api/runs/:id/events', async (req, reply) => {
+    const run = deps.engine.getRun(req.params.id);
+    if (!run) return reply.code(404).send({ error: 'not found' });
+    return { runId: run.runId, events: run.events ?? [] };
+  });
+
+  // R5.1 归档（记录保留、移出主列表）
+  app.post<{ Params: { id: string } }>('/api/runs/:id/archive', async (req, reply) => {
+    const run = deps.engine.getRun(req.params.id);
+    if (!run) return reply.code(404).send({ error: 'not found' });
+    if (run.state === 'running') return reply.code(409).send({ error: '运行中的流水线不能归档，请先停止' });
+    run.archived = true;
+    deps.store.saveRun(run);
+    deps.engine.evictRun(run.runId);
+    return { archived: true };
+  });
+
+  // R5.1 导出单次 run 完整记录
+  app.get<{ Params: { id: string } }>('/api/runs/:id/export', async (req, reply) => {
+    const run = deps.engine.getRun(req.params.id) ?? deps.store.getRun(req.params.id) ?? deps.store.getArchivedRun(req.params.id);
+    if (!run) return reply.code(404).send({ error: 'not found' });
+    reply.header('Content-Type', 'application/json');
+    reply.header('Content-Disposition', `attachment; filename="${run.runId}.json"`);
+    return run;
+  });
+
   app.post<{ Params: { id: string } }>('/api/runs/:id/stop', async (req, reply) => {
     const ok = deps.engine.stopRun(req.params.id);
     if (!ok) return reply.code(409).send({ error: '流水线未在运行' });

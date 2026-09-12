@@ -153,21 +153,56 @@ export class Store {
 
   // -- runs -------------------------------------------------------------------
 
+  /** 全量列出（R5.2 解除 50 条截断）；归档记录移入 archive/ 子目录后不再出现 */
   listRuns(): RunRecord[] {
     return fs
       .readdirSync(this.runsDir)
       .filter((f) => f.endsWith('.json'))
       .map((f) => this.readJson<RunRecord>(path.join(this.runsDir, f)))
       .filter((r): r is RunRecord => r !== null)
-      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
-      .slice(0, 50);
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  }
+
+  /** R5.1 归档：移入 archive/ 子目录（记录保留、可检索） */
+  archiveRun(runId: string): boolean {
+    const src = this.runPath(runId);
+    if (!fs.existsSync(src)) return false;
+    const archiveDir = path.join(this.runsDir, 'archive');
+    fs.mkdirSync(archiveDir, { recursive: true });
+    fs.renameSync(src, path.join(archiveDir, `${runId}.json`));
+    return true;
+  }
+
+  listArchivedRuns(): RunRecord[] {
+    const archiveDir = path.join(this.runsDir, 'archive');
+    if (!fs.existsSync(archiveDir)) return [];
+    return fs
+      .readdirSync(archiveDir)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => this.readJson<RunRecord>(path.join(archiveDir, f)))
+      .filter((r): r is RunRecord => r !== null)
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }
 
   getRun(runId: string): RunRecord | null {
     return this.readJson<RunRecord>(this.runPath(runId));
   }
 
+  /** R5.1 归档记录读取 */
+  getArchivedRun(runId: string): RunRecord | null {
+    const p = path.join(this.runsDir, 'archive', `${runId}.json`);
+    return this.readJson<RunRecord>(p);
+  }
+
   saveRun(run: RunRecord): void {
+    if (run.archived) {
+      const archiveDir = path.join(this.runsDir, 'archive');
+      fs.mkdirSync(archiveDir, { recursive: true });
+      fs.writeFileSync(path.join(archiveDir, `${run.runId}.json`), JSON.stringify(run, null, 2));
+      const main = this.runPath(run.runId);
+      if (fs.existsSync(main)) fs.rmSync(main);
+      return;
+    }
     fs.writeFileSync(this.runPath(run.runId), JSON.stringify(run, null, 2));
   }
 
