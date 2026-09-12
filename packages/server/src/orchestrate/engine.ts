@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import type {
   AgentStatus,
   AcceptanceAssertion,
@@ -63,6 +64,10 @@ export class Engine {
   /** Cross-run pane semaphore: the cap holds across ALL concurrent pipelines. */
   private readonly paneSlots: { acquired: number } = { acquired: 0 };
   private readonly paneWaiters: (() => void)[] = [];
+  /** R3.1/R3.2 仓库占用登记：repoRoot → 占用者（runId + nodeId） */
+  private readonly repoClaims = new Map<string, { runId: string; nodeId: string; key: string }>();
+  /** R3.5 本引擎创建的 worktree（run 结束时尽力回收） */
+  private readonly liveWorktrees: { runId: string; repo: string; path: string; branch: string }[] = [];
 
   constructor(
     private readonly ops: HerdrOps,
@@ -92,6 +97,27 @@ export class Engine {
         this.runs.set(run.runId, run);
       }
     }
+  }
+
+  /**
+   * R3.3 启动前脏检查：对每个 agent 节点的 cwd（git 仓库）执行 status --porcelain，
+   * 有未提交改动即拒绝启动并给出清单。非 git 目录跳过；PF_DIRTY_CHECK=0 可关闭。
+   */
+  private checkDirtyRepos(graph: DagGraph, cwd: string, spaceId?: string): string | null {
+    if (process.env.PF_DIRTY_CHECK === '0') return null;
+    const checked = new Set<string>();
+    const dirty: string[] = [];
+    for (const n of graph.nodes) {
+      if (n.type !== 'agent') continue;
+      const nodeCwd = n.config.cwd ? path.resolve(cwd, n.config.cwd) : cwd;
+      const repo = gitRepoRoot(nodeCwd);
+      if (!repo || checked.has(repo)) continue;
+      checked.add(repo);
+      const st = gitStatusPorcelain(repo);
+      if (st) dirty.push(`${repo}（${st.split('\n').filter(Boolean).length} 个未提交变更）`);
+    }
+    if (!dirty.length) return null;
+    return `工作区有未提交改动，拒绝启动（防止覆盖你的工作）：\n${dirty.join('\n')}\n提交或 stash 后重试；临时关闭请设置 PF_DIRTY_CHECK=0`;
   }
 
   /** Space-scoped store for persistence of a given run. */
@@ -136,6 +162,18 @@ export class Engine {
   }
 
   async startRun(graph: DagGraph, cwd: string, spaceId?: string, variables?: Record<string, string>, issueId?: string): Promise<RunRecord> {
+    // R3.4 同 issue 幂等锁：同空间同 issue 已有运行中流水线时拒绝重复下发
+    if (issueId) {
+      const dup = [...this.runs.values()].find(
+        (r) => r.state === 'running' && r.issueId === issueId && (r.spaceId ?? 'default') === (spaceId ?? 'default'),
+      );
+      if (dup) {
+        throw new Error(`Issue ${issueId} 已有运行中的流水线（run ${dup.runId}），如需重跑请先停止它`);
+      }
+    }
+    // R3.3 启动前脏检查：git 仓库有未提交改动时拒绝（不覆盖用户工作区）
+    const dirtyErr = this.checkDirtyRepos(graph, cwd, spaceId);
+    if (dirtyErr) throw new Error(dirtyErr);
     const applied = applyVariables(graph, variables);
     if (applied.missing.length) {
       throw new Error(`缺少必填参数：${applied.missing.join('、')}`);
@@ -280,6 +318,7 @@ export class Engine {
         ),
       );
       // resource cleanup — never leave panes behind
+      this.reclaimWorktrees(run.runId);
       try {
         await this.ops.closeWorkspace(run.workspaceId!);
       } catch (err) {
@@ -555,9 +594,35 @@ export class Engine {
     rec.state = 'starting';
     this.persistAndNotify(run);
     let unsub: (() => void) | null = null;
+    let repoClaimKey: string | null = null;
+    let nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
     try {
       const rootPane = this.rootPanes.get(run.runId)!;
-      const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
+      // R3.1/R3.2 仓库占用：同 run 兄弟并发写同仓 → worktree 隔离；跨 run → 软锁排队
+      const repo = gitRepoRoot(nodeCwd);
+      if (repo) {
+        const myKey = `${run.runId}:${nodeId}`;
+        const holder = this.repoClaims.get(repo);
+        if (holder && holder.key !== myKey) {
+          if (holder.runId === run.runId) {
+            const wt = this.createWorktree(repo, run.runId, nodeId);
+            nodeCwd = wt.path;
+            rec.worktree = wt.path;
+          } else {
+            rec.state = 'queued';
+            rec.error = `等待仓库锁：${repo}（被 run ${holder.runId} 的 ${holder.nodeId} 占用）`;
+            this.persistAndNotify(run);
+            const lockDeadline = Date.now() + Math.max(60_000, timeoutMs);
+            while (this.repoClaims.get(repo)?.runId === holder.runId) {
+              if (this.cancels.has(run.runId)) return '已取消（等待仓库锁）';
+              if (Date.now() > lockDeadline) return `仓库锁等待超时：${repo}`;
+              await sleep(1500);
+            }
+          }
+        }
+        this.repoClaims.set(repo, { runId: run.runId, nodeId, key: myKey });
+        repoClaimKey = repo;
+      }
       // env 合并：全局 < 模型网关 < 角色 < 节点
       let paneEnv: Record<string, string> = {
         ...(this.opts.paneEnv ?? {}),
@@ -1009,6 +1074,37 @@ export class Engine {
     return { block: parts.join('\n'), agentKind: role?.agentKind };
   }
 
+  /**
+   * R3.1 同仓并发隔离：git worktree add 独立目录 + 独立分支（脏目录保留并注明）。
+   */
+  private createWorktree(repo: string, runId: string, nodeId: string): { path: string; branch: string } {
+    const wtPath = path.join(os.tmpdir(), 'paneflow-wt', `${runId}-${nodeId}`);
+    const branch = `paneflow/${runId}-${nodeId}`;
+    fs.mkdirSync(path.dirname(wtPath), { recursive: true });
+    execFileSync('git', ['-C', repo, 'worktree', 'add', wtPath, '-b', branch], { timeout: 30_000 });
+    const entry = { runId, repo, path: wtPath, branch };
+    this.liveWorktrees.push(entry);
+    return entry;
+  }
+
+  /** R3.5 worktree 回收：干净则 remove，脏则保留目录并在日志注明。 */
+  private reclaimWorktrees(runId: string): void {
+    for (const wt of this.liveWorktrees.filter((w) => w.runId === runId)) {
+      try {
+        if (gitStatusPorcelain(wt.path)) {
+          console.warn(`[engine] worktree 有未提交变更，保留目录：${wt.path}`);
+          continue;
+        }
+        execFileSync('git', ['-C', wt.repo, 'worktree', 'remove', wt.path], { timeout: 15_000 });
+      } catch (err) {
+        console.warn(`[engine] worktree 回收失败（保留）：${wt.path} — ${(err as Error).message}`);
+      }
+    }
+    for (let i = this.liveWorktrees.length - 1; i >= 0; i--) {
+      if (this.liveWorktrees[i]!.runId === runId) this.liveWorktrees.splice(i, 1);
+    }
+  }
+
   /** Submit a prompt and wait for the turn to settle (server-side wait + poll). */
   private async promptAndSettle(
     run: RunRecord,
@@ -1203,6 +1299,25 @@ function paneIdOf(rec: NodeRunRecord): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function gitRepoRoot(dir: string): string | null {
+  try {
+    const out = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { timeout: 5000 });
+    return String(out).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function gitStatusPorcelain(repo: string): string | null {
+  try {
+    const out = execFileSync('git', ['-C', repo, 'status', '--porcelain'], { timeout: 5000 });
+    const text = String(out);
+    return text.trim() ? text : null;
+  } catch {
+    return null; // 非 git 仓库/无 git 命令 —— 视为干净
+  }
 }
 
 function nodeCwdOf(run: RunRecord, cfg: DagNodeConfig): string {

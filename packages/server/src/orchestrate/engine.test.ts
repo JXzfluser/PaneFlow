@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { DagGraph } from '@paneflow/shared';
+import { execFileSync } from 'node:child_process';
 import { Engine } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
 import { Store } from './store.js';
@@ -755,6 +756,83 @@ describe('Engine (serial DAG)', () => {
     expect(run.nodes['dev__1']!.state).toBe('done');
     const devPrompt = ops.prompts.find((p) => p.target.includes('dev__1'))!;
     expect(devPrompt.text).toContain('结论：按顺序完成全部工作');
+  });
+
+  it('R3.4 same-issue idempotency: duplicate dispatch is rejected while running', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const g = serialGraph();
+    ops.onPrompt = () => { /* 永不 settle：保持 working */ };
+    const r1 = await engine.startRun(g, cwd, 'default', {}, '162');
+    await expect(engine.startRun(g, cwd, 'default', {}, '162')).rejects.toThrow(/162/);
+    // 不同 issue 不受限
+    const r2 = await engine.startRun(g, cwd, 'default', {}, '163');
+    expect(r2.issueId).toBe('163');
+    engine.stopRun(r1.runId);
+    engine.stopRun(r2.runId);
+  });
+
+  it('R3.3 dirty check rejects start when the repo has uncommitted changes', async () => {
+    // 真实 git 仓库 + 未提交变更
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-dirty-'));
+    execFileSync('git', ['-C', repo, 'init']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 't@t'], );
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
+    fs.writeFileSync(path.join(repo, 'wip.txt'), '未提交的工作');
+    execFileSync('git', ['-C', repo, 'add', '.']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'base']);
+    fs.writeFileSync(path.join(repo, 'wip.txt'), '脏改动');
+    const graph = serialGraph();
+    graph.nodes[1]!.config.cwd = repo;
+    await expect(engine.startRun(graph, repo, 'default', {}, '9')).rejects.toThrow(/未提交改动/);
+    // 提交后可启动
+    execFileSync('git', ['-C', repo, 'add', '-A']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'wip']);
+    const run = await engine.startRun(graph, repo, 'default', {}, '9');
+    engine.stopRun(run.runId);
+  });
+
+  it('R3.1 same-run siblings on the same repo get isolated worktrees', async () => {
+    // 真实 git 仓库：两个 agent 节点同仓并发 → 后到者自动 worktree 隔离
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wt-'));
+    execFileSync('git', ['-C', repo, 'init']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 't@t']);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'base');
+    execFileSync('git', ['-C', repo, 'add', '-A']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'base']);
+
+    const graph: DagGraph = {
+      version: 1,
+      name: 'wt-test',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'fork', type: 'fanout', label: '展开', config: {} },
+        { id: 'a', type: 'agent', label: '任务A', config: { agentKind: 'fake', prompt: 'A', cwd: repo } },
+        { id: 'b', type: 'agent', label: '任务B', config: { agentKind: 'fake', prompt: 'B', cwd: repo } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'fork' },
+        { id: 'e2', source: 'fork', target: 'a' },
+        { id: 'e3', source: 'fork', target: 'b' },
+        { id: 'e4', source: 'a', target: 'end' },
+        { id: 'e5', source: 'b', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    const run = await engine.startRun(graph, repo);
+    // 运行中：后到者获得 worktree（目录存在、独立分支）
+    await waitFor(() => (engine.getRun(run.runId)!.nodes['b']!.worktree ?? '') !== '');
+    const wtPath = engine.getRun(run.runId)!.nodes['b']!.worktree!;
+    expect(wtPath).toContain('paneflow-wt');
+    // 运行结束：完成 + worktree 回收（分支引用保留、目录移除）——fake 环境毫秒级完成，中途存在性断言有竞态
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    expect(final.nodes['b']!.worktree).toBe(wtPath);
+    expect(fs.existsSync(wtPath)).toBe(false);
+    const branches = execFileSync('git', ['-C', repo, 'branch', '--list', 'paneflow/*']).toString();
+    expect(branches).toContain('paneflow/');
   });
 
   it('recoverOrphans reclaims workspaces from previous dead runs', async () => {

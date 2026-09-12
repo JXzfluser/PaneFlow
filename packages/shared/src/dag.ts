@@ -228,6 +228,8 @@ export interface NodeRunRecord {
   state: NodeRunState;
   /** manual 检查的提问文本（审批卡片展示） */
   blockedPrompt?: string;
+  /** worktree 路径（同仓并发隔离时由引擎创建；运行结束前尽力回收） */
+  worktree?: string;
   /**
    * 终端输出快照（按时间追加，每条 ≤8KB）：运行中随状态推送采集，
    * run 结束后 agent pane 已回收，终端预览从这里回放。
