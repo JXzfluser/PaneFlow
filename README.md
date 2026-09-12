@@ -12,6 +12,15 @@
 【运行底座】Herdr server → Workspace/Tab/Pane → pi / opencode / claude / codex / …17 种编码 Agent
 ```
 
+## 核心能力一览
+
+- **🎯 智能下发**：顶栏一句任务描述 → Planner 自动选择交付模板（或生成任务拆解）→ 骨架自动执行 → Issue 回链 + git 收口
+- **确定性编排**：策展骨架 + 动态扇出（按任务数组克隆分支）+ 条件边（产物字段断言剪枝）+ Dry-Run 预演
+- **质量门禁**：file-exists/command/regex/manual 四类检查；manual 复用审批卡片人闸
+- **模型网关**：设置页配置 OmniRoute/LiteLLM 等网关后，Agent 全量走网关（免费档/自动切换由网关负责）
+- **GitHub 闭环**：GH_TOKEN 注入 + create-issue/update-issue 确定性原语（EMU 账号场景可用）
+- **验收断言**：align 注入 AC-N 断言面 → impl 逐条自测回写 → verify 逐条核对（带证据链的交付）
+
 ## 快速开始
 
 前置：本机已安装并运行 [Herdr](https://github.com/herdrdev/herdr) ≥ 0.8.2，Node ≥ 22，pnpm。

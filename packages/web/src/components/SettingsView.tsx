@@ -205,6 +205,9 @@ export function SettingsView() {
   const [env, setEnv] = useState<{ herdrOk: boolean; herdrVersion: string | null; env: { agentsInstalled: string[] } } | null>(null);
   const [discover, setDiscover] = useState<{ markdowns: string[]; skills: string[]; repos: string[] } | null>(null);
   const [browsing, setBrowsing] = useState(false);
+  const [recentRoots, setRecentRoots] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('pf-recent-roots') ?? '[]') as string[]; } catch { return []; }
+  });
   const [browseDir, setBrowseDir] = useState<string | null>(null);
   const [browseList, setBrowseList] = useState<string[] | null>(null);
 
@@ -238,6 +241,11 @@ export function SettingsView() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rootCwd: profile.rootCwd, description: profile.description }),
       });
+      if (profile?.rootCwd) {
+        const next = [profile.rootCwd, ...recentRoots.filter((x) => x !== profile.rootCwd)].slice(0, 5);
+        setRecentRoots(next);
+        localStorage.setItem('pf-recent-roots', JSON.stringify(next));
+      }
       log('info', '项目档案已保存');
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
@@ -284,6 +292,34 @@ export function SettingsView() {
               />
               <button style={{ whiteSpace: 'nowrap' }} onClick={() => setBrowsing((b) => !b)}>📁 浏览</button>
             </div>
+            {(recentRoots.length > 0 || true) && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6, alignItems: 'center' }}>
+                <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>最近：</span>
+                {recentRoots.slice(0, 3).map((r) => (
+                  <button
+                    key={r}
+                    style={{ fontSize: 11, padding: '2px 8px' }}
+                    title={r}
+                    onClick={() => setProfile((p) => (p ? { ...p, rootCwd: r } : p))}
+                  >
+                    {r.split('/').pop() || r}
+                  </button>
+                ))}
+                <label
+                  style={{ fontSize: 11, cursor: 'pointer', color: 'var(--text-dim)' }}
+                  title="拖拽文件夹到此可填入路径"
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const item = e.dataTransfer?.items?.[0];
+                    const entry = item?.webkitGetAsEntry?.() as { fullPath?: string } | null;
+                    if (entry?.fullPath) setProfile((p) => (p ? { ...p, rootCwd: entry.fullPath } : p));
+                  }}
+                >
+                  ⤵ 拖拽
+                </label>
+              </div>
+            )}
             {browsing && (
               <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 6, marginTop: 6, maxHeight: 180, overflowY: 'auto' }}>
                 <div style={{ color: 'var(--text-dim)', fontSize: 11, marginBottom: 4 }}>{browseDir || '（父级）'}</div>
