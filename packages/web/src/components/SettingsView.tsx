@@ -193,6 +193,7 @@ interface SpaceProfile {
   description?: string;
   conventionFiles?: string[];
   skills?: string[];
+  repos?: string[];
 }
 
 /** 设置视图（B8 骨架 + B10 预置）：空间管理 / 项目档案 / 出站通知 / 环境。 */

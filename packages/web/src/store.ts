@@ -10,7 +10,7 @@ import {
   type EdgeChange,
 } from '@xyflow/react';
 import type { DagGraph, DagNode, DagNodeType, EdgeCondition, NodeRunState, RunRecord, TemplateVariable } from '@paneflow/shared';
-import { graphToRfParts, rfToGraph, type GraphMeta, type PfEdge, type PfEdgeData, type PfNode, type PfNodeData } from './graph-serialization.js';
+import { graphToRfParts, rfToGraph, type GraphMeta, type PfEdgeData, type PfNode, type PfNodeData } from './graph-serialization.js';
 import { setSpace as setApiSpace, getSpace, api } from './api.js';
 import { validateDag } from '@paneflow/shared';
 
@@ -65,6 +65,8 @@ interface PfStore {
 
   setView: (view: AppView) => void;
   setTheme: (theme: ThemeName) => void;
+  setGraphVariables: (v: TemplateVariable[]) => void;
+  setGraphMeta: (m: GraphMeta) => void;
   setCwd: (cwd: string) => void;
   setHealth: (herdrOk: boolean | null, wsOk: boolean) => void;
   setAgentKinds: (kinds: string[]) => void;
@@ -303,12 +305,15 @@ export const useStore = create<PfStore>((set, get) => ({
       void api.listGraphs().then((r) => set({ templateList: r.graphs }));
     }
     // 载入该 run 的图（画布显示这条流水线本身，而非当前画布残留）
-    const { nodes, edges } = dagToRf(run.graph);
+    const parts = graphToRfParts(run.graph);
     set({
       graphName: run.graph.name,
-      nodes,
-      edges,
+      nodes: parts.nodes,
+      edges: parts.edges,
+      graphVariables: parts.variables,
+      graphMeta: parts.meta,
       selectedNodeId: null,
+      selectedEdgeId: null,
       activeRunId: runId,
     });
     get().applyRun(run);
