@@ -19,10 +19,14 @@ function EdgeConditionPanel({ edgeId }: { edgeId: string }) {
   if (!edge) {
     return <div className="props"><h3>属性 · 连线</h3><div className="hint">连线不存在。</div></div>;
   }
-  const cond = edge.data?.condition;
-  const src = edges.find((e) => e.id === edge.source);
+  const cond = edge?.data?.condition as EdgeCondition | undefined;
   const set = (patch: Partial<EdgeCondition>) =>
-    updateEdgeCondition(edgeId, { field: '', ...cond, ...patch });
+    updateEdgeCondition(edgeId, {
+      field: patch.field ?? cond?.field ?? '',
+      equals: patch.equals !== undefined ? patch.equals : cond?.equals,
+      notEquals: patch.notEquals !== undefined ? patch.notEquals : cond?.notEquals,
+      exists: patch.exists !== undefined ? patch.exists : cond?.exists,
+    } as EdgeCondition);
   return (
     <div className="props">
       <h3>条件边 · {edge.source} → {edge.target}</h3>
