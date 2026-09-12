@@ -15,6 +15,7 @@ export function OrchestrateView() {
   const log = useStore((s) => s.log);
   const runs = useStore((s) => s.runs);
   const activeRunId = useStore((s) => s.activeRunId);
+  const openRun = useStore((s) => s.openRun);
   const setActiveRun = useStore((s) => s.setActiveRun);
   const cwd = useStore((s) => s.cwd);
   const setCwd = useStore((s) => s.setCwd);
@@ -122,7 +123,7 @@ export function OrchestrateView() {
           {activeRunId && (
             <select
               value={activeRunId}
-              onChange={(e) => setActiveRun(e.target.value)}
+              onChange={(e) => openRun(e.target.value)}
               title="切换查看历史运行"
               style={{ background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', maxWidth: 230 }}
             >

@@ -46,7 +46,7 @@ export function RunsCenter() {
   const runs = useStore((s) => s.runs);
   const [notifyOn, toggleNotify] = useBrowserNotify();
   useRunNotifications();
-  const setActiveRun = useStore((s) => s.setActiveRun);
+  const openRun = useStore((s) => s.openRun);
   const setView = useStore((s) => s.setView);
   const log = useStore((s) => s.log);
 
@@ -97,7 +97,7 @@ export function RunsCenter() {
               </span>
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{elapsed}s</span>
               <div className="run-card-ops">
-                <button title="在画布中打开" onClick={() => { setActiveRun(r.runId); setView('orchestrate'); }}>↗</button>
+                <button title="在画布中打开" onClick={() => { openRun(r.runId); setView('orchestrate'); }}>↗</button>
                 {r.state === 'running' && <button className="danger" title="停止" onClick={() => void stop(r.runId)}>⏹</button>}
               </div>
             </div>

@@ -10,6 +10,7 @@ import {
   type EdgeChange,
 } from '@xyflow/react';
 import type { DagGraph, DagNode, DagNodeType, NodeRunState, RunRecord } from '@paneflow/shared';
+import { setSpace as setApiSpace, getSpace, api } from './api.js';
 import { validateDag } from '@paneflow/shared';
 
 export type ThemeName = 'dark' | 'light';
@@ -84,6 +85,8 @@ interface PfStore {
 
   applyRun: (run: RunRecord) => void;
   setActiveRun: (runId: string | null) => void;
+  /** 从运行中心打开某次运行：载入其图并镜像状态（跨空间自动切换） */
+  openRun: (runId: string) => void;
   approve: (runId: string, nodeId: string, action: 'approve' | 'reject' | 'input', text?: string) => void;
 }
 
@@ -309,6 +312,28 @@ export const useStore = create<PfStore>((set, get) => ({
     set({ activeRunId: runId });
     const run = runId ? get().runs[runId] : null;
     if (run) get().applyRun(run);
+  },
+
+  openRun: (runId) => {
+    const run = get().runs[runId];
+    if (!run) return;
+    // 跨空间：先切空间并刷新该空间的模板列表
+    const targetSpace = run.spaceId || 'default';
+    if (getSpace() !== targetSpace) {
+      setApiSpace(targetSpace);
+      void api.listGraphs().then((r) => set({ templateList: r.graphs }));
+    }
+    // 载入该 run 的图（画布显示这条流水线本身，而非当前画布残留）
+    const { nodes, edges } = dagToRf(run.graph);
+    set({
+      graphName: run.graph.name,
+      nodes,
+      edges,
+      selectedNodeId: null,
+      activeRunId: runId,
+    });
+    get().applyRun(run);
+    get().log('info', `已打开运行 ${run.runId}（模板：${run.dagName}）`);
   },
 
   approve: (runId, nodeId, action, text) => {
