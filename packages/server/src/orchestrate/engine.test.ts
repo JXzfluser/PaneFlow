@@ -835,6 +835,36 @@ describe('Engine (serial DAG)', () => {
     expect(branches).toContain('paneflow/');
   });
 
+  it('R6.5 resume: done nodes inherited, failed node re-executes only', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = twoNodeGraph();
+    // 首轮：design 成功、impl 失败（unknown 不可恢复）→ run failed
+    let callCount = 0;
+    ops.onPrompt = (target) => {
+      callCount += 1;
+      if (target.includes('impl')) {
+        ops.setStatus(target, 'working');
+        setTimeout(() => ops.setStatus(target, 'unknown'), 10);
+      }
+    };
+    const run1 = await runToCompletion(graph, cwd);
+    expect(run1.state).toBe('failed');
+    expect(run1.nodes['design']!.state).toBe('done');
+    expect(run1.nodes['impl']!.state).toBe('failed');
+    const promptsAfterRun1 = ops.prompts.length;
+
+    // 续跑：design（done）被继承不再执行，仅 impl 重跑且成功
+    ops.onPrompt = () => {};
+    const run2 = await engine.startRun(graph, cwd, 'default', {}, undefined, run1.runId);
+    await waitFor(() => engine.getRun(run2.runId)!.state !== 'running');
+    const final = engine.getRun(run2.runId)!;
+    expect(final.state).toBe('completed');
+    // design 未重新执行（提示词总数只增加 impl 的一次）
+    expect(ops.prompts.length).toBe(promptsAfterRun1 + 1);
+    expect(final.nodes['design']!.state).toBe('done');
+    expect(final.nodes['impl']!.state).toBe('done');
+  });
+
   it('recoverOrphans reclaims workspaces from previous dead runs', async () => {
     await ops.createWorkspace('paneflow-deadbeef', '/tmp');
     await ops.createWorkspace('unrelated', '/tmp');

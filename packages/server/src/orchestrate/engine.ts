@@ -166,7 +166,14 @@ export class Engine {
     return reclaimed;
   }
 
-  async startRun(graph: DagGraph, cwd: string, spaceId?: string, variables?: Record<string, string>, issueId?: string): Promise<RunRecord> {
+  async startRun(
+    graph: DagGraph,
+    cwd: string,
+    spaceId?: string,
+    variables?: Record<string, string>,
+    issueId?: string,
+    resumeOf?: string,
+  ): Promise<RunRecord> {
     // R3.4 同 issue 幂等锁：同空间同 issue 已有运行中流水线时拒绝重复下发
     if (issueId) {
       const dup = [...this.runs.values()].find(
@@ -220,9 +227,36 @@ export class Engine {
     this.runs.set(runId, run);
     this.persistAndNotify(run);
 
+    // R6.5 断点续跑：从源 run 继承 done 节点的记录与产物（这些节点不再执行）
+    const blackboardPreload = new Map<string, Artifact>();
+    if (resumeOf) {
+      const source = this.storeFor(run).getRun(resumeOf);
+      if (!source || source.dagName !== graph.name) {
+        throw new Error(`断点续跑源无效：${resumeOf}（不存在或模板不一致）`);
+      }
+      const orderSet = new Set(order);
+      let inherited = 0;
+      for (const [nodeId, srcRec] of Object.entries(source.nodes)) {
+        if (!orderSet.has(nodeId) || srcRec.state !== 'done') continue;
+        const rec = run.nodes[nodeId]!;
+        Object.assign(rec, {
+          ...srcRec,
+          nodeId,
+          state: 'done' as const,
+          finishedAt: srcRec.finishedAt,
+        });
+        if (srcRec.artifact) blackboardPreload.set(nodeId, srcRec.artifact);
+        inherited += 1;
+      }
+      if (inherited) {
+        this.recordEvent(run, 'run', undefined, `断点续跑：继承 ${resumeOf} 的 ${inherited} 个已完成节点`);
+      }
+    }
+    this.persistAndNotify(run);
+
     // Fire and forget — the HTTP layer returns the runId immediately and the
     // canvas follows state over WebSocket.
-    void this.execute(run, order).catch((err) => {
+    void this.execute(run, order, blackboardPreload).catch((err) => {
       run.state = 'failed';
       run.finishedAt = new Date().toISOString();
       this.persistAndNotify(run);
@@ -273,7 +307,7 @@ export class Engine {
 
   // -- execution ----------------------------------------------------------------
 
-  private async execute(run: RunRecord, order: string[]): Promise<void> {
+  private async execute(run: RunRecord, order: string[], blackboardPreload?: Map<string, Artifact>): Promise<void> {
     // readable workspace name: paneflow-<space>-<runId> (sweep prefix preserved)
     const label = `${this.opts.workspaceLabelPrefix}${run.spaceId ?? 'default'}-${run.runId}`;
     const ws = await this.ops.createWorkspace(label, run.cwd, this.opts.paneEnv ?? {});
@@ -291,7 +325,7 @@ export class Engine {
     }
     this.persistAndNotify(run);
 
-    const blackboard = new Map<string, Artifact>();
+    const blackboard = blackboardPreload ?? new Map<string, Artifact>();
     let abort = false;
 
     try {
@@ -351,6 +385,14 @@ export class Engine {
     const outcomes = new Map<string, 'done' | 'failed' | 'skipped'>();
     const pending = new Set(order);
     const inflight = new Map<string, Promise<void>>();
+    // 断点续跑：已继承 done 的节点直接登记，不再执行
+    for (const id of order) {
+      const rec = run.nodes[id]!;
+      if (rec.state === 'done') {
+        outcomes.set(id, 'done');
+        pending.delete(id);
+      }
+    }
     const capacity = Math.max(1, this.opts.maxConcurrentPanes ?? 8);
     let abort = false;
 

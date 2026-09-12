@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag } from '@paneflow/shared';
@@ -76,6 +77,23 @@ export async function buildHttpServer(deps: HttpDeps) {
   const app = Fastify({ logger: false });
   await app.register(cors, { origin: true });
   await app.register(fastifyWebsocket);
+
+  // R6.2 一键启动：服务端托管前端构建产物（生产模式无需 vite/proxy）
+  const webDist = path.resolve(deps.dataDir, '../../..', 'packages/web/dist');
+  for (const candidate of [webDist, path.join(process.cwd(), '../web/dist'), path.join(process.cwd(), 'dist')]) {
+    if (fs.existsSync(path.join(candidate, 'index.html'))) {
+      await app.register(fastifyStatic, { root: candidate, prefix: '/' });
+      // SPA 回退：非 /api //ws 路径回 index.html
+      app.setNotFoundHandler((req, reply) => {
+        const url = (req.url || '').split('?')[0] ?? '';
+        if (url.startsWith('/api') || url.startsWith('/ws')) {
+          return reply.code(404).send({ error: 'not found' });
+        }
+        return reply.type('text/html').send(fs.readFileSync(path.join(candidate, 'index.html')));
+      });
+      break;
+    }
+  }
 
   // R4.1 访问令牌：仅远程暴露模式启用（本机信任模式跳过）
   if (deps.authToken) {
@@ -456,7 +474,7 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   // -- runs -------------------------------------------------------------------
 
-  app.post<{ Body: { graph?: DagGraph; graphId?: string; cwd: string; variables?: Record<string, string>; issueId?: string }; Querystring: { space?: string } }>(
+  app.post<{ Body: { graph?: DagGraph; graphId?: string; cwd: string; variables?: Record<string, string>; issueId?: string; resumeOf?: string }; Querystring: { space?: string } }>(
     '/api/runs',
     async (req, reply) => {
       const { graph: inlineGraph, graphId, cwd } = req.body;
@@ -464,7 +482,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       const graph = inlineGraph ?? (graphId ? store.getGraph(graphId) : undefined);
       if (!graph) return reply.code(400).send({ error: '缺少 graph 或 graphId' });
       try {
-        const run = await deps.engine.startRun(graph, cwd, req.query.space, req.body.variables, req.body.issueId);
+        const run = await deps.engine.startRun(graph, cwd, req.query.space, req.body.variables, req.body.issueId, req.body.resumeOf);
         return reply.code(201).send({ runId: run.runId, run });
       } catch (err) {
         return reply.code(400).send({ error: (err as Error).message });

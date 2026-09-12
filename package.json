@@ -9,7 +9,8 @@
     "smoke": "tsx scripts/smoke.ts",
     "dev:server": "tsx packages/server/src/index.ts",
     "dev:web": "pnpm --filter @paneflow/web dev",
-    "build": "pnpm --filter @paneflow/web build"
+    "build": "pnpm --filter @paneflow/web build",
+    "start": "pnpm build && pnpm dev:server"
   },
   "devDependencies": {
     "@types/node": "^22.18.0",
@@ -17,5 +18,8 @@
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
   },
-  "packageManager": "pnpm@10.28.0"
+  "packageManager": "pnpm@10.28.0",
+  "dependencies": {
+    "@fastify/static": "^10.1.3"
+  }
 }

@@ -37,6 +37,7 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.port, host: config.host });
   console.log(`[paneflow] server listening on http://${config.host}:${config.port}`);
+  console.log('[paneflow] 一键模式：浏览器打开上述地址即是画布（前端由服务端托管）');
   if (config.authToken) {
     console.log(`[paneflow] 访问令牌（仅此一次展示，浏览器首次访问时填入）: ${config.authToken}`);
   }
