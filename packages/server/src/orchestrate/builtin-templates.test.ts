@@ -31,9 +31,11 @@ describe('builtin templates', () => {
     const ref = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_-]*)/g;
     for (const t of BUILTIN_TEMPLATES) {
       const ids = new Set(t.nodes.map((n) => n.id));
+      const declaredVars = new Set((t.variables ?? []).map((v) => v.key));
       for (const n of t.nodes) {
         for (const m of n.config.prompt?.matchAll(ref) ?? []) {
           if (m[1] === 'item') continue; // 动态扇出的条目变量，非节点引用
+          if (declaredVars.has(m[1]!)) continue; // 已声明的模板变量
           expect(ids.has(m[1]!), `${t.name}/${n.id} 引用了不存在的节点 ${m[1]}`).toBe(true);
         }
       }

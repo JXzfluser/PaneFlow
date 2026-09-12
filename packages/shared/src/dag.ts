@@ -144,7 +144,11 @@ export interface Artifact {
   files?: string[];
   /** Errors / failures the agent reports */
   errors?: string[];
-  /** Anything else, agent-defined */
+  /** Anything else, agent-defined.
+   * 验收断言约定：extra.acceptance —— align 节点产物，验收断言列表
+   * `[{ id, assertion, verify_method }]`（AcceptanceAssertion[]），供引擎/下游机器消费；
+   * extra.assertionResults —— 下游 impl/verify 逐条核对结果
+   * `[{ id, status: 'ok'|'fail'|'n/a', evidence }]`（AcceptanceResult[]）。 */
   extra?: Record<string, unknown>;
   /** 澄清循环约定字段：'true' 表示已对齐（Agent 按结果约定写入） */
   aligned?: string;
@@ -153,6 +157,54 @@ export interface Artifact {
   /** Whether this artifact came from the result file or the output fallback */
   source: 'file' | 'output-fallback' | 'empty';
   finishedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance — 验收断言（align 注入）与逐条核对结果（impl/verify 回写）
+// ---------------------------------------------------------------------------
+
+/** 验收断言：align 节点从需求「验收标准」小节提炼并注入编号断言面 AC-N */
+export interface AcceptanceAssertion {
+  /** 断言编号，如 AC-1（同一 list 内唯一） */
+  id: string;
+  /** 可验证断言文本 */
+  assertion: string;
+  /** 验证方法（人工/AI 如何核实） */
+  verify_method: string;
+}
+
+/** 验收断言核对结果：下游节点逐条回写至 extra.assertionResults */
+export interface AcceptanceResult {
+  id: string;
+  status: 'ok' | 'fail' | 'n/a';
+  /** 核对证据：实测输出、截图、日志摘录等，供人工/下游复核 */
+  evidence: string;
+}
+
+/**
+ * 轻校验验收断言列表：数组非空、每项 id/assertion/verify_method 均为非空字符串。
+ * 校验通过返回 null；否则返回描述问题所在的错误信息
+ * （供 aligned 门判定与 clarify 补齐提示复用）。
+ */
+export function validateAcceptance(list: AcceptanceAssertion[] | undefined | null): string | null {
+  if (!Array.isArray(list) || list.length === 0) {
+    return '验收断言列表为空或不是数组';
+  }
+  for (const item of list) {
+    if (!item || typeof item !== 'object') {
+      return '验收断言包含无效项（非对象）';
+    }
+    if (typeof item.id !== 'string' || item.id.trim() === '') {
+      return `验收断言第 ${list.indexOf(item) + 1} 项缺少非空 id`;
+    }
+    if (typeof item.assertion !== 'string' || item.assertion.trim() === '') {
+      return `验收断言 ${item.id} 缺少非空 assertion`;
+    }
+    if (typeof item.verify_method !== 'string' || item.verify_method.trim() === '') {
+      return `验收断言 ${item.id} 缺少非空 verify_method`;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

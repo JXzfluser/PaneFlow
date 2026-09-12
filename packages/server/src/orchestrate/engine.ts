@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import type {
   AgentStatus,
+  AcceptanceAssertion,
   DagNodeConfig,
   Artifact,
   DagEdge,
@@ -11,7 +12,7 @@ import type {
   NodeRunRecord,
   RunRecord,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance } from '@paneflow/shared';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
@@ -671,11 +672,20 @@ export class Engine {
         const maxRounds = Math.max(1, cfg.clarify.maxRounds ?? 3);
         for (let round = 1; ; round++) {
           const aligned = String(rec.artifact?.aligned ?? 'true');
-          if (aligned === 'true' || aligned === '1') break;
+          // 断言完成门：aligned=true 且验收断言有效（T1 validateAcceptance 通过）才算对齐；
+          // 断言缺失/无效即视同未对齐，进入澄清轮提示补齐（approve 强制放行 / 轮次耗尽语义不变）
+          // 验收断言可选增强：Agent 写了断言才校验其有效性；未写时 aligned=true 即放行（向后兼容）
+          const acceptanceList = rec.artifact?.extra?.acceptance as AcceptanceAssertion[] | undefined;
+          const acceptInvalid = acceptanceList?.length ? validateAcceptance(acceptanceList) : null;
+          if (String(aligned) === 'true' && acceptInvalid === null) break;
           if (round > maxRounds) return `澄清循环 ${maxRounds} 轮后仍未对齐（aligned=${aligned}）`;
           const questions = (rec.artifact?.extra?.questions as string[] | undefined) ?? [];
           rec.state = 'blocked';
-          rec.blockedPrompt = questions.length ? questions.map((q, i) => `${i + 1}. ${q}`).join('\n') : 'Agent 有疑问，请补充信息（aligned 未通过）';
+          rec.blockedPrompt = acceptInvalid !== null
+            ? '验收断言缺失/无效：请补齐 resultFile.extra.acceptance=[{id,assertion,verify_method}] 后再写 aligned=true'
+            : questions.length
+              ? questions.map((q, i) => `${i + 1}. ${q}`).join('\n')
+              : 'Agent 有疑问，请补充信息（aligned 未通过）';
           this.persistAndNotify(run);
           const action = await new Promise<ApprovalAction>((resolve) => {
             this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);

@@ -6,6 +6,8 @@ export type {
   DagNodeType,
   DagEdge,
   Artifact,
+  AcceptanceAssertion,
+  AcceptanceResult,
   NodeRunState,
   RunRecord,
   NodeRunRecord,
@@ -13,6 +15,7 @@ export type {
 } from './dag.js';
 export {
   validateDag,
+  validateAcceptance,
   topoSort,
   upstreamOf,
   renderPromptTemplate,

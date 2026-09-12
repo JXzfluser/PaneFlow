@@ -329,50 +329,72 @@ const issueTriage: DagGraph = graph(
   ],
 );
 
-/** 通用兜底：对齐 → 方案拆解 → 动态扇出并行实现 → 汇总 → 归档收口 */
-const genericDelivery: DagGraph = graph(
-  'builtin-generic-issue-delivery',
-  '通用 Issue 交付兜底：需求对齐（澄清循环）→ 方案与任务拆解 → 按任务动态扇出并行实现 → 汇总验证 → 归档收口。没有专门模板时的自动流程',
-  [
-    start(),
-    agent(
-      'align',
-      '需求对齐',
-      '围绕该 Issue 做需求对齐：理解目标与验收标准，不确定的点写入结果文件的 extra.questions（列表），并在 aligned 字段写 false；确认无误则 aligned=true。',
-      { clarify: { maxRounds: 3 }, onFail: 'abort' },
-    ),
-    agent(
-      'plan',
-      '方案拆解',
-      '基于对齐结论 {{align.artifact.summary}} 设计实现方案，并拆分为可并行执行的任务清单，写入结果文件 extra.tasks（数组，每项 {name, brief}，单任务不跨模块）。同时把方案要点写入 summary。',
-      { onFail: 'abort' },
-    ),
-    { id: 'fork', type: 'fanout', label: '按任务展开', config: { expand: { from: 'plan', field: 'extra.tasks' } } },
-    agent(
-      'impl',
-      '实现 {{item.name}}',
-      '实现任务「{{item.name}}」：{{item.brief}}。方案上下文：{{plan.artifact.summary}}。在当前工作目录完成实现并自测，交付说明写入结果文件。',
-      { retryCount: 1, onFail: 'continue' },
-    ),
-    { id: 'merge', type: 'fanin', label: '汇总验证', config: { requireAll: false } },
-    agent(
-      'wrapup',
-      '归档收口',
-      '各任务结果：{{impl.artifact.summary}}。汇总本轮交付（做了什么/遗留什么/验证情况）写入结果文件，并把交付摘要作为评论回贴到关联 Issue（gh issue comment）。',
-      { onFail: 'continue' },
-    ),
-    end(),
-  ],
-  [
-    e('e1', 'start', 'align'),
-    e('e2', 'align', 'plan'),
-    e('e3', 'plan', 'fork'),
-    e('e4', 'fork', 'impl'),
-    e('e5', 'impl', 'merge'),
-    e('e6', 'merge', 'wrapup'),
-    e('e7', 'wrapup', 'end'),
-  ],
-);
+/** 通用兜底：对齐（断言注入）→ 方案拆解（断言映射）→ 动态扇出并行实现（断言自测）→ 汇总 → 验收断言核对 → 归档收口 */
+const genericDeliveryNodes: DagGraph['nodes'] = [
+  start(),
+  agent(
+    'align',
+    '需求对齐 + 验收断言注入',
+    '你负责「需求对齐 + 验收断言注入」。围绕该 Issue（编号 {{issue_id}}，可能为空）做：\n' +
+      '1. 读取本地需求源 issue-draft.json（在工作目录；含 背景/目标/验收标准/风险，由受理阶段起草）。若文件缺失，则按 Issue 标题生成需求骨架（标题/方向见运行参数 brief，无则以当前工作目录上下文推断），并落盘为 issue-draft.json。\n' +
+      '2. 把需求拆解为显式、可测试的验收断言：每条断言为 AC-N 编号 + 可验证断言 + 验证方法。就地覆写 issue-draft.json 的「验收标准」小节为编号断言面（保留其余小节）：\n' +
+      'AC-1：<可验证断言>（验证方法：<方法>）\n' +
+      'AC-2：<可验证断言>（验证方法：<方法>）\n' +
+      '...（N 通常 3-10 条，须覆盖需求全部关键点、可被下游实现/核对客观判定）\n' +
+      '3. 构造远程 Issue 完整正文（背景/目标/验收标准/风险，验收标准用上面的 AC-N 断言面），用 shell 调本地编排服务的 update-issue 端点就地更新远程 Issue 正文（确定性、无需 gh 登录，省略 repo 时用已配置默认仓库）：\n' +
+      'curl -s -X PATCH http://127.0.0.1:4310/api/github/update-issue -H "Content-Type: application/json" -d \'{"number":<issue 编号>,"body":"<完整正文>"}\'\n' +
+      'issue 编号取 {{issue_id}}，为空则回退读 issue-draft.json 中的 number 字段；两者都拿不到就跳过远程更新（不改动远程 Issue）。远程更新失败不阻断交付，把原因记入结果文件 errors。\n' +
+      '4. 结果文件写：summary=断言清单（Markdown 编号列表，每行 AC-N：<断言>（验证方法：<方法>），下游 plan/impl/verify 都照抄此清单）、extra.acceptance=[{id:"AC-1",assertion:"...",verify_method:"..."},...]（与 Markdown 面一一对应）、aligned=true。仍不确定的点可写入 extra.questions 并置 aligned=false 进入澄清轮。',
+    { clarify: { maxRounds: 3 }, onFail: 'abort' },
+  ),
+  agent(
+    'plan',
+    '方案拆解 + 断言覆盖映射',
+    '基于对齐结论 {{align.artifact.summary}}（内含验收断言清单）设计实现方案，并拆分为可并行执行的任务清单：按验收断言逐条映射任务覆盖——每条断言至少被一个任务承接，任务 brief 中内嵌其承接的断言（引用断言一律照抄自 {{align.artifact.summary}} 的 AC-N 编号断言条目：AC-N：<断言>（验证方法：<方法>），禁止插值任何数组字段，如 [object Object] 即引擎把数组 String 化的错误特征）。结果文件写 extra.tasks（数组，每项 {name, brief}，单任务不跨模块；brief 必须包含承接断言原文）；summary 写 方案要点 + 断言覆盖矩阵（逐条 AC-N → 承接任务名）。',
+    { onFail: 'abort' },
+  ),
+  { id: 'fork', type: 'fanout', label: '按任务展开', config: { expand: { from: 'plan', field: 'extra.tasks' } } },
+  agent(
+    'impl',
+    '实现 {{item.name}}',
+    '实现任务「{{item.name}}」：{{item.brief}}。方案上下文：{{plan.artifact.summary}}。当前任务承接的验收断言已在任务 brief 中给出（AC-N 编号断言，照抄自 {{align.artifact.summary}}）。实现完成后按对应断言逐条自测，并在结果文件回写 extra.assertionResults=[{id,status,evidence}]：id 为 AC-N，status ∈ ok|fail|n/a，evidence 为可验证的自测证据（命令/输出/文件路径等），未满足的断言如实标 fail 并给出原因。在当前工作目录完成实现并自测，交付说明写入结果文件。',
+    { retryCount: 1, onFail: 'continue' },
+  ),
+  { id: 'merge', type: 'fanin', label: '汇总验证', config: { requireAll: false } },
+  agent(
+    'verify',
+    '验收断言核对',
+    '验收断言核对。按需求对齐（align 阶段）注入的验收断言清单（见 {{align.artifact.summary}}：每行 AC-N：<断言>（验证方法：<方法>））逐条核对各实现分支的断言自测结果——各 {{impl.artifact.summary}} 的 extra.assertionResults=[{id,status,evidence}] 逐条核对：断言是否有分支承接、自测 status 是否 ok、evidence 是否充分客观。把核查汇总写入结果文件 extra.assertionResults=[{id,status,evidence}]（status ∈ ok|fail|n/a，evidence 注明核对依据与来源分支），summary 注明未满足项（若有；无则说明全部断言已满足）。引用断言一律照抄自 {{align.artifact.summary}}，禁止插值 extra.acceptance 数组（引擎 String 化会变成 [object Object]）。',
+    { onFail: 'continue' },
+  ),
+  agent(
+    'wrapup',
+    '归档收口',
+    '各任务结果：{{impl.artifact.summary}}；验收断言核对结论：{{verify.artifact.summary}}。汇总本轮交付（做了什么/遗留什么/验证情况）写入结果文件，并把交付摘要作为评论回贴到关联 Issue（gh issue comment）。',
+    { onFail: 'continue' },
+  ),
+  end(),
+];
+
+// 通用兜底模板：变量 issue_id 由受理路线的 pipeline params.issue_id 注入（无编号时为空字符串，align 会回退跳过远程更新）
+const genericDelivery: DagGraph = {
+  ...graph(
+    'builtin-generic-issue-delivery',
+    '通用 Issue 交付兜底：需求对齐 + 验收断言注入 → 方案拆解（断言覆盖映射）→ 按任务动态扇出并行实现（断言自测）→ 汇总验证 → 验收断言核对 → 归档收口。没有专门模板时的自动流程',
+    genericDeliveryNodes,
+    [
+      e('e1', 'start', 'align'),
+      e('e2', 'align', 'plan'),
+      e('e3', 'plan', 'fork'),
+      e('e4', 'fork', 'impl'),
+      e('e5', 'impl', 'merge'),
+      e('e6', 'merge', 'verify'),
+      e('e7', 'verify', 'wrapup'),
+      e('e8', 'wrapup', 'end'),
+    ],
+  ),
+  variables: [{ key: 'issue_id', label: '主 Issue 编号', required: false }],
+};
 
 export const BUILTIN_TEMPLATES: DagGraph[] = [
   issueTriage,

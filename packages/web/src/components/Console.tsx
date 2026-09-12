@@ -266,6 +266,18 @@ function TerminalTab({
   );
 }
 
+/**
+ * 归一化 extra 中的列表项为对象数组。
+ * extra 是引擎约定的自由结构（Record<string, unknown>），按需求可以是
+ * acceptance / assertionResults 数组；防御处理 JSON 里可能的非数组/非对象脏数据。
+ */
+function itemList(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object') : [];
+}
+function s(v: unknown): string {
+  return v == null ? '' : String(v);
+}
+
 function SummaryView() {
   const runs = useStore((s) => s.runs);
   const activeRunId = useStore((s) => s.activeRunId);
@@ -279,6 +291,9 @@ function SummaryView() {
         .map((n) => {
           const label = nodes.find((x) => x.id === n.nodeId)?.data.dagNode.label ?? n.nodeId;
           const a = n.artifact!;
+          const extra = (a.extra ?? {}) as Record<string, unknown>;
+          const acceptance = itemList(extra.acceptance);
+          const assertionResults = itemList(extra.assertionResults);
           return (
             <div key={n.nodeId} className="run-summary">
               <span className="nid">{label}</span>{' '}
@@ -288,6 +303,34 @@ function SummaryView() {
               {a.summary && <div>{a.summary}</div>}
               {a.files && a.files.length > 0 && <div style={{ color: 'var(--text-dim)' }}>文件：{a.files.join('、')}</div>}
               {a.errors && a.errors.length > 0 && <div style={{ color: 'var(--err)' }}>错误：{a.errors.join('；')}</div>}
+              {acceptance.length > 0 && (
+                <div className="rs-block">
+                  <div className="rs-head">验收断言（{acceptance.length}）</div>
+                  {acceptance.map((c, i) => (
+                    <div key={i} className="rs-row">
+                      <span className="rs-id">{s(c.id)}</span>
+                      <span>{s(c.assertion)}</span>
+                      {s(c.verify_method) && <span className="rs-ev">验证方法：{s(c.verify_method)}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {assertionResults.length > 0 && (
+                <div className="rs-block">
+                  <div className="rs-head">断言核对（{assertionResults.length}）</div>
+                  {assertionResults.map((r, i) => {
+                    const st = s(r.status);
+                    const stCls = st === 'ok' ? 'ok' : st === 'fail' ? 'fail' : st === 'n/a' ? 'na' : 'other';
+                    return (
+                      <div key={i} className="rs-row">
+                        <span className="rs-id">{s(r.id)}</span>
+                        <span className={`rs-check ${stCls}`}>{st || '未知'}</span>
+                        {s(r.evidence) && <span className="rs-ev">{s(r.evidence)}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}

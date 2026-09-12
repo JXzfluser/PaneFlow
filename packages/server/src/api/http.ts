@@ -20,6 +20,14 @@ interface CreateIssueBody {
   /** 需求简述（无 title 时由 Agent 调用前的草稿生成） */
   labels?: string[];
 }
+
+interface UpdateIssueBody {
+  /** GitHub issue number（仓库内编号） */
+  number: number;
+  repo?: string;
+  /** 就地更新的完整正文（覆盖原正文） */
+  body: string;
+}
 import { registerFsRoutes } from './fs-routes.js';
 import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
 
@@ -176,6 +184,33 @@ export async function buildHttpServer(deps: HttpDeps) {
       }
     },
   );
+
+  app.patch<{ Body: UpdateIssueBody }>('/api/github/update-issue', async (req, reply) => {
+    const gh = readGithubSettings(deps.dataDir);
+    if (!gh.token) return reply.code(400).send({ error: '未配置 GitHub 凭据' });
+    const repo = req.body.repo ?? gh.defaultRepo;
+    if (!repo) return reply.code(400).send({ error: '缺少 repo（未配置默认仓库）' });
+    const number = Number(req.body.number);
+    if (!Number.isInteger(number) || number <= 0) return reply.code(400).send({ error: '缺少 number' });
+    if (req.body.body === undefined) return reply.code(400).send({ error: '缺少 body' });
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repo}/issues/${number}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${gh.token}`,
+          Accept: 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ body: String(req.body.body) }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const data = (await res.json()) as { number?: number; html_url?: string; message?: string };
+      if (!res.ok) return reply.code(res.status).send({ error: data.message ?? `HTTP ${res.status}` });
+      return { number: data.number, url: data.html_url, repo };
+    } catch (err) {
+      return reply.code(502).send({ error: (err as Error).message });
+    }
+  });
 
   // -- notification settings -------------------------------------------------
 
