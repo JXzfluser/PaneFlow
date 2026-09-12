@@ -39,7 +39,7 @@ function RolesEditor() {
               <option value="">（默认 Agent）</option>
               {agentKinds.map((k) => <option key={k} value={k}>{k}</option>)}
             </select>
-            <button className="danger" onClick={() => save(roles.filter((x) => x.id !== r.id))}>删</button>
+            <button className="danger" title="删除角色" onClick={() => save(roles.filter((x) => x.id !== r.id))}>🗑</button>
           </div>
           <textarea
             value={r.prePrompt ?? ''}

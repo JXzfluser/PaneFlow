@@ -65,10 +65,11 @@ export function OrchestrateView() {
       <div className="topbar">
         <div className="tb-group" title="当前画布的模板">
           <input className="gname" value={graphName} onChange={(e) => renameGraph(e.target.value)} placeholder="模板名" style={{ width: 160 }} />
-          <button onClick={saveTemplate}>💾 保存模板</button>
+          <button onClick={saveTemplate} title="保存模板（用左侧模板名）">💾</button>
         </div>
         <div className="tb-group" title="GitHub 模板沉淀（可选，需服务端配置）">
           <button
+            title="沉淀：本地模板推送到 GitHub templates/"
             onClick={async () => {
               try {
                 const st = await api.syncStatus();
@@ -83,9 +84,10 @@ export function OrchestrateView() {
               }
             }}
           >
-            ☁️ 沉淀
+            ☁️
           </button>
           <button
+            title="拉取：从 GitHub 合并模板到本地"
             onClick={async () => {
               try {
                 const r = await api.syncPull();
@@ -96,7 +98,7 @@ export function OrchestrateView() {
               }
             }}
           >
-            ⬇️ 拉取
+            ⬇️
           </button>
         </div>
         <div className="tb-group" title="流水线运行">
@@ -111,9 +113,9 @@ export function OrchestrateView() {
           {!running ? (
             <button className="primary" onClick={run}>▶ 运行</button>
           ) : (
-            <button className="danger" onClick={() => void stop()}>⏹ 停止</button>
+            <button className="danger" onClick={() => void stop()} title="停止流水线">⏹</button>
           )}
-          <button onClick={clearCanvas} title="清空画布">清空</button>
+          <button onClick={clearCanvas} title="清空画布">🧹</button>
         </div>
         <div className="spacer" />
         <div className="tb-status">

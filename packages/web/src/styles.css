@@ -368,3 +368,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 12px;
 }
 .settings-card button { margin-top: 10px; }
+
+/* icon-only buttons */
+.tpl-item .tpl-ops button, .run-card-ops button, .tb-group button, .tb-status button {
+  min-width: 30px; text-align: center;
+}
+button[title]:has(> none) {}

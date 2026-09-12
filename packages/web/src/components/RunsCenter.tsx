@@ -77,10 +77,10 @@ export function RunsCenter() {
         <span style={{ color: 'var(--text-dim)' }}>共 {list.length} 条历史</span>
         <button
           onClick={toggleNotify}
-          title="浏览器系统通知：等待审批/完成/失败时提醒（多流水线并行时不必盯屏）"
+          title={notifyOn ? '浏览器通知已开启（点击关闭）' : '开启浏览器通知：等待审批/完成/失败时提醒'}
           style={notifyOn ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : undefined}
         >
-          {notifyOn ? '🔔 通知开' : '🔔 通知关'}
+          🔔
         </button>
       </div>
       {list.length === 0 && <div className="runs-empty">还没有运行记录。去「编」视图搭建流水线并运行。</div>}
@@ -97,8 +97,8 @@ export function RunsCenter() {
               </span>
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{elapsed}s</span>
               <div className="run-card-ops">
-                <button onClick={() => { setActiveRun(r.runId); setView('orchestrate'); }}>打开</button>
-                {r.state === 'running' && <button className="danger" onClick={() => void stop(r.runId)}>停止</button>}
+                <button title="在画布中打开" onClick={() => { setActiveRun(r.runId); setView('orchestrate'); }}>↗</button>
+                {r.state === 'running' && <button className="danger" title="停止" onClick={() => void stop(r.runId)}>⏹</button>}
               </div>
             </div>
             <div className="run-progress">

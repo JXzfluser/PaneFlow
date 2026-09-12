@@ -157,10 +157,10 @@ export function Palette() {
             {g.name.startsWith('builtin-') ? '📦' : '📋'} {tplName(g)}
           </button>
           <div className="tpl-ops">
-            <button title="复制另存" onClick={() => void duplicate(g)}>复制</button>
-            <button title="重命名" onClick={() => void rename(g)}>改名</button>
-            <button title="导出 JSON" onClick={() => exportTpl(g)}>导出</button>
-            <button className="danger" title="删除" onClick={() => void remove(g)}>删</button>
+            <button title="复制另存" onClick={() => void duplicate(g)}>⧉</button>
+            <button title="重命名" onClick={() => void rename(g)}>✎</button>
+            <button title="导出 JSON" onClick={() => exportTpl(g)}>⤓</button>
+            <button className="danger" title="删除" onClick={() => void remove(g)}>🗑</button>
           </div>
         </div>
       ))}
