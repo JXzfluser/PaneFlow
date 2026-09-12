@@ -75,13 +75,17 @@ export interface PaneReadParams {
   strip_ansi?: boolean;
 }
 
+/** 响应封包：`{type, read}` —— 内容在 read 子对象（M0 实测，勿改） */
 export interface PaneReadResult {
-  pane_id: string;
-  revision: number;
-  source: ReadSource;
-  format: string;
-  text?: string;
-  truncated?: boolean;
+  type: string;
+  read: {
+    pane_id: string;
+    revision: number;
+    source: ReadSource;
+    format: string;
+    text?: string;
+    truncated?: boolean;
+  };
 }
 
 export interface PaneWaitForOutputParams {

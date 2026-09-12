@@ -8,6 +8,8 @@ export interface Role {
   agentKind?: string;
   /** 角色前置提示（渲染在节点 prompt 之前） */
   prePrompt?: string;
+  /** 角色级环境变量（如模型网关地址；节点 env 覆盖此处） */
+  env?: Record<string, string>;
 }
 
 const PER_FILE_CAP = 100 * 1024;

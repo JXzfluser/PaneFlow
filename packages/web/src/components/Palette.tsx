@@ -135,6 +135,7 @@ export function Palette() {
       <button className="pal-item" onClick={() => add('fanin')}>⑀ 汇总 Fan-in</button>
       <h4>核心</h4>
       <button className="pal-item" onClick={() => add('agent')}>⚙ Agent 节点</button>
+      <button className="pal-item" onClick={() => add('pipeline')}>⇢ 子流水线</button>
       <h4>
         模板
         <label title="导入模板 JSON" style={{ float: 'right', fontSize: 11, cursor: 'pointer', color: 'var(--text-dim)' }}>

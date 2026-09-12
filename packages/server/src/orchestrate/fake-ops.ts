@@ -27,7 +27,7 @@ export class FakeHerdrOps implements HerdrOps {
     this.workspaces.set(id, { label, panes: new Set([rootPane]) });
     return { workspaceId: id, tabId: `${id}:t1`, rootPaneId: rootPane };
   }
-  async splitPane(workspaceId: string) {
+  async splitPane(workspaceId: string, _targetPaneId?: string, _cwd?: string, _env?: Record<string, string>) {
     const ws = this.workspaces.get(workspaceId)!;
     const pane = `${workspaceId}:p${++this.paneCounter}`;
     ws.panes.add(pane);
@@ -65,7 +65,8 @@ export class FakeHerdrOps implements HerdrOps {
     this.agents.get(target)!.status = 'idle';
   }
   async sendPaneText(_paneId: string, _text: string): Promise<void> {}
-  async readOutput() {
+  async readOutput(target?: string) {
+    void target;
     return 'FAKE OUTPUT TAIL';
   }
   async subscribePaneStatus(paneId: string, cb: (status: AgentStatus, agent: string | null) => void) {

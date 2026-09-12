@@ -12,7 +12,7 @@ export interface HerdrOps {
   /** Create a dedicated workspace for a pipeline run. */
   createWorkspace(label: string, cwd: string, env?: Record<string, string>): Promise<{ workspaceId: string; tabId: string; rootPaneId: string }>;
   /** Split a new pane off an existing one; returns the new pane id. */
-  splitPane(workspaceId: string, targetPaneId: string, cwd: string): Promise<string>;
+  splitPane(workspaceId: string, targetPaneId: string, cwd: string, env?: Record<string, string>): Promise<string>;
   /** Start an agent in a pane. Resolves once Herdr accepts the launch. */
   startAgent(paneId: string, name: string, kind: string, args: string[], timeoutMs: number): Promise<void>;
   /** Submit a prompt; waits (server-side) until the turn settles. */
@@ -56,12 +56,13 @@ export class RealHerdrOps implements HerdrOps {
     };
   }
 
-  async splitPane(workspaceId: string, targetPaneId: string, cwd: string): Promise<string> {
+  async splitPane(workspaceId: string, targetPaneId: string, cwd: string, env?: Record<string, string>): Promise<string> {
     const r = await this.client.paneSplit({
       direction: 'right',
       target_pane_id: targetPaneId,
       workspace_id: workspaceId,
       cwd,
+      ...(env && Object.keys(env).length ? { env } : {}),
     });
     return r.pane.pane_id;
   }
@@ -106,8 +107,21 @@ export class RealHerdrOps implements HerdrOps {
   }
 
   async readOutput(target: string, lines: number): Promise<string> {
-    const r = await this.client.agentRead(target, 'recent_unwrapped', lines);
-    return r.text ?? '';
+    // TUI agents (pi/opencode…) render on the alternate screen — host
+    // scrollback (recent_unwrapped) comes back empty for them. Fall back to
+    // the live viewport, which always reflects what the user would see.
+    try {
+      const r = await this.client.agentRead(target, 'recent_unwrapped', lines);
+      if (r.read.text?.trim()) return r.read.text;
+    } catch {
+      // fall through
+    }
+    try {
+      const r = await this.client.agentRead(target, 'visible', lines);
+      return r.read.text ?? '';
+    } catch {
+      return '';
+    }
   }
 
   async subscribePaneStatus(

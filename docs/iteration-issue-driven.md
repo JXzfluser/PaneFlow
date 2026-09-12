@@ -144,11 +144,46 @@ Space = 主仓根 + 项目档案(约定/技能/变量/角色覆盖) + 模板集 
 - **P1（低成本高价值）**：出站通知——blocked / 完成 / 失败 → 飞书 webhook 卡片（附深链）；同时 Web 服务支持 `--host 0.0.0.0` + 访问令牌，**手机浏览器直接审批**，零机器人就解决「离开工位审批」；
 - **P2**：飞书长连接命令网关（白名单命令 + 交互卡片审批 + 身份白名单 + 审计日志 who/when/what）。
 
-## 7. 全局角色库（D1，不变）
+## 7.5 模型网关：Agent 模型代理与自动切换（实测痛点驱动）
+
+**痛点实测**：真实受理流水线中，pi 使用的免费模型通道（deepseek 等）响应极慢甚至超时，导致 explore/triage 节点动辄十几分钟、时好时坏。
+
+**方案定位**：PaneFlow **不自建网关**（不重做生态），而是提供三层 env 注入，把任何 Agent 指向你自己部署的模型网关：
+
+| 层级 | 配置处 | 适用 |
+|---|---|---|
+| 全局 | `PF_PANE_ENV` 环境变量 | 全部流水线统一走网关 |
+| 角色 | 设置 → 角色库 → 环境变量 | 「开发」走强模型、「调研」走便宜模型 |
+| 节点 | 属性面板 → 模型网关/环境变量 | 单节点特例（覆盖角色与全局） |
+
+合并优先级：全局 < 角色 < 节点。
+
+**网关选型**（自行部署，PaneFlow 只注入地址类 env）：
+
+| 网关 | 特点 | 典型注入 |
+|---|---|---|
+| **LiteLLM Proxy** | OpenAI 风格统一入口，fallbacks/retries/路由策略内置 | `OPENAI_API_BASE=http://127.0.0.1:4000/v1` + `OPENAI_API_KEY=sk-…` |
+| **Claude Code Router** | 为 claude-code 系设计，多供应商路由 | `ANTHROPIC_BASE_URL=http://127.0.0.1:3456` |
+| **OmniRoute** | v4 预留的网关方案，MCP 聚合 | 按其文档 |
+
+**自动切换示例**（LiteLLM router 配置 fallback）：
+
+```yaml
+model_list:
+  - model_name: main
+    litellm_params: { model: deepseek/deepseek-chat }      # 便宜主力
+  - model_name: main
+    litellm_params: { model: openai/gpt-4o-mini }          # 超时自动切
+routing_fallbacks: [main]
+```
+
+Agent 端只需把 base_url 指向网关、模型名写 `main`——单模型超时/限流时网关自动换供应商，PaneFlow 侧零改动。**收尾说明**：Agent 对网关 env 的具体变量名因 kind 而异（claude=ANTHROPIC_*、opencode=OPENCODE_*/OPENAI_*、pi=pi 配置），节点 env 注入的正是这层适配点。
+
+## 8. 全局角色库（D1，不变）
 
 设置页「角色库」：角色 = 默认 agentKind + 约定文档集 + 前置/后置动作 + 检查集 + 提示词骨架；项目档案/Space 只做引用+覆盖。画布节点 = 名称 + 角色 + 仓库 + 提示词。
 
-## 8. 优先级总表（v4）
+## 9. 优先级总表（v4）
 
 | 优先级 | 项 | 来源 |
 |---|---|---|
@@ -173,13 +208,13 @@ Space = 主仓根 + 项目档案(约定/技能/变量/角色覆盖) + 模板集 
 
 P0 各项 0.5–2 天；P1 为产品形态主战场；P2 治理增强。
 
-## 9. 待确认（已全部确认 ✅）
+## 10. 待确认（已全部确认 ✅）
 
 1. 亮色默认主题 → **确认**（D5）
 2. Space 纯个人工具语义 → **确认**；远程协作诉求由 §6 微信/飞书通道分析承接（D9）
 3. 同仓并发 worktree 隔离 → **确认**（D8）
 
-## 10. 开发执行计划（已确认：P0+P1 全量，逐功能推送）
+## 11. 开发执行计划（已确认：P0+P1 全量，逐功能推送）
 
 事实勘察结论（开发前）：
 - `herdr server agent-manifests` 输出全部 Agent kind 及版本/状态 → 环境自检数据源可靠（辅以 `command -v` 检测本地二进制）；

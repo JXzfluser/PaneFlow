@@ -87,6 +87,20 @@ export function FanoutNode({ data, selected }: NodeProps & { data: PfNodeData })
   );
 }
 
+export function PipelineNode({ data, selected }: NodeProps & { data: PfNodeData }) {
+  const d = data as PfNodeData;
+  const tpl = d.dagNode.config.pipeline?.template ?? '未配置模板';
+  const mode = d.dagNode.config.pipeline?.mode === 'fire' ? '即发即忘' : '等待完成';
+  return (
+    <div className={`pf-node ${selected ? 'selected' : ''}`} style={{ minWidth: 150 }}>
+      <Handle type="target" position={Position.Left} />
+      <div className="head">⇢ {d.dagNode.label}</div>
+      <div className="body">⇒ {tpl.length > 22 ? tpl.slice(0, 22) + '…' : tpl} · {mode}</div>
+      <Handle type="source" position={Position.Right} />
+    </div>
+  );
+}
+
 export function FaninNode({ data, selected }: NodeProps & { data: PfNodeData }) {
   const d = data as PfNodeData;
   return (

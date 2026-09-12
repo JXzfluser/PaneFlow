@@ -9,7 +9,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useStore, type PfNodeData } from '../store.js';
-import { AgentNode, StartNode, EndNode, FanoutNode, FaninNode } from './nodes.jsx';
+import { AgentNode, StartNode, EndNode, FanoutNode, FaninNode, PipelineNode } from './nodes.jsx';
 
 const nodeTypes: NodeTypes = {
   start: StartNode,
@@ -17,6 +17,7 @@ const nodeTypes: NodeTypes = {
   agent: AgentNode,
   fanout: FanoutNode,
   fanin: FaninNode,
+  pipeline: PipelineNode,
 };
 
 export function Canvas() {

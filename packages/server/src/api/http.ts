@@ -314,10 +314,21 @@ export async function buildHttpServer(deps: HttpDeps) {
     async (req, reply) => {
       const run = deps.engine.getRun(req.params.id);
       const rec = run?.nodes[req.params.nodeId];
-      if (!run || !rec?.agentName) return reply.code(404).send({ error: '节点无终端输出' });
+      if (!run || !rec) return reply.code(404).send({ error: '节点不存在' });
       const lines = Math.min(1000, Math.max(1, Number(req.query.lines ?? 200)));
-      const text = await deps.ops.readOutput(rec.agentName, lines);
-      return { text };
+      if (rec.agentName) {
+        try {
+          const text = await deps.ops.readOutput(rec.agentName, lines);
+          if (text.trim()) return { text, source: 'live' };
+        } catch {
+          // agent gone (run finished) → fall through to snapshots
+        }
+      }
+      const snaps = rec.outputSnapshots ?? [];
+      if (snaps.length) {
+        return { text: snaps.map((sn) => sn.text).join('\n…\n').split('\n').slice(-lines).join('\n'), source: 'history' };
+      }
+      return { text: '', source: 'none' };
     },
   );
 

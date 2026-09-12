@@ -6,6 +6,7 @@ interface Role {
   name: string;
   agentKind?: string;
   prePrompt?: string;
+  env?: Record<string, string>;
 }
 
 function RolesEditor() {
@@ -46,6 +47,22 @@ function RolesEditor() {
             onChange={(e) => patch(i, { prePrompt: e.target.value })}
             placeholder="角色前置提示（渲染在节点指令之前），如：你是后端开发工程师，遵守团队分支与提交规范…"
             style={{ width: '100%', minHeight: 56, marginTop: 8, background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: 6, font: 'inherit' }}
+          />
+          <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: 11, margin: '6px 0 3px' }}>
+            角色环境变量（每行 key=值；典型：模型网关地址，节点级可覆盖）
+          </label>
+          <input
+            value={Object.entries(r.env ?? {}).map(([k, v]) => `${k}=${v}`).join('  ')}
+            onChange={(e) => {
+              const env: Record<string, string> = {};
+              for (const line of e.target.value.split(/\s+/)) {
+                const idx = line.indexOf('=');
+                if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+              }
+              patch(i, { env: Object.keys(env).length ? env : undefined });
+            }}
+            placeholder="ANTHROPIC_BASE_URL=http://127.0.0.1:4000"
+            style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: 5, font: 'inherit' }}
           />
         </div>
       ))}

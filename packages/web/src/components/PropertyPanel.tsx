@@ -23,6 +23,7 @@ export function PropertyPanel() {
   const cfg = node.data.dagNode.config;
   const isAgent = node.data.dagNode.type === 'agent';
   const isFanin = node.data.dagNode.type === 'fanin';
+  const isPipeline = node.data.dagNode.type === 'pipeline';
   const set = (patch: Parameters<typeof updateNodeConfig>[1]) => updateNodeConfig(node.id, patch);
 
   return (
@@ -111,6 +112,21 @@ export function PropertyPanel() {
             </div>
           </div>
 
+          <label>模型网关 / 环境变量（每行 key=值，注入该节点 pane；可把 Agent 指向 LiteLLM/OmniRoute 等网关）</label>
+          <textarea
+            style={{ minHeight: 52 }}
+            value={Object.entries(cfg.env ?? {}).map(([k, v]) => `${k}=${v}`).join('\n')}
+            onChange={(e) => {
+              const env: Record<string, string> = {};
+              for (const line of e.target.value.split('\n')) {
+                const i = line.indexOf('=');
+                if (i > 0) env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+              }
+              set({ env: Object.keys(env).length ? env : undefined });
+            }}
+            placeholder={'ANTHROPIC_BASE_URL=http://127.0.0.1:4000\nOPENAI_API_BASE=http://127.0.0.1:4000/v1'}
+          />
+
           <label>失败策略</label>
           <select value={cfg.onFail ?? 'abort'} onChange={(e) => set({ onFail: e.target.value as 'abort' | 'continue' })}>
             <option value="abort">终止流水线</option>
@@ -125,6 +141,45 @@ export function PropertyPanel() {
               set({ approveKeys: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })
             }
           />
+        </>
+      )}
+
+      {isPipeline && (
+        <>
+          <label>目标模板名（支持 {'{{上游.artifact.*}}'} 插值做路由）</label>
+          <input
+            value={cfg.pipeline?.template ?? ''}
+            onChange={(e) => set({ pipeline: { ...cfg.pipeline, template: e.target.value } })}
+            placeholder="{{triage.artifact.extra.suggestedTemplate}}"
+          />
+          <label>兜底模板（目标不存在时使用）</label>
+          <input
+            value={cfg.pipeline?.fallbackTemplate ?? ''}
+            onChange={(e) => set({ pipeline: { ...cfg.pipeline, fallbackTemplate: e.target.value || undefined } })}
+            placeholder="builtin-generic-issue-delivery"
+          />
+          <label>参数（key=值，每行一个；值支持插值）</label>
+          <textarea
+            style={{ minHeight: 60 }}
+            value={Object.entries(cfg.pipeline?.params ?? {}).map(([k, v]) => `${k}=${v}`).join('\n')}
+            onChange={(e) => {
+              const params: Record<string, string> = {};
+              for (const line of e.target.value.split('\n')) {
+                const i = line.indexOf('=');
+                if (i > 0) params[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+              }
+              set({ pipeline: { ...cfg.pipeline, params } });
+            }}
+            placeholder={'issue_id={{triage.artifact.extra.issue_id}}'}
+          />
+          <label>执行模式</label>
+          <select
+            value={cfg.pipeline?.mode ?? 'wait'}
+            onChange={(e) => set({ pipeline: { ...cfg.pipeline, mode: e.target.value as 'wait' | 'fire' } })}
+          >
+            <option value="wait">等待子运行完成（镜像结果）</option>
+            <option value="fire">即发即忘</option>
+          </select>
         </>
       )}
 

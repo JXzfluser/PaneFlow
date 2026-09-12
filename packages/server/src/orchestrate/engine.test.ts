@@ -607,6 +607,119 @@ describe('Engine (serial DAG)', () => {
     expect(run.nodes['fork']!.error).toContain('动态扇出');
   });
 
+  it('terminal snapshots are captured per node and survive run completion', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    const rec = run.nodes['impl']!;
+    expect(rec.state).toBe('done');
+    // final snapshot captured before workspace cleanup
+    expect(rec.outputSnapshots?.length).toBeGreaterThanOrEqual(1);
+    expect(rec.outputSnapshots![rec.outputSnapshots!.length - 1]!.text).toContain('FAKE OUTPUT TAIL');
+  });
+
+  it('pipeline node routes to the suggested child template and waits', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    // child delivery template in the same space
+    store.saveGraph({
+      version: 1,
+      name: 'delivery-child',
+      // 被路由的模板必须声明它消费的参数（变量即契约）
+      variables: [{ key: 'issue_id', label: '主 Issue', required: true }],
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'worker', type: 'agent', label: '交付', config: { agentKind: 'fake', prompt: '交付 {{issue_id}}' } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'c1', source: 'start', target: 'worker' },
+        { id: 'c2', source: 'worker', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    });
+    // triage graph: writes suggestedTemplate + issue_id → pipeline routes
+    const graph: DagGraph = {
+      version: 1,
+      name: 'triage-test',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'triage', type: 'agent', label: '受理', config: { agentKind: 'fake', prompt: '受理' } },
+        { id: 'route', type: 'pipeline', label: '路由', config: { pipeline: {
+          template: '{{triage.artifact.extra.suggestedTemplate}}',
+          fallbackTemplate: 'fallback-tpl',
+          params: { issue_id: '{{triage.artifact.extra.issue_id}}' },
+          mode: 'wait',
+        } } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'triage' },
+        { id: 'e2', source: 'triage', target: 'route' },
+        { id: 'e3', source: 'route', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    ops.onPrompt = (target, text) => {
+      if (target.includes('triage')) {
+        fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, '.herdr/artifacts/triage.json'), JSON.stringify({ extra: { suggestedTemplate: 'delivery-child', issue_id: '162' } }));
+      }
+      if (target.includes('worker')) expect(text).toContain('162');
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['route']!.state).toBe('done');
+    expect(run.nodes['route']!.error).toContain('delivery-child');
+    // child template's worker got the interpolated issue id
+    expect(ops.prompts.some((p) => p.text.includes('交付 162'))).toBe(true);
+  });
+
+  it('pipeline node falls back when suggested template is missing', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    store.saveGraph({
+      version: 1,
+      name: 'fallback-tpl',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'worker', type: 'agent', label: '兜底交付', config: { agentKind: 'fake', prompt: '兜底处理' } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'c1', source: 'start', target: 'worker' },
+        { id: 'c2', source: 'worker', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    });
+    const graph: DagGraph = {
+      version: 1,
+      name: 'triage-fallback',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'triage', type: 'agent', label: '受理', config: { agentKind: 'fake', prompt: '受理' } },
+        { id: 'route', type: 'pipeline', label: '路由', config: { pipeline: {
+          template: '{{triage.artifact.extra.suggestedTemplate}}',
+          fallbackTemplate: 'fallback-tpl',
+          mode: 'wait',
+        } } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'triage' },
+        { id: 'e2', source: 'triage', target: 'route' },
+        { id: 'e3', source: 'route', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    ops.onPrompt = (target) => {
+      if (target.includes('triage')) {
+        fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, '.herdr/artifacts/triage.json'), JSON.stringify({ extra: { suggestedTemplate: 'no-such-tpl' } }));
+      }
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['route']!.error).toContain('fallback-tpl');
+  });
+
   it('recoverOrphans reclaims workspaces from previous dead runs', async () => {
     await ops.createWorkspace('paneflow-deadbeef', '/tmp');
     await ops.createWorkspace('unrelated', '/tmp');

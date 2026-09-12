@@ -282,7 +282,101 @@ const researchCompare: DagGraph = graph(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// Issue 受理 → 路由 → 交付（三段式，用户场景：探索功能成熟度并创建 Issue）
+// ---------------------------------------------------------------------------
+
+/** 受理：探索项目 → 产出评估与 Issue 草稿 → 创建 Issue → 路由到交付模板 */
+const issueTriage: DagGraph = graph(
+  'builtin-issue-triage',
+  'Issue 受理流水线：输入项目根目录与一句需求描述 → Agent 探索项目功能成熟度 → 创建规范 Issue → 按产出的建议模板路由到交付流程（无匹配则用通用兜底）',
+  [
+    start(),
+    agent(
+      'explore',
+      '探索与评估',
+      '项目根目录下探索该项目：读 README、docs、目录结构与关键代码，评估「功能成熟度」（已实现哪些能力/缺失哪些能力/明显的体验或工程缺口），围绕用户给的需求描述判断该做什么。用户描述会由运行参数 brief 提供。',
+      { clarify: { maxRounds: 3 }, retryCount: 1, onFail: 'abort' },
+    ),
+    agent(
+      'triage',
+      '创建 Issue 并建议模板',
+      '基于探索结论 {{explore.artifact.summary}}：\n1. 把需求整理为规范 Issue（背景/目标/验收标准/风险），用 shell 执行 gh issue create 创建（标题带上需求主题），记录返回的 Issue 编号与 URL；\n2. 在结果文件的 extra.suggestedTemplate 写入建议的交付模板名（从「bug fix pipeline / parallel module dev / standard dev flow / role team review」中选择最匹配的，没有合适的写 generic）；\n3. 把 issue 编号写入 extra.issue_id。探索详情：{{explore.artifact.output}}',
+      { retryCount: 2, onFail: 'abort' },
+    ),
+    {
+      id: 'route',
+      type: 'pipeline',
+      label: '路由到交付流程',
+      config: {
+        pipeline: {
+          template: '{{triage.artifact.extra.suggestedTemplate}}',
+          fallbackTemplate: 'builtin-generic-issue-delivery',
+          params: {
+            issue_id: '{{triage.artifact.extra.issue_id}}',
+          },
+          mode: 'wait',
+        },
+      },
+    },
+    end(),
+  ],
+  [
+    e('e1', 'start', 'explore'),
+    e('e2', 'explore', 'triage'),
+    e('e3', 'triage', 'route'),
+    e('e4', 'route', 'end'),
+  ],
+);
+
+/** 通用兜底：对齐 → 方案拆解 → 动态扇出并行实现 → 汇总 → 归档收口 */
+const genericDelivery: DagGraph = graph(
+  'builtin-generic-issue-delivery',
+  '通用 Issue 交付兜底：需求对齐（澄清循环）→ 方案与任务拆解 → 按任务动态扇出并行实现 → 汇总验证 → 归档收口。没有专门模板时的自动流程',
+  [
+    start(),
+    agent(
+      'align',
+      '需求对齐',
+      '围绕该 Issue 做需求对齐：理解目标与验收标准，不确定的点写入结果文件的 extra.questions（列表），并在 aligned 字段写 false；确认无误则 aligned=true。',
+      { clarify: { maxRounds: 3 }, onFail: 'abort' },
+    ),
+    agent(
+      'plan',
+      '方案拆解',
+      '基于对齐结论 {{align.artifact.summary}} 设计实现方案，并拆分为可并行执行的任务清单，写入结果文件 extra.tasks（数组，每项 {name, brief}，单任务不跨模块）。同时把方案要点写入 summary。',
+      { onFail: 'abort' },
+    ),
+    { id: 'fork', type: 'fanout', label: '按任务展开', config: { expand: { from: 'plan', field: 'extra.tasks' } } },
+    agent(
+      'impl',
+      '实现 {{item.name}}',
+      '实现任务「{{item.name}}」：{{item.brief}}。方案上下文：{{plan.artifact.summary}}。在当前工作目录完成实现并自测，交付说明写入结果文件。',
+      { retryCount: 1, onFail: 'continue' },
+    ),
+    { id: 'merge', type: 'fanin', label: '汇总验证', config: { requireAll: false } },
+    agent(
+      'wrapup',
+      '归档收口',
+      '各任务结果：{{impl.artifact.summary}}。汇总本轮交付（做了什么/遗留什么/验证情况）写入结果文件，并把交付摘要作为评论回贴到关联 Issue（gh issue comment）。',
+      { onFail: 'continue' },
+    ),
+    end(),
+  ],
+  [
+    e('e1', 'start', 'align'),
+    e('e2', 'align', 'plan'),
+    e('e3', 'plan', 'fork'),
+    e('e4', 'fork', 'impl'),
+    e('e5', 'impl', 'merge'),
+    e('e6', 'merge', 'wrapup'),
+    e('e7', 'wrapup', 'end'),
+  ],
+);
+
 export const BUILTIN_TEMPLATES: DagGraph[] = [
+  issueTriage,
+  genericDelivery,
   parallelModuleDev,
   standardDevFlow,
   riskApprovalFlow,

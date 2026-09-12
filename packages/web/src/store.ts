@@ -222,11 +222,12 @@ export const useStore = create<PfStore>((set, get) => ({
       agent: { agentKind: get().agentKinds[0], prompt: '', retryCount: 0, timeoutMs: 0, onFail: 'abort' },
       fanout: {},
       fanin: {},
+      pipeline: { pipeline: { template: '', mode: 'wait' } },
     };
     const dagNode: DagNode = {
       id,
       type,
-      label: { start: '开始', end: '结束', agent: `Agent ${nodeSeq}`, fanout: '并行 Fan-out', fanin: '汇总 Fan-in' }[type],
+      label: { start: '开始', end: '结束', agent: `Agent ${nodeSeq}`, fanout: '并行 Fan-out', fanin: '汇总 Fan-in', pipeline: '子流水线' }[type],
       position,
       config: defaults[type],
     };

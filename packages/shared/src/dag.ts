@@ -4,7 +4,7 @@ import type { AgentStatus } from './states.js';
 // DAG model — the single source of truth for both canvas (web) and orchestrator
 // ---------------------------------------------------------------------------
 
-export type DagNodeType = 'start' | 'agent' | 'fanout' | 'fanin' | 'end';
+export type DagNodeType = 'start' | 'agent' | 'fanout' | 'fanin' | 'end' | 'pipeline';
 
 export interface DagNodeConfig {
   /** 全局角色库的角色 id（继承 agentKind 默认与 prePrompt） */
@@ -22,6 +22,24 @@ export interface DagNodeConfig {
   cwd?: string;
   /** done 后检查门禁（全部通过才算完成；对齐 flow-engine 检查语义） */
   checks?: CheckSpec[];
+  /**
+   * 节点级环境变量（注入该节点的 pane）：
+   * 典型用途是把 Agent 指向模型网关（如 ANTHROPIC_BASE_URL/OPENAI_API_BASE
+   * 指向 LiteLLM / OmniRoute，实现代理与自动换模型）。
+   * 合并顺序：全局 PF_PANE_ENV < 角色默认 < 节点。
+   */
+  env?: Record<string, string>;
+  /** pipeline 子流水线调用（type='pipeline' 专用） */
+  pipeline?: {
+    /** 目标模板名（支持 {{上游.artifact.*}} 插值，如受理节点建议的模板名） */
+    template?: string;
+    /** 模板不存在时的兜底模板名 */
+    fallbackTemplate?: string;
+    /** 传给子运行的参数（值支持插值） */
+    params?: Record<string, string>;
+    /** wait=等子运行完成并镜像状态；fire=即发即忘 */
+    mode?: 'wait' | 'fire';
+  };
   /**
    * 动态扇出（fanout 节点专用）：完成后从上游 artifact 的数组字段展开，
    * 为每个元素克隆本节点的直接后继（分支模板），克隆节点内可用 {{item.*}}。
@@ -153,6 +171,11 @@ export interface NodeRunRecord {
   state: NodeRunState;
   /** manual 检查的提问文本（审批卡片展示） */
   blockedPrompt?: string;
+  /**
+   * 终端输出快照（按时间追加，每条 ≤8KB）：运行中随状态推送采集，
+   * run 结束后 agent pane 已回收，终端预览从这里回放。
+   */
+  outputSnapshots?: { at: string; text: string }[];
   paneId?: string;
   agentName?: string;
   agentStatus?: AgentStatus;

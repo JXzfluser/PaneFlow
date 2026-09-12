@@ -253,6 +253,19 @@ export class Engine {
           rec.state = this.cancels.has(run.runId) ? 'cancelled' : 'failed';
         }
       }
+      // final terminal snapshot per node — panes are about to be reclaimed
+      await Promise.allSettled(
+        Object.values(run.nodes).map((rec) =>
+          rec.agentName
+            ? this.ops.readOutput(rec.agentName, 240).then((text) => {
+                if (!text.trim()) return;
+                const snaps = (rec.outputSnapshots ??= []);
+                snaps.push({ at: new Date().toISOString(), text: text.slice(0, 16 * 1024) });
+                if (snaps.length > 12) snaps.splice(0, snaps.length - 12);
+              }).catch(() => {})
+            : Promise.resolve(),
+        ),
+      );
       // resource cleanup — never leave panes behind
       try {
         await this.ops.closeWorkspace(run.workspaceId!);
@@ -367,6 +380,27 @@ export class Engine {
           }
 
           if (node.type !== 'agent') {
+            // pipeline: spawn a child run from a template (B-场景: 受理→路由→执行)
+            if (node.type === 'pipeline') {
+              {
+                const recP = run.nodes[id]!;
+                recP.state = 'starting';
+                this.persistAndNotify(run);
+              }
+              const launchErr = await this.runPipelineNode(run, node, blackboard, (childId) => {
+                const recW = run.nodes[id]!;
+                recW.state = 'working';
+                recW.error = `子运行 ${childId}`;
+                this.persistAndNotify(run);
+              });
+              if (launchErr) {
+                mark(id, 'failed', launchErr);
+                fail();
+                continue;
+              }
+              mark(id, 'done');
+              continue;
+            }
             // start / end are structural markers; fanout may expand dynamically
             if (node.type === 'fanout' && node.config.expand) {
               const exp = node.config.expand;
@@ -378,7 +412,8 @@ export class Engine {
               }
               const items = Array.isArray(cur) ? cur : null;
               if (!items?.length) {
-                mark(id, 'failed', `动态扇出未取到数组：{{${exp.from}.${exp.field}}}`);
+                const keys = artifact && typeof artifact === 'object' ? Object.keys(artifact as object).join(',') : '(无产物)';
+                mark(id, 'failed', `动态扇出未取到数组 {{${exp.from}.${exp.field}}}（上游产物字段: ${keys}；检查拆分节点是否按约定写入数组）`);
                 fail();
                 continue;
               }
@@ -497,7 +532,12 @@ export class Engine {
     try {
       const rootPane = this.rootPanes.get(run.runId)!;
       const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
-      const paneId = await this.ops.splitPane(run.workspaceId!, rootPane, nodeCwd);
+      // env 合并：全局 < 角色 < 节点（节点级用于把 Agent 指向模型网关等）
+      let paneEnv: Record<string, string> = { ...(this.opts.paneEnv ?? {}) };
+      const role = this.roleById(run, cfg.role);
+      if (role?.env) paneEnv = { ...paneEnv, ...role.env };
+      if (cfg.env) paneEnv = { ...paneEnv, ...cfg.env };
+      const paneId = await this.ops.splitPane(run.workspaceId!, rootPane, nodeCwd, paneEnv);
       rec.paneId = paneId;
       rec.agentName = agentName;
       await this.ops.startAgent(paneId, agentName, this.resolveAgentKind(run, cfg), cfg.agentArgs ?? [], this.opts.agentStartTimeoutMs);
@@ -511,6 +551,7 @@ export class Engine {
     try {
       unsub = await this.ops.subscribePaneStatus(paneIdOf(rec), (status) => {
         rec.agentStatus = status;
+        this.captureOutput(run, rec);
         if (status === 'blocked' && rec.state === 'working') {
           rec.state = 'blocked';
           this.persistAndNotify(run);
@@ -666,6 +707,62 @@ export class Engine {
   }
 
   /**
+   * 子流水线节点：按（插值后的）模板名启动子 run。
+   * 模板缺失时回退 fallbackTemplate；wait 模式轮询子 run 至终态并镜像结果。
+   */
+  private async runPipelineNode(
+    run: RunRecord,
+    node: DagGraph['nodes'][number],
+    _blackboard: Map<string, Artifact>,
+    onChildStarted: (childId: string) => void,
+  ): Promise<string | null> {
+    const cfg = node.config.pipeline;
+    if (!cfg?.template) return 'pipeline 节点缺少 template 配置';
+    const spaceId = run.spaceId ?? 'default';
+    const store = new Store(this.store.root, spaceId);
+
+    // 插值：黑板产物 + run 变量（graph.variables 已在启动时展开，这里做 artifact 引用）
+    const render = (str: string): string =>
+      renderPromptTemplate(str, (refId, refPath) => this.resolveBlackboardRef(_blackboard, refId, refPath));
+    const templateName = render(cfg.template).trim();
+
+    let target = store.getGraph(templateName);
+    let usedTemplate = templateName;
+    if (!target && cfg.fallbackTemplate) {
+      usedTemplate = cfg.fallbackTemplate;
+      target = store.getGraph(cfg.fallbackTemplate);
+    }
+    if (!target) return `模板不存在：${templateName}${cfg.fallbackTemplate ? `（兜底 ${cfg.fallbackTemplate} 亦未找到）` : ''}`;
+
+    const params: Record<string, string> = {};
+    for (const [k, v] of Object.entries(cfg.params ?? {})) params[k] = render(v);
+    // 子 run 的必填变量校验留给 startRun；这里把受理产出透传为 issueId（常见路由约定）
+    const issueId = params.issue_id ?? run.issueId;
+
+    onChildStarted('');
+    const child = await this.startRun(target, params.cwd ?? run.cwd, spaceId, params, issueId);
+    run.nodes[node.id]!.error = `子运行 ${child.runId}（模板 ${usedTemplate}）`;
+
+    if ((cfg.mode ?? 'wait') === 'wait') {
+      const deadline = Date.now() + 24 * 60 * 60 * 1000;
+      for (;;) {
+        if (this.cancels.has(run.runId)) {
+          this.stopRun(child.runId);
+          return '已取消（子运行一并停止）';
+        }
+        const cur = this.getRun(child.runId);
+        if (cur && cur.state !== 'running') {
+          if (cur.state === 'completed') return null;
+          return `子运行 ${child.runId} 结束于 ${cur.state}`;
+        }
+        if (Date.now() > deadline) return '等待子运行超时（24h）';
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+    return null;
+  }
+
+  /**
    * B14 动态扇出：为 items 的每个元素克隆 fanout 的直接后继（分支模板），
    * 克隆节点内 {{item.field}} 注入元素字段（嵌套字段 JSON 序列化）。原后继节点
    * 标记 skipped 并注明展开数量；下游（fanin）改接克隆节点。
@@ -814,6 +911,22 @@ export class Engine {
       if (Date.now() >= deadline) return 'unknown';
       await sleep(800);
     }
+  }
+
+  /** Capture a terminal output snapshot onto the node record (bounded). */
+  private captureOutput(run: RunRecord, rec: NodeRunRecord): void {
+    if (!rec.agentName) return;
+    void this.ops
+      .readOutput(rec.agentName, 120)
+      .then((text) => {
+        if (!text.trim()) return;
+        const snaps = (rec.outputSnapshots ??= []);
+        const last = snaps[snaps.length - 1];
+        if (last && last.text === text) return;
+        snaps.push({ at: new Date().toISOString(), text: text.slice(0, 8192) });
+        if (snaps.length > 12) snaps.splice(0, snaps.length - 12);
+      })
+      .catch(() => {});
   }
 
   /** Append the artifact hand-off contract unless the prompt already mentions it. */
