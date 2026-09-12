@@ -1,0 +1,22 @@
+{
+  "summary": "PaneFlow 是一个基于 Herdr 真实终端 Pane 的确定性多 Agent DAG 编排平台（成熟度高的个人工具）。前端 Vite+React+@xyflow，后端 Node22+Fastify，底座 Herdr 协议20 经 Unix Socket。已实现 B1-B14 全部迭代：DAG 校验/数据流调度/真实并行（全局 pane 池）/blocked 人工审批/黑板产物交接/动态扇出(expandFrom+onEmpty 回退)/条件边+Dry-Run/澄清循环/pipeline 子流水线/checks 门禁/Space 多空间/角色库/模板管理/运行中心/飞书通知/环境自检向导/GitHub 沉淀/OmniRoute 模型网关/GitHub 凭据注入。测试全绿（66 通过，含新增扇出回退），typecheck 与 web build 均通过。当前未提交变更=F14 迭代：GitHub 凭据（GH_TOKEN 注入 Agent + 服务端 /api/github/create-issue + 设置页凭据卡 + triage 模板改走本地服务确定建 issue + claude agent 自动附加 --dangerously-skip-permissions 沙箱豁免/bootstrap env + 启动就绪转人工闸门 waitReadyWithGate + 就绪超时放宽到 4/6 分钟 + 扇出空数组默认回退单分支）。判断：需求=「探索功能成熟度并建 Issue 受理流水线」，已具备全部前置能力，当前分支的收尾点是验证 GitHub 凭据流程端到端跑通；无需新能力开发。",
+  "files": [
+    "README.md",
+    "docs/iteration-issue-driven.md",
+    "docs/protocol-learnings.md",
+    "package.json",
+    "packages/shared/src/dag.ts",
+    "packages/server/src/index.ts",
+    "packages/server/src/config.ts",
+    "packages/server/src/api/http.ts",
+    "packages/server/src/api/gateway.ts",
+    "packages/server/src/api/github-cred.ts",
+    "packages/server/src/orchestrate/engine.ts",
+    "packages/server/src/orchestrate/store.ts",
+    "packages/server/src/orchestrate/builtin-templates.ts",
+    "packages/server/src/orchestrate/engine.test.ts",
+    "packages/web/src/components/SettingsView.tsx",
+    "packages/web/src/components/RunsCenter.tsx"
+  ],
+  "errors": []
+}

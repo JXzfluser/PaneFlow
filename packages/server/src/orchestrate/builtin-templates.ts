@@ -20,7 +20,7 @@ const end = (): N => ({ id: 'end', type: 'end', label: '结束', config: {} });
 const fanout = (): N => ({ id: 'fork', type: 'fanout', label: '并行展开', config: {} });
 
 function agent(id: string, label: string, prompt: string, extra: N['config'] = {}): N {
-  return { id, type: 'agent', label, config: { agentKind: 'pi', prompt, ...extra } };
+  return { id, type: 'agent', label, config: { agentKind: 'claude', prompt, ...extra } };
 }
 
 function graph(name: string, description: string, nodes: N[], edges: E[]): DagGraph {
@@ -301,7 +301,7 @@ const issueTriage: DagGraph = graph(
     agent(
       'triage',
       '创建 Issue 并建议模板',
-      '基于探索结论 {{explore.artifact.summary}}：\n1. 把需求整理为规范 Issue（背景/目标/验收标准/风险），用 shell 执行 gh issue create 创建（标题带上需求主题），记录返回的 Issue 编号与 URL；\n2. 在结果文件的 extra.suggestedTemplate 写入建议的交付模板名（从「bug fix pipeline / parallel module dev / standard dev flow / role team review」中选择最匹配的，没有合适的写 generic）；\n3. 把 issue 编号写入 extra.issue_id。探索详情：{{explore.artifact.output}}',
+      '基于探索结论 {{explore.artifact.summary}}：\n1. 把需求整理为规范 Issue（背景/目标/验收标准/风险），将草稿写入文件 issue-draft.json，然后用 shell 调用本地编排服务创建（确定性，无需 gh 登录）：`curl -s -X POST http://127.0.0.1:4310/api/github/create-issue -H "Content-Type: application/json" -d @issue-draft.json`；记录返回 JSON 里的 number 与 url；\n2. 在结果文件的 extra.suggestedTemplate 写入建议的交付模板名（只能从以下精确 ID 中选：builtin-bug-fix-pipeline / builtin-parallel-module-dev / builtin-standard-dev-flow / builtin-role-team-review；都不合适才写 builtin-generic-issue-delivery）；\n3. 把 issue 编号写入 extra.issue_id。探索详情：{{explore.artifact.output}}',
       { retryCount: 2, onFail: 'abort' },
     ),
     {

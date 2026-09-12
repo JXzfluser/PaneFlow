@@ -17,6 +17,7 @@ import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
 import { buildConventionBlock, loadRoles, type Role } from './roles.js';
 import { buildGatewayEnv } from '../api/gateway.js';
+import { buildGithubEnv } from '../api/github-cred.js';
 
 export interface EngineOptions {
   workspaceLabelPrefix: string;
@@ -413,8 +414,21 @@ export class Engine {
               }
               const items = Array.isArray(cur) ? cur : null;
               if (!items?.length) {
+                // 弱模型常不守结构化约定：默认回退单分支（用上游 summary 作为任务），保交付
+                if ((exp.onEmpty ?? 'fallback') === 'fallback') {
+                  const upstream = blackboard.get(exp.from);
+                  const fallbackItem: Record<string, unknown> = {
+                    name: '串行交付',
+                    brief: upstream?.summary ?? upstream?.outputTail ?? '按上游结论完成全部工作',
+                    __upstream: true,
+                  };
+                  mark(id, 'done');
+                  this.expandFanout(run, node.id, [fallbackItem], pending, blackboard);
+                  this.persistAndNotify(run);
+                  continue;
+                }
                 const keys = artifact && typeof artifact === 'object' ? Object.keys(artifact as object).join(',') : '(无产物)';
-                mark(id, 'failed', `动态扇出未取到数组 {{${exp.from}.${exp.field}}}（上游产物字段: ${keys}；检查拆分节点是否按约定写入数组）`);
+                mark(id, 'failed', `动态扇出未取到数组 {{${exp.from}.${exp.field}}}（上游产物字段: ${keys}）`);
                 fail();
                 continue;
               }
@@ -534,15 +548,55 @@ export class Engine {
       const rootPane = this.rootPanes.get(run.runId)!;
       const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
       // env 合并：全局 < 模型网关 < 角色 < 节点
-      let paneEnv: Record<string, string> = { ...(this.opts.paneEnv ?? {}), ...buildGatewayEnv(this.store.root) };
+      let paneEnv: Record<string, string> = {
+        ...(this.opts.paneEnv ?? {}),
+        ...buildGatewayEnv(this.store.root),
+        ...buildGithubEnv(this.store.root),
+      };
       const role = this.roleById(run, cfg.role);
       if (role?.env) paneEnv = { ...paneEnv, ...role.env };
       if (cfg.env) paneEnv = { ...paneEnv, ...cfg.env };
-      const paneId = await this.ops.splitPane(run.workspaceId!, rootPane, nodeCwd, paneEnv);
+      let paneId: string;
+      try {
+        paneId = await this.ops.splitPane(run.workspaceId!, rootPane, nodeCwd, paneEnv);
+      } catch (err) {
+        // 重试时根 pane 可能已消失：重建工作区再分割（保交付）
+        if (!/not_found|not found/i.test((err as Error).message)) throw err;
+        const ws = await this.ops.createWorkspace(
+          `${this.opts.workspaceLabelPrefix}${run.runId}-r${rec.attempts}`, run.cwd, this.opts.paneEnv ?? {},
+        );
+        run.workspaceId = ws.workspaceId;
+        this.rootPanes.set(run.runId, ws.rootPaneId);
+        paneId = await this.ops.splitPane(ws.workspaceId, ws.rootPaneId, nodeCwd, paneEnv);
+      }
       rec.paneId = paneId;
       rec.agentName = agentName;
-      await this.ops.startAgent(paneId, agentName, this.resolveAgentKind(run, cfg), cfg.agentArgs ?? [], this.opts.agentStartTimeoutMs);
-      await this.ops.waitAgent(agentName, ['idle'], this.opts.agentReadyTimeoutMs);
+      // claude 自动附加沙箱豁免 + 网关/凭据 env（信任与 bypass 对话框经 settings 预接受）
+      let startArgs = [...(cfg.agentArgs ?? [])];
+      const kind = this.resolveAgentKind(run, cfg);
+      if (kind === 'claude') {
+        const bootstrapEnv = {
+          ...buildGatewayEnv(this.store.root),
+          ...buildGithubEnv(this.store.root),
+        };
+        if (Object.keys(bootstrapEnv).length) {
+          startArgs = [
+            '--dangerously-skip-permissions',
+            '--settings',
+            JSON.stringify({
+              env: bootstrapEnv,
+              hasTrustDialogAccepted: true,
+              bypassPermissionsModeAccepted: true,
+              // 沙箱网络白名单：放行 GitHub（gh 命令）与网关
+              sandbox: { network: { allowedDomains: ['api.github.com', 'github.com', 'objects.githubusercontent.com', 'localhost', '127.0.0.1'] } },
+            }),
+            ...startArgs,
+          ];
+        }
+      }
+      await this.ops.startAgent(paneId, agentName, kind, startArgs, this.opts.agentStartTimeoutMs);
+      // 启动等待含人工闸门：冷启动慢→继续等；启动对话框 blocked→审批卡片
+      await this.waitReadyWithGate(run, rec, agentName, cfg);
     } catch (err) {
       return `启动失败：${(err as Error).message}`;
     }
@@ -817,6 +871,47 @@ export class Engine {
     }
   }
 
+  /**
+   * 等待 Agent 就绪；超时或启动对话框时转人工闸门（审批卡片 + 终端预览按键），
+   * 而不是直接判死——弱网/慢模型/首次对话框都可能让就绪等待超时。
+   */
+  private async waitReadyWithGate(
+    run: RunRecord,
+    rec: NodeRunRecord,
+    agentName: string,
+    cfg: DagNodeConfig,
+  ): Promise<void> {
+    const deadline = Date.now() + Math.max(60_000, this.opts.agentReadyTimeoutMs * 2);
+    for (;;) {
+      if (this.cancels.has(run.runId)) throw new Error('已取消');
+      const status = (await this.ops.getAgentStatus(agentName)) ?? 'unknown';
+      rec.agentStatus = status;
+      if (status === 'idle' || status === 'done') return;
+      if (status === 'blocked') {
+        rec.state = 'blocked';
+        rec.blockedPrompt = 'Agent 启动需要人工确认（可能是信任/权限对话框）——请在终端预览查看并用按键处理，或点放行发送回车';
+        this.persistAndNotify(run);
+        const action = await new Promise<ApprovalAction>((resolve) => {
+          this.blockedWaiters.set(`${run.runId}:${rec.nodeId}`, resolve);
+        });
+        rec.blockedPrompt = undefined;
+        if (this.cancels.has(run.runId)) throw new Error('已取消');
+        if (action.action === 'reject') throw new Error('启动确认被人工拒绝');
+        const keys = action.keys ?? (action.action === 'approve' ? (cfg.approveKeys ?? ['enter']) : ['enter']);
+        await this.ops.sendKeys(agentName, keys).catch(() => {});
+        if (action.action === 'input' && action.text) {
+          await this.ops.sendKeys(agentName, [action.text]).catch(() => {});
+        }
+        this.persistAndNotify(run);
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`启动超时（最后状态 ${status}）——可在终端预览查看 Agent 画面`);
+      }
+      await sleep(2500);
+    }
+  }
+
   /** Resolve role defaults: agentKind from role when node omits it. */
   private resolveAgentKind(run: RunRecord, cfg: DagNodeConfig): string {
     if (cfg.agentKind) return cfg.agentKind;
@@ -885,14 +980,26 @@ export class Engine {
   ): Promise<AgentStatus> {
     const deadline = Date.now() + timeoutMs;
     let polls = 0;
+    let blockedStreak = 0;
     for (;;) {
       if (this.cancels.has(run.runId)) throw new Error('已取消');
       const status = (await this.ops.getAgentStatus(agentName)) ?? 'unknown';
       rec.agentStatus = status;
-      if (status === 'idle' || status === 'done' || status === 'blocked') {
+      if (status === 'idle' || status === 'done') {
         this.persistAndNotify(run);
         return status;
       }
+      if (status === 'blocked') {
+        // herdr 偶发把 bypass 横幅误判为 blocked：连续两次（间隔 3s）仍是 blocked 才采信
+        blockedStreak += 1;
+        if (blockedStreak >= 2) {
+          this.persistAndNotify(run);
+          return 'blocked';
+        }
+        await sleep(3000);
+        continue;
+      }
+      blockedStreak = 0;
       if (Date.now() >= deadline) throw new Error('等待节点完成超时');
       polls += 1;
       if (polls > 40) {

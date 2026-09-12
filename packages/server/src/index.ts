@@ -19,9 +19,9 @@ async function main(): Promise<void> {
   const engine = new Engine(ops, store, {
     workspaceLabelPrefix: config.workspaceLabelPrefix,
     reconcileIntervalMs: config.reconcileIntervalMs,
-    defaultNodeTimeoutMs: 15 * 60_000,
-    agentStartTimeoutMs: 90_000,
-    agentReadyTimeoutMs: 120_000,
+    defaultNodeTimeoutMs: 30 * 60_000, // 免费网关模型慢，30min
+    agentStartTimeoutMs: 240_000,
+    agentReadyTimeoutMs: 360_000,
     paneEnv: config.paneEnv,
     maxConcurrentPanes: config.maxConcurrentPanes,
   });

@@ -11,6 +11,15 @@ import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync
 import { detectInstalledAgents } from './env-check.js';
 import { notify, readNotifySettings, writeNotifySettings, type NotifySettings } from './notifier.js';
 import { readGateway, writeGateway, buildGatewayEnv, type ModelGatewaySettings } from './gateway.js';
+import { readGithubSettings, writeGithubSettings, buildGithubEnv, type GithubSettings } from './github-cred.js';
+
+interface CreateIssueBody {
+  title: string;
+  body?: string;
+  repo?: string;
+  /** 需求简述（无 title 时由 Agent 调用前的草稿生成） */
+  labels?: string[];
+}
 import { registerFsRoutes } from './fs-routes.js';
 import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
 
@@ -118,6 +127,55 @@ export async function buildHttpServer(deps: HttpDeps) {
       return { ok: false, error: (err as Error).message };
     }
   });
+
+  // -- github credentials ------------------------------------------------------
+
+  app.get('/api/github/cred', async () => {
+    const g = readGithubSettings(deps.dataDir);
+    return { tokenConfigured: Boolean(g.token), defaultRepo: g.defaultRepo ?? '' };
+  });
+
+  app.put<{ Body: GithubSettings }>('/api/github/cred', async (req, reply) => {
+    const { token, defaultRepo } = req.body ?? {};
+    const cur = readGithubSettings(deps.dataDir);
+    const next: GithubSettings = {
+      token: token || cur.token,
+      defaultRepo: defaultRepo ?? cur.defaultRepo,
+    };
+    writeGithubSettings(deps.dataDir, next);
+    return { saved: true, tokenConfigured: Boolean(next.token) };
+  });
+
+  // -- github deterministic actions（服务端用配置的 PAT 直调 API，Agent 只需 curl 本地） --
+
+  app.post<{ Body: CreateIssueBody; Querystring: { space?: string } }>(
+    '/api/github/create-issue',
+    async (req, reply) => {
+      const gh = readGithubSettings(deps.dataDir);
+      if (!gh.token) return reply.code(400).send({ error: '未配置 GitHub 凭据（设置页 → GitHub 凭据）' });
+      const repo = req.body.repo ?? gh.defaultRepo;
+      if (!repo) return reply.code(400).send({ error: '缺少 repo（未配置默认仓库）' });
+      const title = String(req.body.title ?? '').trim();
+      if (!title) return reply.code(400).send({ error: '缺少 title' });
+      try {
+        const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${gh.token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ title, body: req.body.body ?? '', labels: req.body.labels ?? [] }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const data = (await res.json()) as { number?: number; html_url?: string; message?: string };
+        if (!res.ok) return reply.code(res.status).send({ error: data.message ?? `HTTP ${res.status}` });
+        return { number: data.number, url: data.html_url, repo };
+      } catch (err) {
+        return reply.code(502).send({ error: (err as Error).message });
+      }
+    },
+  );
 
   // -- notification settings -------------------------------------------------
 

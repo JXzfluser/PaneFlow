@@ -1,0 +1,11 @@
+{
+  "summary": "已对需求「探索功能成熟度并建 Issue 受理流水线」完成受理：探索结论确认 PaneFlow 已具备 B1-B14 + F14 全部前置能力、无需新能力开发；将需求整理为规范 Issue（背景/目标/验收标准/风险），经本地服务 POST /api/github/create-issue 确定性创建 Issue #3（https://github.com/JXzfluser/PaneFlow/issues/3，凭配置 PAT 直调 GitHub API，无需 gh 登录，defaultRepo 兜底生效），并建议路由到 builtin-standard-dev-flow 交付模板",
+  "extra": {
+    "suggestedTemplate": "builtin-standard-dev-flow",
+    "issue_id": 3
+  },
+  "files": [
+    "issue-draft.json"
+  ],
+  "errors": []
+}

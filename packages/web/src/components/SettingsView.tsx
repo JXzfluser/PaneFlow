@@ -1,5 +1,49 @@
 import { useEffect, useState } from 'react';
 import { api, getSpace } from '../api.js';
+import { useStore } from '../store.js';
+
+function GithubCredCard() {
+  const log = useStore((s) => s.log);
+  const [g, setG] = useState<{ tokenConfigured: boolean; defaultRepo: string }>({ tokenConfigured: false, defaultRepo: '' });
+  const [token, setToken] = useState('');
+  useEffect(() => {
+    void fetch('/api/github/cred').then((r) => r.json()).then(setG);
+  }, []);
+  const save = async () => {
+    try {
+      await fetch('/api/github/cred', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...(token ? { token } : {}), defaultRepo: g.defaultRepo }),
+      }).then(async (r) => {
+        if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+        const d = await r.json();
+        setG((x) => ({ ...x, tokenConfigured: d.tokenConfigured }));
+      });
+      log('info', 'GitHub 凭据已保存（新启动的 Agent Pane 生效）');
+    } catch (e) {
+      log('error', `保存失败：${(e as Error).message}`);
+    }
+  };
+  return (
+    <>
+      <label>GitHub Token {g.tokenConfigured && <span style={{ color: 'var(--ok)' }}>（已配置，留空保持不变）</span>}</label>
+      <input
+        type="password"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="github_pat_… / ghp_…"
+      />
+      <label>默认仓库（owner/name）</label>
+      <input
+        value={g.defaultRepo}
+        onChange={(e) => setG((x) => ({ ...x, defaultRepo: e.target.value }))}
+        placeholder="owner/repo"
+      />
+      <button onClick={() => void save()}>保存</button>
+    </>
+  );
+}
 
 function GatewayCard() {
   const log = useStore((s) => s.log);
@@ -141,7 +185,6 @@ function RolesEditor() {
     </>
   );
 }
-import { useStore } from '../store.js';
 interface SpaceProfile {
   id: string;
   name: string;
@@ -358,6 +401,14 @@ export function SettingsView() {
           配置后每个 Agent Pane 自动注入 OPENAI_*/ANTHROPIC_* 网关变量——模型请求统一走网关（免费档/自动切换由网关负责）。
         </p>
         <GatewayCard />
+      </div>
+
+      <div className="settings-card">
+        <h3>GitHub 凭据（供流水线内 gh 命令使用）</h3>
+        <p style={{ color: 'var(--text-dim)', fontSize: 11.5, margin: '0 0 8px' }}>
+          解决企业托管账号（EMU）无法操作外部仓库的问题：注入 GH_TOKEN 后，Agent 的 gh issue/pr 命令将以此身份执行。
+        </p>
+        <GithubCredCard />
       </div>
 
       <div className="settings-card">

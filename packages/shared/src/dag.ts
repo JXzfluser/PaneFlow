@@ -44,7 +44,12 @@ export interface DagNodeConfig {
    * 动态扇出（fanout 节点专用）：完成后从上游 artifact 的数组字段展开，
    * 为每个元素克隆本节点的直接后继（分支模板），克隆节点内可用 {{item.*}}。
    */
-  expand?: { from: string; field: string };
+  expand?: {
+    from: string;
+    field: string;
+    /** 数组缺失/为空时的行为：fallback=回退单分支交付（默认），fail=节点失败 */
+    onEmpty?: 'fallback' | 'fail';
+  };
   /**
    * 澄清循环（grilling 编排化）：节点完成后读取 artifact.aligned；非 'true' 时
    * 进入问答回合（审批卡片展示 extra.questions），人类回答作为补充指令再跑一轮，

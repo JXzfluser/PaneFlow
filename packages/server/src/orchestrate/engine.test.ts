@@ -590,7 +590,7 @@ describe('Engine (serial DAG)', () => {
       nodes: [
         { id: 'start', type: 'start', label: '开始', config: {} },
         { id: 'plan', type: 'agent', label: '拆分', config: { agentKind: 'fake', prompt: '拆' } },
-        { id: 'fork', type: 'fanout', label: '动态展开', config: { expand: { from: 'plan', field: 'tasks' } } },
+        { id: 'fork', type: 'fanout', label: '动态展开', config: { expand: { from: 'plan', field: 'tasks', onEmpty: 'fail' } } },
         { id: 'dev', type: 'agent', label: '开发', config: { agentKind: 'fake', prompt: 'x' } },
         { id: 'end', type: 'end', label: '结束', config: {} },
       ],
@@ -718,6 +718,43 @@ describe('Engine (serial DAG)', () => {
     const run = await runToCompletion(graph, cwd);
     expect(run.state).toBe('completed');
     expect(run.nodes['route']!.error).toContain('fallback-tpl');
+  });
+
+  it('dynamic fanout falls back to single branch when upstream yields no array', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph: DagGraph = {
+      version: 1,
+      name: 'expand-fallback',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'plan', type: 'agent', label: '拆分', config: { agentKind: 'fake', prompt: '拆' } },
+        { id: 'fork', type: 'fanout', label: '动态展开', config: { expand: { from: 'plan', field: 'extra.tasks' } } },
+        { id: 'dev', type: 'agent', label: '交付 {{item.name}}', config: { agentKind: 'fake', prompt: '交付 {{item.brief}}' } },
+        { id: 'merge', type: 'fanin', label: '汇总', config: {} },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'plan' },
+        { id: 'e2', source: 'plan', target: 'fork' },
+        { id: 'e3', source: 'fork', target: 'dev' },
+        { id: 'e4', source: 'dev', target: 'merge' },
+        { id: 'e5', source: 'merge', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    // plan 不写 tasks 数组（弱模型现实），只写 summary
+    ops.onPrompt = (target) => {
+      if (target.includes('plan')) {
+        fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, '.herdr/artifacts/plan.json'), JSON.stringify({ summary: '结论：按顺序完成全部工作' }));
+      }
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    // 回退单分支：dev__1 执行，brief 注入上游 summary
+    expect(run.nodes['dev__1']!.state).toBe('done');
+    const devPrompt = ops.prompts.find((p) => p.target.includes('dev__1'))!;
+    expect(devPrompt.text).toContain('结论：按顺序完成全部工作');
   });
 
   it('recoverOrphans reclaims workspaces from previous dead runs', async () => {
