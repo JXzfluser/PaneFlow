@@ -30,6 +30,8 @@ interface UpdateIssueBody {
 }
 import { registerFsRoutes } from './fs-routes.js';
 import { buildDispatchGraph } from './dispatch.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
 
 export const AGENT_KINDS = [
@@ -59,6 +61,8 @@ export interface HttpDeps {
   herdrSocketPath: string;
   /** dataDir root — Space stores are derived from it */
   dataDir: string;
+  /** R4.1 远程暴露模式下的访问令牌（127.0.0.1 信任模式为 null） */
+  authToken?: string | null;
 }
 
 const DEFAULT_SPACE = 'default';
@@ -72,7 +76,45 @@ export async function buildHttpServer(deps: HttpDeps) {
   const app = Fastify({ logger: false });
   await app.register(cors, { origin: true });
   await app.register(fastifyWebsocket);
-  registerFsRoutes(app);
+
+  // R4.1 访问令牌：仅远程暴露模式启用（本机信任模式跳过）
+  if (deps.authToken) {
+    app.addHook('onRequest', async (req, reply) => {
+      const url = ((req.url || '') as string).split('?')[0] ?? '';
+      if (url === '/api/health') return;
+      if (!url.startsWith('/api') && !url.startsWith('/ws')) return;
+      if ((req.headers.authorization ?? '') !== `Bearer ${deps.authToken}`) {
+        return reply.code(401).send({ error: '需要访问令牌（Authorization: Bearer <token>）' });
+      }
+    });
+  }
+
+  // R4.3 注入类端点审计日志（who=令牌模式/when/what），JSONL 落盘
+  const audit = (action: string, detail: unknown): void => {
+    try {
+      fs.appendFileSync(
+        path.join(deps.dataDir, 'audit.log'),
+        JSON.stringify({ at: new Date().toISOString(), action, detail }) + '\n',
+      );
+    } catch {
+      // 审计失败不阻塞主流程
+    }
+  };
+  const auditedKeysInput = (
+    action: string,
+    runId: string,
+    nodeId: string,
+    detail: Record<string, unknown>,
+  ): void => {
+    audit(`terminal:${action}`, { runId, nodeId, ...detail });
+  };
+  registerFsRoutes(app, (space) => {
+    try {
+      return spaceStore(deps, space).readProfile().rootCwd ?? null;
+    } catch {
+      return null;
+    }
+  });
 
   // -- global roles library ----------------------------------------------------
 
@@ -461,6 +503,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       if (!run || !rec?.agentName) return reply.code(404).send({ error: '节点无活跃 agent' });
       const keys = Array.isArray(req.body.keys) ? req.body.keys.slice(0, 8).map(String) : [];
       if (!keys.length) return reply.code(400).send({ error: 'keys 不能为空' });
+      auditedKeysInput('keys', req.params.id, req.params.nodeId, { keys });
       await deps.ops.sendKeys(rec.agentName, keys);
       return { sent: keys };
     },
@@ -475,6 +518,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       const text = String(req.body.text ?? '').slice(0, 20_000);
       if (!text.trim()) return reply.code(400).send({ error: 'text 不能为空' });
       if (!rec.paneId) return reply.code(409).send({ error: '节点无关联 pane' });
+      auditedKeysInput('input', req.params.id, req.params.nodeId, { text: text.slice(0, 80) });
       await deps.ops.sendPaneText(rec.paneId, text);
       return { sent: true };
     },

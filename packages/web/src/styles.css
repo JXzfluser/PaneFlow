@@ -398,3 +398,19 @@ button[title]:has(> none) {}
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   padding: 12px 16px; margin: 0 0 4px;
 }
+
+/* R4.4 移动端可用性：窄屏下侧栏压缩、面板收窄、控制台保持可用 */
+@media (max-width: 900px) {
+  .sidenav { width: 44px; }
+  .sidenav-brand { width: 28px; height: 28px; font-size: 13px; }
+  .palette { width: 150px; }
+  .props { width: 220px; }
+  .topbar { flex-wrap: wrap; height: auto; min-height: 46px; padding: 6px 10px; }
+  .topbar .tb-group { border-right: none; }
+}
+@media (max-width: 640px) {
+  .main { flex-direction: column; }
+  .palette { width: 100%; max-height: 140px; border-right: none; border-bottom: 1px solid var(--border); }
+  .props { width: 100%; border-left: none; border-top: 1px solid var(--border); }
+  .canvas-wrap { min-height: 320px; }
+}

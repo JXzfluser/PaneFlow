@@ -32,10 +32,14 @@ async function main(): Promise<void> {
     ops,
     herdrSocketPath: config.herdrSocketPath,
     dataDir: config.dataDir,
+    authToken: config.authToken,
   });
 
-  await app.listen({ port: config.port, host: '127.0.0.1' });
-  console.log(`[paneflow] server listening on http://127.0.0.1:${config.port}`);
+  await app.listen({ port: config.port, host: config.host });
+  console.log(`[paneflow] server listening on http://${config.host}:${config.port}`);
+  if (config.authToken) {
+    console.log(`[paneflow] 访问令牌（仅此一次展示，浏览器首次访问时填入）: ${config.authToken}`);
+  }
   console.log(`[paneflow] herdr socket: ${config.herdrSocketPath}`);
   console.log(`[paneflow] data dir: ${config.dataDir}`);
 

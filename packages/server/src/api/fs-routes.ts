@@ -14,11 +14,14 @@ function listDirSafe(dir: string): fs.Dirent[] {
 
 /** B10: read-only filesystem helpers — discovery of conventions/skills and a
  * constrained directory browser (home-rooted, directories only). */
-export function registerFsRoutes(app: FastifyInstance): void {
-  // discover: markdown docs + skill files under a root (1 level deep, plus skills/ dir)
-  app.get<{ Querystring: { root?: string } }>('/api/fs/discover', async (req, reply) => {
-    const root = req.query.root ?? '';
-    if (!root || !path.isAbsolute(root)) return reply.code(400).send({ error: '需要绝对路径 root' });
+export function registerFsRoutes(
+  app: FastifyInstance,
+  resolveRoot: (space: string | undefined) => string | null,
+): void {
+  // discover: markdown docs + skill files under the Space 的主仓根（root 不再接受客户端任意值）
+  app.get<{ Querystring: { space?: string } }>('/api/fs/discover', async (req, reply) => {
+    const root = resolveRoot(req.query.space);
+    if (!root) return reply.code(400).send({ error: '当前空间未配置主仓根目录' });
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
       return reply.code(400).send({ error: `目录不存在：${root}` });
     }
@@ -56,8 +59,8 @@ export function registerFsRoutes(app: FastifyInstance): void {
   });
 
   // read one discovered file (for prompt injection at run time; size-capped)
-  app.get<{ Querystring: { root?: string; rel?: string } }>('/api/fs/read', async (req, reply) => {
-    const root = req.query.root ?? '';
+  app.get<{ Querystring: { space?: string; rel?: string } }>('/api/fs/read', async (req, reply) => {
+    const root = resolveRoot(req.query.space) ?? '';
     const rel = req.query.rel ?? '';
     if (!root || !rel || rel.includes('..')) return reply.code(400).send({ error: '参数缺失或非法' });
     const full = path.resolve(root, rel);
