@@ -24,12 +24,16 @@ export function registerFsRoutes(app: FastifyInstance): void {
     }
     const markdowns: string[] = [];
     const skills: string[] = [];
+    const repos: string[] = [];
     for (const d of listDirSafe(root)) {
       if (d.name.startsWith('.')) continue;
       const full = path.join(root, d.name);
       if (d.isFile() && d.name.endsWith('.md')) {
         markdowns.push(d.name);
         continue;
+      }
+      if (d.isDirectory() && fs.existsSync(path.join(full, '.git'))) {
+        repos.push(d.name);
       }
       if (d.isDirectory() && !MD_SKIP.has(d.name)) {
         // one level deep: docs/*.md, skills/*.md(x)
@@ -48,7 +52,7 @@ export function registerFsRoutes(app: FastifyInstance): void {
         }
       }
     }
-    return { root, markdowns: markdowns.sort(), skills: skills.sort() };
+    return { root, markdowns: markdowns.sort(), skills: skills.sort(), repos: repos.sort() };
   });
 
   // read one discovered file (for prompt injection at run time; size-capped)

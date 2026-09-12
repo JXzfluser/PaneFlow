@@ -27,6 +27,7 @@ export function Canvas() {
   const onEdgesChange = useStore((s) => s.onEdgesChange);
   const onConnect = useStore((s) => s.onConnect);
   const select = useStore((s) => s.select);
+  const selectEdge = useStore((s) => s.selectEdge);
   const theme = useStore((s) => s.theme);
 
   const onPaneClick = useCallback(() => select(null), [select]);
@@ -50,6 +51,7 @@ export function Canvas() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeClick={(_, n) => select(n.id)}
+        onEdgeClick={(_, e) => selectEdge(e.id)}
         onPaneClick={onPaneClick}
         fitView
         deleteKeyCode={['Backspace', 'Delete']}

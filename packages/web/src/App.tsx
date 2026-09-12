@@ -47,6 +47,8 @@ export function App() {
         }
       })
       .catch((e) => log('error', `后端不可达：${String(e)}`));
+    const restored = useStore.getState().restoreAutosave();
+    if (restored) log('info', '已恢复上次未保存的画布（自动保存）');
     void api.listGraphs().then((r) => setTemplates(r.graphs));
     if (!useStore.getState().cwd) setCwd('/tmp/paneflow-workspace');
     if (!localStorage.getItem('pf-guide-seen')) {

@@ -7,6 +7,7 @@ import { PropertyPanel } from './PropertyPanel.jsx';
 import { Console } from './Console.jsx';
 import { RunDialog } from './RunDialog.jsx';
 import { DispatchDialog } from './DispatchDialog.jsx';
+import { VariablesEditor } from './VariablesEditor.jsx';
 
 export function OrchestrateView() {
   const graphName = useStore((s) => s.graphName);
@@ -26,6 +27,7 @@ export function OrchestrateView() {
 
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [varsOpen, setVarsOpen] = useState(false);
   const activeRun = activeRunId ? runs[activeRunId] : null;
   const running = activeRun?.state === 'running';
 
@@ -72,6 +74,7 @@ export function OrchestrateView() {
         </div>
         <div className="tb-group">
           <button className="primary" title="一句任务描述，自动路由/生成编排并执行" onClick={() => setDispatchOpen(true)}>🎯 下发任务</button>
+          <button title="模板变量（运行参数表单的声明）" onClick={() => setVarsOpen((v) => !v)}>⎇ 变量</button>
         </div>
         <div className="tb-group" title="GitHub 模板沉淀（可选，需服务端配置）">
           <button
@@ -142,6 +145,7 @@ export function OrchestrateView() {
           <button onClick={() => setView('runs')} title="打开运行中心（多流水线总览）">🕘 迏行中心</button>
         </div>
       </div>
+      {varsOpen && <VariablesEditor />}
       <div className="main">
         <Palette />
         <Canvas />

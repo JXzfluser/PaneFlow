@@ -1,6 +1,7 @@
 export type { AgentStatus } from './states.js';
 export type {
   DagGraph,
+  EdgeCondition,
   DagNode,
   DagNodeConfig,
   DagNodeType,

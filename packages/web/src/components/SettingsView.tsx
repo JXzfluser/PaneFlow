@@ -202,7 +202,10 @@ export function SettingsView() {
   const [profile, setProfile] = useState<SpaceProfile | null>(null);
   const [notify, setNotify] = useState<{ feishuWebhook: string; notifyEvents?: string[] }>({ feishuWebhook: '' });
   const [env, setEnv] = useState<{ herdrOk: boolean; herdrVersion: string | null; env: { agentsInstalled: string[] } } | null>(null);
-  const [discover, setDiscover] = useState<{ markdowns: string[]; skills: string[] } | null>(null);
+  const [discover, setDiscover] = useState<{ markdowns: string[]; skills: string[]; repos: string[] } | null>(null);
+  const [browsing, setBrowsing] = useState(false);
+  const [browseDir, setBrowseDir] = useState<string | null>(null);
+  const [browseList, setBrowseList] = useState<string[] | null>(null);
 
   useEffect(() => {
     if (spaceId !== 'default') {
@@ -215,6 +218,16 @@ export function SettingsView() {
       .then((s) => setNotify({ feishuWebhook: s.feishuWebhook ?? '', notifyEvents: s.notifyEvents }));
     void api.health().then(setEnv);
   }, [spaceId]);
+
+  const loadBrowse = async (dir: string) => {
+    try {
+      const d = await fetch(`/api/fs/browse?path=${encodeURIComponent(dir)}`).then((r) => r.json());
+      setBrowseList(d.entries ?? []);
+      setBrowseDir(d.dir ?? dir);
+    } catch {
+      setBrowseList([]);
+    }
+  };
 
   const saveProfile = async () => {
     if (!profile) return;
@@ -262,11 +275,33 @@ export function SettingsView() {
         ) : (
           <>
             <label>主仓根目录（仓库/文档/技能发现的基准路径）</label>
-            <input
-              value={profile?.rootCwd ?? ''}
-              onChange={(e) => setProfile((p) => (p ? { ...p, rootCwd: e.target.value } : p))}
-              placeholder="/home/user/work/my-project"
-            />
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input
+                value={profile?.rootCwd ?? ''}
+                onChange={(e) => setProfile((p) => (p ? { ...p, rootCwd: e.target.value } : p))}
+                placeholder="/home/user/work/my-project"
+              />
+              <button style={{ whiteSpace: 'nowrap' }} onClick={() => setBrowsing((b) => !b)}>📁 浏览</button>
+            </div>
+            {browsing && (
+              <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 6, marginTop: 6, maxHeight: 180, overflowY: 'auto' }}>
+                <div style={{ color: 'var(--text-dim)', fontSize: 11, marginBottom: 4 }}>{browseDir || '（父级）'}</div>
+                {(browseList || []).map((d) => (
+                  <div
+                    key={d}
+                    style={{ padding: '3px 6px', cursor: 'pointer', borderRadius: 4 }}
+                    onClick={() => {
+                      setBrowseDir((browseDir || '') + '/' + d);
+                      setBrowseList(null);
+                      void loadBrowse((browseDir || '') + '/' + d);
+                    }}
+                  >
+                    📁 {d}
+                  </div>
+                ))}
+                {browseList === null && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>加载中…</span>}
+              </div>
+            )}
             <button
               style={{ marginTop: 8 }}
               onClick={() =>
@@ -277,7 +312,7 @@ export function SettingsView() {
                       log('error', d.error);
                       return;
                     }
-                    setDiscover({ markdowns: d.markdowns ?? [], skills: d.skills ?? [] });
+                    setDiscover({ markdowns: d.markdowns ?? [], skills: d.skills ?? [], repos: d.repos ?? [] });
                     // auto-select conventions on first discovery
                     setProfile((p) =>
                       p
@@ -320,6 +355,28 @@ export function SettingsView() {
                       </label>
                     ))}
                     {discover.markdowns.length === 0 && <span style={{ color: 'var(--text-dim)' }}>未发现 markdown</span>}
+                  </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <label>仓库（含 .git 的子目录，勾选 = 登记）</label>
+                  <div style={{ maxHeight: 140, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 6 }}>
+                    {(discover.repos ?? []).map((r) => (
+                      <label key={r} style={{ display: 'block', fontSize: 11.5 }}>
+                        <input
+                          type="checkbox"
+                          checked={(profile?.repos ?? []).includes(r)}
+                          onChange={(e) =>
+                            setProfile((p) =>
+                              p
+                                ? { ...p, repos: e.target.checked ? [...(p.repos ?? []), r] : (p.repos ?? []).filter((x) => x !== r) }
+                                : p,
+                            )
+                          }
+                        />{' '}
+                        {r}
+                      </label>
+                    ))}
+                    {(discover.repos ?? []).length === 0 && <span style={{ color: 'var(--text-dim)' }}>未发现仓库</span>}
                   </div>
                 </div>
                 <div style={{ flex: 1, minWidth: 220 }}>

@@ -48,6 +48,8 @@ interface PfStore {
   nodes: PfNode[];
   edges: Edge[];
   selectedNodeId: string | null;
+  selectedEdgeId: string | null;
+  canvasDirty: boolean;
   logs: ConsoleLog[];
   runs: Record<string, RunRecord>;
   activeRunId: string | null;
@@ -69,6 +71,10 @@ interface PfStore {
   setTemplates: (graphs: DagGraph[]) => void;
   log: (level: ConsoleLog['level'], text: string) => void;
   select: (id: string | null) => void;
+  selectEdge: (id: string | null) => void;
+  markDirty: () => void;
+  updateEdgeCondition: (edgeId: string, condition: EdgeCondition | undefined) => void;
+  restoreAutosave: () => boolean;
 
   onNodesChange: (changes: NodeChange<PfNode>[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
@@ -95,6 +101,8 @@ export const useStore = create<PfStore>((set, get) => ({
   nodes: [],
   edges: [],
   selectedNodeId: null,
+  selectedEdgeId: null,
+  canvasDirty: false,
   logs: [],
   runs: {},
   activeRunId: null,
@@ -131,13 +139,49 @@ export const useStore = create<PfStore>((set, get) => ({
       logs: [...s.logs.slice(-400), { ts: new Date().toLocaleTimeString(), level, text }],
     })),
   select: (id) => set({ selectedNodeId: id }),
+  selectEdge: (id) => set({ selectedEdgeId: id, selectedNodeId: null }),
+  markDirty: () => set({ canvasDirty: true }),
+  updateEdgeCondition: (edgeId, condition) =>
+    set((s) => ({
+      canvasDirty: true,
+      edges: s.edges.map((e) =>
+        e.id === edgeId
+          ? { ...e, data: { ...e.data, condition } }
+          : e,
+      ),
+    })),
+  restoreAutosave: () => {
+    try {
+      const raw = localStorage.getItem('pf-canvas-autosave');
+      if (!raw) return false;
+      const saved = JSON.parse(raw) as {
+        graphName: string; nodes: PfNode[]; edges: Edge[];
+        graphVariables: TemplateVariable[]; graphMeta: GraphMeta; cwd: string;
+      };
+      set({
+        graphName: saved.graphName ?? '未命名流水线',
+        nodes: saved.nodes ?? [],
+        edges: saved.edges ?? [],
+        graphVariables: saved.graphVariables ?? [],
+        graphMeta: saved.graphMeta ?? {},
+        cwd: saved.cwd ?? '',
+        canvasDirty: true,
+        selectedNodeId: null,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  },
 
-  onNodesChange: (changes) =>
-    set((s) => ({ nodes: applyNodeChanges(changes, s.nodes) })),
+  onNodesChange: (changes) => {
+    set((s) => ({ nodes: applyNodeChanges(changes, s.nodes), canvasDirty: true }));
+  },
   onEdgesChange: (changes) =>
-    set((s) => ({ edges: applyEdgeChanges(changes, s.edges) })),
+    set((s) => ({ edges: applyEdgeChanges(changes, s.edges), canvasDirty: true })),
   onConnect: (conn) =>
     set((s) => ({
+      canvasDirty: true,
       edges: addEdge({ ...conn, id: `e-${conn.source}-${conn.target}` }, s.edges),
     })),
 
@@ -167,12 +211,13 @@ export const useStore = create<PfStore>((set, get) => ({
       position,
       config: defaults[type],
     };
-    set((s) => ({ nodes: [...s.nodes, { id, type, position, data: { dagNode } }] }));
+    set((s) => ({ nodes: [...s.nodes, { id, type, position, data: { dagNode } }], canvasDirty: true }));
     set({ selectedNodeId: id });
   },
 
   updateNodeConfig: (nodeId, patch) =>
     set((s) => ({
+      canvasDirty: true,
       nodes: s.nodes.map((n) =>
         n.id === nodeId ? { ...n, data: { ...n.data, dagNode: { ...n.data.dagNode, config: { ...n.data.dagNode.config, ...patch } } } } : n,
       ),
@@ -189,6 +234,8 @@ export const useStore = create<PfStore>((set, get) => ({
       graphVariables: parts.variables,
       graphMeta: parts.meta,
       selectedNodeId: null,
+      selectedEdgeId: null,
+      canvasDirty: false,
     });
     get().log('info', `已加载模板「${graph.name}」（${graph.nodes.length} 节点）`);
   },
@@ -199,7 +246,7 @@ export const useStore = create<PfStore>((set, get) => ({
   },
 
   clearCanvas: () => {
-    set({ nodes: [], edges: [], selectedNodeId: null, graphName: '未命名流水线', graphVariables: [], graphMeta: {} });
+    set({ nodes: [], edges: [], selectedNodeId: null, selectedEdgeId: null, graphName: '未命名流水线', graphVariables: [], graphMeta: {}, canvasDirty: false });
     get().log('info', '画布已清空');
   },
 
@@ -284,3 +331,37 @@ export function graphIssues(): string[] {
     .filter((i) => i.level === 'error')
     .map((i) => i.message);
 }
+
+// ---------------------------------------------------------------------------
+// 画布自动保存（R2.5）：防抖 800ms 持久化到 localStorage，刷新不丢
+// ---------------------------------------------------------------------------
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+useStore.subscribe((state, prev) => {
+  if (
+    state.nodes === prev.nodes &&
+    state.edges === prev.edges &&
+    state.graphName === prev.graphName &&
+    state.cwd === prev.cwd
+  ) {
+    return;
+  }
+  if (autosaveTimer) clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    const s = useStore.getState();
+    try {
+      localStorage.setItem(
+        'pf-canvas-autosave',
+        JSON.stringify({
+          graphName: s.graphName,
+          nodes: s.nodes,
+          edges: s.edges,
+          graphVariables: s.graphVariables,
+          graphMeta: s.graphMeta,
+          cwd: s.cwd,
+        }),
+      );
+    } catch {
+      // 存储满等异常不阻塞使用
+    }
+  }, 800);
+});

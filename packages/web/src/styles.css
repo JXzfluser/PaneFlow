@@ -392,3 +392,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   min-width: 30px; text-align: center;
 }
 button[title]:has(> none) {}
+
+/* variables editor */
+.vars-editor {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 16px; margin: 0 0 4px;
+}

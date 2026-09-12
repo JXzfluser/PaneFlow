@@ -1,7 +1,85 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
+import type { EdgeCondition } from '@paneflow/shared';
 
 export function PropertyPanel() {
+  const selectedEdgeId = useStore((s) => s.selectedEdgeId);
+  if (selectedEdgeId) {
+    return <EdgeConditionPanel edgeId={selectedEdgeId} />;
+  }
+  return <NodePropertyPanel />;
+}
+
+/** 条件边编辑（R2.1）：断言上游 artifact 字段，不满足即剪枝 */
+function EdgeConditionPanel({ edgeId }: { edgeId: string }) {
+  const edges = useStore((s) => s.edges);
+  const updateEdgeCondition = useStore((s) => s.updateEdgeCondition);
+  const selectEdge = useStore((s) => s.selectEdge);
+  const edge = edges.find((e) => e.id === edgeId);
+  if (!edge) {
+    return <div className="props"><h3>属性 · 连线</h3><div className="hint">连线不存在。</div></div>;
+  }
+  const cond = edge.data?.condition;
+  const src = edges.find((e) => e.id === edge.source);
+  const set = (patch: Partial<EdgeCondition>) =>
+    updateEdgeCondition(edgeId, { field: '', ...cond, ...patch });
+  return (
+    <div className="props">
+      <h3>条件边 · {edge.source} → {edge.target}</h3>
+      <p className="hint" style={{ margin: '0 0 8px' }}>
+        运行时对「{edge.source}」的产物字段做断言：不满足则此连线被剪枝，下游按依赖缺失跳过。
+      </p>
+      <label>artifact 字段（如 aligned / status）</label>
+      <input
+        value={cond?.field ?? ''}
+        onChange={(e) => set({ field: e.target.value })}
+        placeholder="aligned"
+      />
+      <label>断言</label>
+      <select
+        value={cond?.equals !== undefined ? 'equals' : cond?.notEquals !== undefined ? 'notEquals' : cond?.exists !== undefined ? 'exists' : 'none'}
+        onChange={(e) => {
+          const mode = e.target.value;
+          if (mode === 'equals') set({ equals: cond?.equals ?? 'true', notEquals: undefined, exists: undefined });
+          else if (mode === 'notEquals') set({ notEquals: cond?.notEquals ?? '', equals: undefined, exists: undefined });
+          else set({ exists: true, equals: undefined, notEquals: undefined });
+        }}
+      >
+        <option value="none">无条件（恒通过）</option>
+        <option value="equals">字段 == 期望值</option>
+        <option value="notEquals">字段 != 排除值</option>
+        <option value="exists">字段存在</option>
+      </select>
+      {(cond?.equals !== undefined || cond?.notEquals !== undefined) && (
+        <>
+          <label>{cond?.equals !== undefined ? '期望值' : '排除值'}</label>
+          <input
+            value={cond?.equals ?? cond?.notEquals ?? ''}
+            onChange={(e) =>
+              cond?.equals !== undefined
+                ? set({ equals: e.target.value })
+                : set({ notEquals: e.target.value })
+            }
+          />
+        </>
+      )}
+      <button
+        style={{ marginTop: 10 }}
+        onClick={() => {
+          updateEdgeCondition(edgeId, undefined);
+          selectEdge(null);
+        }}
+      >
+        移除条件（恢复恒通过）
+      </button>
+      <div className="hint" style={{ marginTop: 10 }}>
+        提示：条件在运行时评估（预演可静态展开）；条件不满足的下游分支会被跳过。
+      </div>
+    </div>
+  );
+}
+
+function NodePropertyPanel() {
   const selectedNodeId = useStore((s) => s.selectedNodeId);
   const nodes = useStore((s) => s.nodes);
   const updateNodeConfig = useStore((s) => s.updateNodeConfig);
@@ -24,6 +102,7 @@ export function PropertyPanel() {
   const isAgent = node.data.dagNode.type === 'agent';
   const isFanin = node.data.dagNode.type === 'fanin';
   const isPipeline = node.data.dagNode.type === 'pipeline';
+  const isFanout = node.data.dagNode.type === 'fanout';
   const set = (patch: Parameters<typeof updateNodeConfig>[1]) => updateNodeConfig(node.id, patch);
 
   return (
@@ -127,6 +206,47 @@ export function PropertyPanel() {
             placeholder={'ANTHROPIC_BASE_URL=http://127.0.0.1:4000\nOPENAI_API_BASE=http://127.0.0.1:4000/v1'}
           />
 
+          <label>检查门禁（done 后全部通过才算完成）</label>
+          {(cfg.checks ?? []).length === 0 && (
+            <div className="hint" style={{ marginBottom: 6 }}>未配置检查。</div>
+          )}
+          {(cfg.checks ?? []).map((c, i) => (
+            <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 6, marginBottom: 6 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ color: 'var(--accent)', fontSize: 11 }}>{c.type}</span>
+                <button
+                  className="danger"
+                  style={{ marginLeft: 'auto', padding: '0 6px', fontSize: 10 }}
+                  onClick={() => set({ checks: (cfg.checks ?? []).filter((_, j) => j !== i) })}
+                >
+                  🗑
+                </button>
+              </div>
+              {c.type === 'file-exists' && (
+                <input value={c.path} onChange={(e) => set({ checks: (cfg.checks ?? []).map((x, j) => (j === i ? { ...x, path: e.target.value } : x)) })} placeholder="相对路径 ok.txt" />
+              )}
+              {c.type === 'command' && (
+                <input value={c.run} onChange={(e) => set({ checks: (cfg.checks ?? []).map((x, j) => (j === i ? { ...x, run: e.target.value } : x)) })} placeholder="npm test" />
+              )}
+              {c.type === 'regex' && (
+                <>
+                  <input value={c.file} onChange={(e) => set({ checks: (cfg.checks ?? []).map((x, j) => (j === i ? { ...x, file: e.target.value } : x)) })} placeholder="report.md" />
+                  <input value={c.pattern} onChange={(e) => set({ checks: (cfg.checks ?? []).map((x, j) => (j === i ? { ...x, pattern: e.target.value } : x)) })} placeholder="PASS" />
+                </>
+              )}
+              {c.type === 'manual' && (
+                <input value={c.prompt} onChange={(e) => set({ checks: (cfg.checks ?? []).map((x, j) => (j === i ? { ...x, prompt: e.target.value } : x)) })} placeholder="冒烟通过？" />
+              )}
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+            {(['file-exists', 'command', 'regex', 'manual'] as const).map((t) => (
+              <button key={t} style={{ fontSize: 11 }} onClick={() => set({ checks: [...(cfg.checks ?? []), t === 'file-exists' ? { type: t, path: '' } : t === 'command' ? { type: t, run: '' } : t === 'regex' ? { type: t, file: '', pattern: '' } : { type: t, prompt: '' }] })}>
+                +{t === 'file-exists' ? '文件' : t === 'command' ? '命令' : t === 'regex' ? '正则' : '人工'}
+              </button>
+            ))}
+          </div>
+
           <label>失败策略</label>
           <select value={cfg.onFail ?? 'abort'} onChange={(e) => set({ onFail: e.target.value as 'abort' | 'continue' })}>
             <option value="abort">终止流水线</option>
@@ -179,6 +299,33 @@ export function PropertyPanel() {
           >
             <option value="wait">等待子运行完成（镜像结果）</option>
             <option value="fire">即发即忘</option>
+          </select>
+        </>
+      )}
+
+      {node.data.dagNode.type === 'fanout' && (
+        <>
+          <label>动态扇出：从上游产物数组字段展开分支</label>
+          <input
+            value={cfg.expand ? `${cfg.expand.from}.${cfg.expand.field}` : ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              const dot = v.indexOf('.');
+              set({
+                expand: v
+                  ? { from: v.slice(0, dot > 0 ? dot : undefined) || 'plan', field: dot > 0 ? v.slice(dot + 1) : v }
+                  : undefined,
+              });
+            }}
+            placeholder="plan.extra.tasks"
+          />
+          <label>数组缺失时</label>
+          <select
+            value={cfg.expand?.onEmpty ?? 'fallback'}
+            onChange={(e) => set({ expand: { ...(cfg.expand ?? { from: '', field: '' }), onEmpty: e.target.value as 'fallback' | 'fail' } })}
+          >
+            <option value="fallback">回退单分支串行交付（推荐）</option>
+            <option value="fail">节点失败</option>
           </select>
         </>
       )}
