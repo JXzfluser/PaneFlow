@@ -292,3 +292,81 @@ Planner 只在骨架库中选择并填参——确定性红线不破；骨架库
 1. Planner 用网关免费档先行验证，效果不足再切 `auto/pro-*`？
 2. 骨架库首批：交付型 + 修复型 + 调研型（复用现成模板改造），巡检型后置？
 3. 下发入口放顶栏还是左侧导航独立视图？
+
+## 13. GitHub 凭据闭环契约与运维（收尾定稿 · Issue #3）
+
+> 收尾来源：Issue「GitHub 凭据闭环与端到端验证」（远程 #3）。align 已核实核心链路全部就位：GET/PUT `/api/github/cred`、POST `/api/github/create-issue`、PATCH `/api/github/update-issue`（http.ts:142-214）、triage→route 插值拉起交付（builtin-templates.ts triage/route 节点）。本节记录四项契约与运维结论：**defaultRepo 兜底语义与验收修订 / 凭据安全与 dataDir 排除 / 端到端验收运行时前置 / 合成 Issue 清理清单**。实现锚点：github-cred.ts、github-sync.ts、config.ts:43。
+
+### 13.1 凭据端点契约与 defaultRepo 兜底语义
+
+**端点面**（本地编排服务，`PF_PORT` 默认 4310）：
+
+| 端点 | 入参 | 语义 |
+|---|---|---|
+| `GET /api/github/cred` | — | 返回 `{ tokenConfigured, defaultRepo }`；未配置时 `tokenConfigured:false` |
+| `PUT /api/github/cred` | `{ token?, defaultRepo? }` | 落盘 `<dataDir>/github.json`；`token` 空 = 保留已存值，`defaultRepo` 可单独更新 |
+| `POST /api/github/create-issue` | `{ title, body?, repo?, labels? }` | 凭配置 PAT 直调 GitHub API 确定性建 Issue；成功返回 `{ number, url, repo }` |
+| `PATCH /api/github/update-issue` | `{ number, repo?, body }` | 就地覆盖 Issue 正文（对齐远程 Issue #3 正文用） |
+
+**create-issue 失败面**（按判定序）：
+
+| 触发 | 结果 |
+|---|---|
+| 缺 token | 400 未配置 GitHub 凭据 |
+| 缺 `repo` 且 **defaultRepo 已配置** | **兜底成功**：按 defaultRepo 直调 API 创建，返回 number/url |
+| 缺 `repo` 且 defaultRepo 也未配置 | 400 缺少 repo（未配置默认仓库） |
+| 缺 title | 400 缺少 title |
+| GitHub API 401/403/404 | 原样透传状态码 + message |
+| 网络不可达 / 15s 超时 | 502 |
+
+**验收语义（AC#2 与 AC#5 对齐，消除『缺 repo』字面冲突）**：
+
+- **基线**：缺 repo 时 defaultRepo 兜底成功；**仅当 defaultRepo 也未配置才 400**（与实测行为一致——兜底分支已由合成 Issue #4 实测通过，见 13.4）。
+- **AC#5 修订指引**：验收标准 #5 措辞由「缺 repo → 400」改为「**缺 defaultRepo（且未携带 repo）→ 400**」，并在同条补齐「缺 repo 且 defaultRepo 已配置 → 按 defaultRepo 兜底成功」。修订需同步两处：`issue-draft.json` 正文，以及远程 Issue #3 正文（用 `PATCH /api/github/update-issue` 就地覆盖，而非重开 Issue）。
+
+### 13.2 凭据安全与 dataDir 不进 git
+
+- **落盘权限**：`writeGithubSettings` 以 `fs mode: 0o600` 写 `<dataDir>/github.json`（token 明文，仅属主可读写，消除 644 世界可读风险）；`readGithubSettings` 对既有 644 文件兼容，无需迁移。
+- **dataDir 不进 git（三重闭环）**：
+  1. `.gitignore` 已含 `data/`；
+  2. 默认 dataDir `~/.paneflow` 位于仓库外；
+  3. **github-sync 仅 push `templates/*.json`**——沉淀用 token 来自 env `PF_GITHUB_TOKEN`，不落盘、不 push，凭据文件永不进入仓库。
+- 结论：凭据/运行时数据（github.json、gateway.json 等）与模板沉淀（`templates/`）严格分离，仓库内无明文密钥。
+
+### 13.3 端到端验收的运行时前置步骤
+
+默认实例（`~/.paneflow`）下 github.json 不存在时凭据卡为空；验收前需**先置独立数据目录 + PUT 凭据，再跑冒烟**：
+
+```bash
+# 1) 独立实例（指定数据目录；默认 ~/.paneflow 亦在仓库外）
+PF_DATA_DIR=/tmp/pf-data pnpm dev:server
+
+# 2) 先置凭据（token 空 = 保留已存值）
+curl -s -X PUT http://127.0.0.1:4310/api/github/cred \
+  -H "Content-Type: application/json" \
+  -d '{"token":"<PAT>","defaultRepo":"JXzfluser/PaneFlow"}'
+
+# 3) 冒烟：确认就绪 + 缺 repo 走 defaultRepo 兜底
+curl -s http://127.0.0.1:4310/api/github/cred        # → tokenConfigured:true, defaultRepo
+curl -s -X POST http://127.0.0.1:4310/api/github/create-issue \
+  -H "Content-Type: application/json" -d '{"title":"smoke"}'   # → { number, url }（缺 repo 兜底成功）
+```
+
+- 错误路径复现：全新 dataDir（不 PUT）→ 缺 token 400；仅 PUT token 不 PUT defaultRepo → 缺 repo 400；缺 title → 400；PAT 无效 → 401 透传 message。
+- 路由链 #3 抽查：triage 产物 `extra.suggestedTemplate` / `extra.issue_id` 经 route(pipeline) 节点 `{{...}}` 插值拉起交付（fallback 未触发）；triage 提示词内置的 curl 即 13.1 的 create-issue。
+- 默认实例的凭据配置视为 **verify 阶段运行时前置**，不单列为验收块（达标证据复用 /tmp 独立实例实测）。
+
+### 13.4 合成 Issue 清理清单
+
+| Issue | 来源 | 处置 |
+|---|---|---|
+| #4（title `t`） | 缺 repo 负路径测试时 defaultRepo 兜底意外创建（实测通过兜底分支的副产物） | 关闭/删除 |
+| #2（「测试-可删除-2」） | 历史遗留合成 Issue | 关闭/删除 |
+
+```bash
+# 仅针对合成实例，非用户 Issue
+gh issue close 4 -R JXzfluser/PaneFlow
+gh issue close 2 -R JXzfluser/PaneFlow
+# 需彻底删除时：gh api "repos/JXzfluser/PaneFlow/issues/4" --method DELETE
+#   （GitHub REST 支持 DELETE /repos/{owner}/{repo}/issues/{number}）
+```

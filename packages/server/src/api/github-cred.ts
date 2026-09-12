@@ -21,7 +21,8 @@ export function readGithubSettings(dataDir: string): GithubSettings {
 }
 
 export function writeGithubSettings(dataDir: string, next: GithubSettings): void {
-  fs.writeFileSync(ghPath(dataDir), JSON.stringify(next, null, 2));
+  // token 以明文落盘，权限收紧为 0o600（仅属主可读写），消除世界可读风险。
+  fs.writeFileSync(ghPath(dataDir), JSON.stringify(next, null, 2), { mode: 0o600 });
 }
 
 /** GH_TOKEN/GITHUB_TOKEN 注入（供 gh CLI 使用）；未配置返回空。 */
