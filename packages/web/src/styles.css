@@ -603,6 +603,13 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .settings-discover > div { flex: 1; min-width: 210px; }
 .recent-roots { gap: 6px; }
 
+/* 出站通道（自动化跟踪：把运行事件推到外部系统） */
+.channel-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.channel-card-head { display: flex; gap: 8px; align-items: center; }
+.settings-card .channel-card-head input.channel-name { flex: 1 1 auto; width: auto; min-width: 0; }
+.settings-card .channel-card-head select { width: 132px; flex: 0 0 auto; }
+.channel-card-ops { justify-content: flex-end; margin-top: 10px; }
+
 /* 角色编辑器 */
 .role-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
 .role-card-head { display: flex; gap: 8px; }

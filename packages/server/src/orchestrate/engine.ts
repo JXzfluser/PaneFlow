@@ -225,6 +225,7 @@ export class Engine {
       startedAt: new Date().toISOString(),
     };
     this.runs.set(runId, run);
+    this.recordEvent(run, 'run', undefined, `运行启动：${graph.name}（${order.length} 个节点）`);
     this.persistAndNotify(run);
 
     // R6.5 断点续跑：从源 run 继承 done 节点的记录与产物（这些节点不再执行）
@@ -269,6 +270,8 @@ export class Engine {
     const run = this.runs.get(runId);
     if (!run || run.state !== 'running') return false;
     this.cancels.add(runId);
+    this.recordEvent(run, 'run', undefined, '收到停止指令：中断运行中的 Agent 并回收');
+    this.persistAndNotify(run);
     // unblock any node waiting for approval so the loop can exit
     for (const [key, waiter] of [...this.blockedWaiters.entries()]) {
       if (key.startsWith(`${runId}:`)) {
@@ -297,6 +300,20 @@ export class Engine {
     const waiter = this.blockedWaiters.get(key);
     if (!waiter) return false;
     this.blockedWaiters.delete(key);
+    const run = this.runs.get(runId);
+    if (run) {
+      this.recordEvent(
+        run,
+        'approval',
+        nodeId,
+        action.action === 'reject'
+          ? '人工拒绝：终止本次执行'
+          : action.action === 'input'
+            ? '人工补充指令'
+            : '人工放行：继续执行',
+      );
+      this.persistAndNotify(run);
+    }
     waiter(action);
     return true;
   }
@@ -336,6 +353,15 @@ export class Engine {
       if (this.cancels.has(run.runId)) run.state = 'cancelled';
       else if (abort) run.state = 'failed';
       else run.state = 'completed';
+      const done = Object.values(run.nodes).filter((n) => n.state === 'done').length;
+      const total = Object.keys(run.nodes).length;
+      const secs = Math.round((Date.now() - new Date(run.startedAt).getTime()) / 1000);
+      this.recordEvent(
+        run,
+        'run',
+        undefined,
+        `运行结束：${run.state}（${done}/${total} 节点完成，耗时 ${secs}s）`,
+      );
     } finally {
       run.finishedAt = new Date().toISOString();
       for (const rec of Object.values(run.nodes)) {
@@ -616,6 +642,9 @@ export class Engine {
       rec.attempts = attempt;
       rec.state = attempt > 1 ? 'retrying' : 'queued';
       rec.error = undefined;
+      if (attempt > 1) {
+        this.recordEvent(run, 'node', nodeId, `第 ${attempt - 1} 次重试（最多 ${maxAttempts - 1} 次）`);
+      }
       this.persistAndNotify(run);
 
       lastError = await this.attemptNode(run, node.id, blackboard);
@@ -640,6 +669,7 @@ export class Engine {
 
     // 1. pane + agent + readiness
     rec.state = 'starting';
+    this.recordEvent(run, 'node', nodeId, '节点启动：准备终端 Pane 与 Agent');
     this.persistAndNotify(run);
     let unsub: (() => void) | null = null;
     let repoClaimKey: string | null = null;
@@ -656,9 +686,11 @@ export class Engine {
             const wt = this.createWorktree(repo, run.runId, nodeId);
             nodeCwd = wt.path;
             rec.worktree = wt.path;
+            this.recordEvent(run, 'node', nodeId, `同仓并发：创建隔离 worktree（${wt.branch}）`);
           } else {
             rec.state = 'queued';
             rec.error = `等待仓库锁：${repo}（被 run ${holder.runId} 的 ${holder.nodeId} 占用）`;
+            this.recordEvent(run, 'node', nodeId, `排队等待仓库锁：${holder.runId}/${holder.nodeId} 占用中`);
             this.persistAndNotify(run);
             const lockDeadline = Date.now() + Math.max(60_000, timeoutMs);
             while (this.repoClaims.get(repo)?.runId === holder.runId) {
@@ -938,6 +970,7 @@ export class Engine {
     if (!target && cfg.fallbackTemplate) {
       usedTemplate = cfg.fallbackTemplate;
       target = store.getGraph(cfg.fallbackTemplate);
+      this.recordEvent(run, 'child', node.id, `模板 ${templateName} 不存在，回退到 ${usedTemplate}`);
     }
     if (!target) return `模板不存在：${templateName}${cfg.fallbackTemplate ? `（兜底 ${cfg.fallbackTemplate} 亦未找到）` : ''}`;
 
@@ -949,6 +982,13 @@ export class Engine {
     onChildStarted('');
     const child = await this.startRun(target, params.cwd ?? run.cwd, spaceId, params, issueId);
     run.nodes[node.id]!.error = `子运行 ${child.runId}（模板 ${usedTemplate}）`;
+    this.recordEvent(
+      run,
+      'child',
+      node.id,
+      `启动子运行 ${child.runId}（模板 ${usedTemplate}，${(cfg.mode ?? 'wait') === 'wait' ? '等待完成' : '即发即忘'}）`,
+    );
+    this.persistAndNotify(run);
 
     if ((cfg.mode ?? 'wait') === 'wait') {
       const deadline = Date.now() + 24 * 60 * 60 * 1000;
@@ -1242,6 +1282,7 @@ export class Engine {
         if (last && last.text === text) return;
         snaps.push({ at: new Date().toISOString(), text: text.slice(0, 8192) });
         if (snaps.length > 12) snaps.splice(0, snaps.length - 12);
+        this.recordEvent(run, 'snapshot', rec.nodeId, `采集终端输出快照（${snaps.length}/12）`);
       })
       .catch(() => {});
   }

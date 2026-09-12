@@ -1,16 +1,199 @@
 import { useEffect, useRef, useState } from 'react';
-import { api } from '../api.js';
+import { api, type Channel, type ChannelType, type NotifyEvent } from '../api.js';
 import { useStore } from '../store.js';
 
 /** 设置页章节：左侧导航 + 右侧分区，避免 6 张卡片平铺到底 */
 const SECTIONS: { id: string; label: string; icon: string }[] = [
   { id: 'space', label: '项目档案', icon: '📁' },
-  { id: 'notify', label: '出站通知', icon: '🔔' },
+  { id: 'channels', label: '通道', icon: '📡' },
   { id: 'roles', label: '角色库', icon: '👤' },
   { id: 'gateway', label: '模型网关', icon: '🌐' },
   { id: 'github', label: 'GitHub 凭据', icon: '🐙' },
   { id: 'env', label: '环境', icon: '🧩' },
 ];
+
+const CHANNEL_TYPES: { id: ChannelType; label: string; hint: string }[] = [
+  {
+    id: 'webhook',
+    label: '通用 Webhook',
+    hint: 'POST 结构化 JSON（event / title / body / runId / dagName / nodeIds），可对接任意系统',
+  },
+  { id: 'feishu', label: '飞书机器人', hint: '仅支持 open.feishu.cn 与 open.larksuite.com' },
+  { id: 'dingtalk', label: '钉钉机器人', hint: '填加签密钥则自动签名；留空需用关键词或 IP 白名单模式' },
+];
+
+const EVENT_OPTIONS: { id: NotifyEvent; label: string }[] = [
+  { id: 'blocked', label: '等待审批' },
+  { id: 'completed', label: '完成' },
+  { id: 'failed', label: '失败' },
+];
+
+/** 出站通道：把运行事件推送到外部系统（原「飞书 webhook」的通用化，旧配置会自动迁移） */
+function ChannelsEditor() {
+  const log = useStore((s) => s.log);
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [testing, setTesting] = useState('');
+  useEffect(() => {
+    void api.listChannels().then((r) => setChannels(r.channels)).catch(() => undefined);
+  }, []);
+
+  const patch = (id: string, part: Partial<Channel>) =>
+    setChannels((cs) => cs.map((c) => (c.id === id ? { ...c, ...part } : c)));
+
+  const add = () =>
+    setChannels((cs) => [
+      ...cs,
+      {
+        id: `ch-${Date.now().toString(36)}`,
+        type: 'webhook',
+        name: `通道 ${cs.length + 1}`,
+        enabled: true,
+        url: '',
+        events: ['blocked', 'completed', 'failed'],
+      },
+    ]);
+
+  const save = async () => {
+    try {
+      const r = await api.saveChannels(channels);
+      setChannels(r.channels);
+      log('info', `已保存 ${r.channels.length} 条通道`);
+    } catch (e) {
+      log('error', `保存失败：${(e as Error).message}`);
+    }
+  };
+
+  const test = async (ch: Channel) => {
+    setTesting(ch.id);
+    try {
+      await api.testChannel(ch);
+      log('info', `「${ch.name}」测试消息已发出，请到接收端确认`);
+    } catch (e) {
+      log('error', `测试失败：${(e as Error).message}`);
+    } finally {
+      setTesting('');
+    }
+  };
+
+  return (
+    <>
+      {channels.map((ch) => {
+        const meta = CHANNEL_TYPES.find((t) => t.id === ch.type);
+        return (
+          <div className="channel-card" key={ch.id}>
+            <div className="channel-card-head">
+              <label className="settings-check" title="停用后不再推送，但保留配置">
+                <input
+                  type="checkbox"
+                  checked={ch.enabled}
+                  onChange={(e) => patch(ch.id, { enabled: e.target.checked })}
+                />
+                启用
+              </label>
+              <input
+                className="channel-name"
+                value={ch.name}
+                onChange={(e) => patch(ch.id, { name: e.target.value })}
+                placeholder="通道名称"
+              />
+              <select
+                value={ch.type}
+                onChange={(e) => patch(ch.id, { type: e.target.value as ChannelType })}
+                title="通道类型"
+              >
+                {CHANNEL_TYPES.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="icon danger"
+                title="删除通道"
+                onClick={() => setChannels((cs) => cs.filter((x) => x.id !== ch.id))}
+              >
+                🗑
+              </button>
+            </div>
+
+            <label>接收地址</label>
+            <input
+              value={ch.url}
+              onChange={(e) => patch(ch.id, { url: e.target.value })}
+              placeholder={
+                ch.type === 'feishu'
+                  ? 'https://open.feishu.cn/open-apis/bot/v2/hook/…'
+                  : ch.type === 'dingtalk'
+                    ? 'https://oapi.dingtalk.com/robot/send?access_token=…'
+                    : 'https://your-system.example.com/hooks/paneflow'
+              }
+            />
+            {ch.type === 'dingtalk' && (
+              <>
+                <label>加签密钥（可选）</label>
+                <input
+                  type="password"
+                  value={ch.secret ?? ''}
+                  onChange={(e) => patch(ch.id, { secret: e.target.value })}
+                  placeholder="SEC…"
+                />
+              </>
+            )}
+            <p className="settings-hint">{meta?.hint}</p>
+
+            <label>订阅事件</label>
+            <div className="settings-row wrap">
+              {EVENT_OPTIONS.map((ev) => (
+                <label key={ev.id} className="settings-check">
+                  <input
+                    type="checkbox"
+                    checked={ch.events.includes(ev.id)}
+                    onChange={(e) =>
+                      patch(ch.id, {
+                        events: e.target.checked
+                          ? [...ch.events, ev.id]
+                          : ch.events.filter((x) => x !== ev.id),
+                      })
+                    }
+                  />
+                  {ev.label}
+                </label>
+              ))}
+            </div>
+
+            <label>消息模板（可选，支持 {'{{title}} {{body}} {{event}} {{runId}}'}）</label>
+            <input
+              value={ch.template ?? ''}
+              onChange={(e) => patch(ch.id, { template: e.target.value || undefined })}
+              placeholder="留空则按通道类型使用默认排版"
+            />
+
+            <div className="settings-row channel-card-ops">
+              <button className="ghost" disabled={testing === ch.id} onClick={() => void test(ch)}>
+                {testing === ch.id ? '发送中…' : '📤 测试发送'}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      {channels.length === 0 && (
+        <p className="settings-hint">
+          还没有通道。新增一条后，运行的「等待审批 / 完成 / 失败」就会自动推送过去。
+        </p>
+      )}
+
+      <div className="settings-actions">
+        <button className="ghost" onClick={add}>
+          + 新增通道
+        </button>
+        <button className="primary" onClick={() => void save()}>
+          保存通道
+        </button>
+      </div>
+    </>
+  );
+}
 
 function GithubCredCard() {
   const log = useStore((s) => s.log);
@@ -237,7 +420,6 @@ export function SettingsView() {
   // 响应式读当前空间（D4）：侧栏切换后本页自动跟随刷新
   const spaceId = useStore((s) => s.space);
   const [profile, setProfile] = useState<SpaceProfile | null>(null);
-  const [notify, setNotify] = useState<{ feishuWebhook: string; notifyEvents?: string[] }>({ feishuWebhook: '' });
   const [env, setEnv] = useState<{ herdrOk: boolean; herdrVersion: string | null; env: { agentsInstalled: string[] } } | null>(null);
   const [discover, setDiscover] = useState<{ markdowns: string[]; skills: string[]; repos: string[] } | null>(null);
   const [browsing, setBrowsing] = useState(false);
@@ -255,9 +437,6 @@ export function SettingsView() {
         .then((r) => r.json())
         .then((p) => setProfile(p as SpaceProfile));
     }
-    void fetch('/api/notify/settings')
-      .then((r) => r.json())
-      .then((s) => setNotify({ feishuWebhook: s.feishuWebhook ?? '', notifyEvents: s.notifyEvents }));
     void api.health().then(setEnv);
   }, [spaceId]);
 
@@ -311,27 +490,6 @@ export function SettingsView() {
       log('error', `保存失败：${(e as Error).message}`);
     }
   };
-
-  const saveNotify = async () => {
-    try {
-      await fetch('/api/notify/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...(notify.feishuWebhook && !notify.feishuWebhook.startsWith('(') ? { feishuWebhook: notify.feishuWebhook } : {}),
-          notifyEvents: notify.notifyEvents ?? ['blocked', 'completed', 'failed'],
-        }),
-      }).then(async (r) => {
-        if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
-      });
-      log('info', '通知设置已保存');
-    } catch (e) {
-      log('error', `保存失败：${(e as Error).message}`);
-    }
-  };
-
-  const events = ['blocked', 'completed', 'failed'];
-  const activeEvents = notify.notifyEvents ?? ['blocked', 'completed', 'failed'];
 
   return (
     <div className="settings-view">
@@ -528,38 +686,13 @@ export function SettingsView() {
           )}
         </section>
 
-        <section className="settings-card" id="sec-notify">
-          <h3>出站通知（飞书 webhook）</h3>
-          <label>机器人 webhook URL（留空 = 关闭；仅支持飞书开放平台域名）</label>
-          <input
-            value={notify.feishuWebhook}
-            onChange={(e) => setNotify((n) => ({ ...n, feishuWebhook: e.target.value }))}
-            placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"
-          />
-          <div className="settings-row wrap">
-            {events.map((ev) => (
-              <label key={ev} className="settings-check">
-                <input
-                  type="checkbox"
-                  checked={activeEvents.includes(ev)}
-                  onChange={(e) =>
-                    setNotify((n) => ({
-                      ...n,
-                      notifyEvents: e.target.checked
-                        ? [...(n.notifyEvents ?? events), ev]
-                        : (n.notifyEvents ?? events).filter((x) => x !== ev),
-                    }))
-                  }
-                />
-                {ev === 'blocked' ? '等待审批' : ev === 'completed' ? '完成' : '失败'}
-              </label>
-            ))}
-          </div>
-          <div className="settings-actions">
-            <button className="primary" onClick={() => void saveNotify()}>
-              保存通知设置
-            </button>
-          </div>
+        <section className="settings-card" id="sec-channels">
+          <h3>出站通道</h3>
+          <p className="settings-hint">
+            运行事件（等待审批 / 完成 / 失败）会推送到下面每条已启用的通道。
+            原先的「飞书 webhook」配置会在首次读取时自动迁移为一条飞书通道，不会丢。
+          </p>
+          <ChannelsEditor />
         </section>
 
         <section className="settings-card" id="sec-roles">

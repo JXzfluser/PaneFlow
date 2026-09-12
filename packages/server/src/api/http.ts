@@ -10,7 +10,14 @@ import { Store } from '../orchestrate/store.js';
 import type { SpaceProfile } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { detectInstalledAgents } from './env-check.js';
-import { notify, readNotifySettings, writeNotifySettings, type NotifySettings } from './notifier.js';
+import { readNotifySettings, writeNotifySettings, type NotifySettings } from './notifier.js';
+import {
+  dispatchChannels,
+  readChannels,
+  sendChannel,
+  writeChannels,
+  type Channel,
+} from './channels.js';
 import { readGateway, writeGateway, buildGatewayEnv, type ModelGatewaySettings } from './gateway.js';
 import { readGithubSettings, writeGithubSettings, buildGithubEnv, type GithubSettings } from './github-cred.js';
 
@@ -294,6 +301,44 @@ export async function buildHttpServer(deps: HttpDeps) {
     };
     writeNotifySettings(deps.dataDir, next);
     return { saved: true };
+  });
+
+  // -- outbound channels ----------------------------------------------------
+
+  /** 出参脱敏：加签密钥不回传明文，'(已配置)' 作为"保留原值"的标记。 */
+  const mask = (list: Channel[]): Channel[] =>
+    list.map((c) => ({ ...c, secret: c.secret ? '(已配置)' : undefined }));
+
+  app.get('/api/channels', async () => ({ channels: mask(readChannels(deps.dataDir)) }));
+
+  app.put<{ Body: { channels: Channel[] } }>('/api/channels', async (req, reply) => {
+    const next = req.body?.channels;
+    if (!Array.isArray(next)) return reply.code(400).send({ error: 'channels 必须是数组' });
+    const prev = readChannels(deps.dataDir);
+    const prevById = new Map(prev.map((c) => [c.id, c]));
+    const merged: Channel[] = next.map((c) => {
+      const old = prevById.get(c.id);
+      // 前端拿不到明文密钥；'(已配置)' 或缺失都表示沿用原值
+      const secret = c.secret && c.secret !== '(已配置)' ? c.secret : old?.secret;
+      return { ...c, ...(secret ? { secret } : { secret: undefined }) };
+    });
+    writeChannels(deps.dataDir, merged);
+    return { saved: true, channels: mask(merged) };
+  });
+
+  app.post<{ Body: { channel: Channel } }>('/api/channels/test', async (req, reply) => {
+    const ch = req.body?.channel;
+    if (!ch?.url) return reply.code(400).send({ error: '通道缺少接收地址' });
+    const prev = readChannels(deps.dataDir).find((c) => c.id === ch.id);
+    const secret = ch.secret && ch.secret !== '(已配置)' ? ch.secret : prev?.secret;
+    const r = await sendChannel({ ...ch, ...(secret ? { secret } : {}) }, {
+      event: 'blocked',
+      title: 'PaneFlow 通道测试',
+      body: `这是一条来自「${ch.name || ch.type}」的测试消息，收到即表示通道配置正确。`,
+      dagName: '(test)',
+    });
+    if (!r.ok) return reply.code(502).send({ error: r.error ?? '发送失败' });
+    return { sent: true };
   });
 
   // -- spaces ---------------------------------------------------------------
@@ -634,23 +679,34 @@ export async function buildHttpServer(deps: HttpDeps) {
   // -- websocket broadcast ------------------------------------------------------
 
   const clients = new Set<{ socket: { send: (s: string) => void } }>();
-  const notified = new Set<string>();
+  // 去重记录按 runId 分组，run 到终态即整组释放
+  // （旧实现是一个全局 Set 只增不清，长跑服务会一直涨且重启后失效）
+  const notified = new Map<string, Set<string>>();
   deps.engine.onChange((run) => {
     // outbound notifications on state transitions (deduped per run+event)
     const events: ('blocked' | 'completed' | 'failed')[] = [];
     if (Object.values(run.nodes).some((n) => n.state === 'blocked')) events.push('blocked');
     if (run.state === 'completed') events.push('completed');
     if (run.state === 'failed') events.push('failed');
+
+    const seen = notified.get(run.runId) ?? new Set<string>();
+    notified.set(run.runId, seen);
+    const blocked = Object.values(run.nodes).filter((n) => n.state === 'blocked').map((n) => n.nodeId);
+
     for (const ev of events) {
-      const key = `${run.runId}:${ev}`;
-      if (notified.has(key)) continue;
-      notified.add(key);
-      const blocked = Object.values(run.nodes).filter((n) => n.state === 'blocked').map((n) => n.nodeId);
-      notify(
-        deps.dataDir,
-        ev,
-        `${run.dagName}（run ${run.runId}）${ev === 'blocked' ? `节点 ${blocked.join('、')} 等待人工审批` : ''}`,
-      );
+      if (seen.has(ev)) continue;
+      seen.add(ev);
+      dispatchChannels(deps.dataDir, {
+        event: ev,
+        title: `PaneFlow ${ev === 'blocked' ? '⛔ 等待审批' : ev === 'completed' ? '✅ 已完成' : '❌ 失败'}`,
+        body: `${run.dagName}（run ${run.runId}）${ev === 'blocked' ? `节点 ${blocked.join('、')} 等待人工审批` : ''}`,
+        runId: run.runId,
+        dagName: run.dagName,
+        ...(ev === 'blocked' ? { nodeIds: blocked } : {}),
+      });
+    }
+    if (run.state === 'completed' || run.state === 'failed' || run.state === 'cancelled') {
+      notified.delete(run.runId);
     }
   });
   const push = (payload: unknown): void => {

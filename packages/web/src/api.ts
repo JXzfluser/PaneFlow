@@ -2,6 +2,20 @@ import type { DagGraph, NodeRunRecord, RunRecord } from '@paneflow/shared';
 
 const BASE = '';
 
+/** 出站通道：把运行事件推送到外部系统（与服务端 api/channels.ts 保持一致） */
+export type ChannelType = 'webhook' | 'feishu' | 'dingtalk';
+export type NotifyEvent = 'blocked' | 'completed' | 'failed';
+export interface Channel {
+  id: string;
+  type: ChannelType;
+  name: string;
+  enabled: boolean;
+  url: string;
+  secret?: string;
+  events: NotifyEvent[];
+  template?: string;
+}
+
 let currentSpace = localStorage.getItem('pf-space') || 'default';
 
 export function setSpace(id: string): void {
@@ -68,6 +82,11 @@ export const api = {
   nodeInput: (runId: string, nodeId: string, text: string) =>
     json<{ sent: boolean }>('POST', `/api/runs/${runId}/nodes/${nodeId}/input`, { text }),
   syncStatus: () => json<{ configured: boolean; repo: string | null }>('GET', '/api/sync/status'),
+  // -- 出站通道（自动化跟踪：把运行事件推到你选的地方） --
+  listChannels: () => json<{ channels: Channel[] }>('GET', '/api/channels', undefined, { raw: true }),
+  saveChannels: (channels: Channel[]) =>
+    json<{ saved: boolean; channels: Channel[] }>('PUT', '/api/channels', { channels }, { raw: true }),
+  testChannel: (channel: Channel) => json<{ sent: boolean }>('POST', '/api/channels/test', { channel }, { raw: true }),
   syncPush: () => json<{ started: boolean }>('POST', '/api/sync/push'),
   syncPull: () => json<{ imported: string[]; failed: { file: string; error: string }[] }>('POST', '/api/sync/pull'),
   dryRun: (graph: DagGraph, cwd: string, variables?: Record<string, string>) =>
