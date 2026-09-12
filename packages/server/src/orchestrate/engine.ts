@@ -236,6 +236,16 @@ export class Engine {
     const ws = await this.ops.createWorkspace(label, run.cwd, this.opts.paneEnv ?? {});
     run.workspaceId = ws.workspaceId;
     this.rootPanes.set(run.runId, ws.rootPaneId);
+    // 工作区卫生守护：运行产物目录（.herdr/）不进版本库
+    try {
+      const gitignore = path.join(run.cwd, '.gitignore');
+      const cur = fs.existsSync(gitignore) ? fs.readFileSync(gitignore, 'utf8') : null;
+      if (cur === null || !/^\.herdr\/?$/m.test(cur)) {
+        fs.appendFileSync(gitignore, `${cur && !cur.endsWith('\n') ? '\n' : ''}.herdr/\n`);
+      }
+    } catch {
+      // 非 git 目录或只读 —— 跳过
+    }
     this.persistAndNotify(run);
 
     const blackboard = new Map<string, Artifact>();
@@ -827,6 +837,7 @@ export class Engine {
 
     if ((cfg.mode ?? 'wait') === 'wait') {
       const deadline = Date.now() + 24 * 60 * 60 * 1000;
+      let lastMirror = 0;
       for (;;) {
         if (this.cancels.has(run.runId)) {
           this.stopRun(child.runId);
@@ -836,6 +847,16 @@ export class Engine {
         if (cur && cur.state !== 'running') {
           if (cur.state === 'completed') return null;
           return `子运行 ${child.runId} 结束于 ${cur.state}`;
+        }
+        // 进度镜像：把子运行节点粒度进度写到父节点（运行中心可见）
+        if (cur && Date.now() - lastMirror > 30_000) {
+          lastMirror = Date.now();
+          const all = Object.values(cur.nodes);
+          const done = all.filter((n) => ['done', 'failed', 'skipped', 'cancelled'].includes(n.state)).length;
+          const working = all.find((n) => ['working', 'blocked', 'starting'].includes(n.state));
+          const recP = run.nodes[node.id]!;
+          recP.error = `子运行 ${child.runId}（模板 ${usedTemplate}）：${done}/${all.length} 节点${working ? ` · ${working.nodeId} ${working.state}` : ''}`;
+          this.persistAndNotify(run);
         }
         if (Date.now() > deadline) return '等待子运行超时（24h）';
         await new Promise((r) => setTimeout(r, 3000));
@@ -915,8 +936,23 @@ export class Engine {
       rec.agentStatus = status;
       if (status === 'idle' || status === 'done') return;
       if (status === 'blocked') {
+        // 常见确认框（trust/bypass：光标默认在否定项）自动应答一轮，未决再转人工
         rec.state = 'blocked';
-        rec.blockedPrompt = 'Agent 启动需要人工确认（可能是信任/权限对话框）——请在终端预览查看并用按键处理，或点放行发送回车';
+        rec.blockedPrompt = '启动确认框：自动应答中（下移+回车）…';
+        this.persistAndNotify(run);
+        await this.ops.sendKeys(agentName, ['down']).catch(() => {});
+        await sleep(400);
+        await this.ops.sendKeys(agentName, ['enter']).catch(() => {});
+        await sleep(4000);
+        const after = (await this.ops.getAgentStatus(agentName)) ?? 'unknown';
+        rec.agentStatus = after;
+        if (after === 'idle' || after === 'done') {
+          rec.state = 'starting';
+          this.persistAndNotify(run);
+          continue;
+        }
+        rec.state = 'blocked';
+        rec.blockedPrompt = '自动应答未解决启动确认——请在终端预览查看并用按键处理，或点放行发送回车';
         this.persistAndNotify(run);
         const action = await new Promise<ApprovalAction>((resolve) => {
           this.blockedWaiters.set(`${run.runId}:${rec.nodeId}`, resolve);

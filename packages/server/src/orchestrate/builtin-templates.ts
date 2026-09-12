@@ -113,7 +113,7 @@ const standardDevFlow: DagGraph = graph(
     agent(
       'doc',
       '文档归档',
-      '为项目补全 README（简介/安装/运行/测试）与 CHANGELOG（首个版本记录）。上游自测结论：{{verify.artifact.summary}}。完成后写结果文件。',
+      '为项目补全 README（简介/安装/运行/测试）与 CHANGELOG（首个版本记录）。上游自测结论：{{verify.artifact.summary}}。完成后写结果文件。若工作目录是 git 仓库：将全部变更 git add 并提交（Conventional Commits 规范，正文注明关联 Issue）。',
       { onFail: 'continue' },
     ),
     end(),
@@ -370,7 +370,7 @@ const genericDeliveryNodes: DagGraph['nodes'] = [
   agent(
     'wrapup',
     '归档收口',
-    '各任务结果：{{impl.artifact.summary}}；验收断言核对结论：{{verify.artifact.summary}}。汇总本轮交付（做了什么/遗留什么/验证情况）写入结果文件，并把交付摘要作为评论回贴到关联 Issue（gh issue comment）。',
+    '各任务结果：{{impl.artifact.summary}}；验收断言核对结论：{{verify.artifact.summary}}。汇总本轮交付（做了什么/遗留什么/验证情况）写入结果文件。若工作目录是 git 仓库且产生变更：git add -A 并提交（Conventional Commits，正文注明关联 Issue），再把交付摘要作为评论回贴到关联 Issue（gh issue comment）。',
     { onFail: 'continue' },
   ),
   end(),
