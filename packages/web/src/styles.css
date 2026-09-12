@@ -94,19 +94,126 @@ body {
 .dot.bad { background: var(--err); }
 .dot.unknown { background: var(--idle); }
 .tb-status { display: flex; align-items: center; gap: 10px; color: var(--text-dim); font-size: 11px; }
+/* 顶栏运行选择器：限宽并省略，避免长 runId 顶开顶栏 */
+.run-picker { max-width: 220px; text-overflow: ellipsis; }
+/* 未设置工作目录时给出可见提示，替代原先写死的无效默认值（D2） */
+/* 未设置必填项时给出可见提示（原为 topbar 专用，提为全局） */
+input.needs-attn,
+input.needs-attn:focus-visible { border-color: var(--warn); }
+input.needs-attn::placeholder { color: var(--warn); opacity: 0.85; }
 
-button {
-  background: var(--panel); color: var(--text);
-  border: 1px solid var(--border); border-radius: 8px;
-  padding: 5px 13px; cursor: pointer; font: inherit; font-family: var(--font-body);
+/* ==========================================================================
+   控件基线（设计系统层）
+   统一 input / textarea / select / button 的字体·圆角·间距·边框·焦点环·过渡，
+   让散落在各视图的裸控件不再依赖内联样式救场（原先只有 .props / .settings-card /
+   .tasks-field 三处各写一遍，其余靠 inline style）。
+   ========================================================================== */
+:root {
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-lg: 12px;
+  --focus-ring: 0 0 0 3px var(--primary-bg);
+  --t-fast: 120ms ease;
 }
-button:hover { border-color: var(--accent); color: var(--accent); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fffefa; font-weight: 500; }
-button.primary:hover { filter: brightness(1.08); color: #fffefa; }
-button:hover { border-color: var(--accent); color: var(--accent); }
 
-button.danger:hover { border-color: var(--err); color: var(--err); }
+/* -- 字段类控件 -------------------------------------------------------- */
+input,
+textarea,
+select {
+  font: inherit;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  margin: 0;
+  transition:
+    border-color var(--t-fast),
+    box-shadow var(--t-fast),
+    background var(--t-fast);
+}
+textarea { min-height: 60px; resize: vertical; line-height: 1.6; }
+input::placeholder,
+textarea::placeholder { color: var(--text-dim); opacity: 0.75; }
+input:disabled,
+textarea:disabled,
+select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 统一焦点环：只在键盘/程序聚焦时出现，保证可访问性又不打扰鼠标用户 */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* 复选 / 单选：重置上面给 input 加的内边距与高度 */
+input[type='checkbox'],
+input[type='radio'] {
+  padding: 0;
+  margin: 0 5px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  vertical-align: -1px;
+}
+
+/* -- 下拉：统一箭头，跨平台一致 ---------------------------------------- */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  cursor: pointer;
+  /* 内联 SVG 三角箭头（stroke 用中灰，双主题下都可读） */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23998f78' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+}
+select:hover:not(:disabled) { border-color: var(--accent); }
+select.sm { padding: 2px 22px 2px 7px; font-size: 11.5px; }
+/* macOS 暗色下 option 会露出系统白底 —— 显式指定配色 */
+select option { background: var(--panel-2); color: var(--text); }
+
+/* -- 按钮 -------------------------------------------------------------- */
+button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 13px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: var(--font-body);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+  transition:
+    border-color var(--t-fast),
+    color var(--t-fast),
+    background var(--t-fast),
+    filter var(--t-fast),
+    opacity var(--t-fast);
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:active:not(:disabled) { filter: brightness(0.97); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fffefa; font-weight: 500; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); color: #fffefa; border-color: var(--accent); }
+button.danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+/* 无框次要按钮：用于卡片里的低优先级操作，避免满屏描边 */
+button.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
+button.ghost:hover:not(:disabled) { background: var(--panel-2); border-color: var(--border); color: var(--accent); }
+button.subtle { background: var(--panel-2); }
+button.sm { padding: 2px 8px; font-size: 11px; border-radius: var(--radius-sm); }
+/* 纯图标按钮：收紧内边距，保证方形 */
+button.icon { padding: 4px 6px; min-width: 28px; }
 
 /* main layout */
 .main { display: flex; flex: 1; min-height: 0; }
@@ -158,15 +265,39 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 /* property panel */
 .props h3 { margin: 4px 0 12px; font-size: 14px; font-family: var(--font-display); color: var(--text); }
 .props label { display: block; color: var(--text-dim); font-size: 11px; margin: 10px 0 3px; }
+/* 用 background-color 而非 background 简写：否则会重置掉基线里下拉箭头的 background-image */
 .props input, .props select, .props textarea {
-  width: 100%; background: var(--panel-2); color: var(--text);
+  width: 100%; background-color: var(--panel-2); color: var(--text);
   border: 1px solid var(--border); border-radius: 6px;
   padding: 6px 8px; font: inherit; font-size: 12px;
 }
+/* 上面简写 padding 会覆盖基线的 padding-right，这里为下拉箭头补回空间 */
+.props select { padding-right: 26px; }
 .props textarea { min-height: 90px; resize: vertical; }
 .props .row { display: flex; gap: 8px; }
 .props .row > div { flex: 1; }
 .props .hint { color: var(--text-dim); font-size: 11px; margin-top: 4px; }
+
+/* property panel two-tier: 常用 / 高级设置（B1） */
+.props .adv-toggle {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; text-align: left; margin: 16px 0 2px;
+  background: var(--panel-2); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 9px; font-size: 11.5px;
+}
+.props .adv-toggle:hover { color: var(--accent); border-color: var(--accent); }
+.props .adv-toggle .adv-badge {
+  margin-left: auto; color: var(--accent); font-size: 10.5px;
+  background: var(--primary-bg); border-radius: 8px; padding: 0 6px;
+}
+.props .adv-body {
+  border-left: 2px solid var(--border);
+  padding: 2px 0 2px 10px; margin: 6px 0 0;
+}
+.props .adv-body[data-open='0'] { display: none; }
+.props .adv-body .hint { margin-bottom: 2px; }
+.props .req-mark { color: var(--err); margin-left: 3px; }
 
 /* react flow theming */
 .react-flow { background: transparent; }
@@ -279,6 +410,19 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .modal table { border-collapse: collapse; width: 100%; margin: 8px 0; }
 .modal td, .modal th { border: 1px solid var(--border); padding: 5px 9px; font-size: 12px; text-align: left; }
 .modal th { color: var(--text-dim); font-weight: 500; }
+
+/* compact prompt / confirm modal（D3） */
+.modal.modal-prompt { width: min(400px, 92vw); padding: 18px 20px; }
+.modal.modal-prompt h2 { font-size: 15px; margin: 0 0 8px; }
+.modal.modal-prompt .hint { color: var(--text-dim); font-size: 11.5px; margin: 0 0 4px; line-height: 1.7; }
+.modal.modal-prompt label { display: block; color: var(--text-dim); font-size: 11px; margin: 12px 0 3px; }
+.modal.modal-prompt input {
+  width: 100%; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 9px; font: inherit; font-size: 12.5px;
+}
+.modal.modal-prompt .pm-err { color: var(--err); margin-top: 8px; }
+.modal.modal-prompt .close-row { gap: 8px; }
 .st-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: baseline; }
 
 /* template item: name left (truncates), ops pinned right — never overlaps text */
@@ -333,11 +477,23 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .sidenav-item.active { background: var(--primary-bg); color: var(--accent); }
 .sidenav-icon { font-size: 15px; }
 .sidenav-label { font-size: 10px; }
-.sidenav-bottom { margin-top: auto; width: 100%; padding: 0 6px; }
-.sidenav-space {
-  width: 100%; font-size: 10px; padding: 4px 2px; border-radius: 6px;
-  background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border);
+.sidenav-bottom {
+  margin-top: auto; width: 100%; padding: 0 6px;
+  display: flex; flex-direction: column; gap: 4px;
 }
+.sidenav-space {
+  width: 100%; font-size: 10px; border-radius: 6px;
+  background-color: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border);
+  /* 侧栏很窄（56px）：缩小箭头并压缩内边距，仍保留下拉可辨识性 */
+  padding: 4px 12px 4px 4px;
+  background-position: right 3px center;
+  background-size: 7px 4px;
+}
+.sidenav-space-add {
+  width: 100%; padding: 3px 0; font-size: 13px; line-height: 1;
+  border-radius: 6px; background: transparent; color: var(--text-dim);
+}
+.sidenav-space-add:hover { color: var(--accent); border-color: var(--accent); }
 .app-main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 /* global topbar for view chrome */
@@ -373,7 +529,28 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .run-progress-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
 
 /* settings view */
-.settings-view { flex: 1; overflow-y: auto; padding: 16px 20px; }
+/* 设置页：左侧章节导航 + 右侧分区（原为 6 张卡片平铺到底 + 42 处内联样式） */
+.settings-view {
+  flex: 1; min-height: 0; overflow: hidden;
+  display: flex; gap: 18px; padding: 16px 20px;
+}
+.settings-nav {
+  width: 158px; flex-shrink: 0; align-self: flex-start; position: sticky; top: 0;
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+}
+.settings-nav-item {
+  justify-content: flex-start; padding: 7px 10px;
+  background: transparent; border-color: transparent; color: var(--text-dim);
+  font-size: 12.5px; border-radius: var(--radius-sm);
+}
+.settings-nav-item:hover:not(:disabled) {
+  background: var(--panel-2); color: var(--text); border-color: transparent;
+}
+.settings-nav-item.on { background: var(--primary-bg); color: var(--accent); border-color: transparent; }
+.settings-nav-icon { font-size: 13px; }
+
+.settings-body { flex: 1; min-width: 0; overflow-y: auto; padding-right: 4px; }
 .settings-card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   padding: 16px 20px; margin-bottom: 14px;
@@ -381,23 +558,249 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .settings-card h3 { margin: 0 0 10px; font-size: 15px; font-family: var(--font-display); }
 .settings-card label { display: block; color: var(--text-dim); font-size: 12px; margin: 9px 0 4px; }
-.settings-card input {
-  width: 100%; background: var(--panel-2); color: var(--text);
+.settings-card input,
+.settings-card textarea,
+.settings-card select {
+  width: 100%; background-color: var(--panel-2); color: var(--text);
   border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 12px;
 }
-.settings-card button { margin-top: 10px; }
+/* 上面简写 padding 会覆盖基线的 padding-right，为下拉箭头补回空间 */
+.settings-card select { padding-right: 26px; }
+.settings-hint { color: var(--text-dim); font-size: 11.5px; margin: 0 0 8px; line-height: 1.7; }
+.inline-ok { color: var(--ok); }
+
+/* 卡片底部统一操作栏：右对齐，避免保存按钮散落在字段之间 */
+.settings-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.settings-action-note { margin-right: auto; color: var(--text-dim); font-size: 11.5px; }
+
+.settings-row { display: flex; gap: 8px; align-items: center; }
+.settings-row.wrap { flex-wrap: wrap; margin-top: 8px; }
+.settings-row input { flex: 1; min-width: 0; }
+.settings-row button { flex-shrink: 0; }
+
+/* 复选行：用更高特异性覆盖上面 label/input 的块级与 100% 宽 */
+.settings-card label.settings-check {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin: 0 14px 0 0; color: var(--text-dim); font-size: 12px; cursor: pointer;
+}
+.settings-card .settings-check input { width: auto; margin: 0; }
+
+.settings-listbox {
+  max-height: 140px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+}
+.settings-browse-item { padding: 3px 6px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.settings-browse-item:hover { background: var(--panel-2); color: var(--accent); }
+.settings-dropzone {
+  font-size: 11px; color: var(--text-dim); cursor: pointer;
+  border: 1px dashed var(--border); border-radius: 6px; padding: 2px 8px;
+}
+.settings-dropzone:hover { border-color: var(--accent); color: var(--accent); }
+.settings-discover { display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap; }
+.settings-discover > div { flex: 1; min-width: 210px; }
+.recent-roots { gap: 6px; }
+
+/* 角色编辑器 */
+.role-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.role-card-head { display: flex; gap: 8px; }
+.settings-card .role-card-head input.role-name { flex: 1 1 auto; width: auto; min-width: 0; }
+.settings-card .role-card-head select { width: 150px; flex: 0 0 auto; }
+.settings-card .role-card textarea { width: 100%; min-height: 56px; margin-top: 8px; }
 
 /* icon-only buttons */
 .tpl-item .tpl-ops button, .run-card-ops button, .tb-group button, .tb-status button {
   min-width: 30px; text-align: center;
 }
-button[title]:has(> none) {}
 
 /* variables editor */
 .vars-editor {
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   padding: 12px 16px; margin: 0 0 4px;
 }
+
+/* ==========================================================================
+   A 组：任务视图 —— 一句话下发 + 编排预告（说需求是主路径）
+   ========================================================================== */
+.tasks-view { flex: 1; overflow-y: auto; padding: 20px 24px; }
+.tasks-hero {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px 22px; box-shadow: 0 1px 2px rgba(44, 41, 33, 0.04);
+}
+.tasks-hero h2 { margin: 0 0 4px; font-size: 20px; font-family: var(--font-display); color: var(--text); }
+.tasks-sub { margin: 0 0 14px; font-size: 12.5px; color: var(--text-dim); line-height: 1.8; }
+.tasks-input {
+  width: 100%; min-height: 96px; resize: vertical;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 11px 12px; font: inherit; font-size: 13px; line-height: 1.7;
+}
+.tasks-input:focus { outline: none; border-color: var(--accent); }
+.tasks-form-row { display: flex; gap: 12px; margin-top: 12px; }
+.tasks-field { flex: 1; min-width: 0; }
+.tasks-field.narrow { flex: 0 0 150px; }
+.tasks-field label { display: block; color: var(--text-dim); font-size: 11px; margin-bottom: 4px; }
+.tasks-field input {
+  width: 100%; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
+  font: inherit; font-size: 12.5px;
+}
+.tasks-field input.needs-attn { border-color: var(--warn); }
+.tasks-actions { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
+.tasks-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.tasks-check input { width: auto; margin: 0; }
+.tasks-actions .primary { margin-left: auto; padding: 8px 20px; }
+
+.tasks-recent { margin-top: 22px; }
+.tasks-recent-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 14px; color: var(--text); }
+.tasks-recent-head .link { margin-left: auto; }
+.tasks-empty {
+  color: var(--text-dim); padding: 28px; text-align: center; font-size: 12.5px;
+  background: var(--panel); border: 1px dashed var(--border); border-radius: 10px;
+}
+
+/* 文本型链接按钮 */
+.link { background: none; border: none; padding: 0; color: var(--accent); font-size: 12px; cursor: pointer; }
+.link:hover { text-decoration: underline; border: none; color: var(--accent); }
+
+.task-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 16px; margin-bottom: 10px;
+  box-shadow: 0 1px 2px rgba(44, 41, 33, 0.04);
+}
+.task-card.gated { border-color: var(--warn); }
+.task-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.task-card .badge {
+  font-size: 10.5px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-dim);
+}
+.task-card .badge.working { color: var(--warn); border-color: var(--warn); }
+.task-card .badge.done { color: var(--ok); border-color: var(--ok); }
+.task-card .badge.failed { color: var(--err); border-color: var(--err); }
+.task-title { font-family: var(--font-display); font-size: 14px; color: var(--text); }
+.task-meta { color: var(--text-dim); font-size: 11px; font-family: var(--font-mono); }
+.task-ops { margin-left: auto; display: flex; gap: 6px; }
+.task-ops button { padding: 3px 10px; font-size: 12px; }
+.task-progress-text { color: var(--text-dim); font-size: 11.5px; white-space: nowrap; }
+.task-blocked { margin-top: 10px; font-size: 12px; color: var(--err); }
+
+/* 编排预告卡片 */
+.plan-gate { margin-top: 12px; border: 1px solid var(--warn); border-radius: 10px; background: var(--chip-warn); padding: 12px 14px; }
+.plan-gate-head { display: flex; align-items: center; gap: 12px; }
+.plan-gate-eyebrow { font-size: 12px; font-weight: 500; color: var(--warn); letter-spacing: 0.5px; }
+.plan-gate-head .link { margin-left: auto; }
+.plan-brief { margin: 8px 0 4px; font-size: 12.5px; color: var(--text); line-height: 1.7; }
+.plan-skeleton { margin: 4px 0 8px; font-size: 12.5px; color: var(--text); }
+.plan-use { color: var(--text-dim); }
+.plan-steps { list-style: none; padding: 0; margin: 6px 0 0; }
+.plan-steps li {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 4px 0; border-top: 1px dashed var(--border); font-size: 12px;
+}
+.plan-steps li:first-child { border-top: none; }
+.plan-step-no { flex: 0 0 18px; color: var(--text-dim); font-family: var(--font-mono); font-size: 11px; }
+.plan-step-label { flex: 0 0 auto; color: var(--text); font-weight: 500; }
+.plan-step-note { color: var(--text-dim); font-size: 11.5px; min-width: 0; }
+.plan-summary { margin: 10px 0 0; font-size: 11.5px; color: var(--text-dim); line-height: 1.7; }
+.plan-gate-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+.plan-gate-prompt { margin-top: 8px; font-size: 11px; color: var(--text-dim); }
+
+/* ==========================================================================
+   C 组：步骤清单视图 —— DAG 的"人话"呈现
+   ========================================================================== */
+.steplist { position: absolute; inset: 0; overflow-y: auto; padding: 18px 22px; }
+.steplist-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.steplist-head b { font-size: 14px; font-family: var(--font-display); color: var(--text); }
+.steplist-meta { color: var(--text-dim); font-size: 11.5px; }
+.steplist-body { list-style: none; padding: 0; margin: 0; }
+.steplist-empty { color: var(--text-dim); text-align: center; padding: 60px 20px; font-size: 12.5px; line-height: 1.9; }
+.step {
+  display: flex; gap: 12px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 11px 14px; margin-bottom: 8px;
+  box-shadow: 0 1px 2px rgba(44, 41, 33, 0.04);
+}
+.step:hover { border-color: var(--accent); }
+.step.sel { border-color: var(--accent); background: var(--primary-bg); }
+.step-no {
+  flex: 0 0 24px; height: 24px; border-radius: 50%;
+  background: var(--panel-2); color: var(--text-dim);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11.5px; font-family: var(--font-mono);
+}
+.step.sel .step-no { background: var(--accent); color: #fffefa; }
+.step-main { min-width: 0; flex: 1; }
+.step-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.step-label { font-size: 13.5px; font-weight: 500; color: var(--text); }
+.step-tag { font-size: 10px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-dim); }
+.step-tag.parallel { color: var(--accent); border-color: var(--accent); }
+.step-state { margin-left: auto; font-size: 10.5px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
+.step-state.done { color: var(--ok); border-color: var(--ok); }
+.step-state.working { color: var(--warn); border-color: var(--warn); }
+.step-state.blocked { color: var(--err); border-color: var(--err); }
+.step-state.failed { color: var(--err); border-color: var(--err); }
+.step-note { margin-top: 4px; font-size: 12px; color: var(--text-dim); line-height: 1.7; }
+.step-cond { margin-top: 4px; font-size: 11.5px; color: var(--warn); }
+.step-cond.blocked { color: var(--err); }
+.step-summary {
+  margin-top: 6px; font-size: 12px; color: var(--text);
+  background: var(--panel-2); border-radius: 6px; padding: 6px 9px;
+  white-space: pre-wrap; line-height: 1.7;
+}
+.step-prompt { margin-top: 6px; }
+.step-prompt summary { font-size: 11.5px; color: var(--text-dim); cursor: pointer; }
+.step-prompt pre {
+  margin: 6px 0 0; padding: 8px 10px; max-height: 200px; overflow-y: auto;
+  background: var(--sunken); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 11px; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+}
+
+/* 空画布引导（B5）：注意 .canvas-empty 是 pointer-events:none，按钮要单独放开 */
+.canvas-empty .empty-actions { pointer-events: auto; display: flex; gap: 10px; margin: 14px 0 4px; }
+.canvas-empty .empty-actions button { padding: 8px 18px; font-size: 13px; }
+.canvas-empty .steps.hint { max-width: 420px; }
+
+/* 指南首屏瘦身（B7） */
+.guide-more { font-size: 12.5px; color: var(--text-dim); line-height: 1.9; }
+.guide-more .link { margin-left: 6px; }
+
+/* 顶栏：清单/画布分段控件 + ⋯ 更多（B6） */
+.pane-switch { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.pane-switch button { border: none; border-radius: 0; padding: 5px 12px; background: transparent; color: var(--text-dim); font-size: 12px; }
+.pane-switch button.on { background: var(--primary-bg); color: var(--accent); }
+.tb-more { position: relative; }
+.tb-more-backdrop { position: fixed; inset: 0; z-index: 20; }
+.tb-more-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 21;
+  min-width: 172px; padding: 5px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.tb-more-menu button {
+  text-align: left; border: none; background: transparent; color: var(--text);
+  padding: 7px 10px; font-size: 12.5px; border-radius: 6px;
+}
+.tb-more-menu button:hover { background: var(--panel-2); color: var(--accent); }
+.tb-more-menu button.on { color: var(--accent); }
+
+/* 节点库：意图分组 + 模板中文名（B2/B3） */
+.pal-hint {
+  font-size: 11px; line-height: 1.7; color: var(--text-dim);
+  background: var(--panel-2); border-radius: 6px; padding: 7px 9px; margin-bottom: 4px;
+}
+.pal-collapse { float: right; border: none; background: transparent; padding: 0 4px; font-size: 11px; color: var(--text-dim); }
+.tpl-item .tpl-load { white-space: normal; }
+.tpl-item .tpl-title { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tpl-item .tpl-use {
+  display: block; margin-top: 2px; font-size: 10.5px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* 进度条填充色：原先缺失，导致 fill 不可见 */
+.run-progress-fill { background: var(--accent); }
 
 /* R4.4 移动端可用性：窄屏下侧栏压缩、面板收窄、控制台保持可用 */
 @media (max-width: 900px) {
@@ -413,4 +816,17 @@ button[title]:has(> none) {}
   .palette { width: 100%; max-height: 140px; border-right: none; border-bottom: 1px solid var(--border); }
   .props { width: 100%; border-left: none; border-top: 1px solid var(--border); }
   .canvas-wrap { min-height: 320px; }
+}
+@media (max-width: 900px) {
+  .tasks-view { padding: 12px; }
+  .tasks-form-row { flex-direction: column; }
+  .tasks-field.narrow { flex: 1 1 auto; }
+  .steplist { padding: 12px; }
+  .tb-more-menu { min-width: 150px; }
+  /* 设置页：窄屏改为顶部横向章节条，不再占左侧一栏 */
+  .settings-view { flex-direction: column; gap: 12px; overflow-y: auto; padding: 12px; }
+  .settings-nav {
+    width: 100%; position: static; flex-direction: row; flex-wrap: wrap; gap: 4px;
+  }
+  .settings-body { overflow: visible; padding-right: 0; }
 }

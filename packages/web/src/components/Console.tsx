@@ -229,9 +229,9 @@ function TerminalTab({
       <div style={{ marginBottom: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         选择节点：
         <select
+          className="sm"
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value || null)}
-          style={{ background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '3px 6px' }}
         >
           <option value="">（未选择）</option>
           {nodes.map((n) => (
