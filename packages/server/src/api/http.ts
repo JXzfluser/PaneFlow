@@ -79,13 +79,16 @@ export async function buildHttpServer(deps: HttpDeps) {
   await app.register(fastifyWebsocket);
 
   // R6.2 一键启动：服务端托管前端构建产物（生产模式无需 vite/proxy）
-  const webDist = path.resolve(deps.dataDir, '../../..', 'packages/web/dist');
-  for (const candidate of [webDist, path.join(process.cwd(), '../web/dist'), path.join(process.cwd(), 'dist')]) {
+  const candidates = [
+    path.join(process.cwd(), 'packages/web/dist'),
+    path.join(process.cwd(), 'dist'),
+  ];
+  for (const candidate of candidates) {
     if (fs.existsSync(path.join(candidate, 'index.html'))) {
       await app.register(fastifyStatic, { root: candidate, prefix: '/' });
       // SPA 回退：非 /api //ws 路径回 index.html
       app.setNotFoundHandler((req, reply) => {
-        const url = (req.url || '').split('?')[0] ?? '';
+        const url = ((req.url || '') as string).split('?')[0] ?? '';
         if (url.startsWith('/api') || url.startsWith('/ws')) {
           return reply.code(404).send({ error: 'not found' });
         }
