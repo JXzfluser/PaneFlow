@@ -9,7 +9,8 @@ import {
   type NodeChange,
   type EdgeChange,
 } from '@xyflow/react';
-import type { DagGraph, DagNode, DagNodeType, NodeRunState, RunRecord } from '@paneflow/shared';
+import type { DagGraph, DagNode, DagNodeType, EdgeCondition, NodeRunState, RunRecord, TemplateVariable } from '@paneflow/shared';
+import { graphToRfParts, rfToGraph, type GraphMeta, type PfEdge, type PfEdgeData, type PfNode, type PfNodeData } from './graph-serialization.js';
 import { setSpace as setApiSpace, getSpace, api } from './api.js';
 import { validateDag } from '@paneflow/shared';
 
@@ -32,14 +33,9 @@ function initialTheme(): ThemeName {
 }
 export type AppView = 'orchestrate' | 'runs' | 'settings';
 
-export interface PfNodeData extends Record<string, unknown> {
-  dagNode: DagNode;
-  runState?: NodeRunState;
-  agentStatus?: string;
-  blocked?: boolean;
-}
-
-export type PfNode = Node<PfNodeData>;
+export type { PfNodeData, PfNode, PfEdgeData } from './graph-serialization.js';
+export type PfEdge = Edge<PfEdgeData>;
+export type { GraphMeta };
 
 export interface ConsoleLog {
   ts: string;
@@ -62,6 +58,8 @@ interface PfStore {
   templateList: DagGraph[];
   theme: ThemeName;
   view: AppView;
+  graphVariables: TemplateVariable[];
+  graphMeta: GraphMeta;
 
   setView: (view: AppView) => void;
   setTheme: (theme: ThemeName) => void;
@@ -92,73 +90,6 @@ interface PfStore {
 
 let nodeSeq = 1;
 
-function dagToRf(graph: DagGraph): { nodes: PfNode[]; edges: Edge[] } {
-  const positioned = autoLayout(graph);
-  const nodes = graph.nodes.map((n) => ({
-    id: n.id,
-    type: n.type,
-    position: n.position ?? positioned[n.id] ?? { x: 80, y: 80 },
-    data: { dagNode: n },
-  }));
-  const edges = graph.edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    animated: false,
-  }));
-  return { nodes, edges };
-}
-
-/**
- * Hierarchical fallback layout for graphs whose saved positions are missing
- * or collapsed (e.g. templates authored elsewhere): topological depth on x,
- * vertically centred branches on y.
- */
-function autoLayout(graph: DagGraph): Record<string, { x: number; y: number }> {
-  const ids = graph.nodes.map((n) => n.id);
-  const hasSpread = (() => {
-    const pos = graph.nodes.filter((n) => n.position);
-    if (pos.length < ids.length || pos.length === 0) return false;
-    const xs = pos.map((n) => n.position!.x);
-    return Math.max(...xs) - Math.min(...xs) >= Math.max(240, ids.length * 12);
-  })();
-  const out: Record<string, { x: number; y: number }> = {};
-  if (hasSpread) {
-    for (const n of graph.nodes) out[n.id] = n.position ?? { x: 80, y: 80 };
-    return out;
-  }
-  // longest-path depth per node
-  const depth: Record<string, number> = {};
-  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-  for (const n of graph.nodes) {
-    const stack: { id: string; d: number }[] = [{ id: n.id, d: 0 }];
-    while (stack.length) {
-      const { id, d } = stack.pop()!;
-      if ((depth[id] ?? -1) >= d) continue;
-      depth[id] = d;
-      for (const e of graph.edges) if (e.source === id) stack.push({ id: e.target, d: d + 1 });
-    }
-  }
-  const byDepth = new Map<number, string[]>();
-  for (const id of ids) {
-    const d = depth[id] ?? 0;
-    if (!byDepth.has(d)) byDepth.set(d, []);
-    byDepth.get(d)!.push(id);
-  }
-  const LEVEL_W = 300;
-  const ROW_H = 130;
-  for (const [d, levelIds] of byDepth) {
-    levelIds.forEach((id, i) => {
-      const width = byId.get(id)!.type === 'agent' ? 220 : 150;
-      out[id] = {
-        x: 60 + d * LEVEL_W,
-        y: 320 + (i - (levelIds.length - 1) / 2) * ROW_H - width / 4,
-      };
-    });
-  }
-  return out;
-}
-
 export const useStore = create<PfStore>((set, get) => ({
   graphName: '未命名流水线',
   nodes: [],
@@ -174,11 +105,16 @@ export const useStore = create<PfStore>((set, get) => ({
   templateList: [],
   theme: initialTheme(),
   view: (localStorage.getItem('pf-view') as AppView) || 'orchestrate',
+  graphVariables: [],
+  graphMeta: {},
 
   setView: (view) => {
     localStorage.setItem('pf-view', view);
     set({ view });
   },
+
+  setGraphVariables: (graphVariables) => set({ graphVariables }),
+  setGraphMeta: (graphMeta) => set({ graphMeta }),
 
   setTheme: (theme) => {
     localStorage.setItem('pf-theme', theme);
@@ -245,30 +181,25 @@ export const useStore = create<PfStore>((set, get) => ({
   renameGraph: (name) => set({ graphName: name }),
 
   loadGraph: (graph) => {
-    const { nodes, edges } = dagToRf(graph);
-    set({ graphName: graph.name, nodes, edges, selectedNodeId: null });
+    const parts = graphToRfParts(graph);
+    set({
+      graphName: graph.name,
+      nodes: parts.nodes,
+      edges: parts.edges,
+      graphVariables: parts.variables,
+      graphMeta: parts.meta,
+      selectedNodeId: null,
+    });
     get().log('info', `已加载模板「${graph.name}」（${graph.nodes.length} 节点）`);
   },
 
   toGraph: () => {
-    const { graphName, nodes, edges } = get();
-    return {
-      version: 1,
-      name: graphName,
-      nodes: nodes.map((n) => ({
-        ...n.data.dagNode,
-        position: n.position,
-      })),
-      edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
-      metadata: {
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-    };
+    const { graphName, nodes, edges, graphVariables, graphMeta } = get();
+    return rfToGraph({ name: graphName, nodes, edges, variables: graphVariables, meta: graphMeta });
   },
 
   clearCanvas: () => {
-    set({ nodes: [], edges: [], selectedNodeId: null, graphName: '未命名流水线' });
+    set({ nodes: [], edges: [], selectedNodeId: null, graphName: '未命名流水线', graphVariables: [], graphMeta: {} });
     get().log('info', '画布已清空');
   },
 

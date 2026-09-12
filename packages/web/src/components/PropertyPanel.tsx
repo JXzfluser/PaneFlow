@@ -79,7 +79,7 @@ export function PropertyPanel() {
               />
             </div>
             <div>
-              <label>超时（分钟，0=默认15）</label>
+              <label>超时（分钟，0=默认30）</label>
               <input
                 type="number" min={0} max={240} value={cfg.timeoutMs ? Math.round(cfg.timeoutMs / 60000) : 0}
                 onChange={(e) => set({ timeoutMs: (Number(e.target.value) || 0) * 60000 })}
