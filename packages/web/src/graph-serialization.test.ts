@@ -79,4 +79,16 @@ describe('graph round-trip (R1 数据完整性)', () => {
     const fork = back.nodes.find((n) => n.id === 'fork')!;
     expect(fork.config.expand).toEqual(g.nodes[2]!.config.expand);
   });
+
+  it('缺少 metadata 的 graph 不抛异常（API 客户端/旧版本落盘的运行）', () => {
+    const g = richGraph() as DagGraph;
+    delete (g as { metadata?: unknown }).metadata;
+    expect(() => graphToRfParts(g)).not.toThrow();
+    const parts = graphToRfParts(g);
+    expect(parts.meta.createdAt).toBeUndefined();
+    expect(parts.meta.description).toBeUndefined();
+    // 兜底后仍能正常回写（createdAt 由 rfToGraph 补当前时间）
+    const back = rfToGraph({ name: g.name, nodes: parts.nodes, edges: parts.edges, variables: parts.variables, meta: parts.meta });
+    expect(back.metadata.createdAt).toBeTruthy();
+  });
 });

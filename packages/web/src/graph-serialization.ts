@@ -103,9 +103,11 @@ export function graphToRfParts(graph: DagGraph): RfParts {
     nodes,
     edges,
     variables: graph.variables ?? [],
+    // metadata 在类型上必填、在运行期未必存在：API 客户端或旧版本落盘的 graph
+    // 可能没有 metadata，此处必须兜底，否则「在画布中打开」会整页崩溃。
     meta: {
-      createdAt: graph.metadata.createdAt,
-      description: graph.metadata.description,
+      createdAt: graph.metadata?.createdAt,
+      description: graph.metadata?.description,
     },
   };
 }

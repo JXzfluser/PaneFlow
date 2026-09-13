@@ -22,6 +22,12 @@ const nodeTypes: NodeTypes = {
 
 export function Canvas() {
   const nodes = useStore((s) => s.nodes);
+  const selectedNodeId = useStore((s) => s.selectedNodeId);
+  // 选中态单向下发：时间线/步骤清单点节点芯片后，画布需要跟着高亮。
+  // 只做派生、不写回 store —— 否则会污染自动保存并让选中态被持久化。
+  const rfNodes = nodes.map((n) =>
+    n.selected === (n.id === selectedNodeId) ? n : { ...n, selected: n.id === selectedNodeId },
+  );
   const edges = useStore((s) => s.edges);
   const onNodesChange = useStore((s) => s.onNodesChange);
   const onEdgesChange = useStore((s) => s.onEdgesChange);
@@ -54,7 +60,7 @@ export function Canvas() {
         </div>
       )}
       <ReactFlow
-        nodes={nodes}
+        nodes={rfNodes}
         edges={edges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
