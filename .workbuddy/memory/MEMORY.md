@@ -45,6 +45,7 @@ align（注入 AC-N 断言 + 回写 Issue）→ plan → fork（按 `extra.tasks
 
 - **引擎是产品级，骨架是演示级**：内置 8 骨架 condition/checks 各 0 次、variables 1 次，7/8 收不到真实输入 → 缺口是内容不是能力，先给骨架加 `variables` 声明。
 - 先做：① 交付审计报告（零引擎改动）② 数据治理批次 ③ 多仓并行交付。角色库仍是薄壳（Role 仅 id/name/agentKind/prePrompt/env），领域知识只能靠 `buildConventionBlock()` 注入。
+- **跨机/多机的接缝是 `HerdrOps`**（`FakeHerdrOps` 已是先例，接口里 `target` 是字符串，可编码 `peer:pane`）→ 引擎零改动。但 `createWorktree` 是 engine 私有方法、用本地 `os.tmpdir()` 执行 `git worktree add` → **跨机必须把建/收 worktree 移到执行机侧**，否则节点 cwd 指向不存在的路径。
 - 定位：卖"活在你能看见、能干预、能留证的封闭环境里被干完了"（明厨亮灶）。
 
 ## 控件基线（styles.css 顶部设计系统层）
