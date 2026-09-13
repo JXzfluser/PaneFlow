@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import type { RunEvent } from '@paneflow/shared';
 import { useStore } from '../store.js';
 import { api } from '../api.js';
+import { RunTimeline } from './RunTimeline.js';
 
 function nodeDuration(r: NonNullable<ReturnType<typeof useStore.getState>['runs'][string]>, nodeId: string): number | null {
   const rec = r.nodes[nodeId];
@@ -57,6 +59,30 @@ export function RunsCenter() {
   const setView = useStore((s) => s.setView);
   const log = useStore((s) => s.log);
 
+  // 时间线：运行中的记录随 WS 实时到（读 store），历史记录按需拉一次
+  const [openTl, setOpenTl] = useState<string | null>(null);
+  const [fetched, setFetched] = useState<Record<string, RunEvent[]>>({});
+  const [loadingTl, setLoadingTl] = useState<string | null>(null);
+
+  const toggleTimeline = async (runId: string, liveHasEvents: boolean) => {
+    if (openTl === runId) {
+      setOpenTl(null);
+      return;
+    }
+    setOpenTl(runId);
+    if (liveHasEvents || fetched[runId]) return;
+    setLoadingTl(runId);
+    try {
+      const r = await api.runEvents(runId);
+      setFetched((c) => ({ ...c, [runId]: r.events }));
+    } catch (e) {
+      log('error', `读取事件时间线失败：${(e as Error).message}`);
+      setFetched((c) => ({ ...c, [runId]: [] }));
+    } finally {
+      setLoadingTl((prev) => (prev === runId ? null : prev));
+    }
+  };
+
   const list = Object.values(runs).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const blockedCount = list.filter((r) => r.state === 'running' && Object.values(r.nodes).some((n) => n.state === 'blocked')).length;
   const runningCount = list.filter((r) => r.state === 'running').length;
@@ -95,6 +121,10 @@ export function RunsCenter() {
         const p = progress(r);
         const blockedNodes = Object.values(r.nodes).filter((n) => n.state === 'blocked');
         const elapsed = ((new Date(r.finishedAt ?? Date.now()).getTime() - new Date(r.startedAt).getTime()) / 1000).toFixed(0);
+        const liveEvents = r.events;
+        const events = liveEvents && liveEvents.length ? liveEvents : fetched[r.runId];
+        const open = openTl === r.runId;
+        const eventCount = events?.length ?? liveEvents?.length ?? 0;
         return (
           <div key={r.runId} className="run-card">
             <div className="run-card-head">
@@ -104,6 +134,13 @@ export function RunsCenter() {
               </span>
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{elapsed}s</span>
               <div className="run-card-ops">
+                <button
+                  className={open ? 'active' : ''}
+                  title={`事件时间线：谁在何时做了什么${eventCount ? `（${eventCount} 条）` : ''}`}
+                  onClick={() => void toggleTimeline(r.runId, !!liveEvents?.length)}
+                >
+                  ⏱{eventCount ? ` ${eventCount}` : ''}
+                </button>
                 <button title="导出完整记录 JSON" onClick={() => {
                   const a = document.createElement('a');
                   a.href = `/api/runs/${r.runId}/export`;
@@ -138,6 +175,16 @@ export function RunsCenter() {
               )}
               {r.spaceId && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>空间 {r.spaceId}</span>}
             </div>
+            {open && (
+              <RunTimeline
+                compact
+                events={events}
+                startedAt={r.startedAt}
+                running={r.state === 'running'}
+                loading={loadingTl === r.runId}
+                emptyHint="这条运行没有事件记录（可能是埋点上线前的历史运行）。"
+              />
+            )}
           </div>
         );
       })}

@@ -1,4 +1,4 @@
-import type { DagGraph, NodeRunRecord, RunRecord } from '@paneflow/shared';
+import type { DagGraph, NodeRunRecord, RunEvent, RunRecord } from '@paneflow/shared';
 
 const BASE = '';
 
@@ -73,6 +73,9 @@ export const api = {
   stopRun: (runId: string) => json<{ stopping: boolean }>('POST', `/api/runs/${runId}/stop`),
   getRun: (runId: string) => json<RunRecord>('GET', `/api/runs/${runId}`),
   listRuns: () => json<{ runs: RunRecord[] }>('GET', '/api/runs'),
+  /** R5.3 事件时间线（历史运行按需拉取；运行中的记录随 WS 实时到达） */
+  runEvents: (runId: string) =>
+    json<{ runId: string; events: RunEvent[] }>('GET', `/api/runs/${encodeURIComponent(runId)}/events`, undefined, { raw: true }),
   approve: (runId: string, nodeId: string, body: { action: 'approve' | 'reject' | 'input'; keys?: string[]; text?: string }) =>
     json<{ delivered: boolean }>('POST', `/api/runs/${runId}/nodes/${nodeId}/approve`, body),
   nodeLog: (runId: string, nodeId: string, lines = 200) =>
@@ -152,4 +155,4 @@ export function connectWs(onRun: (run: RunRecord) => void, onStatus: (ok: boolea
   };
 }
 
-export type { NodeRunRecord, RunRecord, DagGraph };
+export type { NodeRunRecord, RunRecord, DagGraph, RunEvent };

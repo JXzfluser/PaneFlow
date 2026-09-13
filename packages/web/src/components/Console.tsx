@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
+import { RunTimeline } from './RunTimeline.js';
 
-type Tab = 'console' | 'approval' | 'terminal' | 'summary';
+type Tab = 'console' | 'timeline' | 'approval' | 'terminal' | 'summary';
 
 const CONSOLE_MIN = 120;
 const CONSOLE_MAX_RATIO = 0.75;
@@ -62,6 +63,7 @@ export function Console() {
   const blockedNodes = run
     ? Object.values(run.nodes).filter((n) => n.state === 'blocked')
     : [];
+  const runEvents = run?.events ?? [];
 
   useEffect(() => {
     if (blockedNodes.length > 0) setTab('approval');
@@ -113,6 +115,7 @@ export function Console() {
         {(
           [
             ['console', `运行日志${logs.length ? ` (${logs.length})` : ''}`],
+            ['timeline', `时间线${runEvents.length ? ` (${runEvents.length})` : ''}`],
             ['approval', `审批${blockedNodes.length ? ` ⛔${blockedNodes.length}` : ''}`],
             ['terminal', '终端预览'],
             ['summary', '产物汇总'],
@@ -137,6 +140,18 @@ export function Console() {
               {l.text}
             </div>
           ))}
+        {tab === 'timeline' && (
+          <RunTimeline
+            events={runEvents}
+            startedAt={run?.startedAt}
+            running={run?.state === 'running'}
+            emptyHint={
+              run
+                ? '本次运行还没有事件记录（可能是埋点上线前的历史运行）。'
+                : '当前没有选中的运行。任务开始后，这里按时间顺序记录每一步。'
+            }
+          />
+        )}
         {tab === 'approval' &&
           (blockedNodes.length === 0 ? (
             <div className="log-line">当前没有等待人工审批的节点。</div>

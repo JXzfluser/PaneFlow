@@ -11,6 +11,7 @@ export type {
   AcceptanceResult,
   NodeRunState,
   RunRecord,
+  RunEvent,
   NodeRunRecord,
   TemplateVariable,
 } from './dag.js';
