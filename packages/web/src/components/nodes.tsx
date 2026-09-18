@@ -7,6 +7,7 @@ const STATE_LABEL: Record<string, string> = {
   starting: '启动中',
   working: '运行中',
   blocked: '待审批',
+  paused: '审批暂停',
   retrying: '重试中',
   done: '完成',
   failed: '失败',

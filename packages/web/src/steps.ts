@@ -179,6 +179,8 @@ export function stateLabel(state: NodeRunState | undefined): { text: string; cls
       return { text: '进行中', cls: 'working' };
     case 'blocked':
       return { text: '待处理', cls: 'blocked' };
+    case 'paused':
+      return { text: '审批暂停（重启）', cls: 'blocked' };
     case 'failed':
       return { text: '失败', cls: 'failed' };
     case 'retrying':

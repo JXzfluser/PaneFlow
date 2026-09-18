@@ -650,7 +650,15 @@ export async function buildHttpServer(deps: HttpDeps) {
     '/api/runs/:id/nodes/:nodeId/approve',
     async (req, reply) => {
       const ok = await deps.engine.approve(req.params.id, req.params.nodeId, req.body);
-      if (!ok) return reply.code(409).send({ error: '该节点当前未在等待审批' });
+      if (!ok) {
+        const rec = deps.engine.getRun(req.params.id)?.nodes[req.params.nodeId];
+        return reply.code(409).send({
+          error:
+            rec?.state === 'paused'
+              ? '服务重启后该审批已暂停，无法原位追认：请在运行中心点「⤴ 续跑」，重跑到该节点会再次弹出审批'
+              : '该节点当前未在等待审批',
+        });
+      }
       return { delivered: true };
     },
   );

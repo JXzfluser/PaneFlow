@@ -86,11 +86,25 @@ export class Engine {
         if (run.state === 'running') {
           run.state = 'failed';
           run.finishedAt = run.finishedAt ?? new Date().toISOString();
+          const paused: string[] = [];
           for (const rec of Object.values(run.nodes)) {
-            if (['working', 'blocked', 'queued', 'starting', 'retrying'].includes(rec.state)) {
+            if (rec.state === 'blocked') {
+              // F2：审批等待不随重启蒸发——节点转 paused，审批上下文（blockedPrompt）保留；
+              // herdr pane 已死，续跑走 A5 ⤴，重执行到该节点会再次弹出审批
+              rec.state = 'paused';
+              rec.error = '服务重启，审批等待已暂停：⤴ 续跑后重到此节点会再次请求审批';
+              paused.push(rec.nodeId);
+            } else if (['working', 'queued', 'starting', 'retrying'].includes(rec.state)) {
               rec.state = 'failed';
               rec.error = '服务重启，运行中断';
             }
+          }
+          if (paused.length) {
+            (run.events ??= []).push({
+              at: new Date().toISOString(),
+              type: 'run',
+              text: `服务重启：${paused.join('、')} 的审批等待转入暂停（⤴ 续跑可重新触达）`,
+            });
           }
           try {
             new Store(store.root, space.id).saveRun(run);

@@ -236,6 +236,8 @@ export type NodeRunState =
   | 'starting'
   | 'working'
   | 'blocked'
+  | /** F2：服务重启打断了审批等待；审批上下文保留，⤴ 续跑重到此节点会重新弹出 */
+    'paused'
   | 'retrying'
   | 'done'
   | 'failed'

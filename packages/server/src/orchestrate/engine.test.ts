@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { DagGraph } from '@paneflow/shared';
+import type { DagGraph, RunRecord } from '@paneflow/shared';
 import { execFileSync } from 'node:child_process';
 import { Engine } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
@@ -1143,6 +1143,67 @@ describe('v8-F1 验收机器门（assertionGate）', () => {
     expect(run.state).toBe('completed');
     expect(run.nodes['impl']!.unverified).toBe(true);
     expect((run.events ?? []).some((e) => e.text.includes('未经文件验证'))).toBe(true);
+  });
+});
+
+describe('v8-F2 审批等待重启可活（paused）', () => {
+  it('boot：磁盘 running 记录里 blocked 节点转 paused 且审批上下文保留', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-boot-'));
+    const s2 = new Store(dir);
+    const g = serialGraph();
+    const now = new Date().toISOString();
+    const run: RunRecord = {
+      runId: 'r-paused',
+      dagName: g.name,
+      graph: g,
+      state: 'running',
+      cwd: dir,
+      spaceId: 'default',
+      startedAt: now,
+      nodes: {
+        start: { nodeId: 'start', state: 'done', attempts: 1, finishedAt: now },
+        impl: { nodeId: 'impl', state: 'blocked', attempts: 1, blockedPrompt: '验收断言未全过（1 条）：AC-2' },
+        end: { nodeId: 'end', state: 'pending', attempts: 0 },
+      },
+    };
+    s2.saveRun(run);
+    const e2 = new Engine(new FakeHerdrOps(), s2, OPTS);
+    const r = e2.getRun('r-paused')!;
+    expect(r.state).toBe('failed'); // run 判死但……
+    expect(r.nodes['impl']!.state).toBe('paused'); // ……审批节点不再被抹平成 failed
+    expect(r.nodes['impl']!.blockedPrompt).toBe('验收断言未全过（1 条）：AC-2');
+    expect(r.nodes['impl']!.error).toContain('续跑');
+    expect(r.nodes['start']!.state).toBe('done');
+    expect((r.events ?? []).some((ev) => ev.text.includes('审批等待转入暂停'))).toBe(true);
+    // 落盘的也是 paused（重启幂等）
+    expect(new Store(dir, 'default').getRun('r-paused')!.nodes['impl']!.state).toBe('paused');
+    // 原位追认不可达 → approve 返回 false（HTTP 层给 409 + 续跑指引）
+    await expect(e2.approve('r-paused', 'impl', { action: 'approve' })).resolves.toBe(false);
+  });
+
+  it('boot：无 blocked 的中断 run 维持原语义（节点全标 failed）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-boot2-'));
+    const s2 = new Store(dir);
+    const g = serialGraph();
+    const now = new Date().toISOString();
+    s2.saveRun({
+      runId: 'r-killed',
+      dagName: g.name,
+      graph: g,
+      state: 'running',
+      cwd: dir,
+      spaceId: 'default',
+      startedAt: now,
+      nodes: {
+        start: { nodeId: 'start', state: 'done', attempts: 1 },
+        impl: { nodeId: 'impl', state: 'working', attempts: 1 },
+        end: { nodeId: 'end', state: 'pending', attempts: 0 },
+      },
+    } as RunRecord);
+    const e2 = new Engine(new FakeHerdrOps(), s2, OPTS);
+    const r = e2.getRun('r-killed')!;
+    expect(r.nodes['impl']!.state).toBe('failed');
+    expect(r.nodes['impl']!.error).toBe('服务重启，运行中断');
   });
 });
 
