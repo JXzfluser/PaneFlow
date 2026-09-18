@@ -465,9 +465,8 @@ button.icon { padding: 4px 6px; min-width: 28px; }
   background: var(--panel); border-right: 1px solid var(--border); padding: 8px 0; gap: 4px;
 }
 .sidenav-brand {
-  width: 34px; height: 34px; border-radius: 8px; background: var(--accent);
-  color: #fffefa; font-weight: 700; display: flex; align-items: center; justify-content: center;
-  margin-bottom: 10px; font-size: 16px; font-family: var(--font-display);
+  width: 34px; height: 34px; border-radius: 8px; display: block;
+  margin-bottom: 10px;
 }
 .sidenav-item {
   width: 44px; padding: 7px 0; border: none; background: transparent; border-radius: 8px;
@@ -883,7 +882,7 @@ button.tl-node:hover { border-color: var(--accent); color: var(--accent); }
 /* R4.4 移动端可用性：窄屏下侧栏压缩、面板收窄、控制台保持可用 */
 @media (max-width: 900px) {
   .sidenav { width: 44px; }
-  .sidenav-brand { width: 28px; height: 28px; font-size: 13px; }
+  .sidenav-brand { width: 28px; height: 28px; }
   .palette { width: 150px; }
   .props { width: 220px; }
   .topbar { flex-wrap: wrap; height: auto; min-height: 46px; padding: 6px 10px; }

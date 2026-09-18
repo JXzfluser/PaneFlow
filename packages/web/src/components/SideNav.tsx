@@ -56,7 +56,7 @@ export function SideNav() {
 
   return (
     <div className="sidenav">
-      <div className="sidenav-brand">P</div>
+      <img className="sidenav-brand" src="/icon.svg" alt="PaneFlow" title="PaneFlow" />
       {ITEMS.map((it) => (
         <button
           key={it.id}

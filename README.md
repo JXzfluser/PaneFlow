@@ -1,3 +1,5 @@
+<img src="packages/web/public/icon.svg" alt="PaneFlow 图标" width="72" height="72" />
+
 # PaneFlow
 
 **基于 Herdr 真实终端 Pane 的确定性多 Agent DAG 可视化编排平台。**
