@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type Channel, type ChannelType, type NotifyEvent } from '../api.js';
+import { api, fetchJson, type Channel, type ChannelType, type NotifyEvent } from '../api.js';
 import { useStore } from '../store.js';
 
 /** 设置页章节：左侧导航 + 右侧分区，避免 6 张卡片平铺到底 */
@@ -200,19 +200,17 @@ function GithubCredCard() {
   const [g, setG] = useState<{ tokenConfigured: boolean; defaultRepo: string }>({ tokenConfigured: false, defaultRepo: '' });
   const [token, setToken] = useState('');
   useEffect(() => {
-    void fetch('/api/github/cred').then((r) => r.json()).then(setG);
+    void fetchJson<{ tokenConfigured: boolean; defaultRepo: string }>('GET', '/api/github/cred')
+      .then(setG)
+      .catch((e: Error) => log('error', `读取 GitHub 凭据状态失败：${e.message}`));
   }, []);
   const save = async () => {
     try {
-      await fetch('/api/github/cred', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...(token ? { token } : {}), defaultRepo: g.defaultRepo }),
-      }).then(async (r) => {
-        if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
-        const d = await r.json();
-        setG((x) => ({ ...x, tokenConfigured: d.tokenConfigured }));
+      const d = await fetchJson<{ tokenConfigured: boolean }>('PUT', '/api/github/cred', {
+        ...(token ? { token } : {}),
+        defaultRepo: g.defaultRepo,
       });
+      setG((x) => ({ ...x, tokenConfigured: d.tokenConfigured }));
       log('info', 'GitHub 凭据已保存（新启动的 Agent Pane 生效）');
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
@@ -250,31 +248,30 @@ function GatewayCard() {
   const [apiKey, setApiKey] = useState('');
   const [testing, setTesting] = useState<string>('');
   useEffect(() => {
-    void fetch('/api/gateway').then((r) => r.json()).then(setG);
+    void fetchJson<typeof g>('GET', '/api/gateway')
+      .then(setG)
+      .catch((e: Error) => log('error', `读取网关配置失败：${e.message}`));
   }, []);
   const save = async () => {
     try {
-      await fetch('/api/gateway', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          baseUrl: g.baseUrl,
-          freeModel: g.freeModel,
-          enabled: g.enabled,
-          ...(apiKey ? { apiKey } : {}),
-        }),
-      }).then(async (r) => {
-        if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+      await fetchJson<{ saved: boolean }>('PUT', '/api/gateway', {
+        baseUrl: g.baseUrl,
+        freeModel: g.freeModel,
+        enabled: g.enabled,
+        ...(apiKey ? { apiKey } : {}),
       });
       log('info', '模型网关已保存（新启动的 Agent Pane 生效）');
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
     }
   };
+  type GatewayTestResult = { ok: boolean; models?: number; error?: string };
   const test = async () => {
     setTesting('检测中…');
     await save();
-    const r = await fetch('/api/gateway/test', { method: 'POST' }).then((x) => x.json());
+    const r = await fetchJson<GatewayTestResult>('POST', '/api/gateway/test').catch(
+      (e: Error): GatewayTestResult => ({ ok: false, error: e.message }),
+    );
     setTesting(r.ok ? `✓ 连通，${r.models} 个模型` : `✗ ${r.error ?? '失败'}`);
   };
   return (
@@ -328,19 +325,16 @@ function RolesEditor() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [agentKinds, setAgentKinds] = useState<string[]>([]);
   useEffect(() => {
-    void fetch('/api/roles').then((r) => r.json()).then((d) => setRoles(d.roles ?? []));
+    void fetchJson<{ roles?: Role[] }>('GET', '/api/roles')
+      .then((d) => setRoles(d.roles ?? []))
+      .catch((e: Error) => log('error', `读取角色库失败：${e.message}`));
     void api.health().then((h) => setAgentKinds(h.agentKinds));
   }, []);
   const save = (next: Role[]) => {
     setRoles(next);
-    void fetch('/api/roles', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ roles: next }),
-    }).then(async (r) => {
-      if (!r.ok) log('error', (await r.json()).error ?? `HTTP ${r.status}`);
-      else log('info', '角色库已保存');
-    });
+    void fetchJson<unknown>('PUT', '/api/roles', { roles: next })
+      .then(() => log('info', '角色库已保存'))
+      .catch((e: Error) => log('error', e.message));
   };
   const patch = (idx: number, part: Partial<Role>) =>
     setRoles((rs) => rs.map((r, i) => (i === idx ? { ...r, ...part } : r)));
@@ -433,9 +427,9 @@ export function SettingsView() {
 
   useEffect(() => {
     if (spaceId !== 'default') {
-      void fetch(`/api/spaces/${encodeURIComponent(spaceId)}`)
-        .then((r) => r.json())
-        .then((p) => setProfile(p as SpaceProfile));
+      void fetchJson<SpaceProfile>('GET', `/api/spaces/${encodeURIComponent(spaceId)}`)
+        .then(setProfile)
+        .catch((e: Error) => log('error', `读取项目档案失败：${e.message}`));
     }
     void api.health().then(setEnv);
   }, [spaceId]);
@@ -464,7 +458,7 @@ export function SettingsView() {
 
   const loadBrowse = async (dir: string) => {
     try {
-      const d = await fetch(`/api/fs/browse?path=${encodeURIComponent(dir)}`).then((r) => r.json());
+      const d = await fetchJson<{ entries?: string[]; dir?: string }>('GET', `/api/fs/browse?path=${encodeURIComponent(dir)}`);
       setBrowseList(d.entries ?? []);
       setBrowseDir(d.dir ?? dir);
     } catch {
@@ -475,10 +469,9 @@ export function SettingsView() {
   const saveProfile = async () => {
     if (!profile) return;
     try {
-      await fetch(`/api/spaces/${encodeURIComponent(spaceId)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rootCwd: profile.rootCwd, description: profile.description }),
+      await fetchJson<unknown>('PUT', `/api/spaces/${encodeURIComponent(spaceId)}`, {
+        rootCwd: profile.rootCwd,
+        description: profile.description,
       });
       if (profile?.rootCwd) {
         const next = [profile.rootCwd, ...recentRoots.filter((x) => x !== profile.rootCwd)].slice(0, 5);
@@ -573,8 +566,10 @@ export function SettingsView() {
               <button
                 className="ghost"
                 onClick={() =>
-                  void fetch(`/api/fs/discover?root=${encodeURIComponent(profile?.rootCwd ?? '')}`)
-                    .then((r) => r.json())
+                  void fetchJson<{ error?: string; markdowns?: string[]; skills?: string[]; repos?: string[] }>(
+                    'GET',
+                    `/api/fs/discover?root=${encodeURIComponent(profile?.rootCwd ?? '')}`,
+                  )
                     .then((d) => {
                       if (d.error) {
                         log('error', d.error);
@@ -586,12 +581,13 @@ export function SettingsView() {
                         p
                           ? {
                               ...p,
-                              conventionFiles: p.conventionFiles ?? (d.markdowns ?? []).filter((f: string) => /AGENTS|CLAUDE/i.test(f)),
+                              conventionFiles: p.conventionFiles ?? (d.markdowns ?? []).filter((f) => /AGENTS|CLAUDE/i.test(f)),
                               skills: p.skills ?? [],
                             }
                           : p,
                       );
                     })
+                    .catch((e: Error) => log('error', `发现失败：${e.message}`))
                 }
               >
                 🔍 发现约定文档与技能

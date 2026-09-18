@@ -18,6 +18,9 @@ export interface DispatchOptions {
 
 const MAX_TASK_LEN = 4000;
 
+/** 智能下发 Planner 固定用的 Agent（R7：当前只启动告警不改行为；preferredAgentKind 配置化留下一迭代） */
+export const DISPATCH_AGENT_KIND = 'claude';
+
 /**
  * 智能下发：把一句任务描述变成一个三节点临时编排
  *   [Planner 路由决策] → [pipeline 路由执行] → 结束
@@ -59,7 +62,7 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
         type: 'agent',
         label: 'Planner · 下发规划',
         config: {
-          agentKind: 'claude',
+          agentKind: DISPATCH_AGENT_KIND,
           prompt: plannerPrompt,
           clarify: { maxRounds: 2 },
           retryCount: 1,

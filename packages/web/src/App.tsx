@@ -102,7 +102,7 @@ export function App() {
             {theme === 'dark' ? '🌙' : '☀️'}
           </button>
           <button onClick={() => setGuideOpen(true)} title="使用指南">? 指南</button>
-          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>v0.2.0</span>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>v{__PF_VERSION__}</span>
         </div>
         {view === 'tasks' && <TasksView />}
         {view === 'orchestrate' && <OrchestrateView />}

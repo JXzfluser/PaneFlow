@@ -74,7 +74,7 @@ export interface DagNodeConfig {
    * by the approval card UI.
    */
   approveKeys?: string[];
-  /** Result-file path relative to the node cwd (default '.herdr/artifact.json') */
+  /** Result-file path relative to the node cwd (default: per-node `.herdr/artifacts/<nodeId>.json`) */
   artifactFile?: string;
 }
 

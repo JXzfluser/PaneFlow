@@ -3,6 +3,8 @@ import { RealHerdrOps } from './orchestrate/herdr-ops.js';
 import { Engine } from './orchestrate/engine.js';
 import { Store } from './orchestrate/store.js';
 import { buildHttpServer } from './api/http.js';
+import { detectInstalledAgents } from './api/env-check.js';
+import { DISPATCH_AGENT_KIND } from './api/dispatch.js';
 import { loadConfig } from './config.js';
 import { seedBuiltinTemplates } from './orchestrate/builtin-templates.js';
 
@@ -45,6 +47,12 @@ async function main(): Promise<void> {
   }
   console.log(`[paneflow] herdr socket: ${config.herdrSocketPath}`);
   console.log(`[paneflow] data dir: ${config.dataDir}`);
+  // R7：智能下发 Planner 写死 agent（行为不变），只在启动时提示缺失，配置化留下一迭代
+  void detectInstalledAgents([DISPATCH_AGENT_KIND]).then((installed) => {
+    if (!installed.includes(DISPATCH_AGENT_KIND)) {
+      console.warn(`[paneflow] 警告：智能下发依赖的 agent「${DISPATCH_AGENT_KIND}」未检测到，下发任务可能起不来`);
+    }
+  });
 
   // orphan sweep after boot (give herdr a moment if it is still starting)
   setTimeout(() => {

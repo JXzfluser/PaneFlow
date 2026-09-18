@@ -532,7 +532,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         const n = graph.nodes.find((x) => x.id === id)!;
         const role = n.config.role ? roles.find((r) => r.id === n.config.role) : undefined;
         if (n.config.role && !role) warnings.push(`节点 ${id} 引用的角色 ${n.config.role} 不存在`);
-        const agentKind = n.config.agentKind ?? role?.agentKind ?? (n.type === 'agent' ? undefined : undefined);
+        const agentKind = n.config.agentKind ?? role?.agentKind;
         if (n.type === 'agent' && !agentKind) warnings.push(`节点 ${id}（${n.label}）未配置 Agent 类型（角色也未提供默认值）`);
         const nodeCwd = n.config.cwd ? `${cwd}/${n.config.cwd}` : cwd;
         const checks = n.config.checks ?? [];

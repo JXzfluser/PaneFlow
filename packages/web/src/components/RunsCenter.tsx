@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { RunEvent } from '@paneflow/shared';
 import { useStore } from '../store.js';
-import { api } from '../api.js';
+import { api, fetchJson } from '../api.js';
 import { RunTimeline } from './RunTimeline.js';
 
 function nodeDuration(r: NonNullable<ReturnType<typeof useStore.getState>['runs'][string]>, nodeId: string): number | null {
@@ -149,13 +149,15 @@ export function RunsCenter() {
                 }}>⤓</button>
                 {r.state !== 'running' && (
                   <button title="归档（移出主列表，记录保留）" onClick={() => {
-                    void fetch(`/api/runs/${r.runId}/archive`, { method: 'POST' }).then(() => {
-                      useStore.setState((s) => {
-                        const runs = { ...s.runs };
-                        delete runs[r.runId];
-                        return { ...s, runs };
-                      });
-                    });
+                    void fetchJson<{ archived: boolean }>('POST', `/api/runs/${r.runId}/archive`)
+                      .then(() => {
+                        useStore.setState((s) => {
+                          const runs = { ...s.runs };
+                          delete runs[r.runId];
+                          return { ...s, runs };
+                        });
+                      })
+                      .catch((e: Error) => useStore.getState().log('error', `归档失败：${e.message}`));
                   }}>📦</button>
                 )}
                 <button title="在画布中打开" onClick={() => { openRun(r.runId); setView('orchestrate'); }}>↗</button>

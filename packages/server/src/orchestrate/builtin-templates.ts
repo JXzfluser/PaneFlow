@@ -336,7 +336,7 @@ const genericDeliveryNodes: DagGraph['nodes'] = [
     'align',
     '需求对齐 + 验收断言注入',
     '你负责「需求对齐 + 验收断言注入」。围绕该 Issue（编号 {{issue_id}}，可能为空）做：\n' +
-      '1. 读取本地需求源 issue-draft.json（在工作目录；含 背景/目标/验收标准/风险，由受理阶段起草）。若文件缺失，则按 Issue 标题生成需求骨架（标题/方向见运行参数 brief，无则以当前工作目录上下文推断），并落盘为 issue-draft.json。\n' +
+      '1. 读取本地需求源 issue-draft.json（在工作目录；含 背景/目标/验收标准/风险，由受理阶段起草）。若文件缺失，则以运行参数中的任务描述「{{task}}」为需求来源生成骨架（{{task}} 为空时按 Issue 标题／当前工作目录上下文推断），并落盘为 issue-draft.json。\n' +
       '2. 把需求拆解为显式、可测试的验收断言：每条断言为 AC-N 编号 + 可验证断言 + 验证方法。就地覆写 issue-draft.json 的「验收标准」小节为编号断言面（保留其余小节）：\n' +
       'AC-1：<可验证断言>（验证方法：<方法>）\n' +
       'AC-2：<可验证断言>（验证方法：<方法>）\n' +
@@ -376,7 +376,8 @@ const genericDeliveryNodes: DagGraph['nodes'] = [
   end(),
 ];
 
-// 通用兜底模板：变量 issue_id 由受理路线的 pipeline params.issue_id 注入（无编号时为空字符串，align 会回退跳过远程更新）
+// 通用兜底模板：变量 issue_id 由受理路线的 pipeline params.issue_id 注入（无编号时为空字符串，align 会回退跳过远程更新）；
+// 变量 task 由智能下发路线的 pipeline params.task 注入（applyVariables 只替换已声明变量，故必须在此声明）
 const genericDelivery: DagGraph = {
   ...graph(
     'builtin-generic-issue-delivery',
@@ -393,7 +394,10 @@ const genericDelivery: DagGraph = {
       e('e8', 'wrapup', 'end'),
     ],
   ),
-  variables: [{ key: 'issue_id', label: '主 Issue 编号', required: false }],
+  variables: [
+    { key: 'issue_id', label: '主 Issue 编号', required: false },
+    { key: 'task', label: '任务描述（智能下发注入）', required: false },
+  ],
 };
 
 /** S5 数据治理批次（v6 Gate 0 骨架）：清单切批 → 动态扇出逐批处理 → 宽容扇入 → 机器判据终审 → 收口报告 */

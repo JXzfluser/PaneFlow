@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildDispatchGraph } from './dispatch.js';
+import { BUILTIN_TEMPLATES } from '../orchestrate/builtin-templates.js';
 import { applyVariables, validateDag } from '@paneflow/shared';
 
 describe('buildDispatchGraph', () => {
@@ -40,5 +41,18 @@ describe('buildDispatchGraph', () => {
     const { graph: applied } = applyVariables(g, { task: 'demo 任务' });
     expect(applied.nodes.length).toBe(g.nodes.length);
     expect(validateDag(applied).filter((i) => i.level === 'error')).toEqual([]);
+  });
+
+  it('route params keys are declared variables of the fallback template (G: 静默丢弃防线)', () => {
+    // applyVariables 只替换模板已声明的变量——params 传了未声明的键会被静默丢掉
+    const g = buildDispatchGraph({ task: 't', issueId: '9', cwd: '/tmp/x', templateList });
+    const route = g.nodes.find((n) => n.id === 'route')!;
+    const generic = BUILTIN_TEMPLATES.find((t) => t.name === route.config.pipeline!.fallbackTemplate)!;
+    const declared = new Set((generic.variables ?? []).map((v) => v.key));
+    declared.add('cwd'); // params.cwd 走 startRun 第三参，不是模板变量
+    for (const key of Object.keys(route.config.pipeline!.params!)) {
+      expect(declared.has(key), `兜底模板未声明参数 ${key}，会被静默丢弃`).toBe(true);
+    }
+    expect(declared.has('task')).toBe(true);
   });
 });

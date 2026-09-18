@@ -44,19 +44,22 @@ async function json<T>(method: string, path: string, body?: unknown, opts?: { ra
   return (await r.json()) as T;
 }
 
-/** Raw JSON request with the current space context skipped (for non-space endpoints). */
-const rawJson = <T>(method: string, path: string, body?: unknown): Promise<T> =>
-  fetch(path, {
+/** 不带 space 上下文的原始 JSON 请求：非 2xx 抛错（错误体里的 error 优先作为消息）。 */
+export const fetchJson = <T>(method: string, path: string, body?: unknown): Promise<T> =>
+  fetch(BASE + path, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   }).then(async (r) => {
-    if (!r.ok) throw new Error(`${method} ${path} → ${r.status}`);
+    if (!r.ok) {
+      const err = (await r.json().catch(() => ({}))) as { error?: string };
+      throw new Error(err.error ?? `${method} ${path} → ${r.status}`);
+    }
     return (await r.json()) as T;
   });
 
 export const api = {
-  request: rawJson,
+  request: fetchJson,
   health: () => json<{
     ok: boolean;
     herdrOk: boolean;

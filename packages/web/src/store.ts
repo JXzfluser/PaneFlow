@@ -128,7 +128,7 @@ export const useStore = create<PfStore>((set, get) => ({
   wsOk: false,
   herdrOk: null,
   cwd: '',
-  agentKinds: ['opencode'],
+  agentKinds: [], // 唯一来源：/api/health 的 agentKinds（App 启动时灌入），不在前端写死偏好
   templateList: [],
   theme: initialTheme(),
   view: initialView(),
