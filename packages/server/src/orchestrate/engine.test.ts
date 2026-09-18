@@ -1001,7 +1001,7 @@ describe('S5 batch-data-governance skeleton (fake-ops e2e)', () => {
     expect(final.cost!.totalMs).toBeGreaterThan(0);
   });
 
-  it('verify 断言有 fail 时机器判据把关：终审节点检查不过 → run 失败', async () => {
+  it('verify 断言有 fail 时 F1 机器门拦截：blocked 等人工，两次拒绝后 run 失败', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-batch-fail-'));
     const tmpl = BUILTIN_TEMPLATES.find((t) => t.name === 'builtin-batch-data-governance')!;
     const art = (name: string, obj: unknown) => {
@@ -1022,13 +1022,127 @@ describe('S5 batch-data-governance skeleton (fake-ops e2e)', () => {
       }
     };
     const run = await engine.startRun(tmpl, cwd, 'default', { batch_source: 's.jsonl', batch_prompt: '处理' });
+    await waitFor(() => engine.isBlocked(run.runId, 'verify'), 30_000);
+    expect(run.nodes['verify']!.blockedPrompt).toContain('AC-3');
+    // 拒绝 → 节点失败重试 → 产物仍 fail → 机器门再次拦截；再拒 → 重试耗尽
+    await engine.approve(run.runId, 'verify', { action: 'reject' });
+    await waitFor(() => engine.getRun(run.runId)!.nodes['verify']!.attempts >= 2, 30_000);
+    await waitFor(() => engine.isBlocked(run.runId, 'verify'), 30_000);
+    await engine.approve(run.runId, 'verify', { action: 'reject' });
     await waitFor(() => engine.getRun(run.runId)!.state !== 'running', 30_000);
     const final = engine.getRun(run.runId)!;
     expect(final.state).toBe('failed'); // onFail:abort 的终审把整个 run 判死
     expect(final.nodes['verify']!.state).toBe('failed');
+    expect(final.nodes['verify']!.error).toContain('验收断言未通过');
     // R6a：verify 重试过（retries≥1），全程无 usage 自报 → tokens=null（unknown，非 0）
     expect(final.cost!.retries).toBeGreaterThanOrEqual(1);
     expect(final.cost!.tokens).toBeNull();
+  });
+});
+
+describe('v8-F1 验收机器门（assertionGate）', () => {
+  const writeImpl = (cwd: string, obj: unknown) => {
+    fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.herdr/artifacts/impl.json'), JSON.stringify(obj));
+  };
+
+  it('断言有 fail → blocked 列明未过项；approve 人工追认放行后 run 完成', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    ops.onPrompt = () =>
+      writeImpl(cwd, {
+        summary: '完成',
+        extra: {
+          assertionResults: [
+            { id: 'AC-1', status: 'ok', evidence: '测试全绿' },
+            { id: 'AC-2', status: 'fail', evidence: '未实现导出' },
+          ],
+        },
+      });
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    const prompt = engine.getRun(run.runId)!.nodes['impl']!.blockedPrompt!;
+    expect(prompt).toContain('AC-2');
+    expect(prompt).toContain('未实现导出');
+    expect(prompt).not.toContain('AC-1:'); // 只列未通过项
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    expect(final.nodes['impl']!.state).toBe('done');
+    expect((final.events ?? []).some((e) => e.text.includes('验收机器门拦截') && e.text.includes('AC-2'))).toBe(true);
+    expect((final.events ?? []).some((e) => e.text.includes('人工追认放行'))).toBe(true);
+  });
+
+  it('reject → 节点失败、错误含未过断言', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    ops.onPrompt = () =>
+      writeImpl(cwd, { summary: 'x', extra: { assertionResults: [{ id: 'AC-9', status: 'fail', evidence: '证据不足' }] } });
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'reject' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('failed');
+    expect(final.nodes['impl']!.error).toContain('验收断言未通过：AC-9');
+  });
+
+  it('input 追问一轮 → agent 重写产物全过 → 无需再拦', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    let turn = 0;
+    ops.onPrompt = () => {
+      turn += 1;
+      writeImpl(cwd, {
+        summary: `第${turn}轮`,
+        extra: {
+          assertionResults:
+            turn === 1
+              ? [{ id: 'AC-1', status: 'fail', evidence: '缺测试' }]
+              : [{ id: 'AC-1', status: 'ok', evidence: '已补测试' }],
+        },
+      });
+    };
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'input', text: '请补齐 AC-1 的测试后重写产物' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    expect(ops.prompts.length).toBe(2);
+  });
+
+  it('status 缺失按 fail 拦、n/a 放行', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    ops.onPrompt = () =>
+      writeImpl(cwd, {
+        summary: 'x',
+        extra: {
+          assertionResults: [
+            { id: 'AC-1', status: 'n/a', evidence: '本次不涉及' },
+            { id: 'AC-2', evidence: '没写 status' },
+          ] as unknown[],
+        },
+      });
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    const prompt = engine.getRun(run.runId)!.nodes['impl']!.blockedPrompt!;
+    expect(prompt).toContain('AC-2');
+    expect(prompt).toContain('1 条');
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(engine.getRun(run.runId)!.state).toBe('completed');
+  });
+
+  it('产物文件缺失走终端兜底 → 节点标 unverified 且有警示事件', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph(); // onPrompt 默认不写结果文件 → output-fallback
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['impl']!.unverified).toBe(true);
+    expect((run.events ?? []).some((e) => e.text.includes('未经文件验证'))).toBe(true);
   });
 });
 

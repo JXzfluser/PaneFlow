@@ -444,9 +444,10 @@ const batchDataGovernance: DagGraph = {
           onFail: 'abort',
           checks: [
             {
+              // F1 后引擎验收机器门负责逐条判 fail；这里只兜底断言列表非空
               type: 'command',
               run:
-                "node -e 'const r=JSON.parse(require(\"fs\").readFileSync(\".herdr/artifacts/verify.json\",\"utf8\"));const a=(r.extra&&r.extra.assertionResults)||[];const bad=a.filter((x)=>x.status!==\"ok\");if(!a.length||bad.length){console.error(\"断言未全过:\",JSON.stringify(bad));process.exit(1)}'",
+                "node -e 'const r=JSON.parse(require(\"fs\").readFileSync(\".herdr/artifacts/verify.json\",\"utf8\"));const a=(r.extra&&r.extra.assertionResults)||[];if(!a.length){console.error(\"assertionResults 为空\");process.exit(1)}'",
             },
           ],
         },

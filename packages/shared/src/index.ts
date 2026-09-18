@@ -20,6 +20,7 @@ export type {
 export {
   validateDag,
   validateAcceptance,
+  failedAssertionsOf,
   topoSort,
   upstreamOf,
   renderPromptTemplate,

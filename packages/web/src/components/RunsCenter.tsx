@@ -227,6 +227,11 @@ export function RunsCenter() {
               {runCostLabel(r) && (
                 <span className="run-cost-chip" title="成本账：时长/重试/tokens（unknown = agent 未自报，不估算）">{runCostLabel(r)}</span>
               )}
+              {Object.values(r.nodes).some((n) => n.unverified) && (
+                <span className="run-cost-chip" style={{ borderColor: 'var(--warn)', color: 'var(--warn)' }} title="部分节点结果文件缺失，产物取自终端尾部兜底（未经文件验证，结论可信度打折）">
+                  ⚠ 未验证产物
+                </span>
+              )}
               <div className="run-card-ops">
                 <button
                   className={open ? 'active' : ''}

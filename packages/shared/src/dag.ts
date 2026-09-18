@@ -182,6 +182,25 @@ export interface AcceptanceResult {
 }
 
 /**
+ * 从节点产物的 extra.assertionResults 里筛出未通过的断言（F1 验收机器门）。
+ * status 非 'ok' 且非 'n/a' 一律视为失败（缺失/非法 status 不放行）。
+ */
+export function failedAssertionsOf(extra: Record<string, unknown> | undefined): AcceptanceResult[] {
+  const list = extra?.assertionResults;
+  if (!Array.isArray(list)) return [];
+  const out: AcceptanceResult[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Partial<AcceptanceResult>;
+    if (typeof r.id !== 'string') continue;
+    if (r.status !== 'ok' && r.status !== 'n/a') {
+      out.push({ id: r.id, status: 'fail', evidence: typeof r.evidence === 'string' ? r.evidence : '' });
+    }
+  }
+  return out;
+}
+
+/**
  * 轻校验验收断言列表：数组非空、每项 id/assertion/verify_method 均为非空字符串。
  * 校验通过返回 null；否则返回描述问题所在的错误信息
  * （供 aligned 门判定与 clarify 补齐提示复用）。
@@ -238,6 +257,8 @@ export interface NodeRunRecord {
   paneId?: string;
   agentName?: string;
   agentStatus?: AgentStatus;
+  /** F1 产物可信标记：true 表示结果文件缺失、artifact 来自终端尾部兜底（未经文件验证） */
+  unverified?: boolean;
   attempts: number;
   startedAt?: string;
   finishedAt?: string;

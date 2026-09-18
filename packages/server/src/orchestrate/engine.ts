@@ -15,7 +15,7 @@ import type {
   RunCost,
   NodeCost,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf } from '@paneflow/shared';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
@@ -852,10 +852,11 @@ export class Engine {
         this.resolveBlackboardRef(blackboard, refId, refPath),
       );
       const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
+      const artifactRel = cfg.artifactFile ?? defaultArtifactFile(nodeId);
       const { block, agentKind } = this.resolveContext(run, cfg);
       const prompt = this.withArtifactConvention(
         `${block}${rendered}`,
-        path.join(nodeCwd, cfg.artifactFile ?? defaultArtifactFile(nodeId)),
+        path.join(nodeCwd, artifactRel),
       );
       let status = await this.promptAndSettle(run, rec, agentName, prompt, timeoutMs);
 
@@ -887,8 +888,13 @@ export class Engine {
       rec.agentStatus = status;
       rec.finishedAt = new Date().toISOString();
       const outputTail = await this.ops.readOutput(agentName, 80).catch(() => '');
-      const artifact = await this.extractArtifact(nodeId, cfg.artifactFile ?? defaultArtifactFile(nodeId), run, outputTail);
+      const artifact = await this.extractArtifact(nodeId, artifactRel, run, outputTail);
       rec.artifact = artifact;
+      // F1 可信标记：结果文件缺失、以终端尾部兜底的产物未经文件验证，运行卡上要可见
+      rec.unverified = artifact.source === 'output-fallback';
+      if (rec.unverified) {
+        this.recordEvent(run, 'node', nodeId, '⚠ 产物文件缺失，以终端尾部兜底（未经文件验证）');
+      }
       blackboard.set(nodeId, artifact);
       this.persistAndNotify(run);
 
@@ -923,7 +929,8 @@ export class Engine {
             // answers become a follow-up turn; artifact re-extracted for the next aligned check
             await this.promptAndSettle(run, rec, agentName, action.text, timeoutMs);
             const tail = await this.ops.readOutput(agentName, 80).catch(() => '');
-            rec.artifact = await this.extractArtifact(nodeId, cfg.artifactFile ?? defaultArtifactFile(nodeId), run, tail);
+            rec.artifact = await this.extractArtifact(nodeId, artifactRel, run, tail);
+            rec.unverified = rec.artifact.source === 'output-fallback';
             blackboard.set(nodeId, rec.artifact);
             this.persistAndNotify(run);
           }
@@ -931,6 +938,10 @@ export class Engine {
         rec.state = 'done';
         this.persistAndNotify(run);
       }
+
+      // F1 验收机器门：产物写了 assertionResults 且有未通过项时不许静默 done
+      const gateFail = await this.assertionGate(run, rec, nodeId, agentName, timeoutMs, artifactRel, blackboard);
+      if (gateFail) return gateFail;
 
       // checks gate: all configured checks must pass for the node to be done
       const checkFail = await this.runChecks(run, rec, nodeId, nodeCwdOf(run, cfg));
@@ -995,6 +1006,54 @@ export class Engine {
       }
     }
     return null;
+  }
+
+  /**
+   * F1 验收机器门：节点产物 extra.assertionResults 存在未通过断言（status 非 ok/n/a）时，
+   * 节点不得静默 done——复用审批循环：reject→节点失败；approve→人工追认放行；
+   * input→追加一轮指令、重新提取产物后复核。无断言结果或全过则直接放行（向后兼容）。
+   */
+  private async assertionGate(
+    run: RunRecord,
+    rec: NodeRunRecord,
+    nodeId: string,
+    agentName: string,
+    timeoutMs: number,
+    artifactRel: string,
+    blackboard: Map<string, Artifact>,
+  ): Promise<string | null> {
+    for (;;) {
+      const failed = failedAssertionsOf(rec.artifact?.extra);
+      if (failed.length === 0) return null;
+      if (this.cancels.has(run.runId)) return '已取消';
+      rec.state = 'blocked';
+      rec.blockedPrompt =
+        `验收断言未全过（${failed.length} 条）：\n` +
+        failed.map((f) => `- ${f.id}: ${f.evidence.slice(0, 160) || '（无证据）'}`).join('\n');
+      this.recordEvent(run, 'approval', nodeId, `验收机器门拦截：${failed.map((f) => f.id).join('、')}`);
+      this.persistAndNotify(run);
+      const action = await new Promise<ApprovalAction>((resolve) => {
+        this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
+      });
+      rec.blockedPrompt = undefined;
+      if (this.cancels.has(run.runId)) return '已取消';
+      if (action.action === 'reject') return `验收断言未通过：${failed.map((f) => f.id).join('、')}`;
+      if (action.action === 'approve') {
+        this.recordEvent(run, 'approval', nodeId, `人工追认放行：${failed.map((f) => f.id).join('、')}`);
+        rec.state = 'done';
+        this.persistAndNotify(run);
+        return null;
+      }
+      if (action.action === 'input' && action.text) {
+        const st = await this.promptAndSettle(run, rec, agentName, action.text, timeoutMs);
+        rec.agentStatus = st;
+        const tail = await this.ops.readOutput(agentName, 80).catch(() => '');
+        rec.artifact = await this.extractArtifact(nodeId, artifactRel, run, tail);
+        rec.unverified = rec.artifact.source === 'output-fallback';
+        blackboard.set(nodeId, rec.artifact);
+        this.persistAndNotify(run);
+      }
+    }
   }
 
   /**
