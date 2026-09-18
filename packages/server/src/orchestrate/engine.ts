@@ -12,6 +12,8 @@ import type {
   DagGraph,
   NodeRunRecord,
   RunRecord,
+  RunCost,
+  NodeCost,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance } from '@paneflow/shared';
 import type { HerdrOps } from './herdr-ops.js';
@@ -393,8 +395,44 @@ export class Engine {
       }
       this.rootPanes.delete(run.runId);
       this.cancels.delete(run.runId);
+      run.cost = this.computeRunCost(run); // R6a：先记账再广播（持久化含 cost）
       this.persistAndNotify(run);
     }
+  }
+
+  /**
+   * R6a 收尾成本账：时长/attempt 由节点记录推算（必有）；
+   * tokens 只聚合 agent 自报的 extra.usage（headless JSON 天然带 / TUI 经 prompt 引导），
+   * 一处都没有即 tokens=null（消费方展示为 unknown）——绝不造估算数。
+   */
+  private computeRunCost(run: RunRecord): RunCost {
+    const byNode: Record<string, NodeCost> = {};
+    let retries = 0;
+    let input = 0;
+    let output = 0;
+    let sawUsage = false;
+    const end = run.finishedAt ? Date.parse(run.finishedAt) : Date.now();
+    for (const rec of Object.values(run.nodes)) {
+      if (!rec.startedAt || rec.state === 'skipped') continue;
+      const durationMs = Math.max(0, (rec.finishedAt ? Date.parse(rec.finishedAt) : end) - Date.parse(rec.startedAt));
+      const r = Math.max(0, rec.attempts - 1);
+      byNode[rec.nodeId] = { durationMs, attempts: rec.attempts, retries: r };
+      retries += r;
+      const usage = (rec.artifact?.extra as Record<string, unknown> | undefined)?.usage as
+        | { input?: unknown; output?: unknown }
+        | undefined;
+      if (usage && typeof usage === 'object' && typeof usage.input === 'number' && typeof usage.output === 'number') {
+        input += usage.input;
+        output += usage.output;
+        sawUsage = true;
+      }
+    }
+    return {
+      totalMs: Math.max(0, end - Date.parse(run.startedAt)),
+      byNode,
+      retries,
+      tokens: sawUsage ? { input, output } : null,
+    };
   }
 
   /**

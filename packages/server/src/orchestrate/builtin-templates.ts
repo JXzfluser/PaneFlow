@@ -396,6 +396,90 @@ const genericDelivery: DagGraph = {
   variables: [{ key: 'issue_id', label: '主 Issue 编号', required: false }],
 };
 
+/** S5 数据治理批次（v6 Gate 0 骨架）：清单切批 → 动态扇出逐批处理 → 宽容扇入 → 机器判据终审 → 收口报告 */
+const batchDataGovernance: DagGraph = {
+  ...graph(
+    'builtin-batch-data-governance',
+    '数据治理批次：输入条目清单 → 按大小切批 → 逐批并行治理（输出目录约定隔离）→ 汇总 → 验收断言终审（机器判据）→ 批次总报告 batch-report.md',
+    [
+      start(),
+      agent(
+        'prepare',
+        '读清单切批',
+        '你是批次规划员。读取输入清单 {{batch_source}}（每行一条或 JSON 数组；相对路径按当前工作目录解析）。' +
+          '按每批 {{batch_size}} 条切分，批次命名 batch-01、batch-02…（保持原顺序，ASCII 名）。' +
+          '每批清单写成独立文件 output/_batches/<批次名>.json（数组）。' +
+          '结果文件：extra.batches 为数组，每项 {name:"<批次名>", brief:"<批次名>：第 X-Y 条，共 N 条，清单文件 output/_batches/<批次名>.json"}；' +
+          'summary 写"共 X 条切为 Y 批"。只做切分与落盘，不改写条目内容。' +
+          '清单缺失或为空时如实失败（extra.batches 给空数组），不要虚构数据。',
+        { retryCount: 1, onFail: 'abort' },
+      ),
+      { id: 'fork', type: 'fanout', label: '按批展开', config: { expand: { from: 'prepare', field: 'extra.batches', onEmpty: 'fail' } } },
+      agent(
+        'impl',
+        '治理 {{item.name}}',
+        '治理批次「{{item.name}}」：{{item.brief}}。' +
+          '按以下要求逐条处理本批：{{batch_prompt}}。' +
+          '产物隔离约定：本批全部输出只写入子目录 output/{{item.name}}/（克隆分支共享同一工作目录，目录约定是唯一隔离手段），批内条目一问一答/一进一出。' +
+          '结果文件：extra.batch="{{item.name}}"、extra.processed=<处理条数>、extra.anomalies=[{entry,reason,advice}]（无异常则空数组）、summary 一段本批结论。' +
+          '若你的运行环境可统计 token 用量，把 {input,output} 写入 extra.usage；拿不到就省略该字段，禁止编造。',
+        { retryCount: 1, onFail: 'continue' },
+      ),
+      { id: 'merge', type: 'fanin', label: '批次汇总', config: { requireAll: false } },
+      agent(
+        'verify',
+        '验收断言终审',
+        '终审各批产物。注意：动态扇出分支的产物不聚合到黑板别名（引擎 G10 约束），' +
+          '必须用 shell 直读文件：遍历 .herdr/artifacts/impl__*.json 逐个解析。' +
+          '同时核对 output/ 下各批次目录与 output/_batches/ 清单的一致性。' +
+          '按验收模板逐条形成断言：{{acceptance_template}}。' +
+          '结果文件：extra.assertionResults=[{id:"AC-1",status:"ok|fail|n/a",evidence:"核对依据（含来源文件）"}]，' +
+          '每条断言都必须给出客观证据（数量、文件路径、抽查样例），未满足如实标 fail；summary 写终审结论。',
+        {
+          retryCount: 1,
+          onFail: 'abort',
+          checks: [
+            {
+              type: 'command',
+              run:
+                "node -e 'const r=JSON.parse(require(\"fs\").readFileSync(\".herdr/artifacts/verify.json\",\"utf8\"));const a=(r.extra&&r.extra.assertionResults)||[];const bad=a.filter((x)=>x.status!==\"ok\");if(!a.length||bad.length){console.error(\"断言未全过:\",JSON.stringify(bad));process.exit(1)}'",
+            },
+          ],
+        },
+      ),
+      agent(
+        'wrapup',
+        '批次总报告',
+        '各批终审结论：见 .herdr/artifacts/verify.json（直读文件，勿引用黑板别名）。' +
+          '汇总本轮批次治理产出 output/batch-report.md：总条数/批次数、每批 处理数与异常数、断言核对表（AC-N/状态/证据）、' +
+          '异常清单汇总与处置建议、产物目录索引。同时把报告要点写入结果文件 summary。',
+        { retryCount: 1, onFail: 'continue', checks: [{ type: 'file-exists', path: 'output/batch-report.md' }] },
+      ),
+      end(),
+    ],
+    [
+      e('e1', 'start', 'prepare'),
+      e('e2', 'prepare', 'fork'),
+      e('e3', 'fork', 'impl'),
+      e('e4', 'impl', 'merge'),
+      e('e5', 'merge', 'verify'),
+      e('e6', 'verify', 'wrapup'),
+      e('e7', 'wrapup', 'end'),
+    ],
+  ),
+  variables: [
+    { key: 'batch_source', label: '条目清单文件（行或 JSON 数组）', required: true },
+    { key: 'batch_prompt', label: '治理要求（逐条怎么处理）', required: true },
+    { key: 'batch_size', label: '每批条数', default: '50' },
+    {
+      key: 'acceptance_template',
+      label: '验收断言模板',
+      default:
+        'AC-1 每批条目全部处理且有输出记录；AC-2 异常条目均有原因与处置建议；AC-3 批间无重复无遗漏（各批 processed 之和=总数）；AC-4 各批自报条数与 output/<批次>/ 实际产物一致',
+    },
+  ],
+};
+
 export const BUILTIN_TEMPLATES: DagGraph[] = [
   issueTriage,
   genericDelivery,
@@ -405,6 +489,7 @@ export const BUILTIN_TEMPLATES: DagGraph[] = [
   bugFixPipeline,
   roleTeamReview,
   researchCompare,
+  batchDataGovernance,
 ];
 
 /** Idempotent seeding: never overwrite a template the user edited/deleted. */

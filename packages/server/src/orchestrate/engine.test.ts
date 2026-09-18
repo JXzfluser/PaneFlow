@@ -6,6 +6,7 @@ import type { DagGraph } from '@paneflow/shared';
 import { execFileSync } from 'node:child_process';
 import { Engine } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
+import { BUILTIN_TEMPLATES } from './builtin-templates.js';
 import { Store } from './store.js';
 
 import { FakeHerdrOps } from './fake-ops.js';
@@ -923,5 +924,110 @@ describe('A.4 prompt confirm window', () => {
     const run = await e2.startRun(serialGraph(), cwd);
     await waitFor(() => e2.getRun(run.runId)!.state !== 'running');
     expect(e2.getRun(run.runId)!.state).toBe('completed');
+  });
+});
+
+/** R4 Gate 0 骨架的 fake-ops 端到端：仿 expand 用例 + 断言终审 + 报告收口 */
+describe('S5 batch-data-governance skeleton (fake-ops e2e)', () => {
+  it('prepare 切批 → impl__1/impl__2 治理 → verify 断言终审 → wrapup 报告', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-batch-'));
+    const tmpl = BUILTIN_TEMPLATES.find((t) => t.name === 'builtin-batch-data-governance')!;
+    const art = (name: string, obj: unknown) => {
+      fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+      fs.writeFileSync(path.join(cwd, `.herdr/artifacts/${name}.json`), JSON.stringify(obj));
+    };
+    const batchFile = (name: string, items: string[]) => {
+      fs.mkdirSync(path.join(cwd, 'output/_batches'), { recursive: true });
+      fs.writeFileSync(path.join(cwd, `output/_batches/${name}.json`), JSON.stringify(items));
+      fs.mkdirSync(path.join(cwd, `output/${name}`), { recursive: true });
+      fs.writeFileSync(path.join(cwd, `output/${name}/result.jsonl`), items.join('\n'));
+    };
+    ops.onPrompt = (target) => {
+      if (target.includes('prepare')) {
+        batchFile('batch-01', ['a', 'b']);
+        batchFile('batch-02', ['c']);
+        art('prepare', {
+          summary: '共 3 条切为 2 批',
+          extra: {
+            batches: [
+              { name: 'batch-01', brief: 'batch-01：第 1-2 条，共 2 条，清单文件 output/_batches/batch-01.json' },
+              { name: 'batch-02', brief: 'batch-02：第 3 条，共 1 条，清单文件 output/_batches/batch-02.json' },
+            ],
+          },
+        });
+      } else if (target.includes('impl__1')) {
+        art('impl__1', { summary: 'batch-01 处理 2 条', extra: { batch: 'batch-01', processed: 2, anomalies: [], usage: { input: 100, output: 200 } } });
+      } else if (target.includes('impl__2')) {
+        art('impl__2', { summary: 'batch-02 处理 1 条', extra: { batch: 'batch-02', processed: 1, anomalies: [] } });
+      } else if (target.includes('verify')) {
+        art('verify', {
+          summary: '终审 PASS：4/4 断言过',
+          extra: {
+            assertionResults: [
+              { id: 'AC-1', status: 'ok', evidence: 'processed 合计 3 = 清单 3' },
+              { id: 'AC-2', status: 'ok', evidence: 'anomalies 均为空数组' },
+              { id: 'AC-3', status: 'ok', evidence: '2+1=3 无重无漏' },
+              { id: 'AC-4', status: 'ok', evidence: 'output/batch-01|02 各 1 产物文件' },
+            ],
+          },
+        });
+      } else if (target.includes('wrapup')) {
+        fs.writeFileSync(path.join(cwd, 'output/batch-report.md'), '# 批次报告\n4/4 断言通过\n');
+        art('wrapup', { summary: '报告已产出' });
+      }
+    };
+    const run = await engine.startRun(tmpl, cwd, 'default', {
+      batch_source: 'source.jsonl',
+      batch_prompt: '把每条记录规范化字段后写入输出文件',
+    });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running', 20_000);
+    const final = engine.getRun(run.runId)!;
+    expect(final.state, `state=${final.state} err=${JSON.stringify(final.nodes)}`).toBe('completed');
+    expect(final.nodes['impl__1']!.state).toBe('done');
+    expect(final.nodes['impl__2']!.state).toBe('done');
+    expect(final.nodes['impl']!.state).toBe('skipped');
+    // 变量与 item 真实插值（不再见占位符字面量）
+    const p1 = ops.prompts.find((p) => p.target.includes('impl__1'))!;
+    expect(p1.text).toContain('output/batch-01/');
+    expect(p1.text).toContain('规范化字段');
+    expect(p1.text).not.toContain('{{item.name}}');
+    const pv = ops.prompts.find((p) => p.target.includes('verify'))!;
+    expect(pv.text).toContain('AC-1'); // acceptance_template 默认值已注入
+    // R6a 成本账：usage 只聚合自报的（impl__1 有、impl__2 无），skipped 分支不入账
+    expect(final.cost).toBeTruthy();
+    expect(final.cost!.tokens).toEqual({ input: 100, output: 200 });
+    expect(final.cost!.byNode['impl__1']!.attempts).toBe(1);
+    expect(final.cost!.byNode['impl']).toBeUndefined();
+    expect(final.cost!.totalMs).toBeGreaterThan(0);
+  });
+
+  it('verify 断言有 fail 时机器判据把关：终审节点检查不过 → run 失败', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-batch-fail-'));
+    const tmpl = BUILTIN_TEMPLATES.find((t) => t.name === 'builtin-batch-data-governance')!;
+    const art = (name: string, obj: unknown) => {
+      fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+      fs.writeFileSync(path.join(cwd, `.herdr/artifacts/${name}.json`), JSON.stringify(obj));
+    };
+    ops.onPrompt = (target) => {
+      if (target.includes('prepare')) {
+        art('prepare', { summary: '2 条 1 批', extra: { batches: [{ name: 'batch-01', brief: 'batch-01：第 1-2 条' }] } });
+      } else if (target.includes('impl__1')) {
+        art('impl__1', { summary: '处理 1 条（漏 1）', extra: { batch: 'batch-01', processed: 1, anomalies: [{ entry: 'b', reason: '未处理', advice: '补跑' }] } });
+      } else if (target.includes('verify')) {
+        art('verify', { summary: '终审 FAIL', extra: { assertionResults: [{ id: 'AC-3', status: 'fail', evidence: 'processed=1 < 2' }] } });
+      } else if (target.includes('wrapup')) {
+        fs.mkdirSync(path.join(cwd, 'output'), { recursive: true });
+        fs.writeFileSync(path.join(cwd, 'output/batch-report.md'), '# 失败报告\n');
+        art('wrapup', { summary: 'done' });
+      }
+    };
+    const run = await engine.startRun(tmpl, cwd, 'default', { batch_source: 's.jsonl', batch_prompt: '处理' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running', 30_000);
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('failed'); // onFail:abort 的终审把整个 run 判死
+    expect(final.nodes['verify']!.state).toBe('failed');
+    // R6a：verify 重试过（retries≥1），全程无 usage 自报 → tokens=null（unknown，非 0）
+    expect(final.cost!.retries).toBeGreaterThanOrEqual(1);
+    expect(final.cost!.tokens).toBeNull();
   });
 });

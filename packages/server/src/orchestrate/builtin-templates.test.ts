@@ -7,8 +7,8 @@ import { BUILTIN_TEMPLATES, seedBuiltinTemplates } from './builtin-templates.js'
 import { Store } from './store.js';
 
 describe('builtin templates', () => {
-  it('contains eight built-in templates, all passing DAG validation', () => {
-    expect(BUILTIN_TEMPLATES).toHaveLength(8);
+  it('contains nine built-in templates, all passing DAG validation', () => {
+    expect(BUILTIN_TEMPLATES).toHaveLength(9);
     for (const t of BUILTIN_TEMPLATES) {
       const issues = validateDag(t).filter((i) => i.level === 'error');
       expect(issues, `${t.name}: ${issues.map((i) => i.message).join(';')}`).toEqual([]);
@@ -46,7 +46,7 @@ describe('builtin templates', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-seed-'));
     const store = new Store(dir);
     const seed = () => seedBuiltinTemplates((id) => store.getGraph(id), (g) => store.saveGraph(g));
-    expect(seed()).toHaveLength(8);
+    expect(seed()).toHaveLength(9);
     expect(seed()).toEqual([]); // second boot: nothing new
     // user edits a builtin → third boot must not clobber it
     const edited = store.getGraph('builtin-standard-dev-flow')!;

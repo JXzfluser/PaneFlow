@@ -12,6 +12,8 @@ export type {
   NodeRunState,
   RunRecord,
   RunEvent,
+  RunCost,
+  NodeCost,
   NodeRunRecord,
   TemplateVariable,
 } from './dag.js';

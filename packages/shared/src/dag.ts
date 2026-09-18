@@ -263,6 +263,8 @@ export interface RunRecord {
   finishedAt?: string;
   /** 运行事件时间线（R5.3：状态变迁/重试/子运行/审批的留档） */
   events?: RunEvent[];
+  /** R6a 运行成本汇总（引擎收尾时计算并持久化） */
+  cost?: RunCost;
   /** R5.1 归档标记（归档后移出运行中心主列表，记录保留可检索） */
   archived?: boolean;
 }
@@ -272,6 +274,22 @@ export interface RunEvent {
   type: 'node' | 'run' | 'child' | 'approval' | 'snapshot';
   nodeId?: string;
   text: string;
+}
+
+/** R6a 成本记账 v0：纯记账（时长/尝试数/token 自报），不做预算强制与熔断 */
+export interface NodeCost {
+  durationMs: number;
+  attempts: number;
+  /** 重试次数 = attempts - 1 */
+  retries: number;
+}
+
+export interface RunCost {
+  totalMs: number;
+  byNode: Record<string, NodeCost>;
+  retries: number;
+  /** Σ 各节点 artifact extra.usage（agent 自报）；null = 拿不到，明示 unknown，绝不估算 */
+  tokens: { input: number; output: number } | null;
 }
 
 // ---------------------------------------------------------------------------
