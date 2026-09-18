@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { DagGraph } from '@paneflow/shared';
-import { GithubSync } from './github-sync.js';
+import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
+import { writeGithubSettings } from './github-cred.js';
 import { Store } from '../orchestrate/store.js';
 
 const CFG = { repo: 'owner/repo', token: 't', branch: 'main', dir: 'templates' };
@@ -94,5 +95,34 @@ describe('GithubSync', () => {
     const r = await new GithubSync(CFG, store, impl2).pushAll();
     expect(r.pushed).toEqual(['beta.json']);
     expect(r.failed).toEqual([{ file: 'alpha.json', error: expect.stringContaining('422') }]);
+  });
+});
+
+describe('v7-A4 loadSyncConfig 凭据回退链（env → 设置页 dataDir）', () => {
+  function credDir(token?: string, repo?: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-ghsync-'));
+    writeGithubSettings(dir, { token, defaultRepo: repo });
+    return dir;
+  }
+
+  it('env 未配时回退到设置页 PAT + 默认仓库', () => {
+    const dir = credDir('ghp_settings', 'me/repo');
+    const cfg = loadSyncConfig({}, dir);
+    expect(cfg).toEqual({ repo: 'me/repo', token: 'ghp_settings', branch: 'main', dir: 'templates' });
+  });
+
+  it('env 优先于设置页', () => {
+    const dir = credDir('ghp_settings', 'me/repo');
+    const cfg = loadSyncConfig({ PF_GITHUB_TOKEN: 'env_tok', PF_GITHUB_REPO: 'env/repo' }, dir);
+    expect(cfg?.token).toBe('env_tok');
+    expect(cfg?.repo).toBe('env/repo');
+  });
+
+  it('两边都没有 → null；文案分别指向设置页缺项', () => {
+    const dir = credDir();
+    expect(loadSyncConfig({}, dir)).toBeNull();
+    expect(syncUnavailableReason({}, dir)).toContain('仓库');
+    expect(syncUnavailableReason({ PF_GITHUB_REPO: 'a/b' }, dir)).toContain('PAT');
+    expect(syncUnavailableReason({ PF_GITHUB_REPO: 'no-slash', PF_GITHUB_TOKEN: 't' })).toContain('owner/name');
   });
 });

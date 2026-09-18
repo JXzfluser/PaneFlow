@@ -730,13 +730,13 @@ export async function buildHttpServer(deps: HttpDeps) {
   // -- GitHub 沉淀（可选，弱依赖，异步非阻塞） ---------------------------------
 
   app.get('/api/sync/status', async () => {
-    const cfg = loadSyncConfig();
+    const cfg = loadSyncConfig(process.env, deps.dataDir);
     return { configured: cfg !== null, repo: cfg?.repo ?? null, dir: cfg?.dir ?? null };
   });
 
   app.post('/api/sync/push', async (req, reply) => {
-    const cfg = loadSyncConfig();
-    if (!cfg) return reply.code(400).send({ error: syncUnavailableReason() });
+    const cfg = loadSyncConfig(process.env, deps.dataDir);
+    if (!cfg) return reply.code(400).send({ error: syncUnavailableReason(process.env, deps.dataDir) });
     const sync = new GithubSync(cfg, spaceStore(deps, (req.query as { space?: string }).space));
     // async, non-blocking: return immediately, results land in the run log
     void sync
@@ -751,8 +751,8 @@ export async function buildHttpServer(deps: HttpDeps) {
   });
 
   app.post('/api/sync/pull', async (req, reply) => {
-    const cfg = loadSyncConfig();
-    if (!cfg) return reply.code(400).send({ error: syncUnavailableReason() });
+    const cfg = loadSyncConfig(process.env, deps.dataDir);
+    if (!cfg) return reply.code(400).send({ error: syncUnavailableReason(process.env, deps.dataDir) });
     try {
       const sync = new GithubSync(cfg, spaceStore(deps, (req.query as { space?: string }).space));
       const r = await sync.pullAll();

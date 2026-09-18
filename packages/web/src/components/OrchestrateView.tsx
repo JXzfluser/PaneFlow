@@ -83,7 +83,7 @@ export function OrchestrateView() {
     try {
       const st = await api.syncStatus();
       if (!st.configured) {
-        log('warn', 'GitHub 沉淀未启用：需配置 PF_GITHUB_REPO / PF_GITHUB_TOKEN');
+        log('warn', 'GitHub 沉淀未启用：请到设置页配置 GitHub Token 与默认目标仓库（owner/name）；环境变量 PF_GITHUB_REPO/PF_GITHUB_TOKEN 亦可，env 优先');
         return;
       }
       await api.syncPush();

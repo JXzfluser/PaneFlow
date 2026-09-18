@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DagGraph } from '@paneflow/shared';
 import type { Store } from '../orchestrate/store.js';
+import { readGithubSettings } from './github-cred.js';
 
 export interface GithubSyncConfig {
   /** owner/name, e.g. JXzfluser/PaneFlow */
@@ -23,9 +24,11 @@ export interface FetchLike {
   }>;
 }
 
-export function loadSyncConfig(env: NodeJS.ProcessEnv = process.env): GithubSyncConfig | null {
-  const repo = env.PF_GITHUB_REPO;
-  const token = env.PF_GITHUB_TOKEN;
+/** v7-A4 凭据合一：env 优先，回退到设置页存于 dataDir 的 PAT + 默认仓库。 */
+export function loadSyncConfig(env: NodeJS.ProcessEnv = process.env, dataDir?: string): GithubSyncConfig | null {
+  const cred = dataDir ? readGithubSettings(dataDir) : {};
+  const repo = env.PF_GITHUB_REPO ?? cred.defaultRepo;
+  const token = env.PF_GITHUB_TOKEN ?? cred.token;
   if (!repo || !token || !repo.includes('/')) return null;
   return {
     repo,
@@ -137,9 +140,10 @@ export class GithubSync {
   }
 }
 
-/** Re-exported for the HTTP layer: describe why sync is unavailable. */
-export function syncUnavailableReason(env: NodeJS.ProcessEnv = process.env): string {
-  if (!env.PF_GITHUB_REPO && !env.PF_GITHUB_TOKEN) return '未配置 PF_GITHUB_REPO / PF_GITHUB_TOKEN';
-  if (!env.PF_GITHUB_REPO) return '缺少 PF_GITHUB_REPO（owner/name）';
-  return '缺少 PF_GITHUB_TOKEN';
+/** Re-exported for the HTTP layer: describe why sync is unavailable（同样走 env → 设置页两级）。 */
+export function syncUnavailableReason(env: NodeJS.ProcessEnv = process.env, dataDir?: string): string {
+  const cred = dataDir ? readGithubSettings(dataDir) : {};
+  if (!env.PF_GITHUB_REPO && !cred.defaultRepo) return '缺少仓库：设置页配「默认目标仓库」或环境变量 PF_GITHUB_REPO（owner/name）';
+  if (!env.PF_GITHUB_TOKEN && !cred.token) return '缺少 PAT：设置页配 GitHub Token 或环境变量 PF_GITHUB_TOKEN';
+  return '仓库格式应为 owner/name（检查 PF_GITHUB_REPO 或设置页默认仓库）';
 }
