@@ -14,8 +14,6 @@ export interface PaneFlowConfig {
   port: number;
   /** Max panes created in parallel (fan-out) across all running pipelines */
   maxConcurrentPanes: number;
-  /** Default agent kind for new nodes */
-  defaultAgentKind: string;
   /** Polling interval for state reconciliation (ms) */
   reconcileIntervalMs: number;
   /** Extra env injected into every pipeline workspace (PF_PANE_ENV=K=V,K2=V2) */
@@ -73,7 +71,6 @@ export function loadConfig(overrides: Partial<PaneFlowConfig> = {}): PaneFlowCon
     dataDir,
     port: Number(process.env.PF_PORT ?? 4310),
     maxConcurrentPanes: Number(process.env.PF_MAX_PANES ?? 8),
-    defaultAgentKind: process.env.PF_DEFAULT_AGENT_KIND ?? 'opencode',
     reconcileIntervalMs: Number(process.env.PF_RECONCILE_MS ?? 5000),
     paneEnv: parsePaneEnv(process.env.PF_PANE_ENV),
     host,

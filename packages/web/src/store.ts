@@ -66,6 +66,8 @@ interface PfStore {
   herdrOk: boolean | null;
   cwd: string;
   agentKinds: string[];
+  /** 新建节点的默认 Agent（health 灌入：本机已安装优先，见 R7-③） */
+  defaultAgentKind: string;
   templateList: DagGraph[];
   theme: ThemeName;
   view: AppView;
@@ -83,6 +85,7 @@ interface PfStore {
   setCwd: (cwd: string) => void;
   setHealth: (herdrOk: boolean | null, wsOk: boolean) => void;
   setAgentKinds: (kinds: string[]) => void;
+  setDefaultAgentKind: (kind: string) => void;
   setTemplates: (graphs: DagGraph[]) => void;
   /** 批量并入运行记录（任务视图挂载时拉历史；按当前空间过滤） */
   mergeRuns: (records: RunRecord[]) => void;
@@ -129,6 +132,7 @@ export const useStore = create<PfStore>((set, get) => ({
   herdrOk: null,
   cwd: '',
   agentKinds: [], // 唯一来源：/api/health 的 agentKinds（App 启动时灌入），不在前端写死偏好
+  defaultAgentKind: '',
   templateList: [],
   theme: initialTheme(),
   view: initialView(),
@@ -169,6 +173,7 @@ export const useStore = create<PfStore>((set, get) => ({
   setCwd: (cwd) => set({ cwd }),
   setHealth: (herdrOk, wsOk) => set({ herdrOk, wsOk }),
   setAgentKinds: (agentKinds) => set({ agentKinds }),
+  setDefaultAgentKind: (defaultAgentKind) => set({ defaultAgentKind }),
   setTemplates: (templateList) => set({ templateList }),
   mergeRuns: (records) =>
     set((s) => {
@@ -246,7 +251,7 @@ export const useStore = create<PfStore>((set, get) => ({
     const defaults: Record<DagNodeType, Partial<DagNode['config']>> = {
       start: {},
       end: {},
-      agent: { agentKind: get().agentKinds[0], prompt: '', retryCount: 0, timeoutMs: 0, onFail: 'abort' },
+      agent: { agentKind: get().defaultAgentKind || get().agentKinds[0], prompt: '', retryCount: 0, timeoutMs: 0, onFail: 'abort' },
       fanout: {},
       fanin: {},
       pipeline: { pipeline: { template: '', mode: 'wait' } },
@@ -277,7 +282,7 @@ export const useStore = create<PfStore>((set, get) => ({
       nodes: [
         mk('start', 'start', '开始', 80, {}),
         mk(agentId, 'agent', `Agent ${seq}`, 400, {
-          agentKind: get().agentKinds[0],
+          agentKind: get().defaultAgentKind || get().agentKinds[0],
           prompt: '',
           retryCount: 0,
           timeoutMs: 0,

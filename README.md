@@ -49,6 +49,8 @@ pnpm dev:web        # 画布开发服务（http://127.0.0.1:4311，代理 API）
 | `PF_MAX_PANES` | `8` | 全局并行 Pane 上限 |
 | `PF_PANE_ENV` | 空 | 注入流水线 workspace 的环境变量（`K=V,K2=V2`），如 `OPENCODE_DISABLE_AUTOUPDATE=1,PI_DISABLE_UPDATE_CHECK=1` |
 | `PF_WORKSPACE_PREFIX` | `paneflow-` | 流水线 workspace 标签前缀（自动回收依据） |
+| `PF_PROMPT_CONFIRM_MS` | `45000` | prompt 提交确认窗（ms）：提交后 agent 状态须在此窗口内离开 idle，超时判 `agent_prompt_stalled` 走节点失败/重试；`0` 关闭（fire-and-forget） |
+| `PF_CORS_ORIGINS` | 空 | 跨站请求白名单（逗号分隔 origin）。默认不回 CORS 头且拦截一切跨站写操作；同源部署与 curl 不受影响，反向代理改写 Host 时需显式配置 |
 | `PF_GITHUB_REPO` | 空 | 启用 GitHub 模板沉淀（`owner/name`） |
 | `PF_GITHUB_TOKEN` | 空 | GitHub PAT（需 Contents 读写权限；只从环境变量读取，永不入库/入日志） |
 | `PF_GITHUB_BRANCH` | `main` | 沉淀分支 |
