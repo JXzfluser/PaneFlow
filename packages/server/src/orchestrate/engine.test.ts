@@ -1031,3 +1031,43 @@ describe('S5 batch-data-governance skeleton (fake-ops e2e)', () => {
     expect(final.cost!.tokens).toBeNull();
   });
 });
+
+describe('v7-A5 断点续跑（resumeOf）', () => {
+  it('done 节点继承不重跑，失败节点在新 run 完成，黑板从源 run 载入', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    let phase = 1;
+    ops.onPrompt = (target, text) => {
+      if (phase === 1 && text.includes('实现')) {
+        // 第一轮 impl 失败：working → unknown（不可澄清 → 判死）
+        ops.setStatus(target, 'working');
+        setTimeout(() => ops.setStatus(target, 'unknown'), 10);
+      }
+    };
+    const run = await runToCompletion(twoNodeGraph(), cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['design']!.state).toBe('done');
+    expect(run.nodes['impl']!.state).toBe('failed');
+
+    phase = 2;
+    const promptsBefore = ops.prompts.length;
+    const resumed = await engine.startRun(run.graph, cwd, undefined, undefined, undefined, run.runId);
+    await waitFor(() => engine.getRun(resumed.runId)!.state !== 'running');
+    const r2 = engine.getRun(resumed.runId)!;
+    expect(r2.state).toBe('completed');
+    expect(r2.nodes['design']!.state).toBe('done');
+    const newPrompts = ops.prompts.slice(promptsBefore);
+    // design 未被再次 prompt；impl 被重放且 {{design.artifact.summary}} 已由继承的黑板解析
+    expect(newPrompts.some((p) => p.text.includes('设计'))).toBe(false);
+    const implPrompt = newPrompts.find((p) => p.text.includes('实现'))!;
+    expect(implPrompt.text).not.toContain('{{');
+    expect(implPrompt.text.length).toBeGreaterThan('根据  实现'.length);
+    // 继承事件留痕
+    expect((r2.events ?? []).some((e) => e.text.includes(`继承 ${run.runId}`))).toBe(true);
+  });
+
+  it('源 run 无效（不存在/模板不一致）→ 启动即抛错，不产生新 run', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    await expect(engine.startRun(serialGraph(), cwd, undefined, undefined, undefined, 'ghost')).rejects.toThrow('断点续跑源无效');
+    expect(engine.listRuns().length).toBe(0);
+  });
+});

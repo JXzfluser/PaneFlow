@@ -164,6 +164,24 @@ export function RunsCenter() {
     }
   };
 
+  // v7-A5 断点续跑：以源 run 已应用的图重启，done 节点（含 fanout 克隆）整体继承不重跑
+  const resume = async (r: RunRecord) => {
+    const all = Object.values(r.nodes);
+    const done = all.filter((n) => n.state === 'done');
+    const ok = window.confirm(
+      `从断点续跑 #${r.runId}？\n\n` +
+        `继承已完成节点 ${done.length}/${all.length}${done.length ? `：${done.map((n) => n.nodeId).join('、')}` : ''}\n` +
+        `失败与未执行节点将重新执行（产物黑板从源 run 载入）。`,
+    );
+    if (!ok) return;
+    try {
+      const d = await api.resumeRun(r);
+      log('info', `断点续跑已启动：新 run ${d.runId} 继承 ${done.length} 个已完成节点`);
+    } catch (e) {
+      log('error', `续跑失败：${(e as Error).message}`);
+    }
+  };
+
   const progress = (r: (typeof list)[number]): { done: number; total: number } => {
     const all = Object.values(r.nodes);
     const done = all.filter((n) => ['done', 'failed', 'skipped', 'cancelled'].includes(n.state)).length;
@@ -235,6 +253,9 @@ export function RunsCenter() {
                       })
                       .catch((e: Error) => useStore.getState().log('error', `归档失败：${e.message}`));
                   }}>📦</button>
+                )}
+                {r.state === 'failed' && (
+                  <button title="从断点续跑（已完成节点直接继承，失败/未跑节点重执行）" onClick={() => void resume(r)}>⤴</button>
                 )}
                 <button title="在画布中打开" onClick={() => { openRun(r.runId); setView('orchestrate'); }}>↗</button>
                 {r.state === 'running' && <button className="danger" title="停止" onClick={() => void stop(r.runId)}>⏹</button>}

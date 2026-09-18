@@ -216,6 +216,17 @@ export class Engine {
       throw new Error(`工作目录不存在：${cwd}`);
     }
 
+    // R6.5 断点续跑：源校验必须在创建 run 之前，否则抛错会留下僵尸 running 记录
+    let resumeSource: RunRecord | undefined;
+    if (resumeOf) {
+      const srcStore = spaceId ? new Store(this.store.root, spaceId) : this.store;
+      const source = srcStore.getRun(resumeOf);
+      if (!source || source.dagName !== graph.name) {
+        throw new Error(`断点续跑源无效：${resumeOf}（不存在或模板不一致）`);
+      }
+      resumeSource = source;
+    }
+
     const order = topoSort(graph.nodes.map((n) => n.id), graph.edges)!;
     const runId = randomUUID().slice(0, 8);
     const nodes: Record<string, NodeRunRecord> = {};
@@ -237,16 +248,12 @@ export class Engine {
     this.recordEvent(run, 'run', undefined, `运行启动：${graph.name}（${order.length} 个节点）`);
     this.persistAndNotify(run);
 
-    // R6.5 断点续跑：从源 run 继承 done 节点的记录与产物（这些节点不再执行）
+    // 继承 done 节点的记录与产物（这些节点不再执行）
     const blackboardPreload = new Map<string, Artifact>();
-    if (resumeOf) {
-      const source = this.storeFor(run).getRun(resumeOf);
-      if (!source || source.dagName !== graph.name) {
-        throw new Error(`断点续跑源无效：${resumeOf}（不存在或模板不一致）`);
-      }
+    if (resumeSource) {
       const orderSet = new Set(order);
       let inherited = 0;
-      for (const [nodeId, srcRec] of Object.entries(source.nodes)) {
+      for (const [nodeId, srcRec] of Object.entries(resumeSource.nodes)) {
         if (!orderSet.has(nodeId) || srcRec.state !== 'done') continue;
         const rec = run.nodes[nodeId]!;
         Object.assign(rec, {

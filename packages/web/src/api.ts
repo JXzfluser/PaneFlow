@@ -73,6 +73,14 @@ export const api = {
   deleteGraph: (id: string) => json<{ deleted: boolean }>('DELETE', `/api/graphs/${encodeURIComponent(id)}`),
   startRun: (graph: DagGraph, cwd: string, variables?: Record<string, string>, issueId?: string) =>
     json<{ runId: string; run: RunRecord }>('POST', '/api/runs', { graph, cwd, ...(variables ? { variables } : {}), ...(issueId ? { issueId } : {}) }),
+  /** v7-A5 断点续跑：复用源 run 的已应用图，显式带回其所属空间（RunsCenter 跨空间列表不能依赖当前空间） */
+  resumeRun: (source: RunRecord) =>
+    json<{ runId: string; run: RunRecord }>(
+      'POST',
+      `/api/runs?space=${encodeURIComponent(source.spaceId || getSpace())}`,
+      { graph: source.graph, cwd: source.cwd, ...(source.issueId ? { issueId: source.issueId } : {}), resumeOf: source.runId },
+      { raw: true },
+    ),
   stopRun: (runId: string) => json<{ stopping: boolean }>('POST', `/api/runs/${runId}/stop`),
   getRun: (runId: string) => json<RunRecord>('GET', `/api/runs/${runId}`),
   listRuns: () => json<{ runs: RunRecord[] }>('GET', '/api/runs'),
