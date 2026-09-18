@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { RunEvent, RunRecord } from '@paneflow/shared';
 import { useStore } from '../store.js';
 import { api, fetchJson } from '../api.js';
+import { runCostLabel } from '../cost.js';
 import { RunTimeline } from './RunTimeline.js';
 
 function nodeDuration(r: NonNullable<ReturnType<typeof useStore.getState>['runs'][string]>, nodeId: string): number | null {
@@ -205,6 +206,9 @@ export function RunsCenter() {
                 {r.state === 'running' ? '运行中' : r.state === 'completed' ? '完成 ✅' : r.state === 'failed' ? '失败 ❌' : '已取消'}
               </span>
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{elapsed}s</span>
+              {runCostLabel(r) && (
+                <span className="run-cost-chip" title="成本账：时长/重试/tokens（unknown = agent 未自报，不估算）">{runCostLabel(r)}</span>
+              )}
               <div className="run-card-ops">
                 <button
                   className={open ? 'active' : ''}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
+import { runCostLabel } from '../cost.js';
 import { useStore } from '../store.js';
 import { RunTimeline } from './RunTimeline.js';
 
@@ -126,6 +127,9 @@ export function Console() {
           </button>
         ))}
         <div className="tabs-end">
+          {run && runCostLabel(run) && (
+            <span className="run-cost-chip" title="成本账：时长/重试/tokens（unknown = agent 未自报，不估算）">{runCostLabel(run)}</span>
+          )}
           <button onClick={toggleCollapsed} title={collapsed ? '展开控制台' : '收起控制台，画布空间更大（点任意标签页也会展开）'}>
             {collapsed ? '⌃ 控制台' : '⌄ 收起'}
           </button>

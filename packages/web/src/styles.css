@@ -519,6 +519,8 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 }
 .run-card b { font-family: var(--font-mono); font-size: 12.5px; letter-spacing: 0.3px; }
 .run-card-head { display: flex; align-items: center; gap: 10px; }
+/* v7-A3 成本格：紧凑、次要色，不与状态徽标抢视觉 */
+.run-cost-chip { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border, #333); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
 .run-card-ops { margin-left: auto; display: flex; gap: 6px; }
 .run-card-ops button { padding: 3px 10px; font-size: 12px; }
 .run-progress { display: flex; align-items: center; gap: 12px; margin-top: 9px; }
