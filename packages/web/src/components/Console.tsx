@@ -74,25 +74,26 @@ export function Console() {
     bodyRef.current?.scrollTo(0, bodyRef.current.scrollHeight);
   }, [logs.length, tab]);
 
-  // poll selected node terminal output
+  // P5：终端预览改为 WS 事件驱动——运行状态推送自带 outputSnapshots（引擎随状态变迁采集），
+  // 快照缺失（埋点上线前的历史 run）才一次性回落服务端读取，不再 2s 轮询
   useEffect(() => {
     if (tab !== 'terminal' || !run || !terminalNode) return;
+    const snaps = run.nodes[terminalNode]?.outputSnapshots;
+    if (snaps?.length) {
+      setTerminal(snaps[snaps.length - 1]!.text);
+      return;
+    }
     let alive = true;
-    const pull = () => {
-      api
-        .nodeLog(run.runId, terminalNode)
-        .then((r) => {
-          if (alive) setTerminal(r.text);
-        })
-        .catch(() => {
-          if (alive) setTerminal('(无法读取终端输出 — agent 可能已结束)');
-        });
-    };
-    pull();
-    const t = setInterval(pull, 2000);
+    api
+      .nodeLog(run.runId, terminalNode)
+      .then((r) => {
+        if (alive) setTerminal(r.text);
+      })
+      .catch(() => {
+        if (alive) setTerminal('(无法读取终端输出 — agent 可能已结束)');
+      });
     return () => {
       alive = false;
-      clearInterval(t);
     };
   }, [tab, run, terminalNode]);
 
@@ -160,7 +161,7 @@ export function Console() {
           (blockedNodes.length === 0 ? (
             <div className="log-line">当前没有等待人工审批的节点。</div>
           ) : (
-            blockedNodes.map((n) => <ApprovalCard key={n.nodeId} runId={run!.runId} nodeId={n.nodeId} />)
+            blockedNodes.map((n) => <ApprovalCard key={n.nodeId} runId={run!.runId} nodeId={n.nodeId} snapshots={n.outputSnapshots} />)
           ))}
         {tab === 'terminal' && (
           <TerminalTab
@@ -180,23 +181,25 @@ export function Console() {
   );
 }
 
-function ApprovalCard({ runId, nodeId }: { runId: string; nodeId: string }) {
+function ApprovalCard({ runId, nodeId, snapshots }: { runId: string; nodeId: string; snapshots?: { at: string; text: string }[] }) {
   const node = useStore((s) => s.nodes.find((n) => n.id === nodeId));
   const approve = useStore((s) => s.approve);
-  const [terminal, setTerminal] = useState('(加载中…)');
+  // P5：审批卡的上下文随 WS 推送里的快照走；无快照的历史 run 一次性回落读取
+  const derived = snapshots?.length ? snapshots[snapshots.length - 1]!.text : null;
+  const [terminal, setTerminal] = useState(derived ?? '(加载中…)');
   const [freeText, setFreeText] = useState('');
 
   useEffect(() => {
+    if (derived !== null) {
+      setTerminal(derived);
+      return;
+    }
     let alive = true;
-    const pull = () =>
-      api.nodeLog(runId, nodeId).then((r) => alive && setTerminal(r.text || '(空)')).catch(() => alive && setTerminal('(无法读取)'));
-    pull();
-    const t = setInterval(pull, 2000);
+    api.nodeLog(runId, nodeId).then((r) => alive && setTerminal(r.text || '(空)')).catch(() => alive && setTerminal('(无法读取)'));
     return () => {
       alive = false;
-      clearInterval(t);
     };
-  }, [runId, nodeId]);
+  }, [runId, nodeId, derived]);
 
   return (
     <div className="approval-card">

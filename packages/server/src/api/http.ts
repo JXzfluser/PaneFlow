@@ -103,7 +103,7 @@ export function isAllowedOrigin(opts: {
 const DEFAULT_SPACE = 'default';
 
 /** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应） */
-const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'skills', 'repos'] as const;
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'skills', 'repos', 'defaultAgentKind'] as const;
 
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
@@ -469,8 +469,14 @@ export async function buildHttpServer(deps: HttpDeps) {
       if (!task) return reply.code(400).send({ error: '缺少任务描述' });
       const store0 = spaceStore(deps, req.query.space);
       let rootCwd: string | undefined;
+      let plannerAgentKind: string | undefined;
       try {
-        rootCwd = store0.readProfile().rootCwd;
+        const profile = store0.readProfile();
+        rootCwd = profile.rootCwd;
+        // E'：Planner agent 取空间档案默认值；非法值回落缺省（buildDispatchGraph 内兜底）
+        plannerAgentKind = profile.defaultAgentKind && (AGENT_KINDS as readonly string[]).includes(profile.defaultAgentKind)
+          ? profile.defaultAgentKind
+          : undefined;
       } catch {
         rootCwd = undefined;
       }
@@ -487,6 +493,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         templateList,
         rootCwd,
         preview: req.body.preview === true,
+        plannerAgentKind,
       });
       const run = await deps.engine.startRun(graph, cwd, req.query.space, { task }, req.body.issueId);
       return { runId: run.runId };

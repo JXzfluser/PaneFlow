@@ -14,11 +14,13 @@ export interface DispatchOptions {
    * 该节点失败并终止整条下发；否则仅靠 onFail=continue 会照常路由下去。
    */
   preview?: boolean;
+  /** E'：Planner 节点用的 agent 类型（空间档案 defaultAgentKind）；空值回落 DISPATCH_AGENT_KIND */
+  plannerAgentKind?: string;
 }
 
 const MAX_TASK_LEN = 4000;
 
-/** 智能下发 Planner 固定用的 Agent（R7：当前只启动告警不改行为；preferredAgentKind 配置化留下一迭代） */
+/** Planner agent 缺省类型（E' 后可被空间档案 defaultAgentKind 覆盖） */
 export const DISPATCH_AGENT_KIND = 'claude';
 
 /**
@@ -62,7 +64,7 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
         type: 'agent',
         label: 'Planner · 下发规划',
         config: {
-          agentKind: DISPATCH_AGENT_KIND,
+          agentKind: opts.plannerAgentKind || DISPATCH_AGENT_KIND,
           prompt: plannerPrompt,
           clarify: { maxRounds: 2 },
           retryCount: 1,

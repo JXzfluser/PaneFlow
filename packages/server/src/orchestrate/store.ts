@@ -15,6 +15,8 @@ export interface SpaceProfile {
   skills?: string[];
   /** 已登记仓库（相对主仓根，含 .git 的子目录）；目前仅存档，无运行期消费者 */
   repos?: string[];
+  /** 智能下发 Planner 用的 agent 类型（E'：取代写死 claude；非法/缺省时回落默认值） */
+  defaultAgentKind?: string;
 }
 
 export const DEFAULT_SPACE = 'default';

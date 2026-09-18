@@ -55,8 +55,8 @@ function defaultArtifactFile(nodeId: string): string {
 
 /**
  * Deterministic DAG execution engine on top of Herdr panes.
- * M1: serial scheduling. Fan-out/Fan-in parallelism lands in M2 on the same
- * node lifecycle primitives built here.
+ * 拓扑序调度：无依赖关系的节点（fan-out 分支）并行执行，受全局 pane 并发上限约束；
+ * fan-in 按 requireAll 严/宽收敛。
  */
 export class Engine {
   private readonly runs = new Map<string, RunRecord>();
@@ -115,6 +115,8 @@ export class Engine {
         this.runs.set(run.runId, run);
       }
     }
+    // F3：轮询校对通电（PF_RECONCILE_MS<=0 时内部守卫视为关闭）
+    this.startReconciler();
   }
 
   /**
@@ -1493,12 +1495,12 @@ export class Engine {
   // -- infrastructure -------------------------------------------------------------
 
   /**
-   * G1 已知坑（v6 判决：本迭代不通电）：本方法当前无任何调用点，"事件+轮询双向校对"
-   * 只剩事件一半。接线时注意 PF_RECONCILE_MS=0 会让 setInterval(0) 退化为 ~4ms 空转，
-   * 足以打爆 herdr——通电前必须先加 `<= 0 直接 return` 守卫（详见 iteration-v6-oss-landing #2）。
+   * F3（v8 裁决通电）："事件+轮询双向校对"补齐轮询一半，守卫已带——
+   * reconcileIntervalMs<=0（PF_RECONCILE_MS=0）视为显式关闭，直接不启动，
+   * 防止 setInterval(0) 退化为 ~4ms 空转打爆 herdr（v6 G1 已知坑）。
    */
   private startReconciler(): void {
-    if (this.reconcileTimer) return;
+    if (this.reconcileTimer || this.opts.reconcileIntervalMs <= 0) return;
     this.reconcileTimer = setInterval(() => {
       void this.reconcile();
     }, this.opts.reconcileIntervalMs);

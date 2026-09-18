@@ -406,6 +406,7 @@ interface SpaceProfile {
   conventionFiles?: string[];
   skills?: string[];
   repos?: string[];
+  defaultAgentKind?: string;
 }
 
 /** 设置视图：左侧章节导航 + 右侧分区（原为 6 张卡片平铺 + 大量内联样式）。 */
@@ -413,6 +414,7 @@ export function SettingsView() {
   const log = useStore((s) => s.log);
   // 响应式读当前空间（D4）：侧栏切换后本页自动跟随刷新
   const spaceId = useStore((s) => s.space);
+  const agentKinds = useStore((s) => s.agentKinds);
   const [profile, setProfile] = useState<SpaceProfile | null>(null);
   const [env, setEnv] = useState<{ herdrOk: boolean; herdrVersion: string | null; env: { agentsInstalled: string[] } } | null>(null);
   const [discover, setDiscover] = useState<{ markdowns: string[]; skills: string[]; repos: string[] } | null>(null);
@@ -476,6 +478,7 @@ export function SettingsView() {
         conventionFiles: profile.conventionFiles ?? [],
         skills: profile.skills ?? [],
         repos: profile.repos ?? [],
+        defaultAgentKind: profile.defaultAgentKind ?? '',
       });
       if (profile?.rootCwd) {
         const next = [profile.rootCwd, ...recentRoots.filter((x) => x !== profile.rootCwd)].slice(0, 5);
@@ -677,6 +680,18 @@ export function SettingsView() {
                 onChange={(e) => setProfile((p) => (p ? { ...p, description: e.target.value } : p))}
                 placeholder="一句话说明这个项目"
               />
+              <label>智能下发 Planner Agent（E'：留空=缺省 claude）</label>
+              <select
+                value={profile?.defaultAgentKind ?? ''}
+                onChange={(e) => setProfile((p) => (p ? { ...p, defaultAgentKind: e.target.value } : p))}
+              >
+                <option value="">缺省（claude）</option>
+                {agentKinds.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
               <div className="settings-actions">
                 <button className="primary" onClick={() => void saveProfile()}>
                   保存档案

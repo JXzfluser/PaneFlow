@@ -47,10 +47,11 @@ async function main(): Promise<void> {
   }
   console.log(`[paneflow] herdr socket: ${config.herdrSocketPath}`);
   console.log(`[paneflow] data dir: ${config.dataDir}`);
-  // R7：智能下发 Planner 写死 agent（行为不变），只在启动时提示缺失，配置化留下一迭代
-  void detectInstalledAgents([DISPATCH_AGENT_KIND]).then((installed) => {
-    if (!installed.includes(DISPATCH_AGENT_KIND)) {
-      console.warn(`[paneflow] 警告：智能下发依赖的 agent「${DISPATCH_AGENT_KIND}」未检测到，下发任务可能起不来`);
+  // E'：Planner agent 已可配置（空间档案 defaultAgentKind）——启动时按实际会用的类型提示缺失
+  const plannerKind = store.readProfile().defaultAgentKind || DISPATCH_AGENT_KIND;
+  void detectInstalledAgents([plannerKind]).then((installed) => {
+    if (!installed.includes(plannerKind)) {
+      console.warn(`[paneflow] 警告：智能下发依赖的 agent「${plannerKind}」未检测到，下发任务可能起不来`);
     }
   });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDispatchGraph } from './dispatch.js';
+import { buildDispatchGraph, DISPATCH_AGENT_KIND } from './dispatch.js';
 import { BUILTIN_TEMPLATES } from '../orchestrate/builtin-templates.js';
 import { applyVariables, validateDag } from '@paneflow/shared';
 
@@ -41,6 +41,13 @@ describe('buildDispatchGraph', () => {
     const { graph: applied } = applyVariables(g, { task: 'demo 任务' });
     expect(applied.nodes.length).toBe(g.nodes.length);
     expect(validateDag(applied).filter((i) => i.level === 'error')).toEqual([]);
+  });
+
+  it("E'：planner agent 取档案默认值，空值回落缺省 claude", () => {
+    const g = buildDispatchGraph({ task: 't', cwd: '/tmp/x', templateList, plannerAgentKind: 'codex' });
+    expect(g.nodes.find((n) => n.id === 'planner')!.config.agentKind).toBe('codex');
+    const g2 = buildDispatchGraph({ task: 't', cwd: '/tmp/x', templateList, plannerAgentKind: '' });
+    expect(g2.nodes.find((n) => n.id === 'planner')!.config.agentKind).toBe(DISPATCH_AGENT_KIND);
   });
 
   it('route params keys are declared variables of the fallback template (G: 静默丢弃防线)', () => {

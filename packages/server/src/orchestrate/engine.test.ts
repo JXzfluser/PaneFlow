@@ -314,7 +314,7 @@ describe('Engine (serial DAG)', () => {
     const graph = fanoutGraph();
     graph.nodes.find((n) => n.id === 'fb')!.config.onFail = 'continue';
     ops.onPrompt = (target) => {
-      if (target.includes('fb')) {
+      if (target.includes('-fb-')) {
         ops.setStatus(target, 'working');
         setTimeout(() => ops.setStatus(target, 'unknown'), 10); // unresolvable → fail
       }
@@ -334,7 +334,7 @@ describe('Engine (serial DAG)', () => {
     graph.nodes.find((n) => n.id === 'fb')!.config.onFail = 'continue';
     graph.nodes.find((n) => n.id === 'merge')!.config.requireAll = false;
     ops.onPrompt = (target) => {
-      if (target.includes('fb')) {
+      if (target.includes('-fb-')) {
         ops.setStatus(target, 'working');
         setTimeout(() => ops.setStatus(target, 'unknown'), 10);
       }
@@ -354,7 +354,7 @@ describe('Engine (serial DAG)', () => {
     graph.edges.push({ id: 'e21', source: 'chain-a', target: 'merge' });
     graph.nodes.find((n) => n.id === 'fa')!.config.onFail = 'continue';
     ops.onPrompt = (target) => {
-      if (target.includes('fa')) {
+      if (target.includes('-fa-')) {
         ops.setStatus(target, 'working');
         setTimeout(() => ops.setStatus(target, 'unknown'), 10);
       }
