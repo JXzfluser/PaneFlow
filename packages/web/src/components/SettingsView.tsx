@@ -469,9 +469,13 @@ export function SettingsView() {
   const saveProfile = async () => {
     if (!profile) return;
     try {
+      // 全字段回写：PUT 是 merge 语义，漏发的键会保住旧值——勾选过的约定/技能/仓库必须随表单一并发出
       await fetchJson<unknown>('PUT', `/api/spaces/${encodeURIComponent(spaceId)}`, {
         rootCwd: profile.rootCwd,
         description: profile.description,
+        conventionFiles: profile.conventionFiles ?? [],
+        skills: profile.skills ?? [],
+        repos: profile.repos ?? [],
       });
       if (profile?.rootCwd) {
         const next = [profile.rootCwd, ...recentRoots.filter((x) => x !== profile.rootCwd)].slice(0, 5);

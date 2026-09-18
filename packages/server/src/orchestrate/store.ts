@@ -13,6 +13,8 @@ export interface SpaceProfile {
   conventionFiles?: string[];
   /** 技能清单（相对主仓根） */
   skills?: string[];
+  /** 已登记仓库（相对主仓根，含 .git 的子目录）；目前仅存档，无运行期消费者 */
+  repos?: string[];
 }
 
 export const DEFAULT_SPACE = 'default';

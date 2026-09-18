@@ -102,6 +102,9 @@ export function isAllowedOrigin(opts: {
 
 const DEFAULT_SPACE = 'default';
 
+/** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应） */
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'skills', 'repos'] as const;
+
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
   return new Store(deps.dataDir, space);
@@ -404,7 +407,12 @@ export async function buildHttpServer(deps: HttpDeps) {
     async (req, reply) => {
       const store = spaceStore(deps, req.params.id);
       const profile = store.readProfile();
-      const next = { ...profile, ...req.body, id: req.params.id };
+      // 白名单：只接受可编辑字段，id/name/createdAt 等身份字段不可经 body 注入
+      const patch: Partial<SpaceProfile> = {};
+      for (const key of PROFILE_EDITABLE_KEYS) {
+        if (req.body && key in req.body) Object.assign(patch, { [key]: req.body[key] });
+      }
+      const next = { ...profile, ...patch, id: req.params.id };
       store.writeProfile(next);
       return next;
     },
