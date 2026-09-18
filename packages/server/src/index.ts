@@ -24,6 +24,7 @@ async function main(): Promise<void> {
     agentReadyTimeoutMs: 360_000,
     paneEnv: config.paneEnv,
     maxConcurrentPanes: config.maxConcurrentPanes,
+    promptConfirmWindowMs: config.promptConfirmWindowMs,
   });
 
   const { app } = await buildHttpServer({
@@ -33,6 +34,7 @@ async function main(): Promise<void> {
     herdrSocketPath: config.herdrSocketPath,
     dataDir: config.dataDir,
     authToken: config.authToken,
+    corsOrigins: config.corsOrigins,
   });
 
   await app.listen({ port: config.port, host: config.host });

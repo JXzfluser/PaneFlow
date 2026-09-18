@@ -82,11 +82,11 @@ export class RealHerdrOps implements HerdrOps {
     await this.client.agentWait({ target, until, timeout_ms: timeoutMs }, timeoutMs + 60_000);
   }
 
-  async promptAgent(target: string, text: string, timeoutMs: number): Promise<void> {
-    await this.client.agentPrompt(
-      { target, text, wait: { until: ['idle', 'done', 'blocked'], timeout_ms: timeoutMs } },
-      timeoutMs + 60_000,
-    );
+  async promptAgent(target: string, text: string, _timeoutMs: number): Promise<void> {
+    // A.4 fire＋确认窗：提交即返回（herdr 5s 判杀窗不再参与），settle 由引擎
+    // waitForSettle 全权等待；提交后 45s 内状态必须离开 idle（确认窗），
+    // 否则视为 prompt 石沉大海快速失败进重试（引擎侧实现确认窗）。
+    await this.client.agentPrompt({ target, text }, 30_000);
   }
 
   async getAgentStatus(target: string): Promise<AgentStatus | null> {

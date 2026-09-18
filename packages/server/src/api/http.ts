@@ -71,6 +71,33 @@ export interface HttpDeps {
   dataDir: string;
   /** R4.1 远程暴露模式下的访问令牌（127.0.0.1 信任模式为 null） */
   authToken?: string | null;
+  /** G2：CORS / 跨站 Origin 白名单（空数组 = 默认拒绝跨站） */
+  corsOrigins?: string[];
+}
+
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/**
+ * G2 跨站 Origin 校验（纯函数便于单测）。放行：
+ * ①无 Origin 头——curl/脚本/CLI/服务端代理等非浏览器来源；
+ * ②同源——Origin 的 host 与请求 Host 相同（生产静态托管与 vite proxy 均落此列）；
+ * ③白名单精确匹配（scheme+host+port）。其余拒绝；Origin 解析失败即拒。
+ * 注：origin:false 挡不住 simple request（无 preflight 直达服务器），故写方法必须服务端自查。
+ */
+export function isAllowedOrigin(opts: {
+  origin: string | undefined;
+  host: string | undefined;
+  allowed: readonly string[];
+}): boolean {
+  if (!opts.origin) return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(opts.origin);
+  } catch {
+    return false;
+  }
+  if (opts.host && parsed.host === opts.host) return true;
+  return opts.allowed.includes(parsed.origin);
 }
 
 const DEFAULT_SPACE = 'default';
@@ -82,7 +109,20 @@ function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
 
 export async function buildHttpServer(deps: HttpDeps) {
   const app = Fastify({ logger: false });
-  await app.register(cors, { origin: true });
+  // G2：不再全反射 Origin。白名单为空时不回 CORS 头（浏览器跨站读取全部失败）；
+  // 写方法的硬拦截见下方 onRequest 钩子（simple request 不触发 preflight，只能服务端自查）。
+  const corsOrigins = deps.corsOrigins ?? [];
+  await app.register(cors, { origin: corsOrigins.length > 0 ? corsOrigins : false });
+
+  app.addHook('onRequest', async (req, reply) => {
+    if (!MUTATING_METHODS.has(req.method)) return;
+    const url = ((req.url || '') as string).split('?')[0] ?? '';
+    if (!url.startsWith('/api')) return;
+    if (!isAllowedOrigin({ origin: req.headers.origin, host: req.headers.host, allowed: corsOrigins })) {
+      return reply.code(403).send({ error: '跨站请求被拒绝（同源之外需配置 PF_CORS_ORIGINS）' });
+    }
+  });
+
   await app.register(fastifyWebsocket);
 
   // R6.2 一键启动：服务端托管前端构建产物（生产模式无需 vite/proxy）

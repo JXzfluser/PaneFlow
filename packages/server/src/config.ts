@@ -24,6 +24,10 @@ export interface PaneFlowConfig {
   host: string;
   /** 访问令牌（远程模式必配；PF_TOKEN 或首次自动生成持久化） */
   authToken: string | null;
+  /** prompt 提交确认窗（ms） */
+  promptConfirmWindowMs: number;
+  /** G2：CORS 白名单（PF_CORS_ORIGINS 逗号分隔）；空 = 不回 CORS 头，跨站读被浏览器拦截 */
+  corsOrigins: string[];
 }
 
 function ensureAuthToken(dataDir: string, host: string): string | null {
@@ -74,6 +78,8 @@ export function loadConfig(overrides: Partial<PaneFlowConfig> = {}): PaneFlowCon
     paneEnv: parsePaneEnv(process.env.PF_PANE_ENV),
     host,
     authToken: ensureAuthToken(dataDir, host),
+    promptConfirmWindowMs: Number(process.env.PF_PROMPT_CONFIRM_MS ?? 45_000),
+    corsOrigins: (process.env.PF_CORS_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean),
     ...overrides,
   };
 }

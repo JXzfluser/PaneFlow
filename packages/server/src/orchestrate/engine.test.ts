@@ -12,6 +12,7 @@ import { FakeHerdrOps } from './fake-ops.js';
 
 const OPTS: EngineOptions = {
   workspaceLabelPrefix: 'paneflow-',
+  promptConfirmWindowMs: 0,
   reconcileIntervalMs: 60_000, // effectively off in tests
   defaultNodeTimeoutMs: 1_200,
   agentStartTimeoutMs: 5_000,
@@ -145,6 +146,7 @@ describe('Engine (serial DAG)', () => {
   it('runs a serial pipeline and cleans up the workspace', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
     const run = await runToCompletion(serialGraph(), cwd);
+    if (run.state !== 'completed') console.log('DEBUG impl err:', run.nodes['impl']!.error);
     expect(run.state).toBe('completed');
     expect(run.nodes['impl']!.state).toBe('done');
     expect(run.nodes['start']!.state).toBe('done');
@@ -872,5 +874,54 @@ describe('Engine (serial DAG)', () => {
     expect(reclaimed).toHaveLength(1);
     expect(ops.workspaces.has('w2')).toBe(true);
     expect(ops.workspaces.has('w1')).toBe(false);
+  });
+});
+
+describe('A.4 prompt confirm window', () => {
+  const confirm = (agent: string, ms: number) =>
+    (engine as unknown as { confirmPromptLanded(a: string, m: number): Promise<void> }).confirmPromptLanded(agent, ms);
+
+  it('状态立即 working 时即刻放行', async () => {
+    await ops.startAgent('w1:p0', 'a1');
+    ops.setStatus('a1', 'working');
+    await expect(confirm('a1', 5_000)).resolves.toBeUndefined();
+  });
+
+  it('始终 idle：窗口末判 stalled，错误信息含配置时长', async () => {
+    await ops.startAgent('w1:p0', 'a1'); // 默认 status=idle
+    const t0 = Date.now();
+    await expect(confirm('a1', 1_500)).rejects.toThrow(/agent_prompt_stalled.*1500ms/);
+    expect(Date.now() - t0).toBeLessThan(6_000);
+  });
+
+  it('getAgentStatus 抛错按无变化处理：窗口末判 stalled 而非冒泡', async () => {
+    await ops.startAgent('w1:p0', 'a1');
+    const orig = ops.getAgentStatus.bind(ops);
+    ops.getAgentStatus = async () => {
+      throw new Error('probe boom');
+    };
+    try {
+      await expect(confirm('a1', 1_500)).rejects.toThrow(/agent_prompt_stalled/);
+    } finally {
+      ops.getAgentStatus = orig;
+    }
+  });
+
+  it('OPTS 默认 confirmMs=0：跳过确认窗，prompt 后 idle 也算落地（全量既有测试的公共路径）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-confirm0-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.state).toBe('completed');
+  });
+
+  it('整跑集成：onPrompt 翻 working 再回 idle，确认窗放行且 run 完成', async () => {
+    const e2 = new Engine(ops, store, { ...OPTS, promptConfirmWindowMs: 1_500 });
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'idle'), 150);
+    };
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-confirm1-'));
+    const run = await e2.startRun(serialGraph(), cwd);
+    await waitFor(() => e2.getRun(run.runId)!.state !== 'running');
+    expect(e2.getRun(run.runId)!.state).toBe('completed');
   });
 });

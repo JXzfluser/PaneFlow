@@ -32,6 +32,8 @@ export interface EngineOptions {
   agentReadyTimeoutMs: number;
   /** Extra env for pipeline workspaces (e.g. OPENCODE_DISABLE_AUTOUPDATE=1) */
   paneEnv?: Record<string, string>;
+  /** 提交后确认窗（ms）：窗口内状态必须离开 idle，否则判 stalled 快速失败（默认 45s） */
+  promptConfirmWindowMs?: number;
   /** Max agent panes running in parallel across a run (default 8) */
   maxConcurrentPanes?: number;
 }
@@ -1208,6 +1210,8 @@ export class Engine {
       const remaining = Math.max(1000, deadline - Date.now());
       try {
         await this.ops.promptAgent(agentName, text, remaining);
+        const confirmMs = this.opts.promptConfirmWindowMs ?? 0;
+        if (confirmMs > 0) await this.confirmPromptLanded(agentName, confirmMs);
       } catch (err) {
         const msg = (err as Error).message;
         // observed start-race: the agent name binds slightly after agent.start
@@ -1218,6 +1222,29 @@ export class Engine {
         throw err;
       }
       return await this.waitForSettle(run, rec, agentName, Math.max(1000, deadline - Date.now()));
+    }
+  }
+
+  /**
+   * A.4 确认窗：prompt 提交后 confirmMs 内状态必须离开 idle/done（working/blocked），
+   * 否则视为 prompt 石沉大海，快速失败进重试（替代 herdr 侧不可配的 5s 判杀）。
+   * 查询接口自身故障按"无变化"处理——宁可窗口末误杀重试，不可无证据放行挂起 45min。
+   */
+  private async confirmPromptLanded(agentName: string, confirmMs: number): Promise<void> {
+    const deadline = Date.now() + confirmMs;
+    for (;;) {
+      let status: AgentStatus | 'unknown';
+      try {
+        status = (await this.ops.getAgentStatus(agentName)) ?? 'unknown';
+      } catch (err) {
+        console.warn(`[engine] 确认窗状态查询失败，按无变化处理：${(err as Error).message}`);
+        status = 'unknown';
+      }
+      if (status === 'working' || status === 'blocked') return;
+      if (Date.now() >= deadline) {
+        throw new Error(`agent_prompt_stalled：提交后 ${confirmMs}ms 无状态变化（确认窗，末次状态 ${status}）`);
+      }
+      await sleep(2000);
     }
   }
 
@@ -1342,6 +1369,11 @@ export class Engine {
 
   // -- infrastructure -------------------------------------------------------------
 
+  /**
+   * G1 已知坑（v6 判决：本迭代不通电）：本方法当前无任何调用点，"事件+轮询双向校对"
+   * 只剩事件一半。接线时注意 PF_RECONCILE_MS=0 会让 setInterval(0) 退化为 ~4ms 空转，
+   * 足以打爆 herdr——通电前必须先加 `<= 0 直接 return` 守卫（详见 iteration-v6-oss-landing #2）。
+   */
   private startReconciler(): void {
     if (this.reconcileTimer) return;
     this.reconcileTimer = setInterval(() => {
