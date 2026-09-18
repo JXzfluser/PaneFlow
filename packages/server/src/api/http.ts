@@ -10,7 +10,6 @@ import { Store } from '../orchestrate/store.js';
 import type { SpaceProfile } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { detectInstalledAgents } from './env-check.js';
-import { readNotifySettings, writeNotifySettings, type NotifySettings } from './notifier.js';
 import {
   dispatchChannels,
   readChannels,
@@ -60,6 +59,7 @@ export const AGENT_KINDS = [
   'omp',
   'mastracode',
   'antigravity-cli',
+  'gemini',
 ] as const;
 
 export interface HttpDeps {
@@ -324,26 +324,6 @@ export async function buildHttpServer(deps: HttpDeps) {
     } catch (err) {
       return reply.code(502).send({ error: (err as Error).message });
     }
-  });
-
-  // -- notification settings -------------------------------------------------
-
-  app.get('/api/notify/settings', async () => {
-    const s = readNotifySettings(deps.dataDir);
-    return { ...s, feishuWebhook: s.feishuWebhook ? '(已配置)' : '' };
-  });
-
-  app.put<{ Body: NotifySettings }>('/api/notify/settings', async (req, reply) => {
-    const { feishuWebhook, notifyEvents } = req.body ?? {};
-    if (feishuWebhook !== undefined && feishuWebhook !== '' && !/^https:\/\/(open\.feishu\.cn|open\.larksuite\.com)\//.test(feishuWebhook)) {
-      return reply.code(400).send({ error: 'webhook 必须是飞书开放平台地址（open.feishu.cn / open.larksuite.com）' });
-    }
-    const next: NotifySettings = {
-      ...(feishuWebhook ? { feishuWebhook } : {}),
-      ...(notifyEvents ? { notifyEvents } : {}),
-    };
-    writeNotifySettings(deps.dataDir, next);
-    return { saved: true };
   });
 
   // -- outbound channels ----------------------------------------------------
@@ -650,7 +630,7 @@ export async function buildHttpServer(deps: HttpDeps) {
     let run = deps.engine.getRun(req.params.id) ?? deps.store.getRun(req.params.id);
     if (!run) {
       for (const sp of Store.listSpaces(deps.dataDir)) {
-        run = new Store(deps.dataDir, sp.id).getArchivedRun(req.params.id) ?? undefined;
+        run = new Store(deps.dataDir, sp.id).getArchivedRun(req.params.id);
         if (run) break;
       }
     }

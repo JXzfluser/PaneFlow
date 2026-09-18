@@ -58,23 +58,6 @@ export function registerFsRoutes(
     return { root, markdowns: markdowns.sort(), skills: skills.sort(), repos: repos.sort() };
   });
 
-  // read one discovered file (for prompt injection at run time; size-capped)
-  app.get<{ Querystring: { space?: string; rel?: string } }>('/api/fs/read', async (req, reply) => {
-    const root = resolveRoot(req.query.space) ?? '';
-    const rel = req.query.rel ?? '';
-    if (!root || !rel || rel.includes('..')) return reply.code(400).send({ error: '参数缺失或非法' });
-    const full = path.resolve(root, rel);
-    if (!full.startsWith(path.resolve(root))) return reply.code(400).send({ error: '越界路径' });
-    try {
-      const stat = fs.statSync(full);
-      if (!stat.isFile()) return reply.code(400).send({ error: '不是文件' });
-      if (stat.size > 512 * 1024) return reply.code(413).send({ error: '文件超过 512KB 上限' });
-      return { rel, content: fs.readFileSync(full, 'utf8') };
-    } catch {
-      return reply.code(404).send({ error: '读取失败' });
-    }
-  });
-
   // browse: directories under a path (home-rooted) for the root picker
   app.get<{ Querystring: { path?: string } }>('/api/fs/browse', async (req, reply) => {
     const home = path.join(process.env.HOME ?? '/', 'Documents');
