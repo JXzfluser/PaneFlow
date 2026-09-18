@@ -28,6 +28,31 @@ export interface GraphMeta {
   description?: string;
 }
 
+/** 进入自动保存载荷的六个字段（G3：守卫此前只比较其中四个，变量/描述改动漏判） */
+export interface AutosaveFields {
+  graphName: string;
+  cwd: string;
+  nodes: unknown;
+  edges: unknown;
+  graphVariables: unknown;
+  graphMeta: unknown;
+}
+
+/**
+ * 自动保存变更检测：zustand 每次 set 对改动字段产生新引用，六字段引用级比较即可；
+ * 放纯模块是因为 store.ts 模块级 localStorage 无法在 node 环境的 vitest 导入。
+ */
+export function autosaveChanged(prev: AutosaveFields, next: AutosaveFields): boolean {
+  return (
+    prev.nodes !== next.nodes ||
+    prev.edges !== next.edges ||
+    prev.graphName !== next.graphName ||
+    prev.cwd !== next.cwd ||
+    prev.graphVariables !== next.graphVariables ||
+    prev.graphMeta !== next.graphMeta
+  );
+}
+
 export interface RfParts {
   nodes: PfNode[];
   edges: PfEdge[];

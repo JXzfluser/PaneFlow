@@ -10,7 +10,7 @@ import {
   type EdgeChange,
 } from '@xyflow/react';
 import type { DagGraph, DagNode, DagNodeType, EdgeCondition, NodeRunState, RunRecord, TemplateVariable } from '@paneflow/shared';
-import { graphToRfParts, rfToGraph, type GraphMeta, type PfEdgeData, type PfNode, type PfNodeData } from './graph-serialization.js';
+import { autosaveChanged, graphToRfParts, rfToGraph, type GraphMeta, type PfEdgeData, type PfNode, type PfNodeData } from './graph-serialization.js';
 import { setSpace as setApiSpace, getSpace, api } from './api.js';
 import { validateDag } from '@paneflow/shared';
 
@@ -198,7 +198,8 @@ export const useStore = create<PfStore>((set, get) => ({
     })),
   restoreAutosave: () => {
     try {
-      const raw = localStorage.getItem('pf-canvas-autosave');
+      // G9：自动保存按空间分 key（旧全局 key 不迁移，视为弃用）
+      const raw = localStorage.getItem(autosaveKeyFor(get().space));
       if (!raw) return false;
       const saved = JSON.parse(raw) as {
         graphName: string; nodes: PfNode[]; edges: Edge[];
@@ -416,35 +417,51 @@ export function graphIssues(): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// 画布自动保存（R2.5）：防抖 800ms 持久化到 localStorage，刷新不丢
+// 画布自动保存（R2.5 + G3/G9）：防抖 800ms 按空间持久化到 localStorage
+// - G3：变更检测用六字段守卫 autosaveChanged（此前只看四个字段，变量/描述改动漏判）
+// - G9：切空间先把待存内容写回原空间的 key，随后空画布变更被忽略——
+//       杜绝旧实现"800ms 后用 getState() 的新空间空图覆盖上一空间未保存内容"
 // ---------------------------------------------------------------------------
+export function autosaveKeyFor(space: string): string {
+  return `pf-canvas-autosave:${space}`;
+}
+
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+let autosavePending: { key: string; payload: unknown } | null = null;
+
+function flushAutosave(): void {
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer);
+    autosaveTimer = null;
+  }
+  if (!autosavePending) return;
+  const { key, payload } = autosavePending;
+  autosavePending = null;
+  try {
+    localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // 存储满等异常不阻塞使用
+  }
+}
+
 useStore.subscribe((state, prev) => {
-  if (
-    state.nodes === prev.nodes &&
-    state.edges === prev.edges &&
-    state.graphName === prev.graphName &&
-    state.cwd === prev.cwd
-  ) {
+  if (state.space !== prev.space) {
+    flushAutosave(); // 落盘原空间待存内容；本次（空画布）变更不保存
     return;
   }
+  if (!autosaveChanged(prev, state)) return;
+  // 快照在变更时捕获；flush 不回读 getState()，避免时序错写
+  autosavePending = {
+    key: autosaveKeyFor(state.space),
+    payload: {
+      graphName: state.graphName,
+      nodes: state.nodes,
+      edges: state.edges,
+      graphVariables: state.graphVariables,
+      graphMeta: state.graphMeta,
+      cwd: state.cwd,
+    },
+  };
   if (autosaveTimer) clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(() => {
-    const s = useStore.getState();
-    try {
-      localStorage.setItem(
-        'pf-canvas-autosave',
-        JSON.stringify({
-          graphName: s.graphName,
-          nodes: s.nodes,
-          edges: s.edges,
-          graphVariables: s.graphVariables,
-          graphMeta: s.graphMeta,
-          cwd: s.cwd,
-        }),
-      );
-    } catch {
-      // 存储满等异常不阻塞使用
-    }
-  }, 800);
+  autosaveTimer = setTimeout(flushAutosave, 800);
 });

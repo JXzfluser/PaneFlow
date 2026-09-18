@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DagGraph } from '@paneflow/shared';
-import { graphToRfParts, rfToGraph } from './graph-serialization.js';
+import { autosaveChanged, graphToRfParts, rfToGraph, type AutosaveFields } from './graph-serialization.js';
 
 /** R1 验收：graph → 画布 → graph 往返，字段零丢失（R1.1/R1.2/R1.3） */
 function richGraph(): DagGraph {
@@ -90,5 +90,37 @@ describe('graph round-trip (R1 数据完整性)', () => {
     // 兜底后仍能正常回写（createdAt 由 rfToGraph 补当前时间）
     const back = rfToGraph({ name: g.name, nodes: parts.nodes, edges: parts.edges, variables: parts.variables, meta: parts.meta });
     expect(back.metadata.createdAt).toBeTruthy();
+  });
+});
+
+/** G3：自动保存守卫六字段引用比较 */
+describe('autosaveChanged (G3 变更检测)', () => {
+  function base(): AutosaveFields {
+    return { graphName: 'g', cwd: '/tmp', nodes: [], edges: [], graphVariables: [], graphMeta: {} };
+  }
+
+  it('六字段同引用 → 不保存', () => {
+    const s = base();
+    expect(autosaveChanged(s, s)).toBe(false);
+  });
+
+  it('仅换 graphVariables 引用 → 保存（旧守卫漏判项）', () => {
+    const prev = base();
+    const next = { ...prev, graphVariables: [{ key: 'k' }] };
+    expect(autosaveChanged(prev, next)).toBe(true);
+  });
+
+  it('仅换 graphMeta 引用 → 保存（旧守卫漏判项）', () => {
+    const prev = base();
+    const next = { ...prev, graphMeta: { description: '改了吗' } };
+    expect(autosaveChanged(prev, next)).toBe(true);
+  });
+
+  it('nodes/edges/cwd/graphName 各自换引用 → 保存', () => {
+    const prev = base();
+    expect(autosaveChanged(prev, { ...prev, nodes: [{}] })).toBe(true);
+    expect(autosaveChanged(prev, { ...prev, edges: [{}] })).toBe(true);
+    expect(autosaveChanged(prev, { ...prev, cwd: '/other' })).toBe(true);
+    expect(autosaveChanged(prev, { ...prev, graphName: 'other' })).toBe(true);
   });
 });
