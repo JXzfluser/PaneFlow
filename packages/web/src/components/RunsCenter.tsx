@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { RunEvent } from '@paneflow/shared';
+import type { RunEvent, RunRecord } from '@paneflow/shared';
 import { useStore } from '../store.js';
 import { api, fetchJson } from '../api.js';
 import { RunTimeline } from './RunTimeline.js';
@@ -50,6 +50,72 @@ export function useRunNotifications(): void {
   }, [runs]);
 }
 
+/** v7-A2 归档面板：反归档回主列表 / 真删除（仅删记录，产物目录不联动清理）。 */
+function ArchivedPanel() {
+  const log = useStore((s) => s.log);
+  const [archived, setArchived] = useState<RunRecord[] | null>(null);
+
+  const reload = () => {
+    void fetchJson<{ runs: RunRecord[] }>('GET', '/api/runs?archived=1')
+      .then((d) => setArchived(d.runs))
+      .catch((e: Error) => {
+        log('error', `读取归档列表失败：${e.message}`);
+        setArchived([]);
+      });
+  };
+  useEffect(reload, []);
+
+  const unarchive = async (runId: string) => {
+    try {
+      const d = await fetchJson<{ restored: boolean; run: RunRecord }>('POST', `/api/runs/${encodeURIComponent(runId)}/unarchive`);
+      useStore.setState((s) => ({ runs: { ...s.runs, [d.run.runId]: d.run } }));
+      setArchived((cur) => (cur ?? []).filter((r) => r.runId !== runId));
+      log('info', `已恢复 ${runId} 到主列表`);
+    } catch (e) {
+      log('error', `反归档失败：${(e as Error).message}`);
+    }
+  };
+
+  const purge = async (runId: string) => {
+    if (!window.confirm(`真删除 ${runId}？\n\n记录文件将从磁盘移除，不可恢复。\n注意：该 run 的产物目录（workspace 内 .herdr/artifacts）不会被自动清理，如需请先自行留存。`)) return;
+    try {
+      await fetchJson<{ deleted: boolean }>('DELETE', `/api/runs/${encodeURIComponent(runId)}/archive`);
+      setArchived((cur) => (cur ?? []).filter((r) => r.runId !== runId));
+      log('info', `已真删除 ${runId}`);
+    } catch (e) {
+      log('error', `删除失败：${(e as Error).message}`);
+    }
+  };
+
+  if (archived === null) return <div className="runs-empty">归档加载中…</div>;
+  if (archived.length === 0) return <div className="runs-empty">没有归档记录。运行卡片上按 📦 可归档到这里。</div>;
+  return (
+    <div>
+      {archived.map((r) => (
+        <div key={r.runId} className="run-card" style={{ opacity: 0.85 }}>
+          <div className="run-card-head">
+            <b>#{r.runId}</b> <span style={{ fontFamily: 'var(--font-display)', fontSize: 13.5 }}>{r.dagName}</span>
+            <span className={`badge ${r.state === 'completed' ? 'done' : r.state === 'failed' ? 'failed' : ''}`}>
+              {r.state === 'completed' ? '完成' : r.state === 'failed' ? '失败' : r.state}
+            </span>
+            <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{r.startedAt.slice(0, 16).replace('T', ' ')}</span>
+            <div className="run-card-ops">
+              <button title="导出完整记录 JSON" onClick={() => {
+                const a = document.createElement('a');
+                a.href = `/api/runs/${encodeURIComponent(r.runId)}/export`;
+                a.download = `${r.runId}.json`;
+                a.click();
+              }}>⤓</button>
+              <button title="恢复到主列表（反归档）" onClick={() => void unarchive(r.runId)}>↩</button>
+              <button className="danger" title="真删除（不可恢复，产物目录不联动）" onClick={() => void purge(r.runId)}>🗑</button>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** 运行中心（B9 第一版）：全部空间的运行总览、进度、操作。 */
 export function RunsCenter() {
   const runs = useStore((s) => s.runs);
@@ -58,6 +124,7 @@ export function RunsCenter() {
   const openRun = useStore((s) => s.openRun);
   const setView = useStore((s) => s.setView);
   const log = useStore((s) => s.log);
+  const [tab, setTab] = useState<'active' | 'archived'>('active');
 
   // 时间线：运行中的记录随 WS 实时到（读 store），历史记录按需拉一次
   const [openTl, setOpenTl] = useState<string | null>(null);
@@ -105,7 +172,9 @@ export function RunsCenter() {
   return (
     <div className="runs-center">
       <div className="runs-status">
-        <span><b>{runningCount}</b> 运行中</span>
+        <button className={tab === 'active' ? 'active' : ''} onClick={() => setTab('active')}>全部运行</button>
+        <button className={tab === 'archived' ? 'active' : ''} title="已归档记录：可恢复或真删除" onClick={() => setTab('archived')}>📦 已归档</button>
+        <span style={{ marginLeft: 'auto' }}><b>{runningCount}</b> 运行中</span>
         <span className={blockedCount ? 'runs-alert' : ''}><b>{blockedCount}</b> 待审批</span>
         <span style={{ color: 'var(--text-dim)' }}>共 {list.length} 条历史</span>
         <button
@@ -116,6 +185,9 @@ export function RunsCenter() {
           🔔
         </button>
       </div>
+      {tab === 'archived' && <ArchivedPanel />}
+      {tab === 'active' && (
+        <>
       {list.length === 0 && <div className="runs-empty">还没有运行记录。去「编」视图搭建流水线并运行。</div>}
       {list.map((r) => {
         const p = progress(r);
@@ -190,6 +262,8 @@ export function RunsCenter() {
           </div>
         );
       })}
+        </>
+      )}
     </div>
   );
 }

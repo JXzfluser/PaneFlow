@@ -196,6 +196,24 @@ export class Store {
     return this.readJson<RunRecord>(p);
   }
 
+  /** v7-A2 反归档：archive/<id>.json 移回主目录并清归档标记，返回恢复后的记录 */
+  unarchiveRun(runId: string): RunRecord | null {
+    const rec = this.getArchivedRun(runId);
+    if (!rec) return null;
+    rec.archived = false;
+    fs.writeFileSync(this.runPath(runId), JSON.stringify(rec, null, 2));
+    fs.rmSync(path.join(this.runsDir, 'archive', `${runId}.json`));
+    return rec;
+  }
+
+  /** v7-A2 真删除：仅删 archive/ 下的记录文件，主列表记录不受影响 */
+  deleteArchivedRun(runId: string): boolean {
+    const p = path.join(this.runsDir, 'archive', `${runId}.json`);
+    if (!fs.existsSync(p)) return false;
+    fs.rmSync(p);
+    return true;
+  }
+
   saveRun(run: RunRecord): void {
     if (run.archived) {
       const archiveDir = path.join(this.runsDir, 'archive');

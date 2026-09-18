@@ -587,7 +587,16 @@ export async function buildHttpServer(deps: HttpDeps) {
     },
   );
 
-  app.get('/api/runs', async () => ({ runs: deps.engine.listRuns() }));
+  app.get<{ Querystring: { archived?: string } }>('/api/runs', async (req) => {
+    if (req.query.archived === '1') {
+      // v7-A2：跨空间收集归档记录
+      const runs = Store.listSpaces(deps.dataDir)
+        .flatMap((sp) => new Store(deps.dataDir, sp.id).listArchivedRuns())
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+      return { runs };
+    }
+    return { runs: deps.engine.listRuns() };
+  });
 
   app.get<{ Params: { id: string } }>('/api/runs/:id', async (req, reply) => {
     const run = deps.engine.getRun(req.params.id);
@@ -602,20 +611,49 @@ export async function buildHttpServer(deps: HttpDeps) {
     return { runId: run.runId, events: run.events ?? [] };
   });
 
-  // R5.1 归档（记录保留、移出主列表）
+  // R5.1 归档（记录保留、移出主列表）——落盘必须走 run 所属空间的 store，否则非默认空间的记录会被复制而非移动
   app.post<{ Params: { id: string } }>('/api/runs/:id/archive', async (req, reply) => {
     const run = deps.engine.getRun(req.params.id);
     if (!run) return reply.code(404).send({ error: 'not found' });
     if (run.state === 'running') return reply.code(409).send({ error: '运行中的流水线不能归档，请先停止' });
     run.archived = true;
-    deps.store.saveRun(run);
+    const store = run.spaceId ? new Store(deps.dataDir, run.spaceId) : deps.store;
+    store.saveRun(run);
     deps.engine.evictRun(run.runId);
     return { archived: true };
   });
 
-  // R5.1 导出单次 run 完整记录
+  // v7-A2 反归档：archive/ → 主列表，并回注引擎内存
+  app.post<{ Params: { id: string } }>('/api/runs/:id/unarchive', async (req, reply) => {
+    for (const sp of Store.listSpaces(deps.dataDir)) {
+      const rec = new Store(deps.dataDir, sp.id).unarchiveRun(req.params.id);
+      if (rec) {
+        deps.engine.restoreRun(rec);
+        return { restored: true, run: rec };
+      }
+    }
+    return reply.code(404).send({ error: '未找到归档记录' });
+  });
+
+  // v7-A2 真删除：仅作用于已归档记录（主列表记录须先归档）
+  app.delete<{ Params: { id: string } }>('/api/runs/:id/archive', async (req, reply) => {
+    for (const sp of Store.listSpaces(deps.dataDir)) {
+      if (new Store(deps.dataDir, sp.id).deleteArchivedRun(req.params.id)) {
+        return { deleted: true };
+      }
+    }
+    return reply.code(404).send({ error: '未找到归档记录（真删除只对已归档记录生效）' });
+  });
+
+  // R5.1 导出单次 run 完整记录（v7-A2：归档记录跨空间可寻）
   app.get<{ Params: { id: string } }>('/api/runs/:id/export', async (req, reply) => {
-    const run = deps.engine.getRun(req.params.id) ?? deps.store.getRun(req.params.id) ?? deps.store.getArchivedRun(req.params.id);
+    let run = deps.engine.getRun(req.params.id) ?? deps.store.getRun(req.params.id);
+    if (!run) {
+      for (const sp of Store.listSpaces(deps.dataDir)) {
+        run = new Store(deps.dataDir, sp.id).getArchivedRun(req.params.id) ?? undefined;
+        if (run) break;
+      }
+    }
     if (!run) return reply.code(404).send({ error: 'not found' });
     reply.header('Content-Type', 'application/json');
     reply.header('Content-Disposition', `attachment; filename="${run.runId}.json"`);

@@ -147,6 +147,11 @@ export class Engine {
     this.runs.delete(runId);
   }
 
+  /** v7-A2 反归档后回注内存（与 evictRun 对称；记录已是终态，不会被重新调度） */
+  restoreRun(run: RunRecord): void {
+    this.runs.set(run.runId, run);
+  }
+
   /** Boot-time sweep: reclaim leftover workspaces from dead previous runs. */
   async recoverOrphans(): Promise<string[]> {
     const reclaimed: string[] = [];
