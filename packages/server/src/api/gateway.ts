@@ -12,25 +12,149 @@ export interface ModelGatewaySettings {
   enabled?: boolean;
 }
 
+/** v9-D2 网关档位：多套配置共存，current 指向生效档 */
+export interface GatewayProfile extends ModelGatewaySettings {
+  id: string;
+  name: string;
+}
+
+interface GatewayDoc {
+  profiles: GatewayProfile[];
+  current: string | null;
+}
+
+const DEFAULT_PROFILE_ID = 'default';
+const PROFILE_ID_RE = /^[a-zA-Z0-9_-]{1,32}$/;
+
 function gatewayPath(dataDir: string): string {
   return path.join(dataDir, 'gateway.json');
 }
 
-export function readGateway(dataDir: string): ModelGatewaySettings {
+/** 磁盘 → 档位文档；旧扁平格式自动包成单档（读侧兼容），空/坏文件 = 无档 */
+function parseGatewayDoc(raw: unknown): GatewayDoc {
+  if (!raw || typeof raw !== 'object') return { profiles: [], current: null };
+  const o = raw as Record<string, unknown>;
+  if (Array.isArray(o.profiles)) {
+    const profiles = (o.profiles as GatewayProfile[]).filter(
+      (p) => p && typeof p === 'object' && typeof p.id === 'string',
+    );
+    const current = typeof o.current === 'string' && profiles.some((p) => p.id === o.current)
+      ? o.current
+      : (profiles[0]?.id ?? null);
+    return { profiles, current };
+  }
+  if (o.baseUrl !== undefined || o.apiKey !== undefined || o.enabled !== undefined || o.freeModel !== undefined) {
+    const flat = o as ModelGatewaySettings;
+    return { profiles: [{ id: DEFAULT_PROFILE_ID, name: '默认档', ...flat }], current: DEFAULT_PROFILE_ID };
+  }
+  return { profiles: [], current: null };
+}
+
+export function readGatewayDoc(dataDir: string): GatewayDoc {
   try {
-    return JSON.parse(fs.readFileSync(gatewayPath(dataDir), 'utf8')) as ModelGatewaySettings;
+    return parseGatewayDoc(JSON.parse(fs.readFileSync(gatewayPath(dataDir), 'utf8')));
   } catch {
-    return {};
+    return { profiles: [], current: null };
   }
 }
 
+function writeGatewayDoc(dataDir: string, doc: GatewayDoc): void {
+  // 含 apiKey 明文：权限收紧 0o600（对齐 github.json）
+  fs.writeFileSync(gatewayPath(dataDir), JSON.stringify(doc, null, 2), { mode: 0o600 });
+}
+
+/**
+ * 生效配置（去掉档位外壳）。profileId 指定档（空间钉档用，悬空回落 current）；
+ * 缺省 = current 档；无档 = {}（消费方语义与旧版一致）。
+ */
+export function readGateway(dataDir: string, profileId?: string): ModelGatewaySettings {
+  const doc = readGatewayDoc(dataDir);
+  const p =
+    (profileId ? doc.profiles.find((x) => x.id === profileId) : undefined) ??
+    doc.profiles.find((x) => x.id === doc.current) ??
+    doc.profiles[0];
+  if (!p) return {};
+  const { id: _id, name: _name, ...settings } = p;
+  return settings;
+}
+
+/** 写当前生效档（不存在则建「默认档」）——语义与旧 writeGateway 对齐 */
 export function writeGateway(dataDir: string, next: ModelGatewaySettings): void {
-  fs.writeFileSync(gatewayPath(dataDir), JSON.stringify(next, null, 2));
+  const doc = readGatewayDoc(dataDir);
+  const cur = doc.profiles.find((p) => p.id === doc.current);
+  if (cur) Object.assign(cur, next);
+  else {
+    doc.profiles.push({ id: DEFAULT_PROFILE_ID, name: '默认档', ...next });
+    doc.current = DEFAULT_PROFILE_ID;
+  }
+  writeGatewayDoc(dataDir, doc);
+}
+
+export interface GatewayProfileView extends GatewayProfile {
+  isCurrent: boolean;
+  /** 密钥只在服务端流转：列表只回「配没配」 */
+  keyConfigured: boolean;
+}
+
+export function listGatewayProfiles(dataDir: string): { profiles: GatewayProfileView[]; current: string | null } {
+  const doc = readGatewayDoc(dataDir);
+  return {
+    current: doc.current,
+    profiles: doc.profiles.map((p) => ({
+      ...p,
+      apiKey: undefined,
+      isCurrent: p.id === doc.current,
+      keyConfigured: Boolean(p.apiKey),
+    })),
+  };
+}
+
+/** 新增/按 id 覆盖一档（apiKey 留空 = 保留旧值）；首档自动成为 current。id 非法则自动生成 */
+export function upsertGatewayProfile(
+  dataDir: string,
+  input: { id?: string; name: string; baseUrl: string; apiKey?: string; freeModel?: string; enabled?: boolean },
+): GatewayProfile {
+  const doc = readGatewayDoc(dataDir);
+  const id = input.id && PROFILE_ID_RE.test(input.id) ? input.id : `gw-${Date.now().toString(36)}`;
+  const existing = doc.profiles.find((p) => p.id === id);
+  const next: GatewayProfile = {
+    id,
+    name: input.name.trim() || id,
+    baseUrl: input.baseUrl,
+    apiKey: input.apiKey || existing?.apiKey,
+    freeModel: input.freeModel ?? existing?.freeModel,
+    enabled: input.enabled ?? existing?.enabled ?? true,
+  };
+  if (existing) Object.assign(existing, next);
+  else doc.profiles.push(next);
+  if (!doc.current) doc.current = id;
+  writeGatewayDoc(dataDir, doc);
+  return next;
+}
+
+export function setCurrentGateway(dataDir: string, id: string): boolean {
+  const doc = readGatewayDoc(dataDir);
+  if (!doc.profiles.some((p) => p.id === id)) return false;
+  doc.current = id;
+  writeGatewayDoc(dataDir, doc);
+  return true;
+}
+
+/** 删档：唯一一档不许删（用 PUT 清空即可）；删的是 current 则顺延到剩下的第一档 */
+export function deleteGatewayProfile(dataDir: string, id: string): { ok: boolean; error?: string; current?: string | null } {
+  const doc = readGatewayDoc(dataDir);
+  const i = doc.profiles.findIndex((p) => p.id === id);
+  if (i < 0) return { ok: false, error: `没有名为 ${id} 的网关档` };
+  if (doc.profiles.length === 1) return { ok: false, error: '只剩这一档：要清配置请在档位里清空后保存' };
+  doc.profiles.splice(i, 1);
+  if (doc.current === id) doc.current = doc.profiles[0]!.id;
+  writeGatewayDoc(dataDir, doc);
+  return { ok: true, current: doc.current };
 }
 
 /** 网关是否配置齐全且启用——Agent 启动参数按此决定是否注入统一路由 */
-export function gatewayActive(dataDir: string): boolean {
-  const g = readGateway(dataDir);
+export function gatewayActive(dataDir: string, profileId?: string): boolean {
+  const g = readGateway(dataDir, profileId);
   return Boolean(g.enabled && g.baseUrl && g.apiKey);
 }
 
@@ -39,8 +163,8 @@ export function gatewayActive(dataDir: string): boolean {
  * (claude via ANTHROPIC_*, OpenAI-compatible via OPENAI_*) to the router.
  * Empty object when unconfigured/disabled.
  */
-export function buildGatewayEnv(dataDir: string): Record<string, string> {
-  const g = readGateway(dataDir);
+export function buildGatewayEnv(dataDir: string, profileId?: string): Record<string, string> {
+  const g = readGateway(dataDir, profileId);
   if (!g.enabled || !g.baseUrl || !g.apiKey) return {};
   // 用户常把地址连 /v1 一起贴进来——统一剥掉尾部 v1 再拼，避免 ANTHROPIC_BASE_URL 变成 …/v1（claude 会再拼一层）
   const base = g.baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '');

@@ -2,7 +2,17 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildGatewayEnv, PI_GATEWAY_PROVIDER, syncPiGatewayProvider } from './gateway.js';
+import {
+  buildGatewayEnv,
+  deleteGatewayProfile,
+  listGatewayProfiles,
+  PI_GATEWAY_PROVIDER,
+  readGateway,
+  setCurrentGateway,
+  syncPiGatewayProvider,
+  upsertGatewayProfile,
+  writeGateway,
+} from './gateway.js';
 
 function dirWith(settings: unknown): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-gw-'));
@@ -108,5 +118,69 @@ describe('v8-AF syncPiGatewayProvider（pi 走网关的 models.json 注册）', 
     fs.writeFileSync(path.join(bad, '.pi', 'agent', 'models.json'), '{{{ broken');
     expect(syncPiGatewayProvider(dirWith(gw), { homeDir: bad }).synced).toBe(false);
     expect(fs.readFileSync(path.join(bad, '.pi', 'agent', 'models.json'), 'utf8')).toBe('{{{ broken');
+  });
+});
+
+describe('v9-D2 多网关档（profiles + current，旧扁平读侧兼容）', () => {
+  it('旧扁平 gateway.json：readGateway 语义不变，列表包成一档「默认档」且为 current', () => {
+    const dir = dirWith({ baseUrl: 'http://old/v1', apiKey: 'sk-old', freeModel: 'm-old', enabled: true });
+    expect(readGateway(dir)).toEqual({ baseUrl: 'http://old/v1', apiKey: 'sk-old', freeModel: 'm-old', enabled: true });
+    const { profiles, current } = listGatewayProfiles(dir);
+    expect(current).toBe('default');
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]!.name).toBe('默认档');
+    // 密钥只在服务端流转：列表只有 keyConfigured
+    expect(profiles[0]!.apiKey).toBeUndefined();
+    expect(profiles[0]!.keyConfigured).toBe(true);
+  });
+
+  it('writeGateway（旧消费方语义）：先改 current 档不增档；无档时建默认档', () => {
+    const dir = dirWith({ baseUrl: 'http://old', apiKey: 'k', enabled: true });
+    writeGateway(dir, { baseUrl: 'http://new', apiKey: 'k2', freeModel: 'fm', enabled: true });
+    const { profiles, current } = listGatewayProfiles(dir);
+    expect(profiles).toHaveLength(1);
+    expect(current).toBe('default');
+    expect(readGateway(dir)).toMatchObject({ baseUrl: 'http://new', apiKey: 'k2', freeModel: 'fm' });
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-gw-empty-'));
+    writeGateway(empty, { baseUrl: 'http://first', apiKey: 'k', enabled: true });
+    expect(readGateway(empty).baseUrl).toBe('http://first');
+  });
+
+  it('upsert：首档自动 current；同 id 覆盖且 apiKey 留空=保留旧值；非法 id 自动生成', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-gw-'));
+    const a = upsertGatewayProfile(dir, { id: 'gw-a', name: 'A 网关', baseUrl: 'http://a', apiKey: 'ka' });
+    expect(a.enabled).toBe(true);
+    expect(listGatewayProfiles(dir).current).toBe('gw-a');
+    const b = upsertGatewayProfile(dir, { id: 'gw b bad!', name: 'B 网关', baseUrl: 'http://b', apiKey: 'kb' });
+    expect(b.id).toMatch(/^gw-/);
+    const re = upsertGatewayProfile(dir, { id: 'gw-a', name: 'A 网关', baseUrl: 'http://a2' });
+    expect(re.apiKey).toBe('ka');
+    expect(readGateway(dir, 'gw-a').baseUrl).toBe('http://a2');
+  });
+
+  it('current 切换与删除：未知 id 拒绝；唯一档不许删；删 current 顺延到第一档', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-gw-'));
+    upsertGatewayProfile(dir, { id: 'g1', name: '档一', baseUrl: 'http://1', apiKey: 'k1' });
+    expect(setCurrentGateway(dir, 'nope')).toBe(false);
+    expect(deleteGatewayProfile(dir, 'nope').ok).toBe(false);
+    expect(deleteGatewayProfile(dir, 'g1').ok).toBe(false);
+    expect(deleteGatewayProfile(dir, 'g1').error).toContain('只剩这一档');
+    upsertGatewayProfile(dir, { id: 'g2', name: '档二', baseUrl: 'http://2', apiKey: 'k2' });
+    expect(setCurrentGateway(dir, 'g2')).toBe(true);
+    expect(readGateway(dir).baseUrl).toBe('http://2');
+    expect(deleteGatewayProfile(dir, 'g2')).toEqual({ ok: true, current: 'g1' });
+    expect(readGateway(dir).baseUrl).toBe('http://1');
+  });
+
+  it('空间钉档：buildGatewayEnv/gatewayActive 按 profileId 取档，悬空 id 回落 current；无 pin 用 current', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-gw-'));
+    upsertGatewayProfile(dir, { id: 'cur', name: '在用', baseUrl: 'http://cur', apiKey: 'kc', freeModel: 'm-cur' });
+    upsertGatewayProfile(dir, { id: 'pin', name: '钉住', baseUrl: 'http://pin', apiKey: 'kp', freeModel: 'm-pin' });
+    expect(buildGatewayEnv(dir, 'pin').ANTHROPIC_MODEL).toBe('m-pin');
+    expect(buildGatewayEnv(dir).ANTHROPIC_MODEL).toBe('m-cur');
+    expect(buildGatewayEnv(dir, 'dangling').ANTHROPIC_MODEL).toBe('m-cur');
+    // 被钉档停用则不注入（即使 current 是启用档）——钉了就按钉的算
+    upsertGatewayProfile(dir, { id: 'pin', name: '钉住', baseUrl: 'http://pin', apiKey: 'kp', enabled: false });
+    expect(buildGatewayEnv(dir, 'pin')).toEqual({});
   });
 });

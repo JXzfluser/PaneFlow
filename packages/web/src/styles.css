@@ -674,6 +674,11 @@ details.settings-more { margin: 4px 0; }
 details.settings-more summary { cursor: pointer; color: var(--text-dim); font-size: 11.5px; }
 details.settings-more[open] summary { margin-bottom: 6px; }
 .gateway-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+/* v9-D2 多网关档列表 */
+.gw-profiles { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.gw-profile { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+.gw-profile .settings-hint { flex: 1; min-width: 160px; }
+.gw-cur { color: var(--accent); }
 
 .settings-listbox {
   max-height: 140px; overflow-y: auto;

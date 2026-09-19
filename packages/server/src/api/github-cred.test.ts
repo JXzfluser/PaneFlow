@@ -166,3 +166,33 @@ describe('github endpoints', () => {
     }
   });
 });
+describe('v9-D1 importFromGhCli（gh 一键导入，失败给最小权限 PAT 指引）', () => {
+  it('gh 已登录：token 落盘且不动已有 defaultRepo', async () => {
+    const dir = tmp();
+    const { writeGithubSettings, readGithubSettings, importFromGhCli } = await import('./github-cred.js');
+    writeGithubSettings(dir, { defaultRepo: 'me/repo' });
+    const r = await importFromGhCli(dir, async () => 'ghp_from_cli');
+    expect(r).toEqual({ ok: true, defaultRepo: 'me/repo' });
+    expect(readGithubSettings(dir)).toEqual({ token: 'ghp_from_cli', defaultRepo: 'me/repo' });
+  });
+
+  it('gh 未装/未登录 → ok:false，错误里带路 A（brew+login）与路 B（Fine-grained 最小权限）', async () => {
+    const { importFromGhCli } = await import('./github-cred.js');
+    const r = await importFromGhCli(tmp(), async () => {
+      throw new Error('spawn gh ENOENT');
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('gh auth login');
+    expect(r.error).toContain('Fine-grained');
+    expect(r.error).toContain('Contents:RW');
+  });
+
+  it('gh 登录但 token 为空 → 提示 gh auth status，且不写盘', async () => {
+    const dir = tmp();
+    const { importFromGhCli, readGithubSettings } = await import('./github-cred.js');
+    const r = await importFromGhCli(dir, async () => '   ');
+    expect(r.ok).toBe(false);
+    expect(readGithubSettings(dir)).toEqual({});
+  });
+});

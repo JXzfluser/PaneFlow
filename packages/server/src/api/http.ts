@@ -18,9 +18,10 @@ import {
   writeChannels,
   type Channel,
 } from './channels.js';
-import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, syncPiGatewayProvider, type ModelGatewaySettings } from './gateway.js';
+import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, syncPiGatewayProvider, listGatewayProfiles, setCurrentGateway, deleteGatewayProfile, upsertGatewayProfile, type ModelGatewaySettings } from './gateway.js';
 import { draftAcceptance, enhanceIssueText, gatewayChatFn } from './enhance.js';
-import { readGithubSettings, writeGithubSettings, buildGithubEnv, type GithubSettings } from './github-cred.js';
+import { readGithubSettings, writeGithubSettings, buildGithubEnv, importFromGhCli, type GithubSettings } from './github-cred.js';
+import { maskCandidate, readSwitcherFile } from './switcher-import.js';
 
 interface CreateIssueBody {
   title: string;
@@ -106,7 +107,7 @@ export function isAllowedOrigin(opts: {
 const DEFAULT_SPACE = 'default';
 
 /** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面；maxConcurrentRuns=G3 队列上限，配置文件面） */
-const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'agentOverride', 'maxConcurrentRuns', 'experienceInjection', 'team'] as const;
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'agentOverride', 'maxConcurrentRuns', 'experienceInjection', 'team', 'gatewayProfile'] as const;
 
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
@@ -234,11 +235,15 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   app.get('/api/gateway', async () => {
     const g = readGateway(deps.dataDir);
+    const doc = listGatewayProfiles(deps.dataDir);
     return {
       baseUrl: g.baseUrl ?? '',
       freeModel: g.freeModel ?? '',
       enabled: g.enabled ?? false,
       keyConfigured: Boolean(g.apiKey),
+      // D2：多档视图（apiKey 只回 keyConfigured，不回显密钥）
+      profiles: doc.profiles,
+      current: doc.current,
     };
   });
 
@@ -264,6 +269,67 @@ export async function buildHttpServer(deps: HttpDeps) {
       /* pi 未安装或目录不可写：忽略 */
     }
     return { saved: true, enabled: next.enabled, piProvider };
+  });
+
+  // D2：另存新档（PUT /api/gateway 只改 current 档；多网关并存要走这里）
+  app.post<{ Body: { name?: string; baseUrl?: string; apiKey?: string; freeModel?: string; enabled?: boolean } }>(
+    '/api/gateway/profile',
+    async (req, reply) => {
+      const name = String(req.body?.name ?? '').trim();
+      const baseUrl = String(req.body?.baseUrl ?? '').trim();
+      if (!name) return reply.code(400).send({ error: '档位名不能为空' });
+      if (!/^https?:\/\//.test(baseUrl)) return reply.code(400).send({ error: 'baseUrl 必须以 http(s):// 开头' });
+      if (!req.body?.apiKey) return reply.code(400).send({ error: '新档位必须带 API Key' });
+      const p = upsertGatewayProfile(deps.dataDir, {
+        name,
+        baseUrl,
+        apiKey: req.body.apiKey,
+        freeModel: req.body.freeModel,
+        enabled: req.body.enabled ?? true,
+      });
+      try {
+        syncPiGatewayProvider(deps.dataDir);
+      } catch {
+        /* pi 未装：忽略 */
+      }
+      return { ok: true, id: p.id };
+    },
+  );
+
+  // D2：切换生效档（pi 的 paneflow-gw provider 同步跟 current）
+  app.put<{ Body: { id?: string } }>('/api/gateway/current', async (req, reply) => {
+    const id = String(req.body?.id ?? '');
+    if (!setCurrentGateway(deps.dataDir, id)) return reply.code(404).send({ error: `没有 id 为 ${id || '（空）'} 的网关档` });
+    try {
+      syncPiGatewayProvider(deps.dataDir);
+    } catch {
+      /* pi 未装：忽略 */
+    }
+    return { ok: true, current: id };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/gateway/profile/:id', async (req, reply) => {
+    const r = deleteGatewayProfile(deps.dataDir, req.params.id);
+    if (!r.ok) return reply.code(400).send({ error: r.error });
+    try {
+      syncPiGatewayProvider(deps.dataDir);
+    } catch {
+      /* 忽略 */
+    }
+    return { ok: true, current: r.current };
+  });
+
+  // D3：外部 switcher（cc Switch 等）导入——preview 只回掩码候选；带 names 才落盘
+  app.post<{ Body: { path?: string; names?: string[] } }>('/api/gateway/import', async (req, reply) => {
+    const file = readSwitcherFile(String(req.body?.path ?? ''));
+    if (!file.ok) return reply.code(400).send({ error: file.error });
+    const names = Array.isArray(req.body?.names) ? req.body.names : null;
+    if (!names) return { candidates: file.candidates.map(maskCandidate) };
+    const picked = file.candidates.filter((c) => names.includes(c.name));
+    for (const c of picked) {
+      upsertGatewayProfile(deps.dataDir, { name: c.name, baseUrl: c.baseUrl, apiKey: c.apiKey, freeModel: c.freeModel, enabled: true });
+    }
+    return { imported: picked.map((c) => c.name) };
   });
 
   app.post('/api/gateway/test', async () => {
@@ -323,6 +389,13 @@ export async function buildHttpServer(deps: HttpDeps) {
     };
     writeGithubSettings(deps.dataDir, next);
     return { saved: true, tokenConfigured: Boolean(next.token) };
+  });
+
+  // D1：本机 gh CLI 已登录 → 一键导入 token；拿不到就给最小权限 PAT 指引（不猜）
+  app.post('/api/github/cred/import-gh', async (req, reply) => {
+    const r = await importFromGhCli(deps.dataDir);
+    if (!r.ok) return reply.code(400).send({ error: r.error });
+    return { imported: true, defaultRepo: r.defaultRepo ?? '' };
   });
 
   // -- github deterministic actions（服务端用配置的 PAT 直调 API，Agent 只需 curl 本地） --
@@ -576,6 +649,11 @@ export async function buildHttpServer(deps: HttpDeps) {
       const expInj = (req.body as Record<string, unknown> | undefined)?.experienceInjection;
       if (expInj !== undefined && typeof expInj !== 'boolean') {
         return reply.code(400).send({ error: 'experienceInjection 必须是布尔值' });
+      }
+      // D2：空间钉的网关档只要求是字符串（空串=取消钉，回落全局 current 档；档不存在时读侧自然回落）
+      const gwPin = (req.body as Record<string, unknown> | undefined)?.gatewayProfile;
+      if (gwPin !== undefined && typeof gwPin !== 'string') {
+        return reply.code(400).send({ error: 'gatewayProfile 必须是字符串（空串表示取消钉）' });
       }
       // B1：班底名册写脏（roleId 缺失/重复）会让下发绑班底静默落空——机检 + 去重
       const team = (req.body as Record<string, unknown> | undefined)?.team;

@@ -163,6 +163,15 @@ export class Engine {
     return run.spaceId ? new Store(this.store.root, run.spaceId) : this.store;
   }
 
+  /** v9-D2：空间档案钉的网关档 id；未钉/读不到返回 undefined → 网关读侧回落全局 current 档 */
+  private gatewayPinFor(run: RunRecord): string | undefined {
+    try {
+      return this.storeFor(run).readProfile().gatewayProfile || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   onChange(listener: RunListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -1009,10 +1018,11 @@ export class Engine {
         this.repoClaims.set(repo, { runId: run.runId, nodeId, key: myKey });
         repoClaimKey = repo;
       }
-      // env 合并：全局 < 模型网关 < 角色 < 节点
+      // env 合并：全局 < 模型网关（D2：空间钉档优先） < 角色 < 节点
+      const gwPin = this.gatewayPinFor(run);
       let paneEnv: Record<string, string> = {
         ...(this.opts.paneEnv ?? {}),
-        ...buildGatewayEnv(this.store.root),
+        ...buildGatewayEnv(this.store.root, gwPin),
         ...buildGithubEnv(this.store.root),
       };
       const role = this.roleById(run, cfg.role);
@@ -1038,13 +1048,13 @@ export class Engine {
       const kind = await this.resolveAgentKind(run, cfg);
       // AE：网关启用时 pi 走 PaneFlow 注册的 paneflow-gw provider（pi 不读 OPENAI_BASE_URL，
       // 且 openai 目录下的未知模型会绕到 api.openai.com 超时）；provider 由网关保存/启动时写入
-      if (kind === 'pi' && gatewayActive(this.store.root)) {
-        const gm = readGateway(this.store.root).freeModel;
+      if (kind === 'pi' && gatewayActive(this.store.root, gwPin)) {
+        const gm = readGateway(this.store.root, gwPin).freeModel;
         startArgs = ['--provider', PI_GATEWAY_PROVIDER, ...(gm ? ['--model', gm] : []), ...startArgs];
       }
       if (kind === 'claude') {
         const bootstrapEnv = {
-          ...buildGatewayEnv(this.store.root),
+          ...buildGatewayEnv(this.store.root, gwPin),
           ...buildGithubEnv(this.store.root),
         };
         if (Object.keys(bootstrapEnv).length) {

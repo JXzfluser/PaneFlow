@@ -217,6 +217,20 @@ function GithubCredCard() {
     }
   };
   const [writing, setWriting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  /** v9-D1：本机 gh 已登录 → 一键把 token 搬进来；拿不到时错误里自带路 A/路 B 指引 */
+  const importGh = async () => {
+    setImporting(true);
+    try {
+      const d = await fetchJson<{ imported: boolean; defaultRepo: string }>('POST', '/api/github/cred/import-gh');
+      setG((x) => ({ tokenConfigured: true, defaultRepo: x.defaultRepo || d.defaultRepo }));
+      log('info', '已从本机 gh CLI 导入 token（新启动的 Agent Pane 生效）');
+    } catch (e) {
+      log('error', `gh 导入失败：${(e as Error).message}`);
+    } finally {
+      setImporting(false);
+    }
+  };
   /** M4：一键回写接单模板（「验收标准」锚点与服务端机检同源），409 时二次确认覆盖 */
   const writeIntake = async (overwrite = false) => {
     setWriting(true);
@@ -266,6 +280,9 @@ function GithubCredCard() {
         <button className="primary" onClick={() => void save()}>
           保存凭据
         </button>
+        <button title="读取本机 `gh auth token` 的登录态并存入（gh 未登录会给出两条备选路）" disabled={importing} onClick={() => void importGh()}>
+          {importing ? '导入中…' : '🔑 从 gh CLI 一键导入'}
+        </button>
         <button
           disabled={writing || !g.tokenConfigured}
           title={g.tokenConfigured ? '向默认仓库写入 .github/ISSUE_TEMPLATE 接单模板（验收标准小节可被 PaneFlow 机检立约）' : '先保存 Token 与默认仓库'}
@@ -278,11 +295,42 @@ function GithubCredCard() {
   );
 }
 
+/** v9-D2 网关档视图（服务端只回掩码后的 key 状态） */
+interface GatewayProfileView {
+  id: string;
+  name: string;
+  baseUrl: string;
+  freeModel?: string;
+  enabled?: boolean;
+  isCurrent: boolean;
+  keyConfigured: boolean;
+}
+interface GatewayGet {
+  baseUrl: string;
+  freeModel: string;
+  enabled: boolean;
+  keyConfigured: boolean;
+  profiles: GatewayProfileView[];
+  current: string | null;
+}
+/** v9-D3 导入预览候选（密钥只回尾 4 位） */
+interface SwitchCandidate {
+  name: string;
+  baseUrl: string;
+  keyTail: string;
+  freeModel?: string;
+}
+
 function GatewayCard() {
   const log = useStore((s) => s.log);
   const [g, setG] = useState({ baseUrl: '', freeModel: '', enabled: false, keyConfigured: false });
+  const [profiles, setProfiles] = useState<GatewayProfileView[]>([]);
   const [apiKey, setApiKey] = useState('');
   const [testing, setTesting] = useState<string>('');
+  const [newName, setNewName] = useState('');
+  const [swPath, setSwPath] = useState('');
+  const [swCandidates, setSwCandidates] = useState<SwitchCandidate[] | null>(null);
+  const [swPicked, setSwPicked] = useState<string[]>([]);
   type GatewayTestResult = { ok: boolean; models?: number; error?: string; chatOk?: boolean; chatError?: string };
   const runTest = async (): Promise<void> => {
     setTesting('探测中…');
@@ -298,10 +346,15 @@ function GatewayCard() {
           : `⚠ 能列模型但对话失败：${r.chatError ?? '原因未知'}（展开「免费档模型」换个 id）`,
     );
   };
+  const refresh = async (): Promise<GatewayGet> => {
+    const cfg = await fetchJson<GatewayGet>('GET', '/api/gateway');
+    setG(cfg);
+    setProfiles(cfg.profiles ?? []);
+    return cfg;
+  };
   useEffect(() => {
-    void fetchJson<typeof g>('GET', '/api/gateway')
+    void refresh()
       .then((cfg) => {
-        setG(cfg);
         // 开着网关进设置页就自动探测一次——结论直接摆脸上，不用用户找按钮
         if (cfg.enabled && cfg.keyConfigured && cfg.baseUrl) void runTest();
       })
@@ -317,10 +370,71 @@ function GatewayCard() {
         ...(apiKey ? { apiKey } : {}),
       });
       setG((x) => ({ ...x, keyConfigured: true }));
+      setApiKey('');
       log('info', '模型网关已保存（新启动的 Agent Pane 生效）');
+      await refresh();
       await runTest();
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
+    }
+  };
+  /** D2：把上方表单当前内容另存为一档新网关（不动生效档） */
+  const saveAsNew = async () => {
+    try {
+      await fetchJson<{ ok: boolean; id: string }>('POST', '/api/gateway/profile', {
+        name: newName,
+        baseUrl: g.baseUrl,
+        apiKey,
+        freeModel: g.freeModel.trim() || undefined,
+        enabled: g.enabled,
+      });
+      setNewName('');
+      setApiKey('');
+      await refresh();
+      log('info', `新档「${newName}」已入列（未切生效档；要启用点它的「设为生效」）`);
+    } catch (e) {
+      log('error', `另存新档失败：${(e as Error).message}`);
+    }
+  };
+  const switchTo = async (p: GatewayProfileView) => {
+    try {
+      await fetchJson<{ ok: boolean }>('PUT', '/api/gateway/current', { id: p.id });
+      await refresh();
+      log('info', `生效档已切到「${p.name}」（pi 的 paneflow-gw 同步跟随）`);
+    } catch (e) {
+      log('error', `切档失败：${(e as Error).message}`);
+    }
+  };
+  const removeProfile = async (p: GatewayProfileView) => {
+    if (!window.confirm(`删除网关档「${p.name}」？密钥与地址会一并从本地移除。`)) return;
+    try {
+      await fetchJson<{ ok: boolean }>('DELETE', `/api/gateway/profile/${encodeURIComponent(p.id)}`);
+      await refresh();
+      log('info', `已删除档「${p.name}」`);
+    } catch (e) {
+      log('error', `删档失败：${(e as Error).message}`);
+    }
+  };
+  /** D3：preview 只回掩码候选；确认勾选后才落盘 */
+  const probeImport = async () => {
+    try {
+      const d = await fetchJson<{ candidates: SwitchCandidate[] }>('POST', '/api/gateway/import', { path: swPath });
+      setSwCandidates(d.candidates);
+      setSwPicked(d.candidates.map((c) => c.name));
+    } catch (e) {
+      setSwCandidates(null);
+      log('error', `识别失败：${(e as Error).message}`);
+    }
+  };
+  const applyImport = async () => {
+    try {
+      const d = await fetchJson<{ imported: string[] }>('POST', '/api/gateway/import', { path: swPath, names: swPicked });
+      setSwCandidates(null);
+      setSwPath('');
+      await refresh();
+      log('info', `已导入 ${d.imported.length} 档：${d.imported.join('、')}（都是新档，未自动切生效档）`);
+    } catch (e) {
+      log('error', `导入失败：${(e as Error).message}`);
     }
   };
   return (
@@ -362,6 +476,114 @@ function GatewayCard() {
           💾 保存并测试
         </button>
       </div>
+      {/* v9-D2 多网关档：上面表单编辑的是生效档；并存其他网关在下方列表里切/删 */}
+      <div className="gw-profiles">
+        <label>网关档位（{profiles.length} 档 · 上方表单保存 = 改生效档「{profiles.find((p) => p.isCurrent)?.name ?? '—'}」）</label>
+        {profiles.map((p) => (
+          <div className="gw-profile" key={p.id}>
+            <b className={p.isCurrent ? 'gw-cur' : ''}>{p.isCurrent ? '● ' : '○ '}{p.name}</b>
+            <span className="settings-hint">
+              {p.baseUrl || '（无地址）'} · {p.keyConfigured ? 'key ✓' : '无 key'}
+              {p.freeModel ? ` · ${p.freeModel}` : ''}
+              {p.enabled === false ? ' · 已停用' : ''}
+            </span>
+            {!p.isCurrent && (
+              <button className="sm" onClick={() => void switchTo(p)}>设为生效</button>
+            )}
+            {profiles.length > 1 && (
+              <button className="sm ghost" title="删除此档" onClick={() => void removeProfile(p)}>✕</button>
+            )}
+          </div>
+        ))}
+        <div className="settings-row">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="新档名，如「公司网关」"
+            aria-label="新档名"
+          />
+          <button
+            disabled={!newName.trim()}
+            title="把上方表单里的地址/Key/模型另存为一档新网关（需要填 Key）"
+            onClick={() => void saveAsNew()}
+          >
+            ＋ 另存为新档
+          </button>
+        </div>
+      </div>
+      <details className="settings-more">
+        <summary>📥 从外部配置导入网关（cc Switch / 同类 switcher 的 JSON）</summary>
+        <div className="settings-row">
+          <input
+            value={swPath}
+            onChange={(e) => setSwPath(e.target.value)}
+            placeholder="配置文件绝对路径，如 /Users/you/.cc-switch/config.json"
+            aria-label="外部配置文件路径"
+          />
+          <button disabled={!swPath.trim()} onClick={() => void probeImport()}>🔍 识别</button>
+        </div>
+        {swCandidates && (
+          <>
+            <p className="settings-hint">认出 {swCandidates.length} 个 provider（密钥只显示尾 4 位；勾选后导入为新增档）：</p>
+            {swCandidates.map((c) => (
+              <label key={c.name} className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={swPicked.includes(c.name)}
+                  onChange={(e) =>
+                    setSwPicked((xs) => (e.target.checked ? [...xs, c.name] : xs.filter((x) => x !== c.name)))
+                  }
+                />
+                {c.name} · {c.baseUrl} · key…**{c.keyTail}{c.freeModel ? ` · ${c.freeModel}` : ''}
+              </label>
+            ))}
+            <div className="settings-actions">
+              <button className="primary" disabled={!swPicked.length} onClick={() => void applyImport()}>
+                ⬇ 导入勾选（{swPicked.length}）
+              </button>
+            </div>
+          </>
+        )}
+      </details>
+    </>
+  );
+}
+
+/** v9-D2 空间钉档：本空间 Agent 固定用某档网关（全局切档不受影响）；「跟随全局」= current */
+function GatewayPinField({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  const log = useStore((s) => s.log);
+  const [profiles, setProfiles] = useState<GatewayProfileView[]>([]);
+  const [current, setCurrent] = useState<string | null>(null);
+  useEffect(() => {
+    void fetchJson<GatewayGet>('GET', '/api/gateway')
+      .then((d) => {
+        setProfiles(d.profiles ?? []);
+        setCurrent(d.current);
+      })
+      .catch((e: Error) => log('error', `读取网关档位失败：${e.message}`));
+  }, []);
+  const dangling = Boolean(value) && !profiles.some((p) => p.id === value);
+  return (
+    <>
+      <label title="本空间所有 Agent 固定用这一档网关，不受全局切档影响；钉的档被删了会自动回落全局生效档">
+        网关档位（本空间钉档）
+      </label>
+      <select
+        value={dangling ? '__dangling__' : value}
+        onChange={(e) => onChange(e.target.value === '__dangling__' ? '' : e.target.value)}
+        aria-label="本空间钉的网关档"
+      >
+        <option value="">
+          跟随全局生效档{current ? `（${profiles.find((p) => p.id === current)?.name ?? ''}）` : ''}
+        </option>
+        {profiles.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+            {p.isCurrent ? '（全局生效）' : ''}
+          </option>
+        ))}
+        {dangling && <option value="__dangling__">{value}（已删除，暂跟随全局）</option>}
+      </select>
     </>
   );
 }
@@ -464,6 +686,7 @@ interface SpaceProfile {
   agentOverride?: boolean;
   experienceInjection?: boolean;
   team?: TeamMember[];
+  gatewayProfile?: string;
 }
 
 /** v9-B1/B3 班底成员：roleId 指向全局角色库，alias 是本空间昵称 */
@@ -695,6 +918,7 @@ export function SettingsView() {
         agentOverride: !!profile.agentOverride,
         experienceInjection: profile.experienceInjection !== false,
         team: profile.team ?? [], // v9-B1：漏发=保住旧班底，但清空必须发得出去
+        gatewayProfile: profile.gatewayProfile ?? '', // v9-D2：空串=取消钉档，跟随全局
       });
       if (profile?.rootCwd) {
         const next = [profile.rootCwd, ...recentRoots.filter((x) => x !== profile.rootCwd)].slice(0, 5);
@@ -988,6 +1212,10 @@ export function SettingsView() {
                 team={profile?.team ?? []}
                 onChange={(t) => setProfile((p) => (p ? { ...p, team: t } : p))}
                 rootCwd={profile?.rootCwd}
+              />
+              <GatewayPinField
+                value={profile?.gatewayProfile ?? ''}
+                onChange={(id) => setProfile((p) => (p ? { ...p, gatewayProfile: id } : p))}
               />
               <div className="settings-actions">
                 <button className="primary" onClick={() => void saveProfile()}>

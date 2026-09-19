@@ -28,6 +28,8 @@ export interface SpaceProfile {
   experienceInjection?: boolean;
   /** v9-B1 空间班底名册：roleId 指向全局角色库；alias 是空间内昵称（成员卡/Planner 名册用） */
   team?: TeamMember[];
+  /** v9-D2 空间钉档：本空间 Agent 的模型请求固定走这一网关档（缺省=跟全局 current） */
+  gatewayProfile?: string;
 }
 
 /** v9-B1 班底成员（弱引用全局角色库；角色库删了 id 时下发回退旧行为并明说） */
