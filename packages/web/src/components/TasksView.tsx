@@ -85,7 +85,7 @@ export function TasksView() {
     }
     if (!cwd.trim()) {
       setAdv(true); // 展开再报错：让「在哪做」字段当场可见
-      log('error', '先告诉 PaneFlow 在哪干活：展开下方「高级选项」填工作目录，或在「设 · 设置」里配置项目主仓根');
+      log('error', '先告诉 PaneFlow 在哪干活：展开下方「高级选项」填工作目录，或在「项目 → 编辑档案」里配置主仓根');
       return;
     }
     setBusy(true);
@@ -310,7 +310,7 @@ function BatchDispatch() {
       return;
     }
     if (!cwd.trim()) {
-      log('error', '请先填写工作目录，或在「设 · 设置」里配置项目主仓根');
+      log('error', '请先填写工作目录，或在「项目 → 编辑档案」里配置主仓根');
       return;
     }
     setBusy(true);

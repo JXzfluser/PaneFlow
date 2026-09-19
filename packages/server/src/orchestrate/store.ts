@@ -42,9 +42,9 @@ export interface TeamMember {
 export const DEFAULT_SPACE = 'default';
 
 /**
- * Space-aware JSON persistence: `<root>/spaces/<spaceId>/{templates,runs}`.
- * Legacy flat layout (root/templates, root/runs) is auto-migrated into the
- * default space on first construction.
+ * Space-aware JSON persistence: `<root>/spaces/<spaceId>/runs`（运行记录按项目隔离）。
+ * 模板是全局资产（v10-Y）：统一住 `<root>/graphs`——切项目模板不再消失。
+ * Legacy 迁移链：flat(root/templates) → spaces/default/templates →（首次构造再合并）graphs。
  */
 export class Store {
   readonly root: string;
@@ -56,8 +56,9 @@ export class Store {
     this.root = dataDir;
     this.spaceId = spaceId;
     Store.migrateLegacy(dataDir);
+    Store.migrateTemplatesToGlobal(dataDir);
     const spaceDir = this.spaceDir(dataDir, spaceId);
-    this.templatesDir = path.join(spaceDir, 'templates');
+    this.templatesDir = path.join(dataDir, 'graphs');
     this.runsDir = path.join(spaceDir, 'runs');
     fs.mkdirSync(this.templatesDir, { recursive: true });
     fs.mkdirSync(this.runsDir, { recursive: true });
@@ -130,6 +131,54 @@ export class Store {
         fs.renameSync(path.join(legacyRuns, f), path.join(target, 'runs', f));
       }
       fs.rmdirSync(legacyRuns);
+    }
+  }
+
+  /**
+   * v10-Y 一次性合并：各项目 spaces/<id>/templates → 全局 graphs/。
+   * 同名撞车取 metadata.updatedAt 新者，输者与其余残档归档到该项目的 templates.pre-global/（可回捞，不删）。
+   */
+  static migrateTemplatesToGlobal(dataDir: string): void {
+    const spacesDir = path.join(dataDir, 'spaces');
+    if (!fs.existsSync(spacesDir)) return;
+    const owners = fs
+      .readdirSync(spacesDir)
+      .filter((id) => fs.existsSync(path.join(spacesDir, id, 'templates')));
+    if (!owners.length) return;
+    const graphsDir = path.join(dataDir, 'graphs');
+    fs.mkdirSync(graphsDir, { recursive: true });
+    const updatedAt = (p: string): string => {
+      try {
+        const g = JSON.parse(fs.readFileSync(p, 'utf8')) as { metadata?: { updatedAt?: string } };
+        return g.metadata?.updatedAt ?? '';
+      } catch {
+        return '';
+      }
+    };
+    for (const id of owners) {
+      const tdir = path.join(spacesDir, id, 'templates');
+      const archive = path.join(spacesDir, id, 'templates.pre-global');
+      fs.mkdirSync(archive, { recursive: true });
+      for (const f of fs.readdirSync(tdir)) {
+        const src = path.join(tdir, f);
+        if (!fs.statSync(src).isFile()) continue;
+        const dst = path.join(graphsDir, f);
+        if (!f.endsWith('.json')) {
+          fs.renameSync(src, path.join(archive, f));
+        } else if (!fs.existsSync(dst)) {
+          fs.renameSync(src, dst);
+        } else if (updatedAt(src) > updatedAt(dst)) {
+          fs.renameSync(dst, path.join(archive, `${f}.older`));
+          fs.renameSync(src, dst);
+        } else {
+          fs.renameSync(src, path.join(archive, f));
+        }
+      }
+      try {
+        fs.rmdirSync(tdir);
+      } catch {
+        /* 有残留（如子目录）就不动，下次构造再试 */
+      }
     }
   }
 

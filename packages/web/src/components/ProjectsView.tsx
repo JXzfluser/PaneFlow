@@ -29,7 +29,7 @@ export function ProjectsView() {
   const newProject = () =>
     setModal({
       title: '新建项目',
-      message: '模板与运行记录按项目互相隔离。',
+      message: '运行记录与档案按项目互相隔离；编排模板全局共享。',
       fields: [
         {
           key: 'id',
@@ -67,7 +67,7 @@ export function ProjectsView() {
         <div>
           <h2>项目</h2>
           <p className="settings-hint">
-            模板、运行记录与档案按项目互相隔离；点卡片即切换当前项目，「编辑档案」在下方就地展开档案面板。
+            运行记录与档案按项目互相隔离，编排模板全局共享；点卡片即切换当前项目，「编辑档案」在下方就地展开档案面板。
           </p>
         </div>
         <button className="primary" onClick={newProject}>

@@ -20,6 +20,7 @@ export function Palette() {
   const loadGraph = useStore((s) => s.loadGraph);
   const setTemplates = useStore((s) => s.setTemplates);
   const log = useStore((s) => s.log);
+  const graphName = useStore((s) => s.graphName);
   const [modal, setModal] = useState<ModalRequest | null>(null);
   const [advOpen, setAdvOpen] = useState(false);
 
@@ -100,11 +101,11 @@ export function Palette() {
 
   return (
     <div className="palette">
-      <div className="pal-hint">推荐路径：从「模板」载入一个骨架，再按需改。</div>
+      <div className="pal-hint">推荐路径：从「模板」载入一个骨架，再按需改。模板全局共享，所有项目都能用。</div>
 
       <h4>
         模板
-        <label title="导入模板 JSON" style={{ float: 'right', fontSize: 11, cursor: 'pointer', color: 'var(--text-dim)' }}>
+        <label className="pal-import" title="导入模板 JSON">
           导入
           <input
             type="file"
@@ -120,10 +121,11 @@ export function Palette() {
       </h4>
       {(graphs ?? []).map((g) => {
         const label = templateLabel(g.name, g.metadata.description);
+        const loaded = g.name === graphName;
         return (
-          <div key={g.name} className="tpl-item">
+          <div key={g.name} className={`tpl-item${loaded ? ' on' : ''}`}>
             <button
-              className="pal-item tpl-load"
+              className="tpl-load"
               title={`${label.title}\n${label.use}\n\n模板 ID：${g.name}`}
               onClick={() => loadGraph(g)}
             >
@@ -133,16 +135,16 @@ export function Palette() {
               {label.use && <span className="tpl-use">{label.use}</span>}
             </button>
             <div className="tpl-ops">
-              <button title="复制另存" onClick={() => duplicate(g)}>⧉</button>
-              <button title="重命名" onClick={() => rename(g)}>✎</button>
-              <button title="导出 JSON" onClick={() => exportTpl(g)}>⤓</button>
-              <button className="danger" title="删除" onClick={() => remove(g)}>🗑</button>
+              <button title="复制另存" aria-label="复制模板" onClick={() => duplicate(g)}>⧉</button>
+              <button title="重命名" aria-label="重命名模板" onClick={() => rename(g)}>✎</button>
+              <button title="导出 JSON" aria-label="导出模板" onClick={() => exportTpl(g)}>⤓</button>
+              <button className="danger" title="删除" aria-label="删除模板" onClick={() => remove(g)}>🗑</button>
             </div>
           </div>
         );
       })}
       {(graphs ?? []).length === 0 && (
-        <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>当前项目暂无模板</div>
+        <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>还没有模板——点上方「导入」，或到「⋯ 更多」从 GitHub 拉取</div>
       )}
 
       <h4>核心</h4>

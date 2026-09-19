@@ -790,6 +790,7 @@ export async function buildHttpServer(deps: HttpDeps) {
   });
 
   // -- graphs (templates) -----------------------------------------------------
+  // v10-Y：模板是全局资产（dataDir/graphs）——?space= 照旧接收但对模板无作用（运行记录仍按项目隔离）
 
   app.get<{ Querystring: { space?: string } }>('/api/graphs', async (req) => ({
     graphs: spaceStore(deps, req.query.space).listGraphs(),
