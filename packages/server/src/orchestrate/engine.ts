@@ -16,7 +16,7 @@ import type {
   RunCost,
   NodeCost,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
@@ -227,6 +227,9 @@ export class Engine {
     if (errors.length) {
       throw new Error(`DAG 校验失败：${errors.map((e) => e.message).join('；')}`);
     }
+    // G2 引用失败可见：applyVariables 后仍残留的 {{}} 是未声明变量或坏节点引用——
+    // 不拦跑（与 B2 必填校验互补），但以 warn 事件上时间线，静默事故变可见事故
+    const unresolved = lintUnresolvedRefs(graph);
     if (graph.nodes.some((n) => n.type === 'fanout' || n.type === 'fanin')) {
       for (const n of graph.nodes) {
         if (n.type === 'fanin' && n.config.onFail) {
@@ -268,6 +271,15 @@ export class Engine {
     };
     this.runs.set(runId, run);
     this.recordEvent(run, 'run', undefined, `运行启动：${graph.name}（${order.length} 个节点）`);
+    if (unresolved.length) {
+      const detail = unresolved.slice(0, 6).map((u) => `${u.where} 的 ${u.ref}`).join('、');
+      this.recordEvent(
+        run,
+        'run',
+        undefined,
+        `⚠ 引用未解析 ${unresolved.length} 处（花括号将原样进提示词——核对变量声明与节点名）：${detail}${unresolved.length > 6 ? ' 等' : ''}`,
+      );
+    }
     this.persistAndNotify(run);
 
     // 继承 done 节点的记录与产物（这些节点不再执行）

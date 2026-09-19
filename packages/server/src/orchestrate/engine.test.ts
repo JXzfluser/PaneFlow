@@ -1643,3 +1643,28 @@ describe('v7-A5 断点续跑（resumeOf）', () => {
     expect(engine.listRuns().length).toBe(0);
   });
 });
+
+describe('v8-G2 引用未解析 warn（不拦跑，上时间线）', () => {
+  it('未声明变量/坏节点引用 → run 照常启动且 warn 事件点名出处', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const g = serialGraph();
+    g.nodes[1]!.config.prompt = '依据 {{nope}} 干活，参考 {{ghost.artifact.summary}}';
+    const run = await engine.startRun(g, cwd);
+    expect(run.state).toBe('running'); // 不拦跑
+    const warn = (run.events ?? []).find((e) => e.text.includes('引用未解析'));
+    expect(warn?.text).toContain('2 处');
+    expect(warn?.text).toContain('{{nope}}');
+    expect(warn?.text).toContain('ghost');
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+  });
+
+  it('已声明变量注入后无 warn 事件', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const g = serialGraph();
+    g.variables = [{ key: 'nope', label: '输入' }];
+    g.nodes[1]!.config.prompt = '依据 {{nope}} 干活';
+    const run = await engine.startRun(g, cwd, undefined, { nope: '值已填' });
+    expect((run.events ?? []).some((e) => e.text.includes('引用未解析'))).toBe(false);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+  });
+});

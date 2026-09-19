@@ -29,4 +29,6 @@ export {
   upstreamOf,
   renderPromptTemplate,
   applyVariables,
+  lintUnresolvedRefs,
+  type UnresolvedRef,
 } from './dag.js';

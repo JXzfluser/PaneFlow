@@ -592,3 +592,50 @@ export function applyVariables(
   };
   return { graph: walk(clone) as DagGraph, missing };
 }
+
+export interface UnresolvedRef {
+  /** 出处：节点 id（`<id>.<字段路径>`）或 metadata */
+  where: string;
+  /** 引用原文（含花括号） */
+  ref: string;
+}
+
+const ANY_REF = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_.\-]*)\s*\}\}/g;
+
+/**
+ * G2 引用失败可见：扫描图内残留的 `{{...}}` token，基准名既不是本图节点、
+ * 也不是动态扇出的 `item` 绑定 → 判为未解析（花括号会原样进提示词，静默事故）。
+ * 应在 applyVariables 之后跑（已声明变量彼时已被替换掉）。只报告不拦截——
+ * startRun 据此发 warn 事件上时间线，与 RunDialog 必填校验互补。
+ */
+export function lintUnresolvedRefs(graph: DagGraph): UnresolvedRef[] {
+  const bases = new Set(graph.nodes.map((n) => n.id));
+  bases.add('item');
+  const out: UnresolvedRef[] = [];
+  const seen = new Set<string>();
+  const scan = (where: string, value: unknown): void => {
+    if (typeof value === 'string') {
+      for (const m of value.matchAll(ANY_REF)) {
+        const base = m[1]!.split('.')[0]!;
+        if (bases.has(base)) continue;
+        const key = `${where}\u0000${m[0]}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ where, ref: m[0] });
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((v, i) => scan(`${where}[${i}]`, v));
+      return;
+    }
+    if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) scan(where ? `${where}.${k}` : k, v);
+    }
+  };
+  for (const n of graph.nodes) {
+    scan(n.id, { label: n.label, config: n.config });
+  }
+  scan('metadata', { description: graph.metadata.description });
+  return out;
+}

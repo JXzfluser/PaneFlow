@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyVariables, validateDag } from '@paneflow/shared';
+import { applyVariables, lintUnresolvedRefs, validateDag } from '@paneflow/shared';
 import type { DagGraph } from '@paneflow/shared';
 
 function varGraph(): DagGraph {
@@ -69,5 +69,39 @@ describe('applyVariables', () => {
   it('resulting graph still passes DAG validation', () => {
     const { graph } = applyVariables(varGraph(), { issue_id: '162' });
     expect(validateDag(graph).filter((i) => i.level === 'error')).toEqual([]);
+  });
+});
+
+describe('lintUnresolvedRefs（G2 引用失败可见）', () => {
+  it('报告未声明裸变量与不存在节点引用，放行真实节点引用与 item 绑定', () => {
+    const g = varGraph();
+    const dev = g.nodes.find((n) => n.id === 'dev')!;
+    dev.config.prompt += ' 还有 {{ghost.artifact.summary}} 与 {{nope}}，条目 {{item.name}} 正常。';
+    g.metadata.description = '描述里漏了 {{also_missing}}';
+    const found = lintUnresolvedRefs(applyVariables(g, { issue_id: '162' }).graph);
+    expect(found.map((u) => `${u.where}=${u.ref}`).sort()).toEqual([
+      'dev.config.prompt={{ghost.artifact.summary}}',
+      'dev.config.prompt={{nope}}',
+      'metadata.description={{also_missing}}',
+    ]);
+  });
+
+  it('同字段同一引用只报一次；已声明变量替换后不再触发', () => {
+    const g = varGraph();
+    const dev = g.nodes.find((n) => n.id === 'dev')!;
+    dev.config.prompt = '{{issue_id}} 与 {{issue_id}} 再与 {{start.output}}';
+    const found = lintUnresolvedRefs(applyVariables(g, { issue_id: '162' }).graph);
+    expect(found).toEqual([]); // issue_id 已替换、start 是真实节点
+  });
+
+  it('run_id 未声明时残留会被抓（声明了才由引擎注入替换）', () => {
+    const g = varGraph();
+    const dev = g.nodes.find((n) => n.id === 'dev')!;
+    dev.config.cwd = 'pf/{{run_id}}';
+    expect(lintUnresolvedRefs(applyVariables(g, { run_id: 'abc', issue_id: '1' }).graph)).toEqual([
+      { where: 'dev.config.cwd', ref: '{{run_id}}' },
+    ]);
+    const declared: DagGraph = { ...g, variables: [...(g.variables ?? []), { key: 'run_id', label: '运行编号' }] };
+    expect(lintUnresolvedRefs(applyVariables(declared, { run_id: 'abc', issue_id: '1' }).graph)).toEqual([]);
   });
 });
