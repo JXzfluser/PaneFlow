@@ -40,3 +40,15 @@
 - 数据模型/API 键改名（space→project 只发生在词面）。
 - 角色层级/汇报线（组织架构感 = 阵容感，不是树）。
 - OAuth / token 加密后端（gh 登录态兜底已覆盖主要摩擦）。
+
+## 实施状态（2026-09-19 收口）
+
+| 项 | commit | 验证 |
+|---|---|---|
+| U1 bot 阵容视图 | `d83c59f` | usage 聚合单测 ×2（含悬空 roleId/空目录）；server 291 全绿；实机 `GET /api/roles/usage` 回 b-smoke 五连部署 |
+| U2 凭据来源/兜底/解绑 | `a33d682` | 来源三态+resolve 优先级+unlink+create-issue gh 兜底+wiki 过凭据门 单测 ×5；实机 `GET /api/github/cred` = stored-pat·尾号 Vh0Q·ghLoggedIn=true |
+| U3 词面改名+班底条 | `68f1b10` | addableRoles 快照测试 ×3；web grep 用户可见「默认空间/空间主仓根/…」清零（仅注释与「画布空间」留）；默认空间读侧显示「默认项目」（listSpaces+GET profile 两处，盘上档案不改写） |
+
+词面裁决补记：用户口语「不叫岗位，就是 bot 的角色」→ 界面词全部阵容化（已部署 N 个项目/待命/首发五连/人设），无任何「岗位/职位/编制」字样。
+
+未做实机像素级核对（browser-use 截图通道仍不可用）：班底条/阵容卡外观以 build+结构测试为凭，像素验收留给用户开页确认。
