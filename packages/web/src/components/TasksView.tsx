@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DagGraph, RunRecord } from '@paneflow/shared';
-import { api } from '../api.js';
+import { api, fetchJson } from '../api.js';
 import { useStore } from '../store.js';
 import { deriveSteps, hasParallel, summarizeSteps } from '../steps.js';
 import { queuedReasonText } from '../queue-view.js';
 import { ADVANCED_FIELDS, ONBOARDING_STEPS } from '../onboarding.js';
 import { templateLabel } from '../template-labels.js';
+import { addableRoles, type TeamMemberLite, type TeamRoleLite } from '../team-bar.js';
 
 /**
  * 任务视图（A 组）：把"按要求驱动编排"变成主路径。
@@ -84,7 +85,7 @@ export function TasksView() {
     }
     if (!cwd.trim()) {
       setAdv(true); // 展开再报错：让「在哪做」字段当场可见
-      log('error', '先告诉 PaneFlow 在哪干活：展开下方「高级选项」填工作目录，或在「设 · 设置」里配置空间主仓根');
+      log('error', '先告诉 PaneFlow 在哪干活：展开下方「高级选项」填工作目录，或在「设 · 设置」里配置项目主仓根');
       return;
     }
     setBusy(true);
@@ -147,6 +148,7 @@ export function TasksView() {
 
   return (
     <div className="tasks-view">
+      <ProjectTeamBar />
       <div className="tasks-hero">
         <h2>你要做什么？</h2>
         {/* N4 三步路径：首屏只有这三步，其余全部收进「高级选项」 */}
@@ -307,7 +309,7 @@ function BatchDispatch() {
       return;
     }
     if (!cwd.trim()) {
-      log('error', '请先填写工作目录，或在「设 · 设置」里配置空间主仓根');
+      log('error', '请先填写工作目录，或在「设 · 设置」里配置项目主仓根');
       return;
     }
     setBusy(true);
@@ -349,7 +351,7 @@ function BatchDispatch() {
             </div>
             <div className="tasks-field narrow">
               <label>repo（可选 owner/name）</label>
-              <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="留空=默认仓或空间候选仓" />
+              <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="留空=默认仓或项目候选仓" />
             </div>
           </div>
           <textarea
@@ -364,7 +366,7 @@ function BatchDispatch() {
               {busy ? '批量派发中…' : '📋 批量派发'}
             </button>
             <span className="tasks-sub" style={{ marginLeft: 8 }}>
-              每单自动注入 Issue 正文；带「验收标准」小节的直接机检入契约；空间并发满了自动排队不冲垮营地
+              每单自动注入 Issue 正文；带「验收标准」小节的直接机检入契约；项目并发满了自动排队不冲垮营地
             </span>
           </div>
         </div>
@@ -541,7 +543,7 @@ function TaskCard({
           )}
           {steps.length === 0 && (
             <p className="plan-summary">
-              骨架模板「{targetName}」不在当前空间，将回退到通用交付骨架。
+              骨架模板「{targetName}」不在当前项目，将回退到通用交付骨架。
             </p>
           )}
           <div className="plan-gate-actions">
@@ -578,4 +580,104 @@ function stateBadge(state: RunRecord['state']): string {
 
 function stateText(state: RunRecord['state']): string {
   return state === 'completed' ? '已完成' : state === 'failed' ? '失败' : state === 'running' ? '运行中' : state === 'queued' ? '⏳ 排队中' : '已取消';
+}
+
+/* ===================== v10-U3b 项目班底条 ===================== */
+
+const TEAM_ICONS: Record<string, string> = {
+  'std-planner': '🧭',
+  'std-implementer': '⚙️',
+  'std-reviewer': '🔍',
+  'std-verifier': '✅',
+  'std-curator': '📚',
+};
+
+/** 班底条：项目带哪些 bot 一眼可见，可直接从全局角色库添加/移除；空班底给首发引导 */
+function ProjectTeamBar() {
+  const spaceId = useStore((s) => s.space);
+  const log = useStore((s) => s.log);
+  const [team, setTeam] = useState<TeamMemberLite[] | null>(null);
+  const [projName, setProjName] = useState('');
+  const [roles, setRoles] = useState<TeamRoleLite[]>([]);
+  const [seeding, setSeeding] = useState(false);
+  useEffect(() => {
+    setTeam(null);
+    void fetchJson<{ team?: TeamMemberLite[]; name?: string }>('GET', `/api/spaces/${encodeURIComponent(spaceId)}`)
+      .then((p) => {
+        setTeam(p.team ?? []);
+        setProjName(p.name ?? '');
+      })
+      .catch(() => setTeam([]));
+    void fetchJson<{ roles?: TeamRoleLite[] }>('GET', '/api/roles')
+      .then((d) => setRoles(d.roles ?? []))
+      .catch(() => undefined);
+  }, [spaceId]);
+  const save = (next: TeamMemberLite[]) => {
+    setTeam(next);
+    void fetchJson<unknown>('PUT', `/api/spaces/${encodeURIComponent(spaceId)}`, { team: next }).catch((e: Error) =>
+      log('error', `班底保存失败：${e.message}`),
+    );
+  };
+  const seedStandard = async () => {
+    setSeeding(true);
+    try {
+      const r = await fetchJson<{ profile: { team?: TeamMemberLite[] } }>(
+        'POST',
+        `/api/spaces/${encodeURIComponent(spaceId)}/team/standard`,
+      );
+      setTeam(r.profile.team ?? []);
+      const d = await fetchJson<{ roles?: TeamRoleLite[] }>('GET', '/api/roles');
+      setRoles(d.roles ?? []);
+      log('info', '首发五连已就位：规划 / 实现 / 评审 / 验收 / 沉淀');
+    } catch (e) {
+      log('error', `装填首发失败：${(e as Error).message}`);
+    } finally {
+      setSeeding(false);
+    }
+  };
+  if (team === null) return null;
+  const nameOf = (id: string) => roles.find((r) => r.id === id)?.name;
+  const addable = addableRoles(roles, team);
+  return (
+    <div className={team.length ? 'team-bar' : 'team-bar empty'}>
+      <span className="team-bar-title" title={`项目 ${spaceId}`}>
+        🤖 {(projName || spaceId) + ' 的班底'}
+      </span>
+      {team.map((m, i) => (
+        <span className="team-chip" key={m.roleId} title={m.roleId}>
+          {TEAM_ICONS[m.roleId] ?? '🤖'} {nameOf(m.roleId) ?? `⚠️ ${m.roleId}（库中已删）`}
+          {m.alias && m.alias !== nameOf(m.roleId) ? ` · ${m.alias}` : ''}
+          <button className="team-chip-rm" title="移出班底" onClick={() => save(team.filter((_, j) => j !== i))}>
+            ×
+          </button>
+        </span>
+      ))}
+      {team.length === 0 && (
+        <>
+          <span className="team-bar-hint">这个项目还没有 bot 在岗——</span>
+          <button className="ghost" disabled={seeding} onClick={() => void seedStandard()}>
+            {seeding ? '装填中…' : '🚀 一键装填首发五连'}
+          </button>
+        </>
+      )}
+      {addable.length > 0 && (
+        <select
+          className="team-add"
+          value=""
+          onChange={(e) => {
+            const id = e.target.value;
+            if (id) save([...team, { roleId: id }]);
+          }}
+          title="从全局角色库挑一个 bot 加入本项目班底"
+        >
+          <option value="">＋ 从角色库添加</option>
+          {addable.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
 }

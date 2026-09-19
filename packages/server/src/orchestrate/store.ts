@@ -64,7 +64,7 @@ export class Store {
     if (!fs.existsSync(this.profilePath)) {
       this.writeProfile({
         id: spaceId,
-        name: spaceId === DEFAULT_SPACE ? '默认空间' : spaceId,
+        name: spaceId === DEFAULT_SPACE ? '默认项目' : spaceId,
         createdAt: new Date().toISOString(),
       });
     }
@@ -77,7 +77,7 @@ export class Store {
   }
 
   private spaceDir(root: string, spaceId: string): string {
-    if (!/^[a-zA-Z0-9_-]{1,32}$/.test(spaceId)) throw new Error(`非法空间 ID：${spaceId}`);
+    if (!/^[a-zA-Z0-9_-]{1,32}$/.test(spaceId)) throw new Error(`非法项目 ID：${spaceId}`);
     return path.join(root, 'spaces', spaceId);
   }
 
@@ -89,7 +89,10 @@ export class Store {
     for (const id of fs.readdirSync(dir)) {
       const p = path.join(dir, id, 'profile.json');
       try {
-        out.push(JSON.parse(fs.readFileSync(p, 'utf8')) as SpaceProfile);
+        const sp = JSON.parse(fs.readFileSync(p, 'utf8')) as SpaceProfile;
+        // U3 词面迁移：老盘上写死的「默认空间」在读取侧改叫「默认项目」，不改写用户档案
+        if (id === DEFAULT_SPACE && sp.name === '默认空间') sp.name = '默认项目';
+        out.push(sp);
       } catch {
         out.push({ id, name: id, createdAt: '' });
       }

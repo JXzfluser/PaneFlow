@@ -71,13 +71,13 @@ interface PfStore {
   templateList: DagGraph[];
   theme: ThemeName;
   view: AppView;
-  /** 当前项目空间（响应式镜像 localStorage 的 pf-space，D4） */
+  /** 当前项目（响应式镜像 localStorage 的 pf-space，D4） */
   space: string;
   graphVariables: TemplateVariable[];
   graphMeta: GraphMeta;
 
   setView: (view: AppView) => void;
-  /** 切换项目空间：更新 api 上下文 + 刷新模板 + 清空画布 */
+  /** 切换项目：更新 api 上下文 + 刷新模板 + 清空画布 */
   switchSpace: (id: string) => void;
   setTheme: (theme: ThemeName) => void;
   setGraphVariables: (v: TemplateVariable[]) => void;
@@ -87,7 +87,7 @@ interface PfStore {
   setAgentKinds: (kinds: string[]) => void;
   setDefaultAgentKind: (kind: string) => void;
   setTemplates: (graphs: DagGraph[]) => void;
-  /** 批量并入运行记录（任务视图挂载时拉历史；按当前空间过滤） */
+  /** 批量并入运行记录（任务视图挂载时拉历史；按当前项目过滤） */
   mergeRuns: (records: RunRecord[]) => void;
   log: (level: ConsoleLog['level'], text: string) => void;
   select: (id: string | null) => void;
@@ -158,7 +158,7 @@ export const useStore = create<PfStore>((set, get) => ({
       runs: {},
     });
     void api.listGraphs().then((r) => set({ templateList: r.graphs }));
-    get().log('info', `已切换空间 → ${id}`);
+    get().log('info', `已切换项目 → ${id}`);
   },
 
   setGraphVariables: (graphVariables) => set({ graphVariables }),

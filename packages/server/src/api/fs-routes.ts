@@ -21,7 +21,7 @@ export function registerFsRoutes(
   // discover: markdown docs + skill files under the Space 的主仓根（root 不再接受客户端任意值）
   app.get<{ Querystring: { space?: string } }>('/api/fs/discover', async (req, reply) => {
     const root = resolveRoot(req.query.space);
-    if (!root) return reply.code(400).send({ error: '当前空间未配置主仓根目录' });
+    if (!root) return reply.code(400).send({ error: '当前项目未配置主仓根目录' });
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
       return reply.code(400).send({ error: `目录不存在：${root}` });
     }

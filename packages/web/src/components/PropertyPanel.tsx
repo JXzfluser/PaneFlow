@@ -163,9 +163,9 @@ function NodePropertyPanel() {
             ))}
           </select>
 
-          <label title="AE：留「自动」时运行时按 空间默认→本机已装推荐（pi 优先）解析">Agent 类型（herdr kind）</label>
+          <label title="AE：留「自动」时运行时按 项目默认→本机已装推荐（pi 优先）解析">Agent 类型（herdr kind）</label>
           <select value={cfg.agentKind ?? ''} onChange={(e) => set({ agentKind: e.target.value || undefined })}>
-            <option value="">自动（空间默认 → 已装推荐）</option>
+            <option value="">自动（项目默认 → 已装推荐）</option>
             {agentKinds.map((k) => (
               <option key={k} value={k}>{k}</option>
             ))}

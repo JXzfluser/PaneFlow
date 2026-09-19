@@ -404,7 +404,7 @@ export function RunsCenter() {
               {blockedNodes.length > 0 && (
                 <span className="badge blocked">⛔ {blockedNodes.map((n) => n.nodeId).join('、')} 等审批</span>
               )}
-              {r.spaceId && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>空间 {r.spaceId}</span>}
+              {r.spaceId && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>项目 {r.spaceId}</span>}
             </div>
             {open && (
               <RunTimeline

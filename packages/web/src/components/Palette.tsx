@@ -142,7 +142,7 @@ export function Palette() {
         );
       })}
       {(graphs ?? []).length === 0 && (
-        <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>当前空间暂无模板</div>
+        <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>当前项目暂无模板</div>
       )}
 
       <h4>核心</h4>

@@ -56,7 +56,7 @@ export function App() {
     void api.listGraphs().then((r) => setTemplates(r.graphs));
     if (!useStore.getState().cwd) {
       // D2：不再写死 /tmp/paneflow-workspace（大概率不存在，点运行即报错）。
-      // 优先沿用当前空间已配置的主仓根；没有就留空并给出可执行提示。
+      // 优先沿用当前项目已配置的主仓根；没有就留空并给出可执行提示。
       void api
         .listSpaces()
         .then((r) => {
@@ -65,9 +65,9 @@ export function App() {
           const sp = r.spaces.find((s) => s.id === cur) ?? r.spaces.find((s) => s.id === 'default');
           if (sp?.rootCwd) {
             setCwd(sp.rootCwd);
-            log('info', `已采用空间「${sp.name}」的主仓根作为工作目录：${sp.rootCwd}`);
+            log('info', `已采用项目「${sp.name}」的主仓根作为工作目录：${sp.rootCwd}`);
           } else {
-            log('warn', '尚未设置流水线工作目录：请在顶栏「流水线工作目录」填写一个已存在的目录，或到「设 · 设置」配置空间主仓根。');
+            log('warn', '尚未设置流水线工作目录：请在顶栏「流水线工作目录」填写一个已存在的目录，或到「设 · 设置」配置项目主仓根。');
           }
         })
         .catch(() => {

@@ -48,7 +48,7 @@ export function OrchestrateView() {
       return;
     }
     if (!cwd.trim()) {
-      log('error', '请先填写流水线工作目录（须已存在），或到「设 · 设置」配置空间主仓根');
+      log('error', '请先填写流水线工作目录（须已存在），或到「设 · 设置」配置项目主仓根');
       return;
     }
     setRunDialogOpen(true);
@@ -128,7 +128,7 @@ export function OrchestrateView() {
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
             placeholder="流水线工作目录（必填）"
-            title={cwd ? '流水线工作目录' : '尚未设置：填一个已存在的本地目录，或到「设 · 设置」配置空间主仓根'}
+            title={cwd ? '流水线工作目录' : '尚未设置：填一个已存在的本地目录，或到「设 · 设置」配置项目主仓根'}
             style={{ width: 180 }}
           />
           {!running ? (

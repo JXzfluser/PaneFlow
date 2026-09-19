@@ -75,7 +75,7 @@ export const api = {
   deleteGraph: (id: string) => json<{ deleted: boolean }>('DELETE', `/api/graphs/${encodeURIComponent(id)}`),
   startRun: (graph: DagGraph, cwd: string, variables?: Record<string, string>, issueId?: string) =>
     json<{ runId: string; run: RunRecord }>('POST', '/api/runs', { graph, cwd, ...(variables ? { variables } : {}), ...(issueId ? { issueId } : {}) }),
-  /** v7-A5 断点续跑：复用源 run 的已应用图，显式带回其所属空间（RunsCenter 跨空间列表不能依赖当前空间） */
+  /** v7-A5 断点续跑：复用源 run 的已应用图，显式带回其所属空间（RunsCenter 跨空间列表不能依赖当前项目） */
   resumeRun: (source: RunRecord) =>
     json<{ runId: string; run: RunRecord }>(
       'POST',
@@ -145,7 +145,7 @@ export const api = {
       ...(cwd ? { cwd } : {}),
       ...(deep ? { deep: true } : {}),
     }),
-  /** G3 批量派发：一个模板 × 一列 issue 编号 → N 个 run（空间并发达上限自动排队） */
+  /** G3 批量派发：一个模板 × 一列 issue 编号 → N 个 run（项目并发达上限自动排队） */
   dispatchBatch: (template: string, issues: string, cwd: string, repo?: string) =>
     json<{
       template: string;

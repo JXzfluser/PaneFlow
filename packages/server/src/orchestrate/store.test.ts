@@ -58,13 +58,24 @@ describe('Store (Space-aware)', () => {
     const spaces = Store.listSpaces(root);
     const demo = spaces.find((s) => s.id === 'demo');
     expect(demo?.name).toBe('演示空间');
-    expect(spaces.find((s) => s.id === DEFAULT_SPACE)?.name).toBe('默认空间');
+    expect(spaces.find((s) => s.id === DEFAULT_SPACE)?.name).toBe('默认项目');
   });
 
   it('rejects invalid space ids', () => {
     const root = tmpRoot();
-    expect(() => new Store(root, '../evil')).toThrow(/非法空间/);
-    expect(() => new Store(root, 'a b')).toThrow(/非法空间/);
+    expect(() => new Store(root, '../evil')).toThrow(/非法项目/);
+    expect(() => new Store(root, 'a b')).toThrow(/非法项目/);
+  });
+
+  it('U3 读侧词面迁移：老档案写死的「默认空间」显示为「默认项目」，盘上档案不改写', () => {
+    const root = tmpRoot();
+    new Store(root);
+    const p = path.join(root, 'spaces', DEFAULT_SPACE, 'profile.json');
+    const prof = JSON.parse(fs.readFileSync(p, 'utf8')) as { name: string };
+    prof.name = '默认空间';
+    fs.writeFileSync(p, JSON.stringify(prof));
+    expect(Store.listSpaces(root).find((s) => s.id === DEFAULT_SPACE)?.name).toBe('默认项目');
+    expect((JSON.parse(fs.readFileSync(p, 'utf8')) as { name: string }).name).toBe('默认空间');
   });
 
   it('profile round-trips via readProfile/writeProfile', () => {

@@ -586,7 +586,7 @@ function GatewayCard() {
   );
 }
 
-/** v9-D2 空间钉档：本空间 Agent 固定用某档网关（全局切档不受影响）；「跟随全局」= current */
+/** v9-D2 空间钉档：本项目 Agent 固定用某档网关（全局切档不受影响）；「跟随全局」= current */
 function GatewayPinField({ value, onChange }: { value: string; onChange: (id: string) => void }) {
   const log = useStore((s) => s.log);
   const [profiles, setProfiles] = useState<GatewayProfileView[]>([]);
@@ -602,13 +602,13 @@ function GatewayPinField({ value, onChange }: { value: string; onChange: (id: st
   const dangling = Boolean(value) && !profiles.some((p) => p.id === value);
   return (
     <>
-      <label title="本空间所有 Agent 固定用这一档网关，不受全局切档影响；钉的档被删了会自动回落全局生效档">
-        网关档位（本空间钉档）
+      <label title="本项目所有 Agent 固定用这一档网关，不受全局切档影响；钉的档被删了会自动回落全局生效档">
+        网关档位（本项目钉档）
       </label>
       <select
         value={dangling ? '__dangling__' : value}
         onChange={(e) => onChange(e.target.value === '__dangling__' ? '' : e.target.value)}
-        aria-label="本空间钉的网关档"
+        aria-label="本项目钉的网关档"
       >
         <option value="">
           跟随全局生效档{current ? `（${profiles.find((p) => p.id === current)?.name ?? ''}）` : ''}
@@ -792,7 +792,7 @@ interface SpaceProfile {
   gatewayProfile?: string;
 }
 
-/** v9-B1/B3 班底成员：roleId 指向全局角色库，alias 是本空间昵称 */
+/** v9-B1/B3 班底成员：roleId 指向全局角色库，alias 是本项目昵称 */
 interface TeamMember {
   roleId: string;
   alias?: string;
@@ -889,7 +889,7 @@ function TeamEditor({
 
   return (
     <>
-      <label title="班底=这个空间固定用的一组成员（取自全局角色库）；智能下发只会从班底点人">班底（{team.length} 人）</label>
+      <label title="班底=这个项目固定用的一组成员（取自全局角色库）；智能下发只会从班底点人">班底（{team.length} 人）</label>
       {team.length === 0 && (
         <p className="settings-hint">还没有班底：下发按默认班底跑。可一键装填「标准五连」（规划/实现/评审/验收/沉淀）。</p>
       )}
@@ -946,7 +946,7 @@ function TeamEditor({
 /** 设置视图：左侧章节导航 + 右侧分区（原为 6 张卡片平铺 + 大量内联样式）。 */
 export function SettingsView() {
   const log = useStore((s) => s.log);
-  // 响应式读当前空间（D4）：侧栏切换后本页自动跟随刷新
+  // 响应式读当前项目（D4）：侧栏切换后本页自动跟随刷新
   const spaceId = useStore((s) => s.space);
   const agentKinds = useStore((s) => s.agentKinds);
   const [profile, setProfile] = useState<SpaceProfile | null>(null);
@@ -968,7 +968,7 @@ export function SettingsView() {
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // AE：默认空间也要能配「空间默认 Agent/统一覆盖」——档案照常读取（表单仅呈现可配项）
+    // AE：默认项目也要能配「项目默认 Agent/统一覆盖」——档案照常读取（表单仅呈现可配项）
     void fetchJson<SpaceProfile>('GET', `/api/spaces/${encodeURIComponent(spaceId)}`)
       .then(setProfile)
       .catch((e: Error) => log('error', `读取项目档案失败：${e.message}`));
@@ -1034,7 +1034,7 @@ export function SettingsView() {
     }
   };
 
-  // AE/I2 Agent 选择控件：默认空间档案表单虽精简，这几个必须可配（实机阻塞点）
+  // AE/I2 Agent 选择控件：默认项目档案表单虽精简，这几个必须可配（实机阻塞点）
   const installedKinds = (env?.env.agentsInstalled ?? []).filter((k) => (agentKinds as readonly string[]).includes(k));
   const otherKinds = agentKinds.filter((k) => !installedKinds.includes(k));
   const pickKind = (k: string) =>
@@ -1087,7 +1087,7 @@ export function SettingsView() {
       <div className="stack">
         <label
           className="settings-check"
-          title="本空间所有 Agent 一律用上面的默认值——包括旧模板里钉死的类型。配合「模型网关」= 启动的 agent 全部统一走网关模型。"
+          title="本项目所有 Agent 一律用上面的默认值——包括旧模板里钉死的类型。配合「模型网关」= 启动的 agent 全部统一走网关模型。"
         >
           <input
             type="checkbox"
@@ -1130,12 +1130,12 @@ export function SettingsView() {
       <div className="settings-body" ref={bodyRef}>
         <section className="settings-card" id="sec-space">
           <h3>项目档案</h3>
-          <p className="settings-hint">当前空间：<b>{spaceId}</b></p>
+          <p className="settings-hint">当前项目：<b>{spaceId}</b></p>
           {spaceId === 'default' ? (
             <>
               <p className="settings-hint">
-                默认空间用于快速体验。建议在左侧「+」新建一个项目空间（如 demo），再配置主仓根目录与约定文档。
-                下面这几项（AE Agent 选择 / I2 经验注入）在默认空间同样可配：
+                默认项目用于快速体验。建议在左侧「+」新建一个项目（如 demo），再配置主仓根目录与约定文档。
+                下面这几项（AE Agent 选择 / I2 经验注入）在默认项目同样可配：
               </p>
               {agentControls}
               <div className="settings-actions">
@@ -1341,7 +1341,7 @@ export function SettingsView() {
         <section className="settings-card" id="sec-roles">
           <h3>全局角色库</h3>
           <p className="settings-hint">
-            角色供画布 Agent 节点选择：继承默认 Agent 类型与前置提示。约定文档在上方「项目档案」按空间配置。
+            角色供画布 Agent 节点选择：继承默认 Agent 类型与前置提示。约定文档在上方「项目档案」按项目配置。
           </p>
           <RolesEditor />
         </section>

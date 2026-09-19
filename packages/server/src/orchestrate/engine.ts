@@ -318,7 +318,7 @@ export class Engine {
         run,
         'run',
         expNodeTarget,
-        `经验注入（I2 v0，仅变量层）：沿用同模板绿 run ${experience.runId} 的实填变量/断言 ${experience.contract?.assertions.length ?? 0} 条/成本画像，已附入「${expNodeTarget}」上下文；全局关闭=空间档案 experienceInjection=false`,
+        `经验注入（I2 v0，仅变量层）：沿用同模板绿 run ${experience.runId} 的实填变量/断言 ${experience.contract?.assertions.length ?? 0} 条/成本画像，已附入「${expNodeTarget}」上下文；全局关闭=项目档案 experienceInjection=false`,
       );
     }
     if (unresolved.length) {
@@ -370,7 +370,7 @@ export class Engine {
         run,
         'run',
         undefined,
-        `排队中：空间并发 run 上限 ${this.runCapFor(spaceKey)} 已占满，位次 ${this.runQueues.get(spaceKey)!.length}，出队即启`,
+        `排队中：项目并发 run 上限 ${this.runCapFor(spaceKey)} 已占满，位次 ${this.runQueues.get(spaceKey)!.length}，出队即启`,
       );
       this.persistAndNotify(run);
     } else {
@@ -482,7 +482,7 @@ export class Engine {
 
   /**
    * I2：找同空间+同模板最近一次绿 run（归档的也算——历史即经验）。
-   * 全局关：空间档案 experienceInjection=false（缺省开）。
+   * 全局关：项目档案 experienceInjection=false（缺省开）。
    */
   private findGreenPredecessor(spaceId: string | undefined, dagName: string): RunRecord | null {
     try {

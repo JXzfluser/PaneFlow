@@ -655,15 +655,18 @@ export async function buildHttpServer(deps: HttpDeps) {
   app.post<{ Body: { id: string; name: string } }>('/api/spaces', async (req, reply) => {
     const { id, name } = req.body;
     if (!/^[a-zA-Z0-9_-]{1,32}$/.test(id ?? '')) {
-      return reply.code(400).send({ error: '空间 ID 只能包含字母/数字/-/_（≤32 字符）' });
+      return reply.code(400).send({ error: '项目 ID 只能包含字母/数字/-/_（≤32 字符）' });
     }
-    if (!name?.trim()) return reply.code(400).send({ error: '缺少空间名称' });
+    if (!name?.trim()) return reply.code(400).send({ error: '缺少项目名称' });
     return reply.code(201).send(Store.createSpace(deps.dataDir, id, name.trim()));
   });
 
   app.get<{ Params: { id: string } }>('/api/spaces/:id', async (req, reply) => {
     const store = spaceStore(deps, req.params.id);
-    return store.readProfile();
+    const profile = store.readProfile();
+    // U3 词面迁移与 listSpaces 同口径：老盘「默认空间」显示为「默认项目」，不改写档案
+    if (profile.id === DEFAULT_SPACE && profile.name === '默认空间') return { ...profile, name: '默认项目' };
+    return profile;
   });
 
   app.put<{ Params: { id: string }; Body: Partial<SpaceProfile> }>(
@@ -940,7 +943,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         rootCwd = undefined;
       }
       const cwd = String(req.body.cwd ?? '').trim() || rootCwd;
-      if (!cwd) return reply.code(400).send({ error: '缺少工作目录（空间未配置 rootCwd 且未指定）' });
+      if (!cwd) return reply.code(400).send({ error: '缺少工作目录（项目未配置 rootCwd 且未指定）' });
       // G1：任务文本里贴了 issue URL/#123 即自动识别编号与 repo
       let issueId = typeof req.body.issueId === 'string' ? req.body.issueId.trim() : '';
       let issueRepo: string | undefined;
@@ -1066,7 +1069,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       rootCwd = undefined;
     }
     const cwd = String(req.body?.cwd ?? '').trim() || rootCwd;
-    if (!cwd) return reply.code(400).send({ error: '缺少工作目录（空间未配置 rootCwd 且未指定）' });
+    if (!cwd) return reply.code(400).send({ error: '缺少工作目录（项目未配置 rootCwd 且未指定）' });
     // 编号列：接受数组或文本（换行/逗号/空格分隔，issue URL 与 #12 混贴皆可），去重限 20
     const text = Array.isArray(req.body?.issues) ? req.body.issues!.join(' ') : String(req.body?.issues ?? '');
     const nums = [...new Set([...text.matchAll(/(\d{1,8})/g)].map((m) => Number(m[1])))].filter((n) => n > 0);
