@@ -280,68 +280,86 @@ function GithubCredCard() {
 
 function GatewayCard() {
   const log = useStore((s) => s.log);
-  const [g, setG] = useState({ baseUrl: '', freeModel: 'auto/best-free', enabled: false, keyConfigured: false });
+  const [g, setG] = useState({ baseUrl: '', freeModel: '', enabled: false, keyConfigured: false });
   const [apiKey, setApiKey] = useState('');
   const [testing, setTesting] = useState<string>('');
+  type GatewayTestResult = { ok: boolean; models?: number; error?: string; chatOk?: boolean; chatError?: string };
+  const runTest = async (): Promise<void> => {
+    setTesting('探测中…');
+    const r = await fetchJson<GatewayTestResult>('POST', '/api/gateway/test').catch(
+      (e: Error): GatewayTestResult => ({ ok: false, error: e.message }),
+    );
+    // 列模型 ≠ 能对话：只有真实 chat completion 通过才算「可用」
+    setTesting(
+      !r.ok
+        ? `✗ ${r.error ?? '失败'}`
+        : r.chatOk
+          ? `✓ 已连通 · ${r.models} 个模型 · 对话验证通过`
+          : `⚠ 能列模型但对话失败：${r.chatError ?? '原因未知'}（展开「免费档模型」换个 id）`,
+    );
+  };
   useEffect(() => {
     void fetchJson<typeof g>('GET', '/api/gateway')
-      .then(setG)
+      .then((cfg) => {
+        setG(cfg);
+        // 开着网关进设置页就自动探测一次——结论直接摆脸上，不用用户找按钮
+        if (cfg.enabled && cfg.keyConfigured && cfg.baseUrl) void runTest();
+      })
       .catch((e: Error) => log('error', `读取网关配置失败：${e.message}`));
   }, []);
   const save = async () => {
     try {
       await fetchJson<{ saved: boolean }>('PUT', '/api/gateway', {
         baseUrl: g.baseUrl,
-        freeModel: g.freeModel,
+        // 免费模型留空时给个能跑的缺省——pi 的 --model 与 claude 的 ANTHROPIC_MODEL 都吃这个
+        freeModel: g.freeModel.trim() || 'auto/best-free',
         enabled: g.enabled,
         ...(apiKey ? { apiKey } : {}),
       });
+      setG((x) => ({ ...x, keyConfigured: true }));
       log('info', '模型网关已保存（新启动的 Agent Pane 生效）');
+      await runTest();
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
     }
   };
-  type GatewayTestResult = { ok: boolean; models?: number; error?: string };
-  const test = async () => {
-    setTesting('检测中…');
-    await save();
-    const r = await fetchJson<GatewayTestResult>('POST', '/api/gateway/test').catch(
-      (e: Error): GatewayTestResult => ({ ok: false, error: e.message }),
-    );
-    setTesting(r.ok ? `✓ 连通，${r.models} 个模型` : `✗ ${r.error ?? '失败'}`);
-  };
   return (
     <>
-      <label>网关地址</label>
-      <input
-        value={g.baseUrl}
-        onChange={(e) => setG((x) => ({ ...x, baseUrl: e.target.value }))}
-        placeholder="http://localhost:20128"
-      />
-      <label>
-        API Key {g.keyConfigured && <span className="inline-ok">（已配置，留空保持不变）</span>}
-      </label>
-      <input
-        type="password"
-        value={apiKey}
-        onChange={(e) => setApiKey(e.target.value)}
-        placeholder={g.keyConfigured ? '••••••••' : 'sk-…'}
-      />
-      <label>免费档模型 id（注入 ANTHROPIC_MODEL 等）</label>
-      <input
-        value={g.freeModel}
-        onChange={(e) => setG((x) => ({ ...x, freeModel: e.target.value }))}
-        placeholder="auto/best-free"
-      />
-      <label className="settings-check">
-        <input type="checkbox" checked={g.enabled} onChange={(e) => setG((x) => ({ ...x, enabled: e.target.checked }))} />
-        启用注入
-      </label>
+      <div className="settings-row">
+        <input
+          style={{ flex: 2, minWidth: 220 }}
+          value={g.baseUrl}
+          onChange={(e) => setG((x) => ({ ...x, baseUrl: e.target.value }))}
+          placeholder="网关地址，如 http://127.0.0.1:20128（带不带 /v1 都行）"
+          aria-label="网关地址"
+        />
+        <input
+          style={{ flex: 1, minWidth: 140 }}
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder={g.keyConfigured ? 'Key 已存 ✓（留空不改）' : 'API Key sk-…'}
+          aria-label="API Key"
+        />
+      </div>
+      <div className="gateway-row">
+        <label className="settings-check" title="注入 OPENAI_*/ANTHROPIC_* 到每个 Agent Pane；claude 经 --settings、pi 经 --provider openai 强制走网关">
+          <input type="checkbox" checked={g.enabled} onChange={(e) => setG((x) => ({ ...x, enabled: e.target.checked }))} />
+          启用：所有 Agent 统一走网关模型
+        </label>
+        <details className="settings-more">
+          <summary>免费档模型 id：{g.freeModel || 'auto/best-free（缺省）'}</summary>
+          <input
+            value={g.freeModel}
+            onChange={(e) => setG((x) => ({ ...x, freeModel: e.target.value }))}
+            placeholder="auto/best-free"
+          />
+        </details>
+      </div>
       <div className="settings-actions">
-        {testing && <span className="settings-action-note">{testing}</span>}
-        <button onClick={() => void test()}>🔍 测试连通</button>
+        {testing && <span className={testing.startsWith('✓') ? 'inline-ok' : 'settings-action-note'}>{testing}</span>}
         <button className="primary" onClick={() => void save()}>
-          保存网关
+          💾 保存并测试
         </button>
       </div>
     </>
@@ -537,44 +555,80 @@ export function SettingsView() {
   };
 
   // AE/I2 Agent 选择控件：默认空间档案表单虽精简，这几个必须可配（实机阻塞点）
+  const installedKinds = (env?.env.agentsInstalled ?? []).filter((k) => (agentKinds as readonly string[]).includes(k));
+  const otherKinds = agentKinds.filter((k) => !installedKinds.includes(k));
+  const pickKind = (k: string) =>
+    setProfile((p) => (p ? { ...p, defaultAgentKind: k, ...(k ? {} : { agentOverride: false }) } : p));
   const agentControls = (
     <>
-      <label title="AE：节点/角色没指定 Agent 类型时用它；智能下发 Planner 也用它。留空=自动推荐（本机已装优先：pi > opencode > codex > claude）">
-        空间默认 Agent（节点未指定时用它；Planner 同款）
+      <label title="节点/角色没指定 Agent 类型时用它；智能下发 Planner 也用它。「自动」= 本机已装里挑（pi > opencode > codex > claude）">
+        默认 Agent
       </label>
-      <select
-        value={profile?.defaultAgentKind ?? ''}
-        onChange={(e) => setProfile((p) => (p ? { ...p, defaultAgentKind: e.target.value } : p))}
-      >
-        <option value="">
-          自动推荐{env?.recommendedAgentKind ? `（当前：${env.recommendedAgentKind}）` : '（检测中…）'}
-        </option>
-        {agentKinds.map((k) => (
-          <option key={k} value={k}>
-            {k}{env?.env.agentsInstalled.includes(k) ? ' ·已装' : ' ·未装'}
-          </option>
+      <div className="agent-chips" role="radiogroup" aria-label="默认 Agent">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={!profile?.defaultAgentKind}
+          className={`agent-chip${!profile?.defaultAgentKind ? ' on' : ''}`}
+          onClick={() => pickKind('')}
+        >
+          自动{env?.recommendedAgentKind ? ` · ${env.recommendedAgentKind}` : '（检测中…）'}
+        </button>
+        {installedKinds.map((k) => (
+          <button
+            key={k}
+            type="button"
+            role="radio"
+            aria-checked={profile?.defaultAgentKind === k}
+            className={`agent-chip${profile?.defaultAgentKind === k ? ' on' : ''}`}
+            onClick={() => pickKind(k)}
+          >
+            {k}
+          </button>
         ))}
-      </select>
-      <label
-        title="勾选后本空间所有 Agent 一律用上面的默认值——包括模板/节点里已钉死的类型。配合「模型网关」即可实现：启动的 agent 全部统一走网关模型。"
-        style={!profile?.defaultAgentKind ? { opacity: 0.5 } : undefined}
-      >
-        <input
-          type="checkbox"
-          disabled={!profile?.defaultAgentKind}
-          checked={!!profile?.agentOverride}
-          onChange={(e) => setProfile((p) => (p ? { ...p, agentOverride: e.target.checked } : p))}
-        />{' '}
-        AE · 统一覆盖：强制全部节点改用空间默认 Agent
-      </label>
-      <label title="同模板有绿 run 时，其「实填变量+断言清单+成本画像」会自动附进新单首个 Agent 节点的上下文（时间线有一条注入事件）。关掉即恢复纯现场发挥。">
-        <input
-          type="checkbox"
-          checked={profile?.experienceInjection !== false}
-          onChange={(e) => setProfile((p) => (p ? { ...p, experienceInjection: e.target.checked } : p))}
-        />{' '}
-        I2 · 上次经验自动注入（缺省开）
-      </label>
+      </div>
+      {otherKinds.length > 0 && (
+        <details className="settings-more">
+          <summary>本机未装的 {otherKinds.length} 个 CLI（谨慎选择，点了起不来）</summary>
+          <div className="agent-chips">
+            {otherKinds.map((k) => (
+              <button
+                key={k}
+                type="button"
+                className={`agent-chip dim${profile?.defaultAgentKind === k ? ' on' : ''}`}
+                onClick={() => pickKind(k)}
+              >
+                {k}
+              </button>
+            ))}
+          </div>
+        </details>
+      )}
+      <div className="stack">
+        <label
+          className="settings-check"
+          title="本空间所有 Agent 一律用上面的默认值——包括旧模板里钉死的类型。配合「模型网关」= 启动的 agent 全部统一走网关模型。"
+        >
+          <input
+            type="checkbox"
+            disabled={!profile?.defaultAgentKind}
+            checked={!!profile?.agentOverride}
+            onChange={(e) => setProfile((p) => (p ? { ...p, agentOverride: e.target.checked } : p))}
+          />{' '}
+          统一覆盖：强制所有节点用「{profile?.defaultAgentKind || '默认'}」
+        </label>
+        <label
+          className="settings-check"
+          title="同模板有绿 run 时，其「实填变量+断言清单+成本画像」会自动附进新单首个 Agent 节点的上下文。关掉即恢复纯现场发挥。"
+        >
+          <input
+            type="checkbox"
+            checked={profile?.experienceInjection !== false}
+            onChange={(e) => setProfile((p) => (p ? { ...p, experienceInjection: e.target.checked } : p))}
+          />{' '}
+          上次成功跑过的变量/验收/成本，自动喂给下一单
+        </label>
+      </div>
     </>
   );
 
@@ -806,9 +860,8 @@ export function SettingsView() {
         <section className="settings-card" id="sec-gateway">
           <h3>模型网关（OmniRoute 等）</h3>
           <p className="settings-hint">
-            配置后每个 Agent Pane 自动注入 OPENAI_*/ANTHROPIC_* 网关变量——模型请求统一走网关（免费档/自动切换由网关负责）。
-            AE 统一路由：claude 经 --settings 注入（未登录也能走网关）；pi 自动加 --provider openai --model 免费模型；其余遵守网关约定的 CLI 直接读环境变量。
-            要「所有 Agent 都走网关」，再到「项目档案」选默认 Agent 并勾选「统一覆盖」。
+            一站式：填地址+Key → 勾选启用 → 保存并测试。启用后所有 Agent 的模型请求统一走网关
+            （claude 未登录也能跑；pi 自动带 --provider openai）。
           </p>
           <GatewayCard />
         </section>

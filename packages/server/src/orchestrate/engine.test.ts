@@ -1973,7 +1973,7 @@ describe('v8-AE Agent 选择链与网关统一', () => {
     expect(ops.starts.at(-1)!.kind).toBe('claude');
   });
 
-  it('AE-3 网关启用时 pi 自动带 --provider openai --model，且 pane env 注入网关变量（统一走网关）', async () => {
+  it('AE-3 网关启用时 pi 自动带 --provider paneflow-gw --model，且 pane env 注入网关变量（统一走网关）', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-ae3-'));
     fs.writeFileSync(
       path.join(dataDir, 'gateway.json'),
@@ -1982,10 +1982,11 @@ describe('v8-AE Agent 选择链与网关统一', () => {
     const run = await runToCompletion(aeGraph('ae3', 'pi'), cwd);
     const start = ops.starts.at(-1)!;
     expect(start.kind).toBe('pi');
-    expect(start.args.slice(0, 4)).toEqual(['--provider', 'openai', '--model', 'auto/free']);
+    expect(start.args.slice(0, 4)).toEqual(['--provider', 'paneflow-gw', '--model', 'auto/free']);
     const paneEnv = ops.paneEnvs.get(run.nodes['w']!.paneId!)!;
     expect(paneEnv.OPENAI_BASE_URL).toBe('http://gw.local:4444/v1');
     expect(paneEnv.OPENAI_API_KEY).toBe('sk-test');
+    expect(paneEnv.PANEFLOW_GW_KEY).toBe('sk-test');
   });
 
   it('AE-4 网关未启用：pi 不加路由参数（保持其自身缺省）', async () => {

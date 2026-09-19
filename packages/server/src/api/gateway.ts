@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export interface ModelGatewaySettings {
@@ -41,12 +42,16 @@ export function gatewayActive(dataDir: string): boolean {
 export function buildGatewayEnv(dataDir: string): Record<string, string> {
   const g = readGateway(dataDir);
   if (!g.enabled || !g.baseUrl || !g.apiKey) return {};
+  // 用户常把地址连 /v1 一起贴进来——统一剥掉尾部 v1 再拼，避免 ANTHROPIC_BASE_URL 变成 …/v1（claude 会再拼一层）
+  const base = g.baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
   const env: Record<string, string> = {
-    OPENAI_API_BASE: `${g.baseUrl.replace(/\/$/, '')}/v1`,
-    // pi 读的是 OPENAI_BASE_URL（不是 OPENAI_API_BASE）——两个名字都给，网关对 pi 同样生效
-    OPENAI_BASE_URL: `${g.baseUrl.replace(/\/$/, '')}/v1`,
+    OPENAI_API_BASE: `${base}/v1`,
+    // pi 的 provider baseUrl 来自它的 models.json 目录而非环境变量——这里只作兜底注入
+    OPENAI_BASE_URL: `${base}/v1`,
     OPENAI_API_KEY: g.apiKey,
-    ANTHROPIC_BASE_URL: g.baseUrl.replace(/\/$/, ''),
+    // paneflow-gw（写入 ~/.pi/agent/models.json 的自定义 provider）按 $PANEFLOW_GW_KEY 引用
+    PANEFLOW_GW_KEY: g.apiKey,
+    ANTHROPIC_BASE_URL: base,
     ANTHROPIC_AUTH_TOKEN: g.apiKey,
     ANTHROPIC_API_KEY: g.apiKey,
   };
@@ -56,5 +61,88 @@ export function buildGatewayEnv(dataDir: string): Record<string, string> {
     env.ANTHROPIC_DEFAULT_OPUS_MODEL = g.freeModel;
     env.ANTHROPIC_SMALL_FAST_MODEL = g.freeModel;
   }
+  // herdr 守护进程可能带着已死的 HTTP_PROXY 传给所有 pane（pi 的 undici 会照走 → 连接失败）。
+  // 这里不删用户的代理，只把网关主机与常用内网段加进 NO_PROXY，保证网关与本机 API 直连。
+  try {
+    const gwHost = new URL(base).hostname;
+    const parts = [
+      ...(process.env.NO_PROXY ?? '').split(','),
+      'localhost', '127.0.0.1', '::1', '10.*', '192.168.*', '*.local', gwHost,
+    ].map((s) => s.trim()).filter(Boolean);
+    const noProxy = [...new Set(parts)].join(',');
+    env.NO_PROXY = noProxy;
+    env.no_proxy = noProxy;
+  } catch {
+    /* baseUrl 不是合法 URL：跳过（上面 baseUrl 正则以已验过，正常到不了这里） */
+  }
   return env;
+}
+
+/** 网关 OpenAI 兼容端点前缀（…/v1），已做 /v1 去重 */
+export function gatewayOpenaiBase(dataDir: string): string | null {
+  const g = readGateway(dataDir);
+  if (!g.enabled || !g.baseUrl || !g.apiKey) return null;
+  return `${g.baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '')}/v1`;
+}
+
+/** pi 里 PaneFlow 网关 provider 的名字；引擎以 `--provider paneflow-gw` 启动 pi */
+export const PI_GATEWAY_PROVIDER = 'paneflow-gw';
+
+/**
+ * pi 的 provider baseUrl 写死在它的目录里（OPENAI_BASE_URL 环境变量不被读取），且 openai
+ * 下未登记的模型 id 会继承 gpt-5.4 模板（api=openai-responses + api.openai.com）——
+ * 在网关环境下表现为 pi 每次 "Request timed out"。这里把网关注册成显式的
+ * openai-completions provider，密钥用 $PANEFLOW_GW_KEY 引用（pane env 注入，磁盘不落明文）。
+ * 合并写：保留用户 models.json 里的其他 provider；幂等，配置没变则不写盘。
+ */
+export function syncPiGatewayProvider(
+  dataDir: string,
+  opts: { homeDir?: string } = {},
+): { synced: boolean; path: string; removed?: boolean } {
+  const home = opts.homeDir ?? os.homedir();
+  const file = path.join(home, '.pi', 'agent', 'models.json');
+  const g = readGateway(dataDir);
+  let doc: { providers?: Record<string, unknown> } = {};
+  if (fs.existsSync(file)) {
+    try {
+      doc = JSON.parse(fs.readFileSync(file, 'utf8')) as typeof doc;
+      if (!doc || typeof doc !== 'object' || ('providers' in doc && typeof doc.providers !== 'object')) {
+        return { synced: false, path: file };
+      }
+    } catch {
+      // 文件损坏时不动用户数据，交由用户处理
+      return { synced: false, path: file };
+    }
+  }
+  doc.providers ??= {};
+  const providers = doc.providers as Record<string, unknown>;
+  if (!gatewayActive(dataDir)) {
+    if (!(PI_GATEWAY_PROVIDER in providers)) return { synced: false, path: file };
+    delete providers[PI_GATEWAY_PROVIDER];
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
+    return { synced: true, path: file, removed: true };
+  }
+  const next = {
+    name: 'PaneFlow 网关',
+    baseUrl: gatewayOpenaiBase(dataDir) ?? '',
+    api: 'openai-completions',
+    apiKey: '$PANEFLOW_GW_KEY',
+    models: [
+      {
+        id: g.freeModel || 'auto',
+        name: g.freeModel || 'auto',
+        input: ['text'],
+        contextWindow: 128000,
+        maxTokens: 8192,
+      },
+    ],
+  };
+  if (JSON.stringify(providers[PI_GATEWAY_PROVIDER]) === JSON.stringify(next)) {
+    return { synced: false, path: file };
+  }
+  providers[PI_GATEWAY_PROVIDER] = next;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
+  return { synced: true, path: file };
 }

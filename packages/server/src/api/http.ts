@@ -18,7 +18,7 @@ import {
   writeChannels,
   type Channel,
 } from './channels.js';
-import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, type ModelGatewaySettings } from './gateway.js';
+import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, syncPiGatewayProvider, type ModelGatewaySettings } from './gateway.js';
 import { readGithubSettings, writeGithubSettings, buildGithubEnv, type GithubSettings } from './github-cred.js';
 
 interface CreateIssueBody {
@@ -255,7 +255,14 @@ export async function buildHttpServer(deps: HttpDeps) {
       enabled: enabled ?? cur.enabled ?? Boolean(baseUrl && apiKey),
     };
     writeGateway(deps.dataDir, next);
-    return { saved: true, enabled: next.enabled };
+    // 网关变了就同步 pi 的 paneflow-gw provider（~/.pi/agent/models.json，合并写、失败不阻断保存）
+    let piProvider: { synced: boolean; path: string; removed?: boolean } | null = null;
+    try {
+      piProvider = syncPiGatewayProvider(deps.dataDir);
+    } catch {
+      /* pi 未安装或目录不可写：忽略 */
+    }
+    return { saved: true, enabled: next.enabled, piProvider };
   });
 
   app.post('/api/gateway/test', async () => {
@@ -267,7 +274,33 @@ export async function buildHttpServer(deps: HttpDeps) {
         signal: AbortSignal.timeout(5000),
       });
       const body = (await res.json()) as { data?: unknown[] };
-      return { ok: res.ok, models: body.data?.length ?? 0 };
+      // 列模型通了不代表能对话：免费池上游可能整段 500，补一发最小 chat completion
+      const freeModel = readGateway(deps.dataDir).freeModel;
+      let chatOk = false;
+      let chatError: string | undefined;
+      const t0 = Date.now();
+      try {
+        const c = await fetch(`${env.OPENAI_API_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+          body: JSON.stringify({
+            model: freeModel || 'auto',
+            messages: [{ role: 'user', content: 'Reply with exactly: OK' }],
+            max_tokens: 200,
+          }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const cj = (await c.json()) as {
+          choices?: { message?: { content?: string; tool_calls?: unknown[] } }[];
+          error?: { message?: string };
+        };
+        const msg = cj.choices?.[0]?.message;
+        if (c.ok && (msg?.content?.trim() || msg?.tool_calls?.length)) chatOk = true;
+        else chatError = cj.error?.message ?? '模型返回空内容（免费池可能已耗尽，换个模型 id 再试）';
+      } catch (err) {
+        chatError = `${(err as Error).message}（${((Date.now() - t0) / 1000).toFixed(1)}s）`;
+      }
+      return { ok: res.ok, models: body.data?.length ?? 0, chatOk, chatError, chatMs: Date.now() - t0 };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }

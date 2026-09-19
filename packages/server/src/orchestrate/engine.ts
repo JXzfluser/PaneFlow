@@ -24,7 +24,7 @@ import { Store } from './store.js';
 import { buildConventionBlock, loadRoles, type Role } from './roles.js';
 import { effectiveRules, matchRules } from './rules.js';
 import { buildSkillBlock } from './skills.js';
-import { buildGatewayEnv, gatewayActive, readGateway } from '../api/gateway.js';
+import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
 import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
 import { buildGithubEnv } from '../api/github-cred.js';
 
@@ -996,10 +996,11 @@ export class Engine {
       // claude 自动附加沙箱豁免 + 网关/凭据 env（信任与 bypass 对话框经 settings 预接受）
       let startArgs = [...(cfg.agentArgs ?? [])];
       const kind = await this.resolveAgentKind(run, cfg);
-      // AE：网关启用时 pi 显式路由到 OpenAI 兼容端点（pi 缺省 provider=google，光靠 env 不会走网关）
+      // AE：网关启用时 pi 走 PaneFlow 注册的 paneflow-gw provider（pi 不读 OPENAI_BASE_URL，
+      // 且 openai 目录下的未知模型会绕到 api.openai.com 超时）；provider 由网关保存/启动时写入
       if (kind === 'pi' && gatewayActive(this.store.root)) {
         const gm = readGateway(this.store.root).freeModel;
-        startArgs = ['--provider', 'openai', ...(gm ? ['--model', gm] : []), ...startArgs];
+        startArgs = ['--provider', PI_GATEWAY_PROVIDER, ...(gm ? ['--model', gm] : []), ...startArgs];
       }
       if (kind === 'claude') {
         const bootstrapEnv = {
