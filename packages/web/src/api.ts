@@ -110,12 +110,24 @@ export const api = {
       warnings: string[];
     }>('POST', '/api/dry-run', { graph, cwd, ...(variables ? { variables } : {}) }),
   dispatch: (task: string, cwd: string, issueId?: string, preview = false) =>
-    json<{ runId: string }>('POST', '/api/dispatch', {
+    json<{ runId: string; issueId?: string; issueFetched?: boolean; note?: string }>('POST', '/api/dispatch', {
       task,
       cwd,
       ...(issueId ? { issueId } : {}),
       ...(preview ? { preview: true } : {}),
     }),
+  /** G1 Issue 读取器：正文+评论（repo 缺省用服务端配置的默认仓库） */
+  getIssue: (number: number, repo?: string) =>
+    json<{
+      number: number;
+      repo: string;
+      title: string;
+      body: string;
+      state: string;
+      url: string;
+      labels: string[];
+      comments: { author: string; body: string }[];
+    }>('GET', `/api/issues/${number}${repo ? `?repo=${encodeURIComponent(repo)}` : ''}`, undefined, { raw: true }),
   listSpaces: () =>
     json<{ spaces: { id: string; name: string; rootCwd?: string; description?: string }[] }>(
       'GET',

@@ -16,6 +16,37 @@ export interface DispatchOptions {
   preview?: boolean;
   /** E'：Planner 节点用的 agent 类型（空间档案 defaultAgentKind）；空值回落 DISPATCH_AGENT_KIND */
   plannerAgentKind?: string;
+  /** G1：已拉取的 Issue 真身（正文/评论），注入 Planner 上下文——贴链接零手抄 */
+  issueContext?: IssueView;
+}
+
+/** G1：Issue 读取器的出参形状（http 路由与下发注入共用） */
+export interface IssueView {
+  number: number;
+  repo: string;
+  title: string;
+  body: string;
+  state: string;
+  url: string;
+  labels: string[];
+  comments: { author: string; body: string }[];
+}
+
+/**
+ * G1：从自由文本识别 issue 引用——完整 GitHub URL（带 repo）或独立的 #123。
+ * 光秃秃的数字不算引用（「修复 308 个 bug」不是 issue 308）。
+ */
+export function parseIssueRef(text: string): { number: number; repo?: string } | null {
+  const url = text.match(/https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)/i);
+  if (url) return { repo: url[1]!, number: Number(url[2]) };
+  const hash = text.match(/(?:^|\s)#(\d{1,7})(?=$|\s)/);
+  if (hash) return { number: Number(hash[1]) };
+  return null;
+}
+
+/** 防模板引擎注入：issue 正文里的 {{ }} 会污染提示词渲染 */
+function debraces(s: string): string {
+  return s.replace(/\{\{|\}\}/g, '');
 }
 
 const MAX_TASK_LEN = 4000;
@@ -37,16 +68,29 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
     .map((t) => `- ${t.name}${t.description ? ` —— ${t.description}` : ''}`)
     .join('\n');
 
+  const issueBlock = opts.issueContext
+    ? [
+        '',
+        `关联 Issue #${opts.issueContext.number}（${opts.issueContext.repo}，${opts.issueContext.state}）——这是需求的真身，以它为准：`,
+        `标题：${debraces(opts.issueContext.title)}`,
+        `正文：\n${debraces(opts.issueContext.body).slice(0, 8000) || '（空）'}`,
+        ...(opts.issueContext.comments.length
+          ? [`讨论补充（评论 ${opts.issueContext.comments.length} 条）：`, ...opts.issueContext.comments.slice(-5).map((c) => `- ${c.author}：${debraces(c.body).slice(0, 1500)}`)]
+          : []),
+        '',
+      ].join('\n')
+    : '';
+
   const plannerPrompt = [
     '你是 PaneFlow 的任务下发规划员。用户任务描述：',
     `"""${task}"""`,
-    '',
+    issueBlock,
     '当前空间可用的交付模板（ID — 说明）：',
     tplList || '（无）',
     opts.rootCwd ? `空间主仓根：${opts.rootCwd}` : '',
     '',
     '请决策并把结论写入结果文件 .herdr/artifacts/planner.json 的 extra 字段：',
-    '1. extra.taskBrief：用一两句话向执行 Agent 清晰重述这个任务（必填）',
+    `1. extra.taskBrief：用一两句话向执行 Agent 清晰重述这个任务（必填；${opts.issueContext ? '必须包含 Issue 正文中的验收要点，执行 Agent 看不到 Issue 全文' : '禁止照抄原始描述'}）`,
     `2. extra.suggestedTemplate：若任务与某个模板高度匹配写其精确 ID；否则写 builtin-generic-issue-delivery（通用交付骨架，会把任务拆解为并行子任务执行）`,
     opts.issueId ? `3. extra.issue_id：${opts.issueId}` : '',
     '4. aligned：写 true（决策完成）',

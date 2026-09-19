@@ -11,6 +11,21 @@ import { templateLabel } from '../template-labels.js';
  *   ② 执行前先生成「编排预告」（Planner 选骨架 + 该骨架的步骤清单），确认才真正跑
  *   ③ 最近任务卡片，可展开看编排（进画布）
  */
+/** G1：与服务端 parseIssueRef 同规则——URL 带 repo，#123 走默认 repo；issueId 框里允许裸数字 */
+function detectIssueRef(text: string, allowBareNumber: boolean): { number: number; repo?: string } | null {
+  const t = text.trim();
+  const url = t.match(/https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)/i);
+  if (url) return { repo: url[1]!, number: Number(url[2]) };
+  const hash = t.match(/(?:^|\s)#(\d{1,7})(?=$|\s)/);
+  if (hash) return { number: Number(hash[1]) };
+  if (allowBareNumber && /^\d{1,7}$/.test(t)) return { number: Number(t) };
+  return null;
+}
+
+type IssuePreview =
+  | { key: string; loading: true }
+  | { key: string; loading: false; error?: string; data?: Awaited<ReturnType<typeof api.getIssue>> };
+
 export function TasksView() {
   const cwd = useStore((s) => s.cwd);
   const setCwd = useStore((s) => s.setCwd);
@@ -19,6 +34,7 @@ export function TasksView() {
 
   const [task, setTask] = useState('');
   const [issueId, setIssueId] = useState('');
+  const [preview, setPreview] = useState<IssuePreview | null>(null);
   const [confirmGate, setConfirmGate] = useState(
     () => localStorage.getItem('pf-dispatch-confirm') !== '0',
   );
@@ -32,6 +48,26 @@ export function TasksView() {
       .catch(() => undefined);
   }, []);
 
+  // G1：识别 Issue 引用（编号框优先，任务文本里的 URL/#N 兜底）并预览正文
+  const ref = detectIssueRef(issueId, true) ?? detectIssueRef(task, false);
+  const refKey = ref ? `${ref.repo ?? ''}:${ref.number}` : '';
+  useEffect(() => {
+    if (!ref) {
+      setPreview(null);
+      return;
+    }
+    const key = refKey;
+    setPreview({ key, loading: true });
+    let alive = true;
+    api
+      .getIssue(ref.number, ref.repo)
+      .then((d) => alive && setPreview({ key, loading: false, data: d }))
+      .catch((e: Error) => alive && setPreview({ key, loading: false, error: e.message }));
+    return () => {
+      alive = false;
+    };
+  }, [refKey]);
+
   const submit = async () => {
     if (!task.trim()) {
       log('error', '先用一句话描述要做的事');
@@ -43,12 +79,17 @@ export function TasksView() {
     }
     setBusy(true);
     try {
-      const r = await api.dispatch(task.trim(), cwd.trim(), issueId.trim() || undefined, confirmGate);
+      const r = await api.dispatch(task.trim(), cwd.trim(), ref ? String(ref.number) : undefined, confirmGate);
       log(
         'info',
-        confirmGate
-          ? `已下发 ${r.runId}：Planner 正在规划，完成后会在这里给你「编排预告」等你确认`
-          : `已下发 ${r.runId}：Planner 正在路由并直接执行`,
+        (r.issueFetched
+          ? `已注入 Issue #${r.issueId} 正文（零手抄）；`
+          : r.note
+            ? `${r.note}；`
+            : '') +
+          (confirmGate
+            ? `已下发 ${r.runId}：Planner 正在规划，完成后会在这里给你「编排预告」等你确认`
+            : `已下发 ${r.runId}：Planner 正在路由并直接执行`),
       );
       setTask('');
       setIssueId('');
@@ -91,10 +132,38 @@ export function TasksView() {
             <input
               value={issueId}
               onChange={(e) => setIssueId(e.target.value)}
-              placeholder="162"
+              placeholder="#162 或 GitHub 链接"
             />
           </div>
         </div>
+        {ref && (
+          <div className="issue-preview" aria-busy={preview?.loading}>
+            {preview?.loading ? (
+              <span>正在读取 Issue #{ref.number}…</span>
+            ) : preview && !preview.loading && preview.error ? (
+              <span className="issue-preview-warn">
+                ⚠ Issue #{ref.number} 读取失败：{preview.error}（下发仍会尝试，失败则只按任务描述执行）
+              </span>
+            ) : preview && !preview.loading && preview.data ? (
+              <>
+                <div className="issue-preview-head">
+                  <b>📌 #{preview.data.number} {preview.data.title}</b>
+                  <span className="issue-preview-meta">
+                    {preview.data.repo}・{preview.data.state}
+                    {preview.data.labels.length > 0 && `・${preview.data.labels.join(', ')}`}
+                  </span>
+                </div>
+                <div className="issue-preview-body">
+                  {preview.data.body.slice(0, 240)}
+                  {preview.data.body.length > 240 && '…'}
+                </div>
+                <div className="issue-preview-foot">
+                  评论 {preview.data.comments.length} 条・启动时正文注入 Planner，执行前零手抄
+                </div>
+              </>
+            ) : null}
+          </div>
+        )}
         <div className="tasks-actions">
           <label className="tasks-check" title="打开后：Planner 选完骨架会先停下来，把步骤计划给你确认">
             <input

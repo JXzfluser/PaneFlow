@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDispatchGraph, DISPATCH_AGENT_KIND } from './dispatch.js';
+import { buildDispatchGraph, DISPATCH_AGENT_KIND, parseIssueRef, type IssueView } from './dispatch.js';
 import { BUILTIN_TEMPLATES } from '../orchestrate/builtin-templates.js';
 import { applyVariables, validateDag } from '@paneflow/shared';
 
@@ -61,5 +61,64 @@ describe('buildDispatchGraph', () => {
       expect(declared.has(key), `兜底模板未声明参数 ${key}，会被静默丢弃`).toBe(true);
     }
     expect(declared.has('task')).toBe(true);
+  });
+});
+
+describe('v8-G1 parseIssueRef', () => {
+  it('识别完整 GitHub URL（带 repo）', () => {
+    const r = parseIssueRef('按 https://github.com/acme/app/issues/308 的要求优化台账汇总');
+    expect(r).toEqual({ repo: 'acme/app', number: 308 });
+  });
+
+  it('识别独立的 #123（走默认 repo）', () => {
+    expect(parseIssueRef('修复 #162 登录页布局')).toEqual({ number: 162 });
+    expect(parseIssueRef('#7')).toEqual({ number: 7 });
+  });
+
+  it('裸数字不算引用；词内的 #N 也不算', () => {
+    expect(parseIssueRef('修复 308 个 bug')).toBeNull();
+    expect(parseIssueRef('C#5 语法')).toBeNull();
+    expect(parseIssueRef('')).toBeNull();
+  });
+});
+
+describe('v8-G1 Issue 正文注入 Planner', () => {
+  const issue: IssueView = {
+    number: 308,
+    repo: 'acme/app',
+    state: 'open',
+    title: '台账汇总性能优化',
+    body: '需要逐条验证结果。\n验收：{{evil}} 每条断言有证据',
+    url: 'https://github.com/acme/app/issues/308',
+    labels: ['perf'],
+    comments: [
+      { author: 'alice', body: '先测 10 万行' },
+      { author: 'bob', body: '注意内存上限' },
+    ],
+  };
+  const templateList = [{ name: 't1', description: 'd' }];
+
+  it('plannerPrompt 含标题/正文/评论，且要求 taskBrief 覆盖验收要点', () => {
+    const g = buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, issueContext: issue, issueId: '308' });
+    const prompt = g.nodes.find((n) => n.id === 'planner')!.config.prompt!;
+    expect(prompt).toContain('关联 Issue #308（acme/app，open）');
+    expect(prompt).toContain('台账汇总性能优化');
+    expect(prompt).toContain('先测 10 万行');
+    expect(prompt).toContain('注意内存上限');
+    expect(prompt).toContain('必须包含 Issue 正文中的验收要点');
+  });
+
+  it('issue 正文里的 {{ }} 被剥掉（防模板注入）', () => {
+    const g = buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, issueContext: issue });
+    const prompt = g.nodes.find((n) => n.id === 'planner')!.config.prompt!;
+    expect(prompt).not.toContain('{{evil}}');
+    expect(prompt).toContain('evil');
+  });
+
+  it('无 issueContext 时保持原语式（禁止照抄原始描述）', () => {
+    const g = buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList });
+    const prompt = g.nodes.find((n) => n.id === 'planner')!.config.prompt!;
+    expect(prompt).toContain('禁止照抄原始描述');
+    expect(prompt).not.toContain('关联 Issue');
   });
 });

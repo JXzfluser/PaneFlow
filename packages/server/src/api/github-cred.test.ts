@@ -14,7 +14,7 @@ function tmp(): string {
 type FetchHandler = (url: string, method: string, body: unknown) => { status: number; json: unknown };
 
 /** 对齐 github-sync.test.ts 的 makeFetch 语义（handler 分派 + 脚本化 json/status），
- *  并用 notifier.test.ts 的 vi.stubGlobal 挂到全局，锁定 http.ts 内真实 fetch 调用面。 */
+ *  并用 vi.stubGlobal 挂到全局，锁定 http.ts 内真实 fetch 调用面。 */
 function stubFetch(handler: FetchHandler): { requests: { url: string; method: string; body: unknown }[] } {
   const requests: { url: string; method: string; body: unknown }[] = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: { method?: string; body?: string }) => {

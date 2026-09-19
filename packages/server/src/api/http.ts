@@ -36,7 +36,7 @@ interface UpdateIssueBody {
   body: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
-import { buildDispatchGraph } from './dispatch.js';
+import { buildDispatchGraph, parseIssueRef, type IssueView } from './dispatch.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
@@ -326,6 +326,59 @@ export async function buildHttpServer(deps: HttpDeps) {
     }
   });
 
+  // -- G1 Issue 读取器：真实需求载体的读侧（写侧见 create-issue/update-issue） ----
+
+  /** 拉取 issue 正文+评论（REST 直调，凭据走既有 GH_TOKEN→dataDir 回退链）；失败抛错由调用方降级 */
+  const fetchGithubIssue = async (number: number, repoOverride?: string): Promise<IssueView> => {
+    const gh = readGithubSettings(deps.dataDir);
+    if (!gh.token) throw new Error('未配置 GitHub 凭据（设置页 → GitHub 凭据）');
+    const repo = repoOverride?.trim() || gh.defaultRepo;
+    if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`repo 非法或缺少（收到：${repo ?? '空'}）`);
+    const headers = { Authorization: `Bearer ${gh.token}`, Accept: 'application/vnd.github+json' };
+    const res = await fetch(`https://api.github.com/repos/${repo}/issues/${number}`, { headers, signal: AbortSignal.timeout(15_000) });
+    const data = (await res.json()) as {
+      number?: number; title?: string; body?: string | null; state?: string; html_url?: string;
+      labels?: { name?: string }[]; message?: string;
+    };
+    if (!res.ok) throw new Error(data.message ?? `HTTP ${res.status}`);
+    let comments: { author: string; body: string }[] = [];
+    try {
+      const cres = await fetch(`https://api.github.com/repos/${repo}/issues/${number}/comments?per_page=30`, { headers, signal: AbortSignal.timeout(15_000) });
+      if (cres.ok) {
+        const clist = (await cres.json()) as { user?: { login?: string }; body?: string | null }[];
+        comments = clist.map((c) => ({ author: c.user?.login ?? '?', body: String(c.body ?? '') }));
+      }
+    } catch {
+      // 评论读取失败不阻断：正文已到手，评论是增强
+    }
+    return {
+      number: data.number ?? number,
+      repo,
+      title: data.title ?? '',
+      body: data.body ?? '',
+      state: data.state ?? 'open',
+      url: data.html_url ?? '',
+      labels: (data.labels ?? []).map((l) => String(l.name ?? '')).filter(Boolean),
+      comments,
+    };
+  };
+
+  app.get<{ Params: { number: string }; Querystring: { repo?: string } }>(
+    '/api/issues/:number',
+    async (req, reply) => {
+      const number = Number(req.params.number);
+      if (!Number.isInteger(number) || number <= 0) return reply.code(400).send({ error: 'issue 编号非法' });
+      try {
+        return await fetchGithubIssue(number, req.query.repo);
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (/not found/i.test(msg)) return reply.code(404).send({ error: msg });
+        if (/HTTP 4\d\d/.test(msg) || msg.includes('凭据') || msg.includes('repo')) return reply.code(400).send({ error: msg });
+        return reply.code(502).send({ error: msg });
+      }
+    },
+  );
+
   // -- outbound channels ----------------------------------------------------
 
   /** 出参脱敏：加签密钥不回传明文，'(已配置)' 作为"保留原值"的标记。 */
@@ -482,21 +535,41 @@ export async function buildHttpServer(deps: HttpDeps) {
       }
       const cwd = String(req.body.cwd ?? '').trim() || rootCwd;
       if (!cwd) return reply.code(400).send({ error: '缺少工作目录（空间未配置 rootCwd 且未指定）' });
+      // G1：任务文本里贴了 issue URL/#123 即自动识别编号与 repo
+      let issueId = typeof req.body.issueId === 'string' ? req.body.issueId.trim() : '';
+      let issueRepo: string | undefined;
+      if (!issueId) {
+        const ref = parseIssueRef(task);
+        if (ref) {
+          issueId = String(ref.number);
+          issueRepo = ref.repo;
+        }
+      }
+      let issueContext: IssueView | undefined;
+      let issueNote: string | undefined;
+      if (issueId && /^\d+$/.test(issueId)) {
+        try {
+          issueContext = await fetchGithubIssue(Number(issueId), issueRepo);
+        } catch (err) {
+          issueNote = `Issue #${issueId} 正文读取失败（${(err as Error).message}），本次仅按任务描述执行`;
+        }
+      }
       const templateList = store0
         .listGraphs()
         .filter((g) => g.name !== 'builtin-issue-triage')
         .map((g) => ({ name: g.name, description: g.metadata.description }));
       const graph = buildDispatchGraph({
         task,
-        issueId: req.body.issueId,
+        issueId: issueId || undefined,
         cwd,
         templateList,
         rootCwd,
         preview: req.body.preview === true,
         plannerAgentKind,
+        issueContext,
       });
-      const run = await deps.engine.startRun(graph, cwd, req.query.space, { task }, req.body.issueId);
-      return { runId: run.runId };
+      const run = await deps.engine.startRun(graph, cwd, req.query.space, { task }, issueId || undefined);
+      return { runId: run.runId, issueId: issueId || undefined, issueFetched: Boolean(issueContext), note: issueNote };
     },
   );
 

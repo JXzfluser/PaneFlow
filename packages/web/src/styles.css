@@ -728,6 +728,13 @@ button.tl-node:hover { border-color: var(--accent); color: var(--accent); }
 }
 .tasks-field input.needs-attn { border-color: var(--warn); }
 .tasks-actions { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
+/* G1: Issue 预览卡（贴链接/编号即读正文，零手抄） */
+.issue-preview { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border, #333); border-radius: 8px; background: var(--bg-2, rgba(255,255,255,0.03)); font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+.issue-preview-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.issue-preview-meta { color: var(--text-2, #999); font-size: 11px; }
+.issue-preview-body { white-space: pre-wrap; color: var(--text-1, #bbb); max-height: 120px; overflow: hidden; line-height: 1.5; }
+.issue-preview-foot { color: var(--text-2, #999); font-size: 11px; }
+.issue-preview-warn { color: var(--warn, #e0a03a); }
 .tasks-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
 .tasks-check input { width: auto; margin: 0; }
 .tasks-actions .primary { margin-left: auto; padding: 8px 20px; }
