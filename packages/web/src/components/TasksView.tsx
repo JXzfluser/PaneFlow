@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { deriveSteps, hasParallel, summarizeSteps } from '../steps.js';
 import { queuedReasonText } from '../queue-view.js';
+import { ADVANCED_FIELDS, ONBOARDING_STEPS } from '../onboarding.js';
 import { templateLabel } from '../template-labels.js';
 
 /**
@@ -44,6 +45,8 @@ export function TasksView() {
   const [confirmGate, setConfirmGate] = useState(
     () => localStorage.getItem('pf-dispatch-confirm') !== '0',
   );
+  // N4：高级字段默认折叠；缺必填时自动展开（不让错误指向看不见的框）
+  const [adv, setAdv] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // 打开任务视图先拉一次历史（不依赖 WS 是否已推送）
@@ -80,7 +83,8 @@ export function TasksView() {
       return;
     }
     if (!cwd.trim()) {
-      log('error', '请先填写工作目录（须已存在），或在「设 · 设置」里配置空间主仓根');
+      setAdv(true); // 展开再报错：让「在哪做」字段当场可见
+      log('error', '先告诉 PaneFlow 在哪干活：展开下方「高级选项」填工作目录，或在「设 · 设置」里配置空间主仓根');
       return;
     }
     setBusy(true);
@@ -145,10 +149,15 @@ export function TasksView() {
     <div className="tasks-view">
       <div className="tasks-hero">
         <h2>你要做什么？</h2>
-        <p className="tasks-sub">
-          用一句话描述任务。PaneFlow 会让 Planner 从你的骨架库里挑一条最合适的编排，
-          <b>先给你看步骤计划</b>，你确认后才真正跑。
-        </p>
+        {/* N4 三步路径：首屏只有这三步，其余全部收进「高级选项」 */}
+        <div className="tasks-steps">
+          {ONBOARDING_STEPS.map((s) => (
+            <div className="tasks-step" key={s.no}>
+              <b>{s.title}</b>
+              <span>{s.hint}</span>
+            </div>
+          ))}
+        </div>
         <textarea
           className="tasks-input"
           value={task}
@@ -162,7 +171,7 @@ export function TasksView() {
           <button disabled={draftBusy} onClick={() => void enhance(true)}>
             ✨✨ 深档（两稿择优，慢一倍）
           </button>
-          <span className="tasks-sub">写得不具体也没关系：AI 会按项目上下文补出背景/细节/可机检验收标准，你改完采纳即可</span>
+          <span className="tasks-sub">写得不具体也没关系：AI 会结合你的项目补出背景、细节和能逐条核对的验收标准，你改完采纳即可</span>
         </div>
         {draft && (
           <div className="enhance-draft">
@@ -195,27 +204,9 @@ export function TasksView() {
             </div>
           </div>
         )}
-        <div className="tasks-form-row">
-          <div className="tasks-field">
-            <label>
-              工作目录<span className="req-mark">*</span>
-            </label>
-            <input
-              className={cwd ? '' : 'needs-attn'}
-              value={cwd}
-              onChange={(e) => setCwd(e.target.value)}
-              placeholder="须已存在的本地目录"
-            />
-          </div>
-          <div className="tasks-field narrow">
-            <label>关联 Issue（可选）</label>
-            <input
-              value={issueId}
-              onChange={(e) => setIssueId(e.target.value)}
-              placeholder="#162 或 GitHub 链接"
-            />
-          </div>
-        </div>
+        {!adv && cwd.trim() && (
+          <p className="tasks-cwd-line">在哪做：<code>{cwd.trim()}</code>（高级选项里可改）</p>
+        )}
         {ref && (
           <div className="issue-preview" aria-busy={preview?.loading}>
             {preview?.loading ? (
@@ -238,27 +229,57 @@ export function TasksView() {
                   {preview.data.body.length > 240 && '…'}
                 </div>
                 <div className="issue-preview-foot">
-                  评论 {preview.data.comments.length} 条・启动时正文注入 Planner，执行前零手抄
+                  评论 {preview.data.comments.length} 条・Issue 正文会自动带给执行方，不用手抄
                 </div>
               </>
             ) : null}
           </div>
         )}
         <div className="tasks-actions">
-          <label className="tasks-check" title="打开后：Planner 选完骨架会先停下来，把步骤计划给你确认">
-            <input
-              type="checkbox"
-              checked={confirmGate}
-              onChange={(e) => {
-                setConfirmGate(e.target.checked);
-                localStorage.setItem('pf-dispatch-confirm', e.target.checked ? '1' : '0');
-              }}
-            />
-            执行前先确认编排
-          </label>
           <button className="primary" disabled={busy} onClick={() => void submit()}>
-            {busy ? '下发中…' : '🎯 下发任务'}
+            {busy ? '提交中…' : confirmGate ? '🎯 开始：先给我看计划再跑' : '🎯 开始执行'}
           </button>
+        </div>
+        <div className="tasks-advanced">
+          <button className="link" onClick={() => setAdv((v) => !v)}>
+            {adv ? '▾ 收起高级选项' : `▸ 高级选项（${ADVANCED_FIELDS.join(' / ')}）`}
+          </button>
+          {adv && (
+            <div className="tasks-adv-body">
+              <div className="tasks-form-row">
+                <div className="tasks-field">
+                  <label>
+                    工作目录<span className="req-mark">*</span>
+                  </label>
+                  <input
+                    className={cwd ? '' : 'needs-attn'}
+                    value={cwd}
+                    onChange={(e) => setCwd(e.target.value)}
+                    placeholder="须已存在的本地目录"
+                  />
+                </div>
+                <div className="tasks-field narrow">
+                  <label>关联 Issue（可选）</label>
+                  <input
+                    value={issueId}
+                    onChange={(e) => setIssueId(e.target.value)}
+                    placeholder="#162 或 GitHub 链接"
+                  />
+                </div>
+              </div>
+              <label className="tasks-check" title="打开后：规划完成后会先停下来，把步骤计划给你确认">
+                <input
+                  type="checkbox"
+                  checked={confirmGate}
+                  onChange={(e) => {
+                    setConfirmGate(e.target.checked);
+                    localStorage.setItem('pf-dispatch-confirm', e.target.checked ? '1' : '0');
+                  }}
+                />
+                执行前先确认编排（关掉=不预览直接跑，熟练后再关）
+              </label>
+            </div>
+          )}
         </div>
       </div>
 
