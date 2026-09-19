@@ -7,7 +7,7 @@ const ITEMS: { id: 'tasks' | 'orchestrate' | 'runs' | 'projects' | 'settings'; i
   { id: 'orchestrate', icon: '◇', label: '编排', title: '编排：步骤清单 / 图形画布' },
   { id: 'runs', icon: '▶', label: '运行', title: '运行中心：多流水线总览' },
   { id: 'projects', icon: '📁', label: '项目', title: '项目：总览 / 切换 / 新建（原底部下拉已升格为视图）' },
-  { id: 'settings', icon: '⚙', label: '设置', title: '设置（项目/角色/通知/环境）' },
+  { id: 'settings', icon: '⚙', label: '设置', title: '设置（角色/通道/网关/GitHub/环境）' },
 ];
 
 /** 56px fixed left navigation: 任务 / 编排 / 运行 / 项目 / 设置。

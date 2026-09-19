@@ -876,6 +876,11 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .project-fact.idle { border-style: dashed; }
 .project-card-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; }
 .project-card-foot .ghost { width: auto; margin: 0; padding: 4px 10px; font-size: 12px; }
+/* v10-W 就地展开的档案面板（复用 settings-card 全套表单样式） */
+.project-profile { margin-top: 16px; }
+.profile-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.profile-head h3 { margin: 0; }
+.profile-head .ghost { width: auto; margin: 0; padding: 3px 10px; font-size: 12px; }
 
 /* v9-N3 排队卡：等待原因可见 + 提队首/取消 */
 .task-queued { margin-top: 10px; border: 1px dashed var(--warn); border-radius: 10px; background: var(--chip-warn); padding: 10px 12px; }

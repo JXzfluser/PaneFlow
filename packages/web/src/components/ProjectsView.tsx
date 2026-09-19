@@ -2,17 +2,19 @@ import { useEffect, useState } from 'react';
 import { fetchJson } from '../api.js';
 import { useStore } from '../store.js';
 import { PromptModal, type ModalRequest } from './PromptModal.jsx';
+import { ProjectProfileEditor } from './ProjectProfileEditor.jsx';
 import { projectCardFacts, sortProjectsCurrentFirst, type ProjectLite } from '../project-cards.js';
 
-/** v10-V 项目视图：项目从侧栏底部下拉升格为一等视图——卡片墙总览，点卡即切换，
- *  「编辑档案」直达设置的项目档案（非当前项目会先切换再跳转，设置页响应式跟随）。 */
+/** v10-V/W 项目视图：项目是一等公民——卡片墙总览 + 就地展开的档案面板（主从布局）。
+ *  档案（主仓/约定/班底/钉档/Agent 选择）已从设置页迁入这里；「编辑档案」先把该项目
+ *  切为当前（试跑/下发等上下文跟当前项目走，D4），再展开面板。 */
 export function ProjectsView() {
   const log = useStore((s) => s.log);
   const space = useStore((s) => s.space);
   const switchSpace = useStore((s) => s.switchSpace);
-  const setView = useStore((s) => s.setView);
   const [list, setList] = useState<ProjectLite[]>([]);
   const [modal, setModal] = useState<ModalRequest | null>(null);
+  const [editing, setEditing] = useState(false);
 
   const load = () =>
     fetchJson<{ spaces: ProjectLite[] }>('GET', '/api/spaces')
@@ -49,12 +51,14 @@ export function ProjectsView() {
         await fetchJson<unknown>('POST', '/api/spaces', { id: sid, name: (name ?? '').trim() || sid });
         await load();
         switchSpace(sid);
+        setEditing(true);
       },
     });
 
-  const goProfile = (id: string) => {
+  const openProfile = (id: string) => {
     if (id !== space) switchSpace(id);
-    setView('settings');
+    setEditing(true);
+    requestAnimationFrame(() => document.getElementById('project-profile')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   };
 
   return (
@@ -63,7 +67,7 @@ export function ProjectsView() {
         <div>
           <h2>项目</h2>
           <p className="settings-hint">
-            模板、运行记录与档案按项目互相隔离；点卡片即切换当前项目，「编辑档案」直达设置页。
+            模板、运行记录与档案按项目互相隔离；点卡片即切换当前项目，「编辑档案」在下方就地展开档案面板。
           </p>
         </div>
         <button className="primary" onClick={newProject}>
@@ -122,7 +126,7 @@ export function ProjectsView() {
                   className="ghost"
                   onClick={(e) => {
                     e.stopPropagation();
-                    goProfile(p.id);
+                    openProfile(p.id);
                   }}
                 >
                   编辑档案
@@ -132,6 +136,10 @@ export function ProjectsView() {
           );
         })}
       </div>
+
+      {editing && (
+        <ProjectProfileEditor key={space} projectId={space} onClose={() => setEditing(false)} />
+      )}
 
       {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </div>
