@@ -226,12 +226,16 @@ export class Engine {
     issueId?: string,
     resumeOf?: string,
     /** M2：机检契约随单落册（input 模式）；generated 模式由引擎在产物提取时捕获 */
-    opts?: { contract?: RunContract },
+    opts?: { contract?: RunContract; parentRunId?: string },
   ): Promise<RunRecord> {
     // R3.4 同 issue 幂等锁：同空间同 issue 已有运行中/排队中的流水线时拒绝重复下发（G3 起含 queued，批量派发不重复入队）
+    // 首驾-2：排除本 run 的祖先链——派发父 run 带 issueId，其 pipeline 子 run 透传同 issue 是血缘不是重复下发，
+    // 旧实现父撞子自己 = 100% 自我死锁（route 节点必炸「Issue 6 已有运行中/排队中的流水线（run 39dd3f22）」）。
     if (issueId) {
+      const lineage = new Set<string>();
+      for (let p = opts?.parentRunId; p && !lineage.has(p); p = this.runs.get(p)?.parentRunId) lineage.add(p);
       const dup = [...this.runs.values()].find(
-        (r) => ['running', 'queued'].includes(r.state) && r.issueId === issueId && (r.spaceId ?? 'default') === (spaceId ?? 'default'),
+        (r) => ['running', 'queued'].includes(r.state) && r.issueId === issueId && (r.spaceId ?? 'default') === (spaceId ?? 'default') && !lineage.has(r.runId),
       );
       if (dup) {
         throw new Error(`Issue ${issueId} 已有运行中/排队中的流水线（run ${dup.runId}），如需重跑请先停止它`);
@@ -306,6 +310,7 @@ export class Engine {
       cwd,
       ...(spaceId ? { spaceId } : {}),
       ...(issueId ? { issueId } : {}),
+      ...(opts?.parentRunId ? { parentRunId: opts.parentRunId } : {}),
       nodes,
       startedAt: new Date().toISOString(),
       ...(variables && Object.keys(variables).length ? { variables: { ...variables } } : {}),
@@ -1600,7 +1605,7 @@ export class Engine {
     const issueId = params.issue_id ?? run.issueId;
 
     onChildStarted('');
-    const child = await this.startRun(target, params.cwd ?? run.cwd, spaceId, params, issueId);
+    const child = await this.startRun(target, params.cwd ?? run.cwd, spaceId, params, issueId, undefined, { parentRunId: run.runId });
     run.nodes[node.id]!.error = `子运行 ${child.runId}（模板 ${usedTemplate}）`;
     this.recordEvent(
       run,

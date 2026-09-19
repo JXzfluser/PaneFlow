@@ -1854,6 +1854,15 @@ describe('v8-G3 空间级轻队列', () => {
     await expect(engine.startRun(serialGraph(), cwd, undefined, undefined, '66')).rejects.toThrow(/已有运行中\/排队中/);
   });
 
+  it('首驾-2 血缘豁免：父 run 带 issue 时，其 pipeline 子 run（parentRunId 指回父）同 issue 放行；无血缘的重复下发仍拒', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-lineage-'));
+    const parent = await engine.startRun(gatedGraph('g77'), cwd, undefined, undefined, '77');
+    await waitFor(() => engine.getRun(parent.runId)!.nodes['impl']!.state === 'blocked');
+    const child = await engine.startRun(serialGraph(), cwd, undefined, undefined, '77', undefined, { parentRunId: parent.runId });
+    expect(child.parentRunId).toBe(parent.runId);
+    await expect(engine.startRun(serialGraph(), cwd, undefined, undefined, '77')).rejects.toThrow(/已有运行中\/排队中/);
+  });
+
   // N3 排队可见即可动：queueStatus 给占用者与位次；promoteRun 提到队首（满额不点火，空额即启）
   it('queueStatus：running 占用者与 queued 位次可见；promoteRun 换序、非排队单返回 false', async () => {
     setCap(1);
