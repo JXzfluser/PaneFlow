@@ -16,11 +16,14 @@ export type {
   NodeCost,
   NodeRunRecord,
   TemplateVariable,
+  CheckSpec,
 } from './dag.js';
 export {
   validateDag,
   validateAcceptance,
   failedAssertionsOf,
+  contractOf,
+  type ContractDoc,
   topoSort,
   upstreamOf,
   renderPromptTemplate,

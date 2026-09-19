@@ -15,7 +15,7 @@ import type {
   RunCost,
   NodeCost,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf } from '@paneflow/shared';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
@@ -960,7 +960,10 @@ export class Engine {
       if (gateFail) return gateFail;
 
       // checks gate: all configured checks must pass for the node to be done
-      const checkFail = await this.runChecks(run, rec, nodeId, nodeCwdOf(run, cfg));
+      const checkFail = await this.runChecks(
+        run, rec, nodeId, nodeCwdOf(run, cfg),
+        { agentName, timeoutMs, artifactRel, blackboard },
+      );
       if (checkFail) return checkFail;
 
       this.persistAndNotify(run);
@@ -978,11 +981,17 @@ export class Engine {
     rec: NodeRunRecord,
     nodeId: string,
     nodeCwd: string,
+    gate: { agentName: string; timeoutMs: number; artifactRel: string; blackboard: Map<string, Artifact> },
   ): Promise<string | null> {
     const node = run.graph.nodes.find((n) => n.id === nodeId)!;
     const checks = node.config.checks ?? [];
     for (const c of checks) {
       if (this.cancels.has(run.runId)) return '已取消';
+      if (c.type === 'contract') {
+        const err = await this.contractGate(run, rec, nodeId, gate);
+        if (err) return err;
+        continue;
+      }
       if (c.type === 'file-exists') {
         const p = path.resolve(nodeCwd, c.path);
         if (!fs.existsSync(p)) return `检查未通过：文件不存在 ${c.path}`;
@@ -1056,6 +1065,67 @@ export class Engine {
       if (action.action === 'reject') return `验收断言未通过：${failed.map((f) => f.id).join('、')}`;
       if (action.action === 'approve') {
         this.recordEvent(run, 'approval', nodeId, `人工追认放行：${failed.map((f) => f.id).join('、')}`);
+        rec.state = 'done';
+        this.persistAndNotify(run);
+        return null;
+      }
+      if (action.action === 'input' && action.text) {
+        const st = await this.promptAndSettle(run, rec, agentName, action.text, timeoutMs);
+        rec.agentStatus = st;
+        const tail = await this.ops.readOutput(agentName, 80).catch(() => '');
+        rec.artifact = await this.extractArtifact(nodeId, artifactRel, run, tail);
+        rec.unverified = rec.artifact.source === 'output-fallback';
+        blackboard.set(nodeId, rec.artifact);
+        this.persistAndNotify(run);
+      }
+    }
+  }
+
+  /**
+   * M1 契约接单门：check type 'contract' 的门体——产物 extra.contract（候选断言+澄清提问）
+   * 必须人工批准才放下游。三档处置齐：拦（reject=契约未确认，节点失败）、
+   * 警（时间线事件）、谈（input 追加一轮、重取产物后复核）。与执行审批语义分开：
+   * 这里确认的是「这单按什么约定干」，不是「干得怎么样」。
+   */
+  private async contractGate(
+    run: RunRecord,
+    rec: NodeRunRecord,
+    nodeId: string,
+    gate: { agentName: string; timeoutMs: number; artifactRel: string; blackboard: Map<string, Artifact> },
+  ): Promise<string | null> {
+    const { agentName, timeoutMs, artifactRel, blackboard } = gate;
+    for (;;) {
+      if (this.cancels.has(run.runId)) return '已取消';
+      const doc = contractOf(rec.artifact?.extra);
+      if (!doc) return '契约门未过：产物未写 extra.contract（assertions+questions），无从立约';
+      rec.state = 'blocked';
+      rec.blockedPrompt = [
+        `契约接单门：候选验收断言 ${doc.assertions.length} 条、澄清提问 ${doc.questions.length} 条——契约确认前下游不派`,
+        ...doc.assertions.map((a) => `- ${a.id}: ${a.assertion.slice(0, 200)}`),
+        ...doc.questions.map((q, i) => `❓${i + 1}. ${q.slice(0, 200)}`),
+        '',
+        '放行=按此契约执行；补充输入=谈（把答案/修改发给规划 Agent 重出契约）；拒绝=终止本单',
+      ].join('\n');
+      this.recordEvent(
+        run,
+        'approval',
+        nodeId,
+        `契约门拦截：断言 ${doc.assertions.length} 条 / 提问 ${doc.questions.length} 条`,
+      );
+      this.persistAndNotify(run);
+      const action = await new Promise<ApprovalAction>((resolve) => {
+        this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
+      });
+      rec.blockedPrompt = undefined;
+      if (this.cancels.has(run.runId)) return '已取消';
+      if (action.action === 'reject') return '契约未确认：拒绝即终止本单（下游不派）';
+      if (action.action === 'approve') {
+        this.recordEvent(
+          run,
+          'approval',
+          nodeId,
+          `契约确认放行：${doc.assertions.map((a) => a.id).join('、') || '（无断言，人工认可空契约）'}`,
+        );
         rec.state = 'done';
         this.persistAndNotify(run);
         return null;

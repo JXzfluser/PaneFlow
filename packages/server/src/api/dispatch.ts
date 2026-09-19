@@ -1,4 +1,4 @@
-import type { DagGraph } from '@paneflow/shared';
+import type { CheckSpec, DagGraph } from '@paneflow/shared';
 
 export interface DispatchOptions {
   task: string;
@@ -18,6 +18,8 @@ export interface DispatchOptions {
   plannerAgentKind?: string;
   /** G1：已拉取的 Issue 真身（正文/评论），注入 Planner 上下文——贴链接零手抄 */
   issueContext?: IssueView;
+  /** M1：服务端机检出的「验收标准」条目（非空=契约已在手，不设接单门） */
+  contractAssertions?: string[];
 }
 
 /** G1：Issue 读取器的出参形状（http 路由与下发注入共用） */
@@ -47,6 +49,28 @@ export function parseIssueRef(text: string): { number: number; repo?: string } |
 /** 防模板引擎注入：issue 正文里的 {{ }} 会污染提示词渲染 */
 function debraces(s: string): string {
   return s.replace(/\{\{|\}\}/g, '');
+}
+
+/**
+ * M1·DoR 机检：从自由文本（任务描述/Issue 正文）提取「验收标准」小节的条目。
+ * 锚点与 M4 回写的 ISSUE_TEMPLATE 同源；条目 = 小节内的列表/编号行，遇到
+ * 下一小节标题或段落正文即止。返回剥掉 {{ }} 的断言文本数组（可为空）。
+ */
+export function extractAcceptance(text: string): string[] {
+  const m = text.match(/^#{1,6}[ \t]*(验收标准|验收条件|Acceptance Criteria)[ \t]*$/im);
+  if (!m || m.index === undefined) return [];
+  const out: string[] = [];
+  for (const line of text.slice(m.index + m[0].length).split('\n')) {
+    if (/^#{1,6}\s/.test(line)) break;
+    const item = line.match(/^\s*(?:[-*]|\d+[.、)])\s+(.+?)\s*$/);
+    if (item) {
+      out.push(debraces(item[1]!));
+      continue;
+    }
+    // 列表已开始后遇到非列表非空行 = 小节结束了（下一段正文）
+    if (out.length && line.trim() !== '') break;
+  }
+  return out.filter((s) => s !== '');
 }
 
 const MAX_TASK_LEN = 4000;
@@ -81,10 +105,36 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
       ].join('\n')
     : '';
 
+  // M1 接单门：机检有「验收标准」→ 直接当契约注入（不设门）；无 → Planner 先立约 + 契约确认门
+  const inputContract = (opts.contractAssertions ?? []).map((s) => s.trim()).filter(Boolean);
+  const hasInputContract = inputContract.length > 0;
+  const contractBlock = hasInputContract
+    ? [
+        '',
+        `输入已含可机检的验收标准 ${inputContract.length} 条——这就是本单契约，执行方将逐条核对：`,
+        ...inputContract.map((a, i) => `- AC-${i + 1}: ${a}`),
+        'extra.contract.assertions 原样透传以上条目（id 用 AC-N，assertion 用原文，verify_method 写你建议的核对方式）；extra.contract.questions 无疑问可留空。',
+      ].join('\n')
+    : [
+        '',
+        '输入未见可机检的「验收标准」小节——按 DoR 先立约再派工：',
+        'extra.contract = { assertions: [{id:"AC-1", assertion:"一句可判真假的验收断言", verify_method:"如何核对"}, …（至少 2 条）], questions: ["必须向需求方澄清的问题", …] }。',
+        '运行会停在契约接单门等你方与人工对齐：断言要具体到能被机器或人工逐条核验，提问直击模糊点。',
+      ].join('\n');
+  const checks: CheckSpec[] = [];
+  if (!hasInputContract) checks.push({ type: 'contract' });
+  if (opts.preview) {
+    checks.push({
+      type: 'manual',
+      prompt: '编排预告：确认步骤计划后放行执行；拒绝则终止本次下发。',
+    });
+  }
+
   const plannerPrompt = [
     '你是 PaneFlow 的任务下发规划员。用户任务描述：',
     `"""${task}"""`,
     issueBlock,
+    contractBlock,
     '当前空间可用的交付模板（ID — 说明）：',
     tplList || '（无）',
     opts.rootCwd ? `空间主仓根：${opts.rootCwd}` : '',
@@ -113,16 +163,7 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
           clarify: { maxRounds: 2 },
           retryCount: 1,
           onFail: opts.preview ? 'abort' : 'continue', // 非预告模式：planner 失败时 route 的兜底模板仍会执行
-          ...(opts.preview
-            ? {
-                checks: [
-                  {
-                    type: 'manual' as const,
-                    prompt: '编排预告：确认步骤计划后放行执行；拒绝则终止本次下发。',
-                  },
-                ],
-              }
-            : {}),
+          ...(checks.length ? { checks } : {}),
         },
       },
       {

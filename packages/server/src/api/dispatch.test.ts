@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDispatchGraph, DISPATCH_AGENT_KIND, parseIssueRef, type IssueView } from './dispatch.js';
+import { buildDispatchGraph, DISPATCH_AGENT_KIND, extractAcceptance, parseIssueRef, type IssueView } from './dispatch.js';
 import { BUILTIN_TEMPLATES } from '../orchestrate/builtin-templates.js';
 import { applyVariables, validateDag } from '@paneflow/shared';
 
@@ -120,5 +120,68 @@ describe('v8-G1 Issue 正文注入 Planner', () => {
     const prompt = g.nodes.find((n) => n.id === 'planner')!.config.prompt!;
     expect(prompt).toContain('禁止照抄原始描述');
     expect(prompt).not.toContain('关联 Issue');
+  });
+});
+
+describe('v8-M1 extractAcceptance（DoR 机检）', () => {
+  it('提取「## 验收标准」小节内的列表与编号条目，止于下一标题', () => {
+    const text = [
+      '做个报表。',
+      '## 验收标准',
+      '- 10 万行 3 秒内出结果',
+      '* 导出 CSV 可被 Excel 打开',
+      '1. 内存峰值不超过 512MB',
+      '',
+      '## 背景',
+      '- 这条不算',
+    ].join('\n');
+    expect(extractAcceptance(text)).toEqual([
+      '10 万行 3 秒内出结果',
+      '导出 CSV 可被 Excel 打开',
+      '内存峰值不超过 512MB',
+    ]);
+  });
+
+  it('英文锚点 Acceptance Criteria 亦可；小节内混入正文段落即截断', () => {
+    const text = 'x\n### Acceptance Criteria\n- ok1\n说明性文字\n- ok2\n';
+    expect(extractAcceptance(text)).toEqual(['ok1']);
+  });
+
+  it('无锚点小节 / 锚点后无条目 → 空（触发立约门）', () => {
+    expect(extractAcceptance('修复登录页布局')).toEqual([]);
+    expect(extractAcceptance('## 验收标准\n（待定）')).toEqual([]);
+  });
+
+  it('条目里的 {{ }} 被剥掉（防注入）', () => {
+    expect(extractAcceptance('## 验收标准\n- {{evil}} 生效')).toEqual(['evil 生效']);
+  });
+});
+
+describe('v8-M1 契约门装配（buildDispatchGraph）', () => {
+  const templateList = [{ name: 't1' }];
+  const planner = (opts: Partial<import('./dispatch.js').DispatchOptions>) =>
+    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...opts }).nodes.find((n) => n.id === 'planner')!;
+
+  it('有机检契约 → prompt 逐条列 AC 且【不】设 contract 门', () => {
+    const p = planner({ contractAssertions: ['3 秒内出结果', '导出不崩'] });
+    expect(p.config.prompt).toContain('这就是本单契约');
+    expect(p.config.prompt).toContain('- AC-2: 导出不崩');
+    expect((p.config.checks ?? []).some((c) => c.type === 'contract')).toBe(false);
+  });
+
+  it('无契约 → 设 contract 门且 prompt 要求先立约', () => {
+    const p = planner({ contractAssertions: [] });
+    expect(p.config.prompt).toContain('先立约再派工');
+    expect(p.config.checks).toEqual([{ type: 'contract' }]);
+  });
+
+  it('contract 门排在编排预告 manual 门之前', () => {
+    const p = planner({ preview: true });
+    expect((p.config.checks ?? []).map((c) => c.type)).toEqual(['contract', 'manual']);
+  });
+
+  it('有输入契约 + preview → 只剩 preview 的 manual 门', () => {
+    const p = planner({ preview: true, contractAssertions: ['一条'] });
+    expect((p.config.checks ?? []).map((c) => c.type)).toEqual(['manual']);
   });
 });

@@ -1146,6 +1146,92 @@ describe('v8-F1 验收机器门（assertionGate）', () => {
   });
 });
 
+describe('v8-M1 契约接单门（contractGate）', () => {
+  const writeImpl = (cwd: string, obj: unknown) => {
+    fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.herdr/artifacts/impl.json'), JSON.stringify(obj));
+  };
+  const contractArt = (assertion: string, question: string) => ({
+    summary: '规划完毕',
+    extra: {
+      contract: {
+        assertions: [{ id: 'AC-1', assertion, verify_method: '人工核对' }],
+        questions: [question],
+      },
+    },
+  });
+  const gateGraph = () => {
+    const g = serialGraph();
+    g.nodes[1]!.config.checks = [{ type: 'contract' }];
+    return g;
+  };
+
+  it('无 extra.contract → 契约门未过，节点失败（无从立约不放行）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = gateGraph();
+    ops.onPrompt = () => writeImpl(cwd, { summary: '只写了个寂寞' });
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['impl']!.error).toContain('契约门未过');
+  });
+
+  it('拦：blocked 列出候选断言与提问清单；reject → 终止本单下游不派', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = gateGraph();
+    ops.onPrompt = () => writeImpl(cwd, contractArt('导出函数可被调用', '目标分支是哪个？'));
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    const prompt = engine.getRun(run.runId)!.nodes['impl']!.blockedPrompt!;
+    expect(prompt).toContain('契约接单门');
+    expect(prompt).toContain('AC-1: 导出函数可被调用');
+    expect(prompt).toContain('目标分支是哪个？');
+    await engine.approve(run.runId, 'impl', { action: 'reject' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('failed');
+    expect(final.nodes['impl']!.error).toContain('契约未确认');
+  });
+
+  it('放行：approve → 契约确认事件 + run 完成', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = gateGraph();
+    ops.onPrompt = () => writeImpl(cwd, contractArt('页面在移动端不破版', ''));
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    expect((final.events ?? []).some((e) => e.text.includes('契约门拦截'))).toBe(true);
+    expect((final.events ?? []).some((e) => e.text.includes('契约确认放行：AC-1'))).toBe(true);
+  });
+
+  it('谈：input 把答案发给 agent → 重出契约再复核一轮才放行', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = gateGraph();
+    let turn = 0;
+    ops.onPrompt = () => {
+      turn += 1;
+      writeImpl(
+        cwd,
+        turn === 1
+          ? contractArt('第一版候选断言', '预算上限是多少？')
+          : contractArt('修订后断言：10 万行 3 秒内', '（已由人工答复）'),
+      );
+    };
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'input', text: '预算按 3 秒内出结果执行' });
+    await waitFor(() => engine.isBlocked(run.runId, 'impl')); // 第二版契约仍要过门
+    const prompt = engine.getRun(run.runId)!.nodes['impl']!.blockedPrompt!;
+    expect(prompt).toContain('修订后断言');
+    expect(ops.prompts.length).toBe(2);
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(engine.getRun(run.runId)!.state).toBe('completed');
+  });
+});
+
 describe('v8-F2 审批等待重启可活（paused）', () => {
   it('boot：磁盘 running 记录里 blocked 节点转 paused 且审批上下文保留', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-boot-'));

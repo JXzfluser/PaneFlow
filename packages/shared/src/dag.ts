@@ -82,7 +82,9 @@ export type CheckSpec =
   | { type: 'file-exists'; path: string }
   | { type: 'command'; run: string; timeoutMs?: number }
   | { type: 'regex'; file: string; pattern: string }
-  | { type: 'manual'; prompt: string };
+  | { type: 'manual'; prompt: string }
+  /** M1 契约接单门：产物 extra.contract（候选断言+澄清提问）必须人工批准才放下游 */
+  | { type: 'contract' };
 
 export interface DagNode {
   id: string;
@@ -198,6 +200,39 @@ export function failedAssertionsOf(extra: Record<string, unknown> | undefined): 
     }
   }
   return out;
+}
+
+/**
+ * M1 契约对象：候选验收断言 + 澄清提问。规划/align 节点写入 extra.contract，
+ * 契约接单门（check type 'contract'）消费——契约未确认，下游一律不派。
+ */
+export interface ContractDoc {
+  assertions: AcceptanceAssertion[];
+  questions: string[];
+}
+
+/** 从产物 extra 读契约；无 contract 对象返回 null（写了但条目非法则逐条宽松过滤）。 */
+export function contractOf(extra: Record<string, unknown> | undefined): ContractDoc | null {
+  const raw = extra?.contract;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const c = raw as { assertions?: unknown; questions?: unknown };
+  const assertions: AcceptanceAssertion[] = [];
+  if (Array.isArray(c.assertions)) {
+    for (const item of c.assertions) {
+      if (!item || typeof item !== 'object') continue;
+      const a = item as Partial<AcceptanceAssertion>;
+      if (typeof a.id !== 'string' || typeof a.assertion !== 'string') continue;
+      assertions.push({
+        id: a.id,
+        assertion: a.assertion,
+        verify_method: typeof a.verify_method === 'string' ? a.verify_method : '',
+      });
+    }
+  }
+  const questions = Array.isArray(c.questions)
+    ? c.questions.filter((q): q is string => typeof q === 'string' && q.trim() !== '')
+    : [];
+  return { assertions, questions };
 }
 
 /**

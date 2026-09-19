@@ -36,7 +36,7 @@ interface UpdateIssueBody {
   body: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
-import { buildDispatchGraph, parseIssueRef, type IssueView } from './dispatch.js';
+import { buildDispatchGraph, extractAcceptance, parseIssueRef, type IssueView } from './dispatch.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
@@ -558,6 +558,11 @@ export async function buildHttpServer(deps: HttpDeps) {
         .listGraphs()
         .filter((g) => g.name !== 'builtin-issue-triage')
         .map((g) => ({ name: g.name, description: g.metadata.description }));
+      // M1 接单门：先机检 DoR——任务/Issue 正文里有「验收标准」小节就直接当契约用，
+      // 没有则由 Planner 立约 + 引擎契约门拦住（契约未确认下游不派）。
+      const contractAssertions = extractAcceptance(
+        issueContext ? `${task}\n\n${issueContext.body}` : task,
+      );
       const graph = buildDispatchGraph({
         task,
         issueId: issueId || undefined,
@@ -567,9 +572,18 @@ export async function buildHttpServer(deps: HttpDeps) {
         preview: req.body.preview === true,
         plannerAgentKind,
         issueContext,
+        contractAssertions,
       });
       const run = await deps.engine.startRun(graph, cwd, req.query.space, { task }, issueId || undefined);
-      return { runId: run.runId, issueId: issueId || undefined, issueFetched: Boolean(issueContext), note: issueNote };
+      return {
+        runId: run.runId,
+        issueId: issueId || undefined,
+        issueFetched: Boolean(issueContext),
+        note: issueNote,
+        contract: contractAssertions.length
+          ? { mode: 'extracted' as const, assertions: contractAssertions.length }
+          : { mode: 'gate' as const },
+      };
     },
   );
 

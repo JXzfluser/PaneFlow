@@ -110,7 +110,14 @@ export const api = {
       warnings: string[];
     }>('POST', '/api/dry-run', { graph, cwd, ...(variables ? { variables } : {}) }),
   dispatch: (task: string, cwd: string, issueId?: string, preview = false) =>
-    json<{ runId: string; issueId?: string; issueFetched?: boolean; note?: string }>('POST', '/api/dispatch', {
+    json<{
+      runId: string;
+      issueId?: string;
+      issueFetched?: boolean;
+      note?: string;
+      /** M1 接单门：extracted=输入自带验收标准；gate=无契约，run 会停在契约确认门 */
+      contract?: { mode: 'extracted' | 'gate'; assertions?: number };
+    }>('POST', '/api/dispatch', {
       task,
       cwd,
       ...(issueId ? { issueId } : {}),
