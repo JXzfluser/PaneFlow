@@ -76,6 +76,10 @@ export class Engine {
   private readonly repoClaims = new Map<string, { runId: string; nodeId: string; key: string }>();
   /** R3.5 本引擎创建的 worktree（run 结束时尽力回收） */
   private readonly liveWorktrees: { runId: string; repo: string; path: string; branch: string }[] = [];
+  /** G3 空间级轻队列：spaceKey → 待启 runId 的 FIFO */
+  private readonly runQueues = new Map<string, string[]>();
+  /** G3 排队 run 随身携带的启动参数（order/续跑黑板），出队即用；重启后从 graph 重算 */
+  private readonly pendingLaunches = new Map<string, { order: string[]; preload?: Map<string, Artifact> }>();
 
   constructor(
     private readonly ops: HerdrOps,
@@ -119,6 +123,13 @@ export class Engine {
         this.runs.set(run.runId, run);
       }
     }
+    // G3：排队态跨重启复原——盘上 queued 的 run 按入队顺序重新排，随后放行使额度内自动开跑
+    for (const r of [...this.runs.values()]
+      .filter((r) => r.state === 'queued')
+      .sort((a, b) => a.startedAt.localeCompare(b.startedAt))) {
+      this.enqueue(r.spaceId ?? 'default', r.runId);
+    }
+    for (const key of [...this.runQueues.keys()]) this.pumpQueue(key);
     // F3：轮询校对通电（PF_RECONCILE_MS<=0 时内部守卫视为关闭）
     this.startReconciler();
   }
@@ -205,13 +216,13 @@ export class Engine {
     /** M2：机检契约随单落册（input 模式）；generated 模式由引擎在产物提取时捕获 */
     opts?: { contract?: RunContract },
   ): Promise<RunRecord> {
-    // R3.4 同 issue 幂等锁：同空间同 issue 已有运行中流水线时拒绝重复下发
+    // R3.4 同 issue 幂等锁：同空间同 issue 已有运行中/排队中的流水线时拒绝重复下发（G3 起含 queued，批量派发不重复入队）
     if (issueId) {
       const dup = [...this.runs.values()].find(
-        (r) => r.state === 'running' && r.issueId === issueId && (r.spaceId ?? 'default') === (spaceId ?? 'default'),
+        (r) => ['running', 'queued'].includes(r.state) && r.issueId === issueId && (r.spaceId ?? 'default') === (spaceId ?? 'default'),
       );
       if (dup) {
-        throw new Error(`Issue ${issueId} 已有运行中的流水线（run ${dup.runId}），如需重跑请先停止它`);
+        throw new Error(`Issue ${issueId} 已有运行中/排队中的流水线（run ${dup.runId}），如需重跑请先停止它`);
       }
     }
     // R3.3 启动前脏检查：git 仓库有未提交改动时拒绝（不覆盖用户工作区）
@@ -311,18 +322,105 @@ export class Engine {
 
     // Fire and forget — the HTTP layer returns the runId immediately and the
     // canvas follows state over WebSocket.
-    void this.execute(run, order, blackboardPreload).catch((err) => {
+    // G3 空间级轻队列：并发达上限即排队待启（profile.maxConcurrentRuns 可配，
+    // 默认=营地上限），额度腾出自动出队——批量派发不再冲垮营地
+    this.pendingLaunches.set(runId, { order, preload: blackboardPreload });
+    const spaceKey = spaceId ?? 'default';
+    if (this.activeRunCount(spaceKey, runId) >= this.runCapFor(spaceKey)) {
+      run.state = 'queued';
+      this.enqueue(spaceKey, runId);
+      this.recordEvent(
+        run,
+        'run',
+        undefined,
+        `排队中：空间并发 run 上限 ${this.runCapFor(spaceKey)} 已占满，位次 ${this.runQueues.get(spaceKey)!.length}，出队即启`,
+      );
+      this.persistAndNotify(run);
+    } else {
+      this.launch(run);
+    }
+    return run;
+  }
+
+  /** G3：真正点火一个 run（startRun 直通与出队放行共用此入口） */
+  private launch(run: RunRecord): void {
+    const pending = this.pendingLaunches.get(run.runId);
+    this.pendingLaunches.delete(run.runId);
+    const order =
+      pending?.order ?? topoSort(run.graph.nodes.map((n) => n.id), run.graph.edges) ?? run.graph.nodes.map((n) => n.id);
+    void this.execute(run, order, pending?.preload).catch((err) => {
       run.state = 'failed';
       run.finishedAt = new Date().toISOString();
       this.persistAndNotify(run);
-      console.error(`[engine] run ${runId} crashed:`, err);
+      this.pumpQueue(run.spaceId ?? 'default'); // 点火即炸也要放行队列，不留僵尸额度
+      console.error(`[engine] run ${run.runId} crashed:`, err);
     });
-    return run;
+  }
+
+  private activeRunCount(spaceKey: string, excludeRunId?: string): number {
+    return [...this.runs.values()].filter(
+      (r) => r.state === 'running' && r.runId !== excludeRunId && (r.spaceId ?? 'default') === spaceKey,
+    ).length;
+  }
+
+  /** G3 并发 run 上限：空间档案 maxConcurrentRuns 优先，缺省回落营地上限（maxConcurrentPanes） */
+  private runCapFor(spaceKey: string): number {
+    try {
+      const n = new Store(this.store.root, spaceKey).readProfile().maxConcurrentRuns;
+      if (typeof n === 'number' && Number.isFinite(n) && n >= 1) return Math.floor(n);
+    } catch {
+      // profile unreadable → default cap
+    }
+    return Math.max(1, this.opts.maxConcurrentPanes ?? 8);
+  }
+
+  private enqueue(spaceKey: string, runId: string): void {
+    const q = this.runQueues.get(spaceKey);
+    if (q) q.push(runId);
+    else this.runQueues.set(spaceKey, [runId]);
+  }
+
+  /** G3：额度有空位就放行一个排队 run（每次最多放行 1 个，FIFO） */
+  private pumpQueue(spaceKey: string): void {
+    const q = this.runQueues.get(spaceKey);
+    if (!q?.length) return;
+    if (this.activeRunCount(spaceKey) >= this.runCapFor(spaceKey)) return;
+    let nextId: string | undefined;
+    while (q.length) {
+      const id = q.shift()!;
+      const r = this.runs.get(id);
+      if (r && r.state === 'queued') {
+        nextId = id;
+        break;
+      }
+      this.pendingLaunches.delete(id); // 已取消/失踪的排队项：清掉随行参数
+    }
+    if (!nextId) return;
+    const run = this.runs.get(nextId)!;
+    run.state = 'running';
+    this.recordEvent(run, 'run', undefined, '出队启动：并发额度腾出，排队放行');
+    this.persistAndNotify(run);
+    this.launch(run);
   }
 
   stopRun(runId: string): boolean {
     const run = this.runs.get(runId);
-    if (!run || run.state !== 'running') return false;
+    if (!run) return false;
+    // G3：排队中未开跑的 run 直接撤回（无 pane 可断，取消即终态）
+    if (run.state === 'queued') {
+      const q = this.runQueues.get(run.spaceId ?? 'default');
+      if (q) {
+        const i = q.indexOf(runId);
+        if (i >= 0) q.splice(i, 1);
+      }
+      this.pendingLaunches.delete(runId);
+      run.state = 'cancelled';
+      run.finishedAt = new Date().toISOString();
+      this.recordEvent(run, 'run', undefined, '取消排队：尚未开跑即撤回');
+      this.persistAndNotify(run);
+      return true;
+    }
+    if (run.state !== 'running') return false;
     this.cancels.add(runId);
     this.recordEvent(run, 'run', undefined, '收到停止指令：中断运行中的 Agent 并回收');
     this.persistAndNotify(run);
@@ -447,6 +545,7 @@ export class Engine {
       this.cancels.delete(run.runId);
       run.cost = this.computeRunCost(run); // R6a：先记账再广播（持久化含 cost）
       this.persistAndNotify(run);
+      this.pumpQueue(run.spaceId ?? 'default'); // G3：终态腾出额度，队列放行
     }
   }
 

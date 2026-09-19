@@ -20,6 +20,8 @@ export interface SpaceProfile {
   repos?: string[];
   /** 智能下发 Planner 用的 agent 类型（E'：取代写死 claude；非法/缺省时回落默认值） */
   defaultAgentKind?: string;
+  /** G3 空间级并发 run 上限（超出的 startRun 排队）；缺省=营地上限（maxConcurrentPanes） */
+  maxConcurrentRuns?: number;
 }
 
 export const DEFAULT_SPACE = 'default';

@@ -189,7 +189,92 @@ export function TasksView() {
         </div>
       </div>
 
+      <BatchDispatch />
+
       <RecentTasks onOpenRuns={() => setView('runs')} />
+    </div>
+  );
+}
+
+/** G3 批量派发：一个模板 × 一列 issue 编号 → N 个 run（并发满了自动排队，去「运」页看位次） */
+function BatchDispatch() {
+  const cwd = useStore((s) => s.cwd);
+  const log = useStore((s) => s.log);
+  const templates = useStore((s) => s.templateList);
+  const [open, setOpen] = useState(false);
+  const [tpl, setTpl] = useState('builtin-generic-issue-delivery');
+  const [issues, setIssues] = useState('');
+  const [repo, setRepo] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!issues.trim()) {
+      log('error', '批量派发需要一列 issue 编号（换行或逗号分隔）');
+      return;
+    }
+    if (!cwd.trim()) {
+      log('error', '请先填写工作目录，或在「设 · 设置」里配置空间主仓根');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.dispatchBatch(tpl, issues.trim(), cwd.trim(), repo.trim() || undefined);
+      log(
+        'info',
+        `批量派发 ${tpl}：成功 ${r.dispatched} 单${r.queued ? `（其中 ${r.queued} 单排队中）` : ''}` +
+          (r.failed.length ? `；失败 ${r.failed.length}：${r.failed.map((f) => `#${f.issue} ${f.error}`).join('；')}` : ''),
+      );
+      if (r.dispatched) {
+        setIssues('');
+        void api.listRuns().then((x) => useStore.getState().mergeRuns(x.runs)).catch(() => undefined);
+      }
+    } catch (e) {
+      log('error', `批量派发失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="tasks-batch">
+      <button className="link" onClick={() => setOpen((v) => !v)}>
+        {open ? '▾ 收起批量派发' : '▸ 批量派发：一个模板 × 一列 issue 编号（一单变一批）'}
+      </button>
+      {open && (
+        <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+          <div className="tasks-form-row">
+            <div className="tasks-field narrow">
+              <label>模板骨架</label>
+              <select value={tpl} onChange={(e) => setTpl(e.target.value)}>
+                {templates.map((g) => (
+                  <option key={g.name} value={g.name}>
+                    {templateLabel(g.name, g.metadata?.description).title}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="tasks-field narrow">
+              <label>repo（可选 owner/name）</label>
+              <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="留空=默认仓或空间候选仓" />
+            </div>
+          </div>
+          <textarea
+            value={issues}
+            onChange={(e) => setIssues(e.target.value)}
+            placeholder={'issue 编号列：一行一个（162\n163\n165），逗号/空格分隔或整列 URL 粘贴也认'}
+            rows={4}
+            style={{ width: '100%' }}
+          />
+          <div>
+            <button className="primary" disabled={busy} onClick={() => void submit()}>
+              {busy ? '批量派发中…' : '📋 批量派发'}
+            </button>
+            <span className="tasks-sub" style={{ marginLeft: 8 }}>
+              每单自动注入 Issue 正文；带「验收标准」小节的直接机检入契约；空间并发满了自动排队不冲垮营地
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -355,5 +440,5 @@ function stateBadge(state: RunRecord['state']): string {
 }
 
 function stateText(state: RunRecord['state']): string {
-  return state === 'completed' ? '已完成' : state === 'failed' ? '失败' : state === 'running' ? '运行中' : '已取消';
+  return state === 'completed' ? '已完成' : state === 'failed' ? '失败' : state === 'running' ? '运行中' : state === 'queued' ? '⏳ 排队中' : '已取消';
 }

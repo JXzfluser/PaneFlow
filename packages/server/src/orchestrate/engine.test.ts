@@ -1794,3 +1794,75 @@ describe('v8-I1 skills 死配置激活（节点注入通道）', () => {
     expect(pA.text.match(/共享做法文档/g)).toHaveLength(1);
   });
 });
+
+describe('v8-G3 空间级轻队列', () => {
+  /** impl 挂 manual 门：run 停在 blocked（state 仍是 running），占额度直到放行 */
+  function gatedGraph(name = 'gated'): DagGraph {
+    const g = serialGraph();
+    g.name = name;
+    g.nodes[1]!.config.checks = [{ type: 'manual', prompt: '确认执行' }];
+    return g;
+  }
+  const setCap = (n: number) =>
+    store.writeProfile({ id: 'default', name: 'default', createdAt: '', maxConcurrentRuns: n });
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  it('并发满 → queued；前单终态后自动出队跑完', async () => {
+    setCap(1);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-q-'));
+    const r1 = await engine.startRun(gatedGraph('g1'), cwd);
+    expect(r1.state).toBe('running');
+    await waitFor(() => engine.getRun(r1.runId)!.nodes['impl']!.state === 'blocked');
+    const r2 = await engine.startRun(serialGraph(), cwd);
+    expect(r2.state).toBe('queued');
+    expect(engine.getRun(r2.runId)!.state).toBe('queued');
+    // 队列事件上了时间线（位次可见）
+    expect((engine.getRun(r2.runId)!.events ?? []).some((e) => e.text.includes('排队中'))).toBe(true);
+
+    await engine.approve(r1.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(r1.runId)!.state === 'completed');
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'queued');
+    await waitFor(() => engine.getRun(r2.runId)!.state === 'completed');
+    const run2 = engine.getRun(r2.runId)!;
+    expect((run2.events ?? []).some((e) => e.text.includes('出队启动'))).toBe(true);
+  });
+
+  it('排队中可取消（stopRun 即终态 cancelled），放行前单后不会再启动它', async () => {
+    setCap(1);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-q-'));
+    const r1 = await engine.startRun(gatedGraph('g1'), cwd);
+    await waitFor(() => engine.getRun(r1.runId)!.nodes['impl']!.state === 'blocked');
+    const r2 = await engine.startRun(serialGraph(), cwd);
+    expect(r2.state).toBe('queued');
+    expect(engine.stopRun(r2.runId)).toBe(true);
+    expect(engine.getRun(r2.runId)!.state).toBe('cancelled');
+    await engine.approve(r1.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(r1.runId)!.state === 'completed');
+    await sleep(150); // 给 pump 一个窗口：撤掉的排队项不能被复活
+    expect(engine.getRun(r2.runId)!.state).toBe('cancelled');
+  });
+
+  it('同 issue 幂等锁覆盖排队中：queued 也拒重复下发', async () => {
+    setCap(1);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-q-'));
+    const r1 = await engine.startRun(gatedGraph('g1'), cwd, undefined, undefined, '55');
+    await waitFor(() => engine.getRun(r1.runId)!.nodes['impl']!.state === 'blocked');
+    const r2 = await engine.startRun(serialGraph(), cwd, undefined, undefined, '66');
+    expect(r2.state).toBe('queued');
+    await expect(engine.startRun(serialGraph(), cwd, undefined, undefined, '66')).rejects.toThrow(/已有运行中\/排队中/);
+  });
+
+  it('重启复原：queued 记录重新入列并在额度内自动开跑', async () => {
+    setCap(1);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-q-'));
+    const r1 = await engine.startRun(gatedGraph('g1'), cwd);
+    await waitFor(() => engine.getRun(r1.runId)!.nodes['impl']!.state === 'blocked');
+    const r2 = await engine.startRun(serialGraph(), cwd);
+    expect(r2.state).toBe('queued');
+    // 模拟服务重启：新引擎读盘——running 的 g1 被清扫为 failed，queued 的 g2 复原并放行跑完
+    const ops2 = new FakeHerdrOps();
+    const engine2 = new Engine(ops2, new Store(dataDir), OPTS);
+    await waitFor(() => engine2.getRun(r2.runId)!.state === 'completed');
+    expect(engine2.getRun(r1.runId)!.state).toBe('failed');
+  });
+});

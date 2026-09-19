@@ -214,6 +214,7 @@ export function RunsCenter() {
   const list = Object.values(runs).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const blockedCount = list.filter((r) => r.state === 'running' && Object.values(r.nodes).some((n) => n.state === 'blocked')).length;
   const runningCount = list.filter((r) => r.state === 'running').length;
+  const queuedCount = list.filter((r) => r.state === 'queued').length;
 
   const stop = async (runId: string) => {
     try {
@@ -254,6 +255,7 @@ export function RunsCenter() {
         <button className={tab === 'active' ? 'active' : ''} onClick={() => setTab('active')}>全部运行</button>
         <button className={tab === 'archived' ? 'active' : ''} title="已归档记录：可恢复或真删除" onClick={() => setTab('archived')}>📦 已归档</button>
         <span style={{ marginLeft: 'auto' }}><b>{runningCount}</b> 运行中</span>
+        {queuedCount > 0 && <span><b>{queuedCount}</b> 排队中</span>}
         <span className={blockedCount ? 'runs-alert' : ''}><b>{blockedCount}</b> 待审批</span>
         <span style={{ color: 'var(--text-dim)' }}>共 {list.length} 条历史</span>
         <button
@@ -281,9 +283,9 @@ export function RunsCenter() {
             <div className="run-card-head">
               <b>{r.issueId ? `#${r.issueId}` : `#${r.runId}`}</b> <span style={{ fontFamily: 'var(--font-display)', fontSize: 13.5 }}>{r.dagName}</span>
               <span className={`badge ${r.state === 'completed' ? 'done' : r.state === 'failed' ? 'failed' : r.state === 'running' ? 'working' : ''}`}>
-                {r.state === 'running' ? '运行中' : r.state === 'completed' ? '完成 ✅' : r.state === 'failed' ? '失败 ❌' : '已取消'}
+                {r.state === 'running' ? '运行中' : r.state === 'queued' ? '⏳ 排队中' : r.state === 'completed' ? '完成 ✅' : r.state === 'failed' ? '失败 ❌' : '已取消'}
               </span>
-              <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{elapsed}s</span>
+              <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{r.state === 'queued' ? `已等 ${elapsed}s` : `${elapsed}s`}</span>
               {runCostLabel(r) && (
                 <span className="run-cost-chip" title="成本账：时长/重试/tokens（unknown = agent 未自报，不估算）">{runCostLabel(r)}</span>
               )}
@@ -337,7 +339,7 @@ export function RunsCenter() {
                   a.download = `${r.runId}.json`;
                   a.click();
                 }}>⤓</button>
-                {r.state !== 'running' && (
+                {!['running', 'queued'].includes(r.state) && (
                   <button title="归档（移出主列表，记录保留）" onClick={() => {
                     void fetchJson<{ archived: boolean }>('POST', `/api/runs/${r.runId}/archive`)
                       .then(() => {
@@ -355,6 +357,7 @@ export function RunsCenter() {
                 )}
                 <button title="在画布中打开" onClick={() => { openRun(r.runId); setView('orchestrate'); }}>↗</button>
                 {r.state === 'running' && <button className="danger" title="停止" onClick={() => void stop(r.runId)}>⏹</button>}
+                {r.state === 'queued' && <button className="danger" title="取消排队（尚未开跑，撤回即终态）" onClick={() => void stop(r.runId)}>✕</button>}
               </div>
             </div>
             <div className="run-progress">

@@ -350,7 +350,13 @@ export interface NodeRunRecord {
   error?: string;
 }
 
-export type RunState = 'running' | 'completed' | 'failed' | 'cancelled';
+export type RunState =
+  | 'running'
+  /** G3 轻队列：空间并发 run 达上限时待启排队，额度腾出自动出队启动 */
+  | 'queued'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
 export interface RunRecord {
   runId: string;

@@ -123,6 +123,20 @@ export const api = {
       ...(issueId ? { issueId } : {}),
       ...(preview ? { preview: true } : {}),
     }),
+  /** G3 批量派发：一个模板 × 一列 issue 编号 → N 个 run（空间并发达上限自动排队） */
+  dispatchBatch: (template: string, issues: string, cwd: string, repo?: string) =>
+    json<{
+      template: string;
+      dispatched: number;
+      queued: number;
+      results: { issue: number; runId: string; state: string }[];
+      failed: { issue: number; error: string }[];
+    }>('POST', '/api/dispatch/batch', {
+      template,
+      issues,
+      cwd,
+      ...(repo ? { repo } : {}),
+    }),
   /** G1 Issue 读取器：正文+评论（repo 缺省用服务端配置的默认仓库） */
   getIssue: (number: number, repo?: string) =>
     json<{

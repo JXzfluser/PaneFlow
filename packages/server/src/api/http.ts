@@ -104,8 +104,8 @@ export function isAllowedOrigin(opts: {
 
 const DEFAULT_SPACE = 'default';
 
-/** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面） */
-const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind'] as const;
+/** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面；maxConcurrentRuns=G3 队列上限，配置文件面） */
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'maxConcurrentRuns'] as const;
 
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
@@ -472,6 +472,11 @@ export async function buildHttpServer(deps: HttpDeps) {
       ) {
         return reply.code(400).send({ error: 'rules 必须是 {file, repo?, pathsGlob?, note?} 条目数组' });
       }
+      // G3：队列上限写脏（字符串/0/负数）会让排队判据静默失效——同样机检
+      const cap = (req.body as Record<string, unknown> | undefined)?.maxConcurrentRuns;
+      if (cap !== undefined && (typeof cap !== 'number' || !Number.isFinite(cap) || cap < 1 || cap > 64)) {
+        return reply.code(400).send({ error: 'maxConcurrentRuns 必须是 1–64 之间的数字' });
+      }
       // 白名单：只接受可编辑字段，id/name/createdAt 等身份字段不可经 body 注入
       const patch: Partial<SpaceProfile> = {};
       for (const key of PROFILE_EDITABLE_KEYS) {
@@ -547,6 +552,27 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   // -- 智能下发（Smart Dispatch） ----------------------------------------------
 
+  /** G1+I1+G3：拉取 issue 真身——显式 repo > 默认仓 > 空间 repos 候选仓依次试，全败返回末错 */
+  const fetchIssueWithCandidates = async (
+    number: number,
+    repoOverride: string | undefined,
+    candidateList: string[],
+  ): Promise<{ view?: IssueView; error?: string }> => {
+    const attempts: (string | undefined)[] = [repoOverride];
+    if (!repoOverride && !readGithubSettings(deps.dataDir).defaultRepo) {
+      attempts.push(...candidateList);
+    }
+    let lastErr: Error | undefined;
+    for (const repo of attempts) {
+      try {
+        return { view: await fetchGithubIssue(number, repo) };
+      } catch (err) {
+        lastErr = err as Error;
+      }
+    }
+    return { error: lastErr?.message ?? String(lastErr) };
+  };
+
   app.post<{ Body: { task: string; issueId?: string; cwd?: string; preview?: boolean }; Querystring: { space?: string } }>(
     '/api/dispatch',
     async (req, reply) => {
@@ -584,21 +610,9 @@ export async function buildHttpServer(deps: HttpDeps) {
       let issueContext: IssueView | undefined;
       let issueNote: string | undefined;
       if (issueId && /^\d+$/.test(issueId)) {
-        const attempts: (string | undefined)[] = [issueRepo];
-        // I1：裸 #123 且没配默认仓时，按空间 repos 登记的 origin 依次解析候选仓，首个命中即用
-        if (!issueRepo && !readGithubSettings(deps.dataDir).defaultRepo) {
-          attempts.push(...candidateRepos(profileRepos, rootCwd));
-        }
-        let lastErr: Error | undefined;
-        for (const repo of attempts) {
-          try {
-            issueContext = await fetchGithubIssue(Number(issueId), repo);
-            break;
-          } catch (err) {
-            lastErr = err as Error;
-          }
-        }
-        if (!issueContext) issueNote = `Issue #${issueId} 正文读取失败（${lastErr?.message}），本次仅按任务描述执行`;
+        const hit = await fetchIssueWithCandidates(Number(issueId), issueRepo, candidateRepos(profileRepos, rootCwd));
+        issueContext = hit.view;
+        if (!hit.view) issueNote = `Issue #${issueId} 正文读取失败（${hit.error}），本次仅按任务描述执行`;
       }
       const templateList = store0
         .listGraphs()
@@ -666,6 +680,86 @@ export async function buildHttpServer(deps: HttpDeps) {
       };
     },
   );
+
+  // -- G3 批量派发：一个模板 × 一列 issue 编号 → N 个 run（并发超限自动排队） ----
+
+  app.post<{
+    Body: { template?: string; issues?: string | number[]; repo?: string; cwd?: string; vars?: Record<string, string> };
+    Querystring: { space?: string };
+  }>('/api/dispatch/batch', async (req, reply) => {
+    const template = String(req.body?.template ?? '').trim();
+    if (!template) return reply.code(400).send({ error: '批量派发必须指定模板（一个模板 × 一列 issue 编号）' });
+    const store0 = spaceStore(deps, req.query.space);
+    const graph = store0.getGraph(template);
+    if (!graph) return reply.code(404).send({ error: `模板不存在：${template}` });
+    let rootCwd: string | undefined;
+    let profileRepos: string[] | undefined;
+    try {
+      const profile = store0.readProfile();
+      rootCwd = profile.rootCwd;
+      profileRepos = profile.repos;
+    } catch {
+      rootCwd = undefined;
+    }
+    const cwd = String(req.body?.cwd ?? '').trim() || rootCwd;
+    if (!cwd) return reply.code(400).send({ error: '缺少工作目录（空间未配置 rootCwd 且未指定）' });
+    // 编号列：接受数组或文本（换行/逗号/空格分隔，issue URL 与 #12 混贴皆可），去重限 20
+    const text = Array.isArray(req.body?.issues) ? req.body.issues!.join(' ') : String(req.body?.issues ?? '');
+    const nums = [...new Set([...text.matchAll(/(\d{1,8})/g)].map((m) => Number(m[1])))].filter((n) => n > 0);
+    if (!nums.length) return reply.code(400).send({ error: 'issue 编号列表为空（支持换行/逗号分隔或 URL）' });
+    if (nums.length > 20) return reply.code(400).send({ error: `一次最多 20 个 issue（收到 ${nums.length} 个）` });
+    // 变量契约先行：非 issue 文本可填的必填变量缺失 → 整批拒绝，不留半截队列（判据与 applyVariables 同源）
+    const supplied = new Set(['task', 'brief', ...Object.keys(req.body?.vars ?? {})]);
+    const missing = (graph.variables ?? [])
+      .filter((v) => v.required && !supplied.has(v.key))
+      .map((v) => v.label || v.key);
+    if (missing.length) {
+      return reply.code(400).send({ error: `模板「${template}」的必填变量 ${missing.join('、')} 无法由 issue 文本自动填充，请用 vars 补充` });
+    }
+    const repo = String(req.body?.repo ?? '').trim() || undefined;
+    const dispatched: { issue: number; runId: string; state: string }[] = [];
+    const failed: { issue: number; error: string }[] = [];
+    for (const n of nums) {
+      const hit = await fetchIssueWithCandidates(n, repo, candidateRepos(profileRepos, rootCwd));
+      if (!hit.view) {
+        failed.push({ issue: n, error: `Issue 读取失败：${hit.error}` });
+        continue;
+      }
+      const view = hit.view;
+      const issueText = `Issue #${view.number}（${view.repo}）：${view.title}\n\n${view.body}`.replace(/\{\{|\}\}/g, '').slice(0, 4000);
+      const assertions = extractAcceptance(`${view.title}\n\n${view.body}`);
+      try {
+        const run = await deps.engine.startRun(
+          graph,
+          cwd,
+          req.query.space,
+          { task: issueText, brief: issueText, ...req.body?.vars },
+          String(view.number),
+          undefined,
+          assertions.length
+            ? {
+                contract: {
+                  assertions: assertions.map((a, i) => ({ id: `AC-${i + 1}`, assertion: a, verify_method: '' })),
+                  questions: [],
+                  source: 'input' as const,
+                },
+              }
+            : undefined,
+        );
+        dispatched.push({ issue: n, runId: run.runId, state: run.state });
+      } catch (err) {
+        failed.push({ issue: n, error: (err as Error).message });
+      }
+    }
+    const queued = dispatched.filter((d) => d.state === 'queued').length;
+    return {
+      template,
+      dispatched: dispatched.length,
+      queued,
+      results: dispatched,
+      failed,
+    };
+  });
 
   // -- dry-run（B12 预演：展开变量、静态评估条件边、输出最终拓扑） -------------
 
@@ -769,7 +863,10 @@ export async function buildHttpServer(deps: HttpDeps) {
   app.post<{ Params: { id: string } }>('/api/runs/:id/archive', async (req, reply) => {
     const run = deps.engine.getRun(req.params.id);
     if (!run) return reply.code(404).send({ error: 'not found' });
-    if (run.state === 'running') return reply.code(409).send({ error: '运行中的流水线不能归档，请先停止' });
+    // G3：排队中的 run 也能被停止（取消排队即终态），归档门槛随之收紧
+    if (run.state === 'running' || run.state === 'queued') {
+      return reply.code(409).send({ error: run.state === 'running' ? '运行中的流水线不能归档，请先停止' : '排队中的流水线不能归档，请先取消排队' });
+    }
     run.archived = true;
     const store = run.spaceId ? new Store(deps.dataDir, run.spaceId) : deps.store;
     store.saveRun(run);
