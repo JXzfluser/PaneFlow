@@ -799,8 +799,10 @@ export class Engine {
       this.persistAndNotify(run);
     };
 
+    let capacityBlocked = false;
     for (;;) {
       if (this.cancels.has(run.runId)) break;
+      capacityBlocked = false;
 
       if (!abort) {
         for (const id of [...pending]) {
@@ -894,7 +896,11 @@ export class Engine {
             continue;
           }
 
-          if (this.paneSlots.acquired >= capacity) break; // global pool full — resume after any release
+          if (this.paneSlots.acquired >= capacity) {
+            pending.add(id); // 首驾调度洞：扫描开头已把节点摘出 pending——没启动就还回去，否则它谁也不在（run 会带着未跑节点「完成」）
+            capacityBlocked = true;
+            break;
+          }
           const launch = waitSlot().then(() =>
             this.runAgentNode(run, id, blackboard)
               .then((res) => {
@@ -940,6 +946,8 @@ export class Engine {
           return st !== 'wait';
         });
         if (!canProgress) break;
+        // 槽位被别的 run 占着且本 run 无在飞：轮询等释放，绝不空转也绝不带着 pending 退出
+        if (capacityBlocked && !inflight.size) await sleep(300);
       } else if (!pending.size && !inflight.size) {
         break;
       }

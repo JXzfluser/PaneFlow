@@ -309,6 +309,19 @@ describe('Engine (serial DAG)', () => {
     const run = await runToCompletion(graph, cwd);
     expect(run.state).toBe('completed');
     expect(ops.maxConcurrent).toBe(2);
+    // 被并发上限挡下的第三分支必须在槽位释放后补跑，不能凭空消失
+    for (const id of ['fa', 'fb', 'fc', 'merge', 'end']) expect(run.nodes[id]!.state).toBe('done');
+  });
+
+  it('首驾-调度洞：ready 节点被并发上限挤出 pending 后仍会补跑，run 不带未跑节点「完成」', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = fanoutGraph();
+    ops.promptDelayMs = 150;
+    engine = new Engine(ops, store, { ...OPTS, maxConcurrentPanes: 1 });
+    const run = await runToCompletion(graph, cwd);
+    expect(ops.maxConcurrent).toBe(1); // 串行执行，未越窗
+    for (const id of ['fa', 'fb', 'fc', 'merge', 'end']) expect(run.nodes[id]!.state).toBe('done');
+    expect(run.state).toBe('completed');
   });
 
   it('strict fan-in fails the merge when a branch fails', async () => {
