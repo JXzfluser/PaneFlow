@@ -158,7 +158,9 @@ export async function buildHttpServer(deps: HttpDeps) {
   await app.register(fastifyWebsocket);
 
   // R6.2 一键启动：服务端托管前端构建产物（生产模式无需 vite/proxy）
+  // Z1 免克隆部署：release 包里的 bin 会设 PF_WEB_DIR 指包内 web/（cwd 在用户目录下不可靠）
   const candidates = [
+    ...(process.env.PF_WEB_DIR ? [process.env.PF_WEB_DIR] : []),
     path.join(process.cwd(), 'packages/web/dist'),
     path.join(process.cwd(), 'dist'),
   ];

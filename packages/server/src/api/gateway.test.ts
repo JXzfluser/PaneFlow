@@ -119,6 +119,18 @@ describe('v8-AF syncPiGatewayProvider（pi 走网关的 models.json 注册）', 
     expect(syncPiGatewayProvider(dirWith(gw), { homeDir: bad }).synced).toBe(false);
     expect(fs.readFileSync(path.join(bad, '.pi', 'agent', 'models.json'), 'utf8')).toBe('{{{ broken');
   });
+
+  it('Z1 防误删：从未配过网关的 dataDir（新装/第二实例）不删别人写好的 paneflow-gw', () => {
+    const freshDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-gw-empty-'));
+    const home = homeWithModelsJson({ providers: { [PI_GATEWAY_PROVIDER]: { baseUrl: 'http://other-instance' } } });
+    const r = syncPiGatewayProvider(freshDataDir, { homeDir: home });
+    expect(r.synced).toBe(false);
+    expect(r.removed).toBeUndefined();
+    const doc = JSON.parse(fs.readFileSync(path.join(home, '.pi', 'agent', 'models.json'), 'utf8')) as {
+      providers: Record<string, { baseUrl?: string }>;
+    };
+    expect(doc.providers[PI_GATEWAY_PROVIDER]!.baseUrl).toBe('http://other-instance');
+  });
 });
 
 describe('v9-D2 多网关档（profiles + current，旧扁平读侧兼容）', () => {

@@ -241,6 +241,8 @@ export function syncPiGatewayProvider(
   doc.providers ??= {};
   const providers = doc.providers as Record<string, unknown>;
   if (!gatewayActive(dataDir)) {
+    // 从未配过网关的 dataDir（新装/第二实例）没有清理权——否则会把别的实例写好的 provider 误删
+    if (!fs.existsSync(gatewayPath(dataDir))) return { synced: false, path: file };
     if (!(PI_GATEWAY_PROVIDER in providers)) return { synced: false, path: file };
     delete providers[PI_GATEWAY_PROVIDER];
     fs.mkdirSync(path.dirname(file), { recursive: true });

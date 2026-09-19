@@ -25,14 +25,36 @@
 
 ## 快速开始
 
-前置：本机已安装并运行 [Herdr](https://github.com/herdrdev/herdr) ≥ 0.8.2，Node ≥ 22，pnpm。
+前置（两条路相同）：本机已安装并运行 [Herdr](https://github.com/herdrdev/herdr) ≥ 0.8.2，Node ≥ 22。
+
+### 方式一 · 免克隆安装（推荐给使用者）
+
+不需要 clone 仓库、不需要 pnpm，一条命令装出全局 `paneflow` 命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JXzfluser/PaneFlow/main/install.sh | bash
+```
+
+（不愿走脚本也可以直接 `npm install -g` 发行包：
+`npm i -g https://github.com/JXzfluser/PaneFlow/releases/latest/download/paneflow-latest.tgz`）
+
+```bash
+paneflow            # 启动编排服务并同源托管画布
+```
+
+打开 http://127.0.0.1:4310 即是画布。升级重跑同一条命令即可；卸载：`npm uninstall -g paneflow`。
+发行包 = 服务端单文件 + 前端构建产物 + 4 个 npm 运行时依赖，数据仍存 `~/.paneflow`。
+
+### 方式二 · 源码运行（推荐给开发者）
+
+额外前置：pnpm（版本以 `packageManager` 为准）。
 
 ```bash
 pnpm install
 pnpm start          # 一键：构建前端 + 启动服务（同源托管画布）
 ```
 
-打开 http://127.0.0.1:4310 即是画布。开发模式（热更新）：
+开发模式（热更新）：
 
 ```bash
 pnpm dev:server     # 编排服务（http://127.0.0.1:4310）
@@ -47,6 +69,9 @@ pnpm dev:web        # 画布开发服务（http://127.0.0.1:4311，代理 API）
 |---|---|---|
 | `PF_HERDR_SOCKET` | `~/.config/herdr/herdr.sock` | Herdr api socket 路径 |
 | `PF_PORT` | `4310` | 编排服务端口 |
+| `PF_HOST` | `127.0.0.1` | 监听地址；非本机回环时强制启用 `PF_TOKEN` 鉴权（远程/手机访问用） |
+| `PF_TOKEN` | 空 | 访问令牌；远程模式下未设置时首次启动自动生成并持久化到 `PF_DATA_DIR/auth-token.json` |
+| `PF_WEB_DIR` | 自动探测 | 前端构建产物目录（免克隆发行包的启动器注入；源码运行无需设置） |
 | `PF_DATA_DIR` | `~/.paneflow` | 模板与运行记录存储 |
 | `PF_MAX_PANES` | `8` | 全局并行 Pane 上限 |
 | `PF_PANE_ENV` | 空 | 注入流水线 workspace 的环境变量（`K=V,K2=V2`），如 `OPENCODE_DISABLE_AUTOUPDATE=1,PI_DISABLE_UPDATE_CHECK=1` |
@@ -82,6 +107,16 @@ pnpm typecheck   # TS 全量类型检查
 - `packages/server/src/herdr` — herdr socket 客户端（NDJSON、一次请求一连接、专用事件连接、自动重连重订阅）
 - `packages/server/src/orchestrate` — 调度引擎（可全量单测，herdr 操作抽象为 `HerdrOps` 接口）
 - `docs/` — herdr socket 协议 schema 与实测经验（`protocol-learnings.md`）
+
+### 发布免克隆发行包
+
+`node scripts/build-release.mjs` 在本地产出 `out/release/paneflow-<ver>.tgz`（+ `paneflow-latest.tgz`）。
+正式分发走 CI：改 `package.json` 版本号 → 打标签推送，`.github/workflows/release.yml` 自动构建并发布 GitHub Release，
+`install.sh` 与 `npm i -g <release-url>` 即刻可用：
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
 
 ## 边界（明确不做）
 
