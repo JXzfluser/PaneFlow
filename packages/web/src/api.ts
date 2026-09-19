@@ -66,7 +66,9 @@ export const api = {
     herdrVersion: string | null;
     herdrSocket: string;
     agentKinds: string[];
-    env: { nodeVersion: string; agentsInstalled: string[]; agentsMissing: string[] };
+    recommendedAgentKind?: string | null;
+    gatewayEnabled?: boolean;
+    env: { nodeVersion: string; agentsInstalled: string[]; agentsMissing: string[]; recommendedAgentKind?: string | null; gatewayEnabled?: boolean };
   }>('GET', '/api/health'),
   listGraphs: () => json<{ graphs: DagGraph[] }>('GET', '/api/graphs'),
   saveGraph: (graph: DagGraph) => json<DagGraph>('POST', '/api/graphs', { graph }),

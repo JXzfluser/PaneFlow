@@ -443,6 +443,7 @@ interface SpaceProfile {
   skills?: string[];
   repos?: string[];
   defaultAgentKind?: string;
+  agentOverride?: boolean;
   experienceInjection?: boolean;
 }
 
@@ -453,7 +454,13 @@ export function SettingsView() {
   const spaceId = useStore((s) => s.space);
   const agentKinds = useStore((s) => s.agentKinds);
   const [profile, setProfile] = useState<SpaceProfile | null>(null);
-  const [env, setEnv] = useState<{ herdrOk: boolean; herdrVersion: string | null; env: { agentsInstalled: string[] } } | null>(null);
+  const [env, setEnv] = useState<{
+    herdrOk: boolean;
+    herdrVersion: string | null;
+    recommendedAgentKind?: string | null;
+    gatewayEnabled?: boolean;
+    env: { agentsInstalled: string[] };
+  } | null>(null);
   const [discover, setDiscover] = useState<{ markdowns: string[]; skills: string[]; repos: string[] } | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [recentRoots, setRecentRoots] = useState<string[]>(() => {
@@ -516,6 +523,7 @@ export function SettingsView() {
         skills: profile.skills ?? [],
         repos: profile.repos ?? [],
         defaultAgentKind: profile.defaultAgentKind ?? '',
+        agentOverride: !!profile.agentOverride,
         experienceInjection: profile.experienceInjection !== false,
       });
       if (profile?.rootCwd) {
@@ -718,18 +726,34 @@ export function SettingsView() {
                 onChange={(e) => setProfile((p) => (p ? { ...p, description: e.target.value } : p))}
                 placeholder="一句话说明这个项目"
               />
-              <label>智能下发 Planner Agent（E'：留空=缺省 claude）</label>
+              <label title="AE：节点/角色没指定 Agent 类型时用它；智能下发 Planner 也用它。留空=自动推荐（本机已装优先：pi > opencode > codex > claude）">
+                空间默认 Agent（节点未指定时用它；Planner 同款）
+              </label>
               <select
                 value={profile?.defaultAgentKind ?? ''}
                 onChange={(e) => setProfile((p) => (p ? { ...p, defaultAgentKind: e.target.value } : p))}
               >
-                <option value="">缺省（claude）</option>
+                <option value="">
+                  自动推荐{env?.recommendedAgentKind ? `（当前：${env.recommendedAgentKind}）` : '（检测中…）'}
+                </option>
                 {agentKinds.map((k) => (
                   <option key={k} value={k}>
-                    {k}
+                    {k}{env?.env.agentsInstalled.includes(k) ? ' ·已装' : ' ·未装'}
                   </option>
                 ))}
               </select>
+              <label
+                title="勾选后本空间所有 Agent 一律用上面的默认值——包括模板/节点里已钉死的类型。配合「模型网关」即可实现：启动的 agent 全部统一走网关模型。"
+                style={!profile?.defaultAgentKind ? { opacity: 0.5 } : undefined}
+              >
+                <input
+                  type="checkbox"
+                  disabled={!profile?.defaultAgentKind}
+                  checked={!!profile?.agentOverride}
+                  onChange={(e) => setProfile((p) => (p ? { ...p, agentOverride: e.target.checked } : p))}
+                />{' '}
+                AE · 统一覆盖：强制全部节点改用空间默认 Agent
+              </label>
               <label title="同模板有绿 run 时，其「实填变量+断言清单+成本画像」会自动附进新单首个 Agent 节点的上下文（时间线有一条注入事件）。关掉即恢复纯现场发挥。">
                 <input
                   type="checkbox"
@@ -768,6 +792,8 @@ export function SettingsView() {
           <h3>模型网关（OmniRoute 等）</h3>
           <p className="settings-hint">
             配置后每个 Agent Pane 自动注入 OPENAI_*/ANTHROPIC_* 网关变量——模型请求统一走网关（免费档/自动切换由网关负责）。
+            AE 统一路由：claude 经 --settings 注入（未登录也能走网关）；pi 自动加 --provider openai --model 免费模型；其余遵守网关约定的 CLI 直接读环境变量。
+            要「所有 Agent 都走网关」，再到「项目档案」选默认 Agent 并勾选「统一覆盖」。
           </p>
           <GatewayCard />
         </section>

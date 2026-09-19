@@ -27,6 +27,12 @@ export function writeGateway(dataDir: string, next: ModelGatewaySettings): void 
   fs.writeFileSync(gatewayPath(dataDir), JSON.stringify(next, null, 2));
 }
 
+/** 网关是否配置齐全且启用——Agent 启动参数按此决定是否注入统一路由 */
+export function gatewayActive(dataDir: string): boolean {
+  const g = readGateway(dataDir);
+  return Boolean(g.enabled && g.baseUrl && g.apiKey);
+}
+
 /**
  * Build the per-pane env block that routes any gateway-aware agent
  * (claude via ANTHROPIC_*, OpenAI-compatible via OPENAI_*) to the router.
@@ -37,6 +43,8 @@ export function buildGatewayEnv(dataDir: string): Record<string, string> {
   if (!g.enabled || !g.baseUrl || !g.apiKey) return {};
   const env: Record<string, string> = {
     OPENAI_API_BASE: `${g.baseUrl.replace(/\/$/, '')}/v1`,
+    // pi 读的是 OPENAI_BASE_URL（不是 OPENAI_API_BASE）——两个名字都给，网关对 pi 同样生效
+    OPENAI_BASE_URL: `${g.baseUrl.replace(/\/$/, '')}/v1`,
     OPENAI_API_KEY: g.apiKey,
     ANTHROPIC_BASE_URL: g.baseUrl.replace(/\/$/, ''),
     ANTHROPIC_AUTH_TOKEN: g.apiKey,

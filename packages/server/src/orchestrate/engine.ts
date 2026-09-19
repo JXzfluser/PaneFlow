@@ -24,7 +24,8 @@ import { Store } from './store.js';
 import { buildConventionBlock, loadRoles, type Role } from './roles.js';
 import { effectiveRules, matchRules } from './rules.js';
 import { buildSkillBlock } from './skills.js';
-import { buildGatewayEnv } from '../api/gateway.js';
+import { buildGatewayEnv, gatewayActive, readGateway } from '../api/gateway.js';
+import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
 import { buildGithubEnv } from '../api/github-cred.js';
 
 export interface EngineOptions {
@@ -42,6 +43,8 @@ export interface EngineOptions {
   promptConfirmWindowMs?: number;
   /** Max agent panes running in parallel across a run (default 8) */
   maxConcurrentPanes?: number;
+  /** AE 自动推荐的探针（默认查本机已装 CLI，60s 缓存）；测试注入以保确定性 */
+  recommendAgentKind?: () => Promise<string | null>;
 }
 
 export interface ApprovalAction {
@@ -992,7 +995,12 @@ export class Engine {
       rec.agentName = agentName;
       // claude 自动附加沙箱豁免 + 网关/凭据 env（信任与 bypass 对话框经 settings 预接受）
       let startArgs = [...(cfg.agentArgs ?? [])];
-      const kind = this.resolveAgentKind(run, cfg);
+      const kind = await this.resolveAgentKind(run, cfg);
+      // AE：网关启用时 pi 显式路由到 OpenAI 兼容端点（pi 缺省 provider=google，光靠 env 不会走网关）
+      if (kind === 'pi' && gatewayActive(this.store.root)) {
+        const gm = readGateway(this.store.root).freeModel;
+        startArgs = ['--provider', 'openai', ...(gm ? ['--model', gm] : []), ...startArgs];
+      }
       if (kind === 'claude') {
         const bootstrapEnv = {
           ...buildGatewayEnv(this.store.root),
@@ -1691,12 +1699,20 @@ export class Engine {
     }
   }
 
-  /** Resolve role defaults: agentKind from role when node omits it. */
-  private resolveAgentKind(run: RunRecord, cfg: DagNodeConfig): string {
+  /**
+   * Resolve which agent CLI to launch（AE 链）：
+   * 统一覆盖(space) > 节点指定 > 角色默认 > 空间默认 > 自动推荐（已装优先 pi）> opencode 兜底。
+   */
+  private async resolveAgentKind(run: RunRecord, cfg: DagNodeConfig): Promise<string> {
+    const profile = this.storeFor(run).readProfile();
+    const spaceDefault = profile.defaultAgentKind?.trim();
+    if (profile.agentOverride && spaceDefault) return spaceDefault;
     if (cfg.agentKind) return cfg.agentKind;
     const role = this.roleById(run, cfg.role);
     if (role?.agentKind) return role.agentKind;
-    return 'opencode';
+    if (spaceDefault) return spaceDefault;
+    const recommend = this.opts.recommendAgentKind ?? probeRecommendAgentKind;
+    return (await recommend()) ?? 'opencode';
   }
 
   private roleById(run: RunRecord, roleId: string | undefined): Role | undefined {

@@ -59,3 +59,15 @@ export async function detectInstalledAgents(kinds: string[]): Promise<string[]> 
 export function clearAgentProbeCache(): void {
   cache.clear();
 }
+
+/** 自动推荐优先级（用户裁决：装了 pi 就默认 pi；claude 常遇未登录，排最后） */
+export const RECOMMEND_PRIORITY = ['pi', 'opencode', 'codex', 'claude'] as const;
+
+/** 本机装了哪个优先用哪个；全都没装返回 null（调用方兜底）。 */
+export async function recommendAgentKind(): Promise<string | null> {
+  const installed = await detectInstalledAgents([...RECOMMEND_PRIORITY]);
+  for (const kind of RECOMMEND_PRIORITY) {
+    if (installed.includes(kind)) return kind;
+  }
+  return null;
+}

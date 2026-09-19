@@ -18,6 +18,8 @@ const OPTS: EngineOptions = {
   defaultNodeTimeoutMs: 1_200,
   agentStartTimeoutMs: 5_000,
   agentReadyTimeoutMs: 5_000,
+  // AE：探针注入固定值，测试不依赖本机装了什么
+  recommendAgentKind: async () => 'reco',
 };
 
 function serialGraph(): DagGraph {
@@ -1927,5 +1929,68 @@ describe('v8-I2 上次经验自动注入 v0（仅变量层）', () => {
     const designPrompt = same.graph.nodes.find((n) => n.id === 'design')!.config.prompt!;
     expect(designPrompt).toContain('AC-1：10 万行 3 秒出结果');
     expect(designPrompt).toContain('本单以自身契约为准');
+  });
+});
+
+describe('v8-AE Agent 选择链与网关统一', () => {
+  function aeGraph(name: string, kind?: string): DagGraph {
+    return {
+      version: 1,
+      name,
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'w', type: 'agent', label: '甲', config: { ...(kind ? { agentKind: kind } : {}), prompt: '做A' } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'w' },
+        { id: 'e2', source: 'w', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+  }
+  const profile = (patch: Partial<{ defaultAgentKind: string; agentOverride: boolean }>) =>
+    store.writeProfile({ id: 'default', name: 'default', createdAt: '', ...patch });
+
+  it('AE-1 节点/角色都没指定：先吃空间默认，再回落自动推荐（OPTS 注入 reco）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-ae1-'));
+    profile({ defaultAgentKind: 'pi' });
+    await runToCompletion(aeGraph('ae1a'), cwd);
+    expect(ops.starts.at(-1)!.kind).toBe('pi');
+    // 清掉空间默认 → 自动推荐（本机真实探针被 OPTS 替成 reco，测试不依赖装了什么）
+    profile({});
+    await runToCompletion(aeGraph('ae1b'), cwd);
+    expect(ops.starts.at(-1)!.kind).toBe('reco');
+  });
+
+  it('AE-2 统一覆盖开：空间默认压过节点里钉死的类型；关着则节点优先', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-ae2-'));
+    profile({ defaultAgentKind: 'pi', agentOverride: true });
+    await runToCompletion(aeGraph('ae2-on', 'claude'), cwd);
+    expect(ops.starts.at(-1)!.kind).toBe('pi');
+    profile({ defaultAgentKind: 'pi', agentOverride: false });
+    await runToCompletion(aeGraph('ae2-off', 'claude'), cwd);
+    expect(ops.starts.at(-1)!.kind).toBe('claude');
+  });
+
+  it('AE-3 网关启用时 pi 自动带 --provider openai --model，且 pane env 注入网关变量（统一走网关）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-ae3-'));
+    fs.writeFileSync(
+      path.join(dataDir, 'gateway.json'),
+      JSON.stringify({ baseUrl: 'http://gw.local:4444/', apiKey: 'sk-test', freeModel: 'auto/free', enabled: true }),
+    );
+    const run = await runToCompletion(aeGraph('ae3', 'pi'), cwd);
+    const start = ops.starts.at(-1)!;
+    expect(start.kind).toBe('pi');
+    expect(start.args.slice(0, 4)).toEqual(['--provider', 'openai', '--model', 'auto/free']);
+    const paneEnv = ops.paneEnvs.get(run.nodes['w']!.paneId!)!;
+    expect(paneEnv.OPENAI_BASE_URL).toBe('http://gw.local:4444/v1');
+    expect(paneEnv.OPENAI_API_KEY).toBe('sk-test');
+  });
+
+  it('AE-4 网关未启用：pi 不加路由参数（保持其自身缺省）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-ae4-'));
+    await runToCompletion(aeGraph('ae4', 'pi'), cwd);
+    expect(ops.starts.at(-1)!.args).toEqual([]);
   });
 });

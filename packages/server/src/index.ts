@@ -3,7 +3,7 @@ import { RealHerdrOps } from './orchestrate/herdr-ops.js';
 import { Engine } from './orchestrate/engine.js';
 import { Store } from './orchestrate/store.js';
 import { buildHttpServer } from './api/http.js';
-import { detectInstalledAgents } from './api/env-check.js';
+import { detectInstalledAgents, recommendAgentKind } from './api/env-check.js';
 import { DISPATCH_AGENT_KIND } from './api/dispatch.js';
 import { loadConfig } from './config.js';
 import { seedBuiltinTemplates } from './orchestrate/builtin-templates.js';
@@ -47,8 +47,9 @@ async function main(): Promise<void> {
   }
   console.log(`[paneflow] herdr socket: ${config.herdrSocketPath}`);
   console.log(`[paneflow] data dir: ${config.dataDir}`);
-  // E'：Planner agent 已可配置（空间档案 defaultAgentKind）——启动时按实际会用的类型提示缺失
-  const plannerKind = store.readProfile().defaultAgentKind || DISPATCH_AGENT_KIND;
+  // E'+AE：Planner agent 已可配置（空间档案 defaultAgentKind），缺省走自动推荐——启动时按实际会用的类型提示缺失
+  const plannerKind =
+    store.readProfile().defaultAgentKind || (await recommendAgentKind()) || DISPATCH_AGENT_KIND;
   void detectInstalledAgents([plannerKind]).then((installed) => {
     if (!installed.includes(plannerKind)) {
       console.warn(`[paneflow] 警告：智能下发依赖的 agent「${plannerKind}」未检测到，下发任务可能起不来`);

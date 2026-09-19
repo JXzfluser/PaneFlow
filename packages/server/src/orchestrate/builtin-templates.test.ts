@@ -15,11 +15,11 @@ describe('builtin templates', () => {
     }
   });
 
-  it('every agent node has agentKind and prompt; fanin uses requireAll not onFail', () => {
+  it('every agent node has a prompt and no钉死 agentKind（AE：类型交给解析链）; fanin uses requireAll not onFail', () => {
     for (const t of BUILTIN_TEMPLATES) {
       for (const n of t.nodes) {
         if (n.type === 'agent') {
-          expect(n.config.agentKind, `${t.name}/${n.id}`).toBeTruthy();
+          expect(n.config.agentKind, `${t.name}/${n.id}`).toBeUndefined();
           expect(n.config.prompt, `${t.name}/${n.id}`).toBeTruthy();
         }
         if (n.type === 'fanin') expect(n.config.onFail).toBeUndefined();

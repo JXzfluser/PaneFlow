@@ -10,7 +10,7 @@ import { Store } from '../orchestrate/store.js';
 import type { SpaceProfile } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { loadContractLibrary, matchContractTemplate, renderContractTemplateBlock } from '../orchestrate/contract-templates.js';
-import { detectInstalledAgents } from './env-check.js';
+import { detectInstalledAgents, recommendAgentKind } from './env-check.js';
 import {
   dispatchChannels,
   readChannels,
@@ -18,7 +18,7 @@ import {
   writeChannels,
   type Channel,
 } from './channels.js';
-import { readGateway, writeGateway, buildGatewayEnv, type ModelGatewaySettings } from './gateway.js';
+import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, type ModelGatewaySettings } from './gateway.js';
 import { readGithubSettings, writeGithubSettings, buildGithubEnv, type GithubSettings } from './github-cred.js';
 
 interface CreateIssueBody {
@@ -105,7 +105,7 @@ export function isAllowedOrigin(opts: {
 const DEFAULT_SPACE = 'default';
 
 /** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面；maxConcurrentRuns=G3 队列上限，配置文件面） */
-const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'maxConcurrentRuns', 'experienceInjection'] as const;
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'agentOverride', 'maxConcurrentRuns', 'experienceInjection'] as const;
 
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
@@ -529,6 +529,15 @@ export async function buildHttpServer(deps: HttpDeps) {
       if (cap !== undefined && (typeof cap !== 'number' || !Number.isFinite(cap) || cap < 1 || cap > 64)) {
         return reply.code(400).send({ error: 'maxConcurrentRuns 必须是 1–64 之间的数字' });
       }
+      // AE：统一覆盖是布尔门，写脏（字符串）会让「全部强制」静默失效；默认类型同理不许写进未知值
+      const ovr = (req.body as Record<string, unknown> | undefined)?.agentOverride;
+      if (ovr !== undefined && typeof ovr !== 'boolean') {
+        return reply.code(400).send({ error: 'agentOverride 必须是布尔值' });
+      }
+      const kind = (req.body as Record<string, unknown> | undefined)?.defaultAgentKind;
+      if (typeof kind === 'string' && kind && !(AGENT_KINDS as readonly string[]).includes(kind)) {
+        return reply.code(400).send({ error: `defaultAgentKind 不是已知类型：${kind}` });
+      }
       // I2：经验注入开关只认真布尔（false 必须能存下去）
       const expInj = (req.body as Record<string, unknown> | undefined)?.experienceInjection;
       if (expInj !== undefined && typeof expInj !== 'boolean') {
@@ -558,16 +567,22 @@ export async function buildHttpServer(deps: HttpDeps) {
       herdrOk = false;
     }
     const agentsInstalled = herdrOk ? await detectInstalledAgents([...AGENT_KINDS]) : [];
+    // AE：推荐与网关状态常备（不依赖 herdr），设置页据此显示「自动推荐：pi」
+    const recommendedAgentKind = await recommendAgentKind();
     return {
       ok: true,
       herdrOk,
       herdrVersion,
       herdrSocket: deps.herdrSocketPath,
       agentKinds: AGENT_KINDS,
+      recommendedAgentKind,
+      gatewayEnabled: gatewayActive(deps.dataDir),
       env: {
         nodeVersion: process.version,
         agentsInstalled,
         agentsMissing: AGENT_KINDS.filter((k) => !agentsInstalled.includes(k)),
+        recommendedAgentKind,
+        gatewayEnabled: gatewayActive(deps.dataDir),
       },
     };
   });
@@ -645,10 +660,10 @@ export async function buildHttpServer(deps: HttpDeps) {
         rootCwd = profile.rootCwd;
         profileSkills = profile.skills;
         profileRepos = profile.repos;
-        // E'：Planner agent 取空间档案默认值；非法值回落缺省（buildDispatchGraph 内兜底）
+        // E'+AE：Planner agent 取空间档案默认值；缺省回落自动推荐（已装优先 pi），最终兜底在 buildDispatchGraph 内
         plannerAgentKind = profile.defaultAgentKind && (AGENT_KINDS as readonly string[]).includes(profile.defaultAgentKind)
           ? profile.defaultAgentKind
-          : undefined;
+          : ((await recommendAgentKind()) ?? undefined);
       } catch {
         rootCwd = undefined;
       }
@@ -834,8 +849,11 @@ export async function buildHttpServer(deps: HttpDeps) {
       if (issues.length) return reply.code(400).send({ error: issues.map((i) => i.message).join('；') });
       const roles = loadRoles(deps.dataDir);
       let rootCwd: string | undefined;
+      let spaceDefaultKind: string | undefined;
       try {
-        rootCwd = spaceStore(deps, (req.query as { space?: string }).space).readProfile().rootCwd;
+        const prof = spaceStore(deps, (req.query as { space?: string }).space).readProfile();
+        rootCwd = prof.rootCwd;
+        spaceDefaultKind = prof.defaultAgentKind?.trim() || undefined;
       } catch {
         rootCwd = undefined;
       }
@@ -845,8 +863,8 @@ export async function buildHttpServer(deps: HttpDeps) {
         const n = graph.nodes.find((x) => x.id === id)!;
         const role = n.config.role ? roles.find((r) => r.id === n.config.role) : undefined;
         if (n.config.role && !role) warnings.push(`节点 ${id} 引用的角色 ${n.config.role} 不存在`);
-        const agentKind = n.config.agentKind ?? role?.agentKind;
-        if (n.type === 'agent' && !agentKind) warnings.push(`节点 ${id}（${n.label}）未配置 Agent 类型（角色也未提供默认值）`);
+        // AE：未指定不再是缺陷——引擎按 空间默认→自动推荐（已装优先 pi）解析
+        const agentKind = n.config.agentKind ?? role?.agentKind ?? spaceDefaultKind;
         const nodeCwd = n.config.cwd ? `${cwd}/${n.config.cwd}` : cwd;
         const checks = n.config.checks ?? [];
         if (n.type === 'fanout' && n.config.expand) {
@@ -857,7 +875,7 @@ export async function buildHttpServer(deps: HttpDeps) {
           type: n.type,
           label: n.label,
           role: role?.name ?? null,
-          agentKind: agentKind ?? null,
+          agentKind: agentKind ?? '自动（推荐已装）',
           cwd: n.type === 'agent' ? nodeCwd : null,
           promptPreview: n.config.prompt ? renderPromptTemplate(n.config.prompt, () => '（运行时注入）').slice(0, 200) : null,
           checks: checks.map((c) => (c.type === 'command' ? `command: ${c.run}` : c.type === 'regex' ? `regex: ${c.file} ~ /${c.pattern}/` : c.type === 'manual' ? `manual: ${c.prompt}` : `file: ${(c as { path: string }).path}`)),

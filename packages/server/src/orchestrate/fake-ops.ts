@@ -8,6 +8,9 @@ export class FakeHerdrOps implements HerdrOps {
   prompts: { target: string; text: string }[] = [];
   sentKeys: { target: string; keys: string[] }[] = [];
   closedWorkspaces: string[] = [];
+  /** AE：启动记录（kind/args）与各 pane 注入的 env，供解析链断言 */
+  starts: { paneId: string; name: string; kind: string; args: string[] }[] = [];
+  paneEnvs = new Map<string, Record<string, string>>();
   paneCounter = 0;
   statusSubs = new Map<string, Set<(s: AgentStatus, agent: string | null) => void>>();
   /** concurrency observation */
@@ -27,13 +30,15 @@ export class FakeHerdrOps implements HerdrOps {
     this.workspaces.set(id, { label, panes: new Set([rootPane]) });
     return { workspaceId: id, tabId: `${id}:t1`, rootPaneId: rootPane };
   }
-  async splitPane(workspaceId: string, _targetPaneId?: string, _cwd?: string, _env?: Record<string, string>) {
+  async splitPane(workspaceId: string, _targetPaneId?: string, _cwd?: string, env?: Record<string, string>) {
     const ws = this.workspaces.get(workspaceId)!;
     const pane = `${workspaceId}:p${++this.paneCounter}`;
     ws.panes.add(pane);
+    if (env) this.paneEnvs.set(pane, env);
     return pane;
   }
-  async startAgent(paneId: string, name: string) {
+  async startAgent(paneId: string, name: string, kind = '', args: string[] = []) {
+    this.starts.push({ paneId, name, kind, args });
     this.agents.set(name, { paneId, status: 'idle' });
   }
   async promptAgent(target: string, text: string) {

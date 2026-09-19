@@ -24,8 +24,9 @@ export function App() {
   const [wizard, setWizard] = useState<{
     herdrOk: boolean;
     herdrVersion: string | null;
-    env: { nodeVersion: string; agentsInstalled: string[]; agentsMissing: string[] };
+    env: { nodeVersion: string; agentsInstalled: string[]; agentsMissing: string[]; recommendedAgentKind?: string | null };
     agentKinds: string[];
+    recommendedAgentKind?: string | null;
   } | null>(null);
 
   useEffect(() => {
@@ -38,8 +39,8 @@ export function App() {
       .then((h) => {
         useStore.getState().setHealth(h.herdrOk, useStore.getState().wsOk);
         setAgentKinds(h.agentKinds);
-        // 默认 Agent：本机已安装优先，其次服务端清单首个（R7-③ 去前端硬编码）
-        useStore.getState().setDefaultAgentKind(h.env.agentsInstalled[0] ?? h.agentKinds[0] ?? '');
+        // 默认 Agent：AE 自动推荐（已装优先 pi）> 本机已装首个 > 服务端清单首个（R7-③ 去前端硬编码）
+        useStore.getState().setDefaultAgentKind(h.recommendedAgentKind ?? h.env.agentsInstalled[0] ?? h.agentKinds[0] ?? '');
         if (!healthLogged) {
           healthLogged = true;
           log(h.herdrOk ? 'info' : 'error', `Herdr ${h.herdrOk ? '已连接' : '不可达'}：${h.herdrSocket}`);

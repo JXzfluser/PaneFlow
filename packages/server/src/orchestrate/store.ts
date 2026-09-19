@@ -18,8 +18,10 @@ export interface SpaceProfile {
   skills?: string[];
   /** 已登记仓库（相对主仓根，含 .git 的子目录）；M3 后作用域挂载点在 rules[].repo（目录名同源） */
   repos?: string[];
-  /** 智能下发 Planner 用的 agent 类型（E'：取代写死 claude；非法/缺省时回落默认值） */
+  /** 空间默认 Agent：节点/角色都没指定时用它（AE：取代写死 opencode/claude）；非法/缺省时回落自动推荐（已装优先 pi） */
   defaultAgentKind?: string;
+  /** AE 统一覆盖：true 时所有 Agent 一律用 defaultAgentKind，忽略节点/模板/角色内的指定（配网关=全走网关） */
+  agentOverride?: boolean;
   /** G3 空间级并发 run 上限（超出的 startRun 排队）；缺省=营地上限（maxConcurrentPanes） */
   maxConcurrentRuns?: number;
   /** I2 上次经验自动注入的全局开关；缺省=开，显式 false=关（绿 run 的变量/断言/成本不再进新单上下文） */

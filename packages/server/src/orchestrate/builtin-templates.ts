@@ -19,8 +19,9 @@ const start = (): N => ({ id: 'start', type: 'start', label: '开始', config: {
 const end = (): N => ({ id: 'end', type: 'end', label: '结束', config: {} });
 const fanout = (): N => ({ id: 'fork', type: 'fanout', label: '并行展开', config: {} });
 
+// AE：模板不再钉死 agent 类型——留给解析链（空间默认 → 自动推荐已装 CLI），避免「模板=claude 而机器没登录」的开箱即挂
 function agent(id: string, label: string, prompt: string, extra: N['config'] = {}): N {
-  return { id, type: 'agent', label, config: { agentKind: 'claude', prompt, ...extra } };
+  return { id, type: 'agent', label, config: { prompt, ...extra } };
 }
 
 function graph(name: string, description: string, nodes: N[], edges: E[]): DagGraph {

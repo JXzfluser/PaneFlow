@@ -479,8 +479,9 @@ export function validateDag(graph: DagGraph): DagIssue[] {
   }
   for (const n of nodes) {
     if (n.type === 'agent') {
-      if (!n.config.agentKind || !AGENT_KIND_PATTERN.test(n.config.agentKind)) {
-        issues.push({ level: 'error', message: `Agent 节点缺少合法的 agentKind：${n.label}`, nodeId: n.id });
+      // AE：agentKind 允许缺省——运行时按 空间默认→自动推荐（已装优先）解析；给了就必须合法
+      if (n.config.agentKind !== undefined && !AGENT_KIND_PATTERN.test(n.config.agentKind)) {
+        issues.push({ level: 'error', message: `Agent 节点 agentKind 非法：${n.config.agentKind || '(空)'}（${n.label}`, nodeId: n.id });
       }
       if (!n.config.prompt || !n.config.prompt.trim()) {
         issues.push({ level: 'error', message: `Agent 节点缺少任务指令（prompt）：${n.label}`, nodeId: n.id });
