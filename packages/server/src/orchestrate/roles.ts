@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { SpaceRule } from './rules.js';
 
 export interface Role {
   id: string;
@@ -34,18 +35,21 @@ export function saveRoles(dataDir: string, roles: Role[]): void {
 
 /**
  * Build the convention context block injected before every agent prompt of a
- * space: profile.conventionFiles read relative to profile.rootCwd, capped
- * per-file and in total. Returns '' when nothing configured.
+ * space: entries resolved relative to profile.rootCwd, capped per-file and in
+ * total. M3: entries are scoped rules (file + optional note) or plain paths
+ * (legacy). Returns '' when nothing configured or nothing matched.
  */
 export function buildConventionBlock(
   rootCwd: string | undefined,
-  conventionFiles: string[] | undefined,
+  entries: (string | SpaceRule)[] | undefined,
   readFile: (p: string) => string | null,
 ): string {
-  if (!rootCwd || !conventionFiles?.length) return '';
+  if (!rootCwd || !entries?.length) return '';
   const parts: string[] = [];
   let total = 0;
-  for (const rel of conventionFiles) {
+  for (const entry of entries) {
+    const rule = typeof entry === 'string' ? { file: entry } : entry;
+    const rel = rule.file;
     if (rel.includes('..')) continue;
     const content = readFile(path.resolve(rootCwd, rel));
     if (content === null) continue;
@@ -55,7 +59,8 @@ export function buildConventionBlock(
       break;
     }
     total += clipped.length;
-    parts.push(`<约定文档 name="${rel}">\n${clipped}\n</约定文档>`);
+    const note = rule.note ? ` note="${rule.note}"` : '';
+    parts.push(`<约定文档 name="${rel}"${note}>\n${clipped}\n</约定文档>`);
   }
   if (!parts.length) return '';
   return `以下是本项目的团队约定（必须严格遵守）：\n\n${parts.join('\n\n')}\n\n---\n`;

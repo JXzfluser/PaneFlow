@@ -22,6 +22,7 @@ import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
 import { buildConventionBlock, loadRoles, type Role } from './roles.js';
+import { effectiveRules, matchRules } from './rules.js';
 import { buildGatewayEnv } from '../api/gateway.js';
 import { buildGithubEnv } from '../api/github-cred.js';
 
@@ -889,7 +890,7 @@ export class Engine {
       );
       const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
       const artifactRel = cfg.artifactFile ?? defaultArtifactFile(nodeId);
-      const { block, agentKind } = this.resolveContext(run, cfg);
+      const { block, agentKind } = this.resolveContext(run, cfg, nodeCwd);
       const prompt = this.withArtifactConvention(
         `${block}${rendered}`,
         path.join(nodeCwd, artifactRel),
@@ -1529,14 +1530,18 @@ export class Engine {
     return loadRoles(this.store.root).find((r) => r.id === roleId);
   }
 
-  /** Convention block from the space profile + role prePrompt, prepended to prompts. */
-  private resolveContext(run: RunRecord, cfg: DagNodeConfig): { block: string; agentKind?: string } {
+  /** Convention block from the space profile + role prePrompt, prepended to prompts. M3: 规则按节点工作目录做作用域匹配。 */
+  private resolveContext(
+    run: RunRecord,
+    cfg: DagNodeConfig,
+    nodeCwd?: string,
+  ): { block: string; agentKind?: string } {
     const parts: string[] = [];
     const role = this.roleById(run, cfg.role);
     if (role?.prePrompt) parts.push(`${role.prePrompt}\n`);
     try {
       const profile = this.storeFor(run).readProfile();
-      const block = buildConventionBlock(profile.rootCwd, profile.conventionFiles, (p) => {
+      const block = buildConventionBlock(profile.rootCwd, matchRules(effectiveRules(profile), profile.rootCwd, nodeCwd), (p) => {
         try {
           return fs.readFileSync(p, 'utf8');
         } catch {

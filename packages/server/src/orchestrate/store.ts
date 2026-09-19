@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DagGraph, RunRecord } from '@paneflow/shared';
+import type { SpaceRule } from './rules.js';
 
 export interface SpaceProfile {
   id: string;
@@ -9,11 +10,13 @@ export interface SpaceProfile {
   /** 主仓根（仓库/文档/技能发现的基准路径） */
   rootCwd?: string;
   description?: string;
-  /** 约定文档（相对主仓根，运行时注入 Agent 上下文） */
+  /** 约定文档（相对主仓根，运行时注入 Agent 上下文）；M3 起被 rules 兼容吸收（迁移为无作用域条目） */
   conventionFiles?: string[];
+  /** M3 作用域规范条目（配置文件管理，无编辑器）：{repo?, pathsGlob?, file, note?} */
+  rules?: SpaceRule[];
   /** 技能清单（相对主仓根） */
   skills?: string[];
-  /** 已登记仓库（相对主仓根，含 .git 的子目录）；目前仅存档，无运行期消费者 */
+  /** 已登记仓库（相对主仓根，含 .git 的子目录）；M3 后作用域挂载点在 rules[].repo（目录名同源） */
   repos?: string[];
   /** 智能下发 Planner 用的 agent 类型（E'：取代写死 claude；非法/缺省时回落默认值） */
   defaultAgentKind?: string;

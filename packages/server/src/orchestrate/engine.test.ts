@@ -1668,3 +1668,74 @@ describe('v8-G2 引用未解析 warn（不拦跑，上时间线）', () => {
     await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
   });
 });
+
+describe('v8-M3 作用域规范注入（rules）', () => {
+  function scopedGraph(): DagGraph {
+    return {
+      version: 1,
+      name: 'scoped-test',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'a', type: 'agent', label: '甲', config: { agentKind: 'fake', prompt: '做A', cwd: 'alpha/svc' } },
+        { id: 'b', type: 'agent', label: '乙', config: { agentKind: 'fake', prompt: '做B', cwd: 'beta' } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'a' },
+        { id: 'e2', source: 'a', target: 'b' },
+        { id: 'e3', source: 'b', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+  }
+
+  function spaceRoot(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-m3-root-'));
+    fs.mkdirSync(path.join(root, 'alpha', 'svc'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'beta'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'global.md'), '全局约定：所有节点可见');
+    fs.writeFileSync(path.join(root, 'alpha', 'conv-a.md'), '甲仓专属规矩');
+    return root;
+  }
+
+  it('repo 规则只进对应仓的节点，无作用域规则全进，note 上标签', async () => {
+    const root = spaceRoot();
+    store.writeProfile({
+      id: 'default',
+      name: 'default',
+      createdAt: '',
+      rootCwd: root,
+      rules: [{ file: 'global.md' }, { repo: 'alpha', file: 'alpha/conv-a.md', note: '仅甲仓适用' }],
+    });
+    const run = await runToCompletion(scopedGraph(), root);
+    expect(run.state).toBe('completed');
+    const pA = ops.prompts.find((p) => p.text.includes('做A'))!;
+    const pB = ops.prompts.find((p) => p.text.includes('做B'))!;
+    expect(pA.text).toContain('全局约定');
+    expect(pA.text).toContain('甲仓专属规矩');
+    expect(pA.text).toContain('note="仅甲仓适用"');
+    expect(pB.text).toContain('全局约定');
+    expect(pB.text).not.toContain('甲仓专属规矩');
+  });
+
+  it('旧 conventionFiles 兼容：与 rules 合并注入（等价无作用域条目）', async () => {
+    const root = spaceRoot();
+    fs.writeFileSync(path.join(root, 'legacy.md'), '旧约定文档');
+    store.writeProfile({
+      id: 'default',
+      name: 'default',
+      createdAt: '',
+      rootCwd: root,
+      conventionFiles: ['legacy.md'],
+      rules: [{ pathsGlob: 'beta', file: 'global.md', note: '乙目录专属' }],
+    });
+    const run = await runToCompletion(scopedGraph(), root);
+    expect(run.state).toBe('completed');
+    const pA = ops.prompts.find((p) => p.text.includes('做A'))!;
+    const pB = ops.prompts.find((p) => p.text.includes('做B'))!;
+    expect(pA.text).toContain('旧约定文档'); // 旧字段全节点可见
+    expect(pB.text).toContain('旧约定文档');
+    expect(pB.text).toContain('全局约定'); // glob 命中 beta
+    expect(pA.text).not.toContain('全局约定'); // 未命中不注入
+  });
+});

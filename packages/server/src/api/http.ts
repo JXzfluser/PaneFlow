@@ -103,8 +103,8 @@ export function isAllowedOrigin(opts: {
 
 const DEFAULT_SPACE = 'default';
 
-/** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应） */
-const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'skills', 'repos', 'defaultAgentKind'] as const;
+/** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面） */
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind'] as const;
 
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
@@ -462,6 +462,15 @@ export async function buildHttpServer(deps: HttpDeps) {
     async (req, reply) => {
       const store = spaceStore(deps, req.params.id);
       const profile = store.readProfile();
+      // M3：rules 无编辑器（配置文件为主），但经 API 写脏形状会让作用域匹配静默失效——机检一把
+      const rules = (req.body as Record<string, unknown> | undefined)?.rules;
+      if (
+        rules !== undefined &&
+        (!Array.isArray(rules) ||
+          rules.some((x) => !x || typeof x !== 'object' || typeof (x as { file?: unknown }).file !== 'string'))
+      ) {
+        return reply.code(400).send({ error: 'rules 必须是 {file, repo?, pathsGlob?, note?} 条目数组' });
+      }
       // 白名单：只接受可编辑字段，id/name/createdAt 等身份字段不可经 body 注入
       const patch: Partial<SpaceProfile> = {};
       for (const key of PROFILE_EDITABLE_KEYS) {
