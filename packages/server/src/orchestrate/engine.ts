@@ -1891,7 +1891,6 @@ export class Engine {
     timeoutMs: number,
   ): Promise<AgentStatus> {
     const deadline = Date.now() + timeoutMs;
-    let polls = 0;
     let blockedStreak = 0;
     for (;;) {
       if (this.cancels.has(run.runId)) throw new Error('已取消');
@@ -1913,11 +1912,6 @@ export class Engine {
       }
       blockedStreak = 0;
       if (Date.now() >= deadline) throw new Error('等待节点完成超时');
-      polls += 1;
-      if (polls > 40) {
-        // debug probe: an unbounded wait would be a logic bug
-        throw new Error(`waitForSettle polls=${polls} timeoutMs=${timeoutMs} deadline=${deadline} now=${Date.now()} status=${status}`);
-      }
       await sleep(1000);
     }
   }
