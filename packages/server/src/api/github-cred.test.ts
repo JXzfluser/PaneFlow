@@ -28,7 +28,11 @@ function stubFetch(handler: FetchHandler): { requests: { url: string; method: st
 }
 
 /** github 端点只消费 deps.dataDir + readGhCliToken；其余依赖以最小桩补齐（buildHttpServer 注册期无需真实实现）。 */
-function buildServer(dataDir: string, readGhCliToken?: () => Promise<string>) {
+function buildServer(
+  dataDir: string,
+  readGhCliToken?: () => Promise<string>,
+  lookupGithubLogin?: (token: string) => Promise<string | null>,
+) {
   return buildHttpServer({
     engine: { onChange: () => {}, getRun: () => undefined } as unknown as Engine,
     store: {} as unknown as Store,
@@ -37,6 +41,8 @@ function buildServer(dataDir: string, readGhCliToken?: () => Promise<string>) {
     dataDir,
     // U2：默认注入「gh 未登录」桩，避免测试受本机钥匙串状态摆布
     readGhCliToken: readGhCliToken ?? (async () => { throw new Error('gh not logged in (test stub)'); }),
+    // v10-X：登录名探测同理默认桩为「探不到」，防测试真打 api.github.com
+    lookupGithubLogin: lookupGithubLogin ?? (async () => null),
   });
 }
 
@@ -289,5 +295,75 @@ describe('v10-U2 凭据来源可见 + gh 兜底 + 解绑', () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe('v10-X 登录名显示（@user）', () => {
+  it('describeGithubCred：有可用 token 才探登录名；探不到不带 login 键', async () => {
+    const { describeGithubCred, writeGithubSettings } = await import('./github-cred.js');
+    const noGh = async () => {
+      throw new Error('no gh');
+    };
+    let probed: string[] = [];
+    const lookup = async (t: string) => {
+      probed.push(t);
+      return 'octocat';
+    };
+    const dir = tmp();
+    // 无凭据：不探测（零网络）
+    expect(await describeGithubCred(dir, noGh, lookup)).toEqual({ source: 'none', tokenTail: '', ghLoggedIn: false });
+    expect(probed).toEqual([]);
+    // gh 登录态兜底：用 gh token 探
+    expect(await describeGithubCred(dir, async () => 'ghtok ', lookup)).toEqual({
+      source: 'gh-cli',
+      tokenTail: '',
+      ghLoggedIn: true,
+      login: 'octocat',
+    });
+    expect(probed).toEqual(['ghtok']);
+    // 存储 PAT 优先：用存储 token 探
+    probed = [];
+    writeGithubSettings(dir, { token: 'ghp_mysecret99' });
+    const r = await describeGithubCred(dir, async () => 'ghtok', lookup);
+    expect(r).toMatchObject({ source: 'stored-pat', login: 'octocat' });
+    expect(probed).toEqual(['ghp_mysecret99']);
+    // 探不到 → login 键整个缺席（前端据缺席显示「没探到」）
+    expect(await describeGithubCred(dir, noGh, async () => null)).toEqual({
+      source: 'stored-pat',
+      tokenTail: 'et99',
+      ghLoggedIn: false,
+    });
+  });
+
+  it('GET /api/github/cred 透传 login；探测失败时字段缺席', async () => {
+    const dir = tmp();
+    const { app } = await buildServer(dir, undefined, async () => 'flow-zfl');
+    try {
+      await app.inject({ method: 'PUT', url: '/api/github/cred', payload: { token: 'ghp_x1', defaultRepo: 'a/b' } });
+      const get = await app.inject({ method: 'GET', url: '/api/github/cred' });
+      expect(get.json()).toMatchObject({ source: 'stored-pat', login: 'flow-zfl' });
+    } finally {
+      await app.close();
+    }
+    const { app: app2 } = await buildServer(dir); // 默认桩=探不到
+    try {
+      const get = await app2.inject({ method: 'GET', url: '/api/github/cred' });
+      expect(get.json()).not.toHaveProperty('login');
+    } finally {
+      await app2.close();
+    }
+  });
+
+  it('githubApiLogin：GET /user 取 login；401/网络炸都返回 null 不抛', async () => {
+    const { githubApiLogin } = await import('./github-cred.js');
+    const ok = async (url: string) => {
+      expect(url).toBe('https://api.github.com/user');
+      return new Response(JSON.stringify({ login: 'cat' }), { status: 200 });
+    };
+    expect(await githubApiLogin('t', ok as typeof fetch)).toBe('cat');
+    expect(await githubApiLogin('t', (async () => new Response('{}', { status: 401 })) as typeof fetch)).toBeNull();
+    expect(await githubApiLogin('t', (async () => {
+      throw new Error('timeout');
+    }) as typeof fetch)).toBeNull();
   });
 });

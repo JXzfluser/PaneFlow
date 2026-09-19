@@ -87,22 +87,45 @@ export async function resolveGithubToken(
   }
 }
 
-/** 设置页可见性：来源 + 尾号 + gh 是否登录（只探不写，token 本身不出这里） */
+/** v10-X：token → GitHub 登录名（GET /user 只探一次；任何失败返回 null，绝不抛） */
+export async function githubApiLogin(
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  try {
+    const res = await fetchImpl('https://api.github.com/user', {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { login?: unknown };
+    return typeof body.login === 'string' && body.login ? body.login : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 设置页可见性：来源 + 尾号 + gh 是否登录（只探不写，token 本身不出这里）；lookupLogin 给出时顺带探登录名 */
 export async function describeGithubCred(
   dataDir: string,
   readToken: () => Promise<string> = ghCliToken,
-): Promise<{ source: GithubCredSource; tokenTail: string; ghLoggedIn: boolean }> {
+  lookupLogin?: (token: string) => Promise<string | null>,
+): Promise<{ source: GithubCredSource; tokenTail: string; ghLoggedIn: boolean; login?: string }> {
   const g = readGithubSettings(dataDir);
-  let ghLoggedIn = false;
+  let ghToken = '';
   try {
-    ghLoggedIn = (await readToken()).trim() !== '';
+    ghToken = (await readToken()).trim();
   } catch {
-    ghLoggedIn = false;
+    ghToken = '';
   }
+  const ghLoggedIn = ghToken !== '';
+  const usable = g.token ?? (ghLoggedIn ? ghToken : undefined);
+  const login = lookupLogin && usable ? (await lookupLogin(usable)) ?? undefined : undefined;
   return {
     source: g.token ? 'stored-pat' : ghLoggedIn ? 'gh-cli' : 'none',
     tokenTail: g.token ? g.token.slice(-4) : '',
     ghLoggedIn,
+    ...(login ? { login } : {}),
   };
 }
 

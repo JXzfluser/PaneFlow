@@ -29,6 +29,7 @@ import {
   resolveGithubToken,
   describeGithubCred,
   removeStoredToken,
+  githubApiLogin,
   type GithubSettings,
 } from './github-cred.js';
 import { maskCandidate, readSwitcherFile } from './switcher-import.js';
@@ -40,6 +41,7 @@ import {
   readWikiPages,
   renderWikiPage,
   syncWikiCache,
+  wikiCacheDir,
 } from './wiki.js';
 
 interface CreateIssueBody {
@@ -98,6 +100,8 @@ export interface HttpDeps {
   corsOrigins?: string[];
   /** U2：gh 登录态 token 读取器（缺省真调 `gh auth token`；测试注入以保证确定性） */
   readGhCliToken?: () => Promise<string>;
+  /** v10-X：token → 登录名探测器（缺省 GET api.github.com/user；测试注入以保证确定性） */
+  lookupGithubLogin?: (token: string) => Promise<string | null>;
 }
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -415,7 +419,11 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   app.get('/api/github/cred', async () => {
     const g = readGithubSettings(deps.dataDir);
-    const d = await describeGithubCred(deps.dataDir, deps.readGhCliToken ?? ghCliToken);
+    const d = await describeGithubCred(
+      deps.dataDir,
+      deps.readGhCliToken ?? ghCliToken,
+      deps.lookupGithubLogin ?? githubApiLogin,
+    );
     return { tokenConfigured: Boolean(g.token), defaultRepo: g.defaultRepo ?? '', ...d };
   });
 
@@ -894,6 +902,41 @@ export async function buildHttpServer(deps: HttpDeps) {
       }
     },
   );
+
+  // -- v10-X wiki 沉淀可见化：状态只读本地缓存（零网络）；sync 显式拉远端最新 ------
+
+  const wikiState = (repo: string) => {
+    let syncedAt = '';
+    try {
+      syncedAt = fs.readFileSync(path.join(wikiCacheDir(deps.dataDir, repo), '.pf-synced'), 'utf8').trim();
+    } catch {
+      syncedAt = '';
+    }
+    const pages = readWikiPages(deps.dataDir, repo).map((p) => ({ file: p.file, title: p.title }));
+    return { repo, pageCount: pages.length, pages, syncedAt };
+  };
+
+  app.get<{ Querystring: { repo?: string } }>('/api/wiki/state', async (req, reply) => {
+    const repo = String(req.query?.repo ?? readGithubSettings(deps.dataDir).defaultRepo ?? '').trim();
+    if (!repo.includes('/')) {
+      return reply.code(400).send({ error: '还没有沉淀目标仓：在设置页配好默认仓库（owner/name）后这里才会有内容' });
+    }
+    return wikiState(repo);
+  });
+
+  app.post<{ Body?: { repo?: string } }>('/api/wiki/sync', async (req, reply) => {
+    const gh = readGithubSettings(deps.dataDir);
+    const token = await ghTokenOrNull();
+    if (!token) return reply.code(400).send({ error: `${NO_CRED}；同步 wiki 沉淀需要读权限` });
+    const repo = String(req.body?.repo ?? gh.defaultRepo ?? '').trim();
+    if (!repo.includes('/')) return reply.code(400).send({ error: '缺少目标仓库（设置页配默认仓库）' });
+    try {
+      await syncWikiCache({ dataDir: deps.dataDir, repo, token, maxAgeMs: 0 });
+    } catch (e) {
+      return reply.code(502).send({ error: `wiki 同步失败：${(e as Error).message}` });
+    }
+    return wikiState(repo);
+  });
 
   // -- 智能下发（Smart Dispatch） ----------------------------------------------
 

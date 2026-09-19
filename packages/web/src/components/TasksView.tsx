@@ -131,7 +131,8 @@ export function TasksView() {
     try {
       const r = await api.enhanceIssue(task.trim(), cwd.trim() || undefined, deep);
       setDraft(r.issue);
-      log('info', deep ? '深档扩写完成：两稿择优，可编辑后采纳' : '扩写完成：草稿可编辑，采纳后直接下发');
+      const wikiNote = r.wikiPages ? `（带了 ${r.wikiPages} 页 wiki 沉淀进上下文）` : '';
+      log('info', `${deep ? '深档扩写完成：两稿择优' : '扩写完成：草稿可编辑'}${wikiNote}，改完采纳即可下发`);
     } catch (e) {
       log('error', `扩写失败：${(e as Error).message}`);
     } finally {

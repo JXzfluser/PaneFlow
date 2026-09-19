@@ -140,6 +140,8 @@ export const api = {
       ok: true;
       issue: { title: string; body: string; acceptance: string[]; openQuestions: string[] };
       candidates?: { title: string; body: string }[];
+      /** v10-X：本次扩写带进上下文的 wiki 沉淀页数 */
+      wikiPages?: number;
     }>('POST', '/api/issues/enhance', {
       text,
       ...(cwd ? { cwd } : {}),

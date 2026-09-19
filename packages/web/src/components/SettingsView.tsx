@@ -201,6 +201,14 @@ interface GithubCredState {
   source?: 'stored-pat' | 'gh-cli' | 'none';
   tokenTail?: string;
   ghLoggedIn?: boolean;
+  /** v10-X：GET /user 探到的登录名（探不到时字段缺席） */
+  login?: string;
+}
+
+/** v10-X 身份行：三种来源都带上 @用户名 */
+function credIdentity(g: GithubCredState): string {
+  if (g.source === 'none') return '';
+  return g.login ? ` · 以 @${g.login} 身份` : ' · 用户名没探到（api.github.com 不可达或 token 缺读权限）';
 }
 
 function GithubCredCard() {
@@ -287,8 +295,8 @@ function GithubCredCard() {
         GitHub Token {g.tokenConfigured && <span className="inline-ok">（已配置，留空保持不变）</span>}
       </label>
       <p className="settings-hint">
-        {g.source === 'stored-pat' && <>来源：本机存储的 PAT · 尾号 {g.tokenTail}{g.ghLoggedIn ? '；gh 登录态可作兜底' : ''}</>}
-        {g.source === 'gh-cli' && <>来源：本机 gh 登录态（现取现用，未写盘）。动作侧照常可用；想让它也喂给 Agent Pane 里的 gh，可一键导入落盘。</>}
+        {g.source === 'stored-pat' && <>来源：本机存储的 PAT · 尾号 {g.tokenTail}{credIdentity(g)}{g.ghLoggedIn ? '；gh 登录态可作兜底' : ''}</>}
+        {g.source === 'gh-cli' && <>来源：本机 gh 登录态（现取现用，未写盘）{credIdentity(g)}。动作侧照常可用；想让它也喂给 Agent Pane 里的 gh，可一键导入落盘。</>}
         {g.source === 'none' && <>来源：无。要么贴一个 PAT，要么本机 gh auth login——登录后无需任何存储即可直连。</>}
       </p>
       <input
@@ -328,6 +336,95 @@ function GithubCredCard() {
         </button>
       </div>
     </>
+  );
+}
+
+/** v10-X wiki 沉淀可见化：状态只读本地缓存（GET /api/wiki/state，零网络）；「拉取远端」显式同步 */
+interface WikiStateView {
+  repo: string;
+  pageCount: number;
+  pages: { file: string; title: string }[];
+  syncedAt: string;
+}
+
+function WikiSedimentCard() {
+  const log = useStore((s) => s.log);
+  const [st, setSt] = useState<WikiStateView | null>(null);
+  const [noRepo, setNoRepo] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const refresh = () =>
+    fetchJson<WikiStateView>('GET', '/api/wiki/state')
+      .then((d) => {
+        setSt(d);
+        setNoRepo(false);
+      })
+      .catch((e: Error) => {
+        if (e.message.includes('默认仓库')) setNoRepo(true);
+        else log('error', `读取 wiki 沉淀状态失败：${e.message}`);
+      });
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const sync = async () => {
+    setSyncing(true);
+    try {
+      const d = await fetchJson<WikiStateView>('POST', '/api/wiki/sync', {});
+      setSt(d);
+      setNoRepo(false);
+      log('info', `wiki 沉淀已同步：${d.pageCount} 页在库`);
+    } catch (e) {
+      log('error', `wiki 同步失败：${(e as Error).message}`);
+    } finally {
+      setSyncing(false);
+    }
+  };
+  if (noRepo) {
+    return (
+      <p className="settings-hint">
+        还没配默认仓库（owner/name）——在上方填好保存后，绿单点赞沉淀的页就会出现在这里。
+      </p>
+    );
+  }
+  return (
+    <div className="wiki-sediment">
+      <div className="wiki-sed-head">
+        <b>📚 wiki 沉淀（知识复利）</b>
+        {st && (
+          <a className="link" href={`https://github.com/${st.repo}/wiki`} target="_blank" rel="noreferrer">
+            github.com/{st.repo}/wiki ↗
+          </a>
+        )}
+      </div>
+      {!st && <p className="settings-hint">读取中…</p>}
+      {st && st.pageCount === 0 && (
+        <p className="settings-hint">
+          还没有沉淀页：到「执行中心」给一条绿单点赞即可推页。扩写需求时会自动读本仓沉淀页进上下文。
+        </p>
+      )}
+      {st && st.pageCount > 0 && (
+        <>
+          <p className="settings-hint">
+            {st.pageCount} 页在库{st.syncedAt ? ` · 缓存同步于 ${new Date(st.syncedAt).toLocaleString()}` : ' · 本地缓存还没同步过'}
+          </p>
+          <ul className="wiki-page-list">
+            {st.pages.slice(0, 8).map((p) => (
+              <li key={p.file}>
+                <a href={`https://github.com/${st.repo}/wiki/${p.file.replace(/\.md$/, '')}`} target="_blank" rel="noreferrer">
+                  {p.title}
+                </a>
+              </li>
+            ))}
+          </ul>
+          {st.pages.length > 8 && <p className="settings-hint">…其余 {st.pages.length - 8} 页见线上 wiki</p>}
+        </>
+      )}
+      <div className="settings-actions">
+        <button className="ghost" disabled={syncing || noRepo} onClick={() => void sync()}>
+          {syncing ? '同步中…' : '🔄 从远端拉最新沉淀'}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -822,6 +919,7 @@ export function SettingsView() {
             解决企业托管账号（EMU）无法操作外部仓库的问题：注入 GH_TOKEN 后，Agent 的 gh issue/pr 命令将以此身份执行。
           </p>
           <GithubCredCard />
+          <WikiSedimentCard />
         </section>
 
         <section className="settings-card" id="sec-env">

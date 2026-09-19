@@ -882,6 +882,15 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .profile-head h3 { margin: 0; }
 .profile-head .ghost { width: auto; margin: 0; padding: 3px 10px; font-size: 12px; }
 
+/* v10-X 设置页 GitHub 区：wiki 沉淀卡 */
+.wiki-sediment {
+  margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--border);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.wiki-sed-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.wiki-page-list { margin: 0; padding-left: 18px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.wiki-page-list a { color: var(--accent); }
+
 /* v9-N3 排队卡：等待原因可见 + 提队首/取消 */
 .task-queued { margin-top: 10px; border: 1px dashed var(--warn); border-radius: 10px; background: var(--chip-warn); padding: 10px 12px; }
 .task-queued-reason { margin: 0; font-size: 12.5px; color: var(--text); line-height: 1.7; }
