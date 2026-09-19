@@ -125,6 +125,15 @@ export const api = {
       ...(issueId ? { issueId } : {}),
       ...(preview ? { preview: true } : {}),
     }),
+  /** v9-N3 排队全景：并发额度、占用者、排队位次（queued 卡片渲染等待原因） */
+  queueStatus: () =>
+    json<{
+      cap: number;
+      running: { runId: string; title: string }[];
+      queued: { runId: string; title: string; position: number }[];
+    }>('GET', '/api/queue'),
+  /** N3：排队单提到队首（插队）；不在队列 409 */
+  promoteRun: (runId: string) => json<{ promoted: true }>('POST', `/api/runs/${runId}/promote`),
   /** v9-N1 需求增强器：一句话 → 接近可开工的 issue 草稿（网关未启用时 400） */
   enhanceIssue: (text: string, cwd?: string, deep?: boolean) =>
     json<{

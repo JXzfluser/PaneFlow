@@ -3,6 +3,7 @@ import type { DagGraph, RunRecord } from '@paneflow/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { deriveSteps, hasParallel, summarizeSteps } from '../steps.js';
+import { queuedReasonText } from '../queue-view.js';
 import { templateLabel } from '../template-labels.js';
 
 /**
@@ -354,6 +355,17 @@ function BatchDispatch() {
 function RecentTasks({ onOpenRuns }: { onOpenRuns: () => void }) {
   const runs = useStore((s) => s.runs);
   const templates = useStore((s) => s.templateList);
+  const [queue, setQueue] = useState<Awaited<ReturnType<typeof api.queueStatus>> | null>(null);
+
+  const refreshQueue = () => void api.queueStatus().then(setQueue).catch(() => undefined);
+  // 有排队单才值得轮询位次/占用者；无排队不产生额外请求
+  const anyQueued = Object.values(runs).some((r) => r.state === 'queued');
+  useEffect(() => {
+    refreshQueue();
+    if (!anyQueued) return;
+    const t = setInterval(refreshQueue, 5000);
+    return () => clearInterval(t);
+  }, [anyQueued]);
 
   const list = useMemo(
     () => Object.values(runs).sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
@@ -375,7 +387,7 @@ function RecentTasks({ onOpenRuns }: { onOpenRuns: () => void }) {
         <div className="tasks-empty">还没有任务。在上面描述一句要做的事，或从「编」里的模板库载入骨架手动运行。</div>
       )}
       {shown.map((r) => (
-        <TaskCard key={r.runId} run={r} templates={templates} />
+        <TaskCard key={r.runId} run={r} templates={templates} queue={queue} onQueueChanged={refreshQueue} />
       ))}
     </div>
   );
@@ -384,9 +396,13 @@ function RecentTasks({ onOpenRuns }: { onOpenRuns: () => void }) {
 function TaskCard({
   run,
   templates,
+  queue,
+  onQueueChanged,
 }: {
   run: RunRecord;
   templates: DagGraph[];
+  queue: Awaited<ReturnType<typeof api.queueStatus>> | null;
+  onQueueChanged: () => void;
 }) {
   const openRun = useStore((s) => s.openRun);
   const setView = useStore((s) => s.setView);
@@ -412,6 +428,23 @@ function TaskCard({
   const title =
     run.graph.metadata?.description?.trim() ||
     (run.issueId ? `Issue #${run.issueId}` : templateLabel(run.dagName).title);
+
+  const promote = async () => {
+    try {
+      await api.promoteRun(run.runId);
+      onQueueChanged();
+    } catch (e) {
+      useStore.getState().log('error', `提队首失败：${(e as Error).message}`);
+    }
+  };
+  const cancelQueued = async () => {
+    try {
+      await api.stopRun(run.runId);
+      onQueueChanged();
+    } catch (e) {
+      useStore.getState().log('error', `取消失败：${(e as Error).message}`);
+    }
+  };
 
   const openCanvas = () => {
     openRun(run.runId);
@@ -441,6 +474,17 @@ function TaskCard({
           <span className="task-progress-text">
             {done}/{all.length} 步
           </span>
+        </div>
+      )}
+
+      {/* N3：排队原因可见 + 可动（提队首/取消）——不再是「⏳ 排队中」死局观感 */}
+      {run.state === 'queued' && (
+        <div className="task-queued">
+          <p className="task-queued-reason">{queuedReasonText(queue, run.runId)}</p>
+          <div className="task-queued-actions">
+            <button onClick={() => void promote()}>⏫ 提到队首</button>
+            <button onClick={() => void cancelQueued()}>✕ 取消排队</button>
+          </div>
         </div>
       )}
 

@@ -1854,6 +1854,38 @@ describe('v8-G3 空间级轻队列', () => {
     await expect(engine.startRun(serialGraph(), cwd, undefined, undefined, '66')).rejects.toThrow(/已有运行中\/排队中/);
   });
 
+  // N3 排队可见即可动：queueStatus 给占用者与位次；promoteRun 提到队首（满额不点火，空额即启）
+  it('queueStatus：running 占用者与 queued 位次可见；promoteRun 换序、非排队单返回 false', async () => {
+    setCap(1);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-q-'));
+    const r1 = await engine.startRun(gatedGraph('g1'), cwd);
+    await waitFor(() => engine.getRun(r1.runId)!.nodes['impl']!.state === 'blocked');
+    const g2 = serialGraph();
+    g2.metadata.description = '第二条排队单';
+    const r2 = await engine.startRun(g2, cwd);
+    const r3 = await engine.startRun(serialGraph(), cwd);
+    expect([r2.state, r3.state]).toEqual(['queued', 'queued']);
+
+    const q = engine.queueStatus();
+    expect(q.cap).toBe(1);
+    expect(q.running.map((x) => x.runId)).toEqual([r1.runId]);
+    expect(q.queued.map((x) => [x.runId, x.position])).toEqual([[r2.runId, 1], [r3.runId, 2]]);
+    expect(q.queued[0]!.title).toBe('第二条排队单');
+
+    expect(engine.promoteRun(r3.runId)).toBe(true);
+    expect(engine.queueStatus().queued.map((x) => x.runId)).toEqual([r3.runId, r2.runId]);
+    // 满额时提队首不越权点火：两条仍是 queued
+    expect(engine.getRun(r3.runId)!.state).toBe('queued');
+    expect((engine.getRun(r3.runId)!.events ?? []).some((e) => e.text.includes('提到队首'))).toBe(true);
+    // 不在队列的单（running / 不存在）拒绝
+    expect(engine.promoteRun(r1.runId)).toBe(false);
+    expect(engine.promoteRun('nope')).toBe(false);
+
+    await engine.approve(r1.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(r3.runId)!.state === 'completed');
+    await waitFor(() => engine.getRun(r2.runId)!.state === 'completed');
+  });
+
   it('重启复原：queued 记录重新入列并在额度内自动开跑', async () => {
     setCap(1);
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-q-'));

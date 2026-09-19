@@ -1190,6 +1190,18 @@ export async function buildHttpServer(deps: HttpDeps) {
     return { stopping: true };
   });
 
+  // -- v9-N3 排队可见即可动：额度占用者/位次 + 提队首 --------------------------------
+
+  app.get<{ Querystring: { space?: string } }>('/api/queue', async (req) => {
+    return deps.engine.queueStatus(req.query.space);
+  });
+
+  app.post<{ Params: { id: string } }>('/api/runs/:id/promote', async (req, reply) => {
+    const ok = deps.engine.promoteRun(req.params.id);
+    if (!ok) return reply.code(409).send({ error: '该单不在排队中（可能已开跑或已取消）' });
+    return { promoted: true };
+  });
+
   app.post<{ Params: { id: string; nodeId: string }; Body: ApprovalAction }>(
     '/api/runs/:id/nodes/:nodeId/approve',
     async (req, reply) => {

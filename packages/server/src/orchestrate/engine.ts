@@ -432,6 +432,46 @@ export class Engine {
   }
 
   /**
+   * N3 排队可见：额度上限 + 占用者 + 队列位次（任务卡据此渲染等待原因与可动按钮）。
+   * title 与运行卡标题同源：描述 > Issue 编号 > 骨架名。
+   */
+  queueStatus(spaceId?: string): {
+    cap: number;
+    running: { runId: string; title: string }[];
+    queued: { runId: string; title: string; position: number }[];
+  } {
+    const spaceKey = spaceId ?? 'default';
+    const titleOf = (r: RunRecord) =>
+      r.graph.metadata?.description?.trim() || (r.issueId ? `Issue #${r.issueId}` : r.dagName);
+    const q = this.runQueues.get(spaceKey) ?? [];
+    const queuedIds = q.filter((id) => this.runs.get(id)?.state === 'queued');
+    return {
+      cap: this.runCapFor(spaceKey),
+      running: [...this.runs.values()]
+        .filter((r) => r.state === 'running' && (r.spaceId ?? 'default') === spaceKey)
+        .map((r) => ({ runId: r.runId, title: titleOf(r) })),
+      queued: queuedIds.map((id, i) => ({ runId: id, title: titleOf(this.runs.get(id)!), position: i + 1 })),
+    };
+  }
+
+  /** N3 排队可动：提到队首插队；恰有空额则立即点火。不在队列（已开跑/已取消）返回 false */
+  promoteRun(runId: string): boolean {
+    for (const [spaceKey, q] of this.runQueues) {
+      const i = q.indexOf(runId);
+      if (i < 0) continue;
+      const run = this.runs.get(runId);
+      if (!run || run.state !== 'queued') return false;
+      q.splice(i, 1);
+      q.unshift(runId);
+      this.recordEvent(run, 'run', undefined, `提到队首：原位次 ${i + 1} → 1（插队需对后果负责——前面各单主人可见）`);
+      this.persistAndNotify(run);
+      this.pumpQueue(spaceKey);
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * I2：找同空间+同模板最近一次绿 run（归档的也算——历史即经验）。
    * 全局关：空间档案 experienceInjection=false（缺省开）。
    */
