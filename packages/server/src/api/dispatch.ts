@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import type { CheckSpec, DagGraph } from '@paneflow/shared';
 
 export interface DispatchOptions {
@@ -22,6 +24,8 @@ export interface DispatchOptions {
   contractAssertions?: string[];
   /** M6：命中的契约骨架模板（stamp=id@sha 留痕；block=注入 Planner 的实例化指令） */
   contractTemplate?: { stamp: string; block: string };
+  /** I1：空间技能索引（名字+首行描述）——注入 Planner 上下文，契约/方案可引用 skill:<name> */
+  skillIndex?: { name: string; description?: string }[];
 }
 
 /** G1：Issue 读取器的出参形状（http 路由与下发注入共用） */
@@ -46,6 +50,52 @@ export function parseIssueRef(text: string): { number: number; repo?: string } |
   const hash = text.match(/(?:^|\s)#(\d{1,7})(?=$|\s)/);
   if (hash) return { number: Number(hash[1]) };
   return null;
+}
+
+/**
+ * I1：从 git remote URL 认出 owner/repo——支持 scp 式 git@、ssh://、https:// 三种写法，
+ * 结尾 .git 剥掉。认不出返回 null（自建 Gitea 域等一律不算 GitHub 候选）。
+ */
+export function parseGithubRemote(url: string): string | null {
+  const s = url.trim();
+  const m =
+    s.match(/^(?:[^@/\s]+@)?github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/) ??
+    s.match(/^ssh:\/\/(?:[^/\s]*@)?github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i) ??
+    s.match(/^https?:\/\/(?:[^/\s]*@)?github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i);
+  return m ? m[1]! : null;
+}
+
+/**
+ * I1：#123 裸引用且没配默认仓时，按空间 repos 登记顺序从各仓 origin 解析候选 GitHub 仓。
+ * readRemote 可注入（默认 `git -C <dir> remote get-url origin`），首个命中即返。
+ */
+export function candidateRepos(
+  repos: string[] | undefined,
+  rootCwd: string | undefined,
+  readRemote: (repoDir: string) => string | null = defaultGitRemote,
+): string[] {
+  if (!rootCwd || !repos?.length) return [];
+  const out: string[] = [];
+  for (const rel of repos) {
+    if (!rel || rel.includes('..')) continue;
+    const url = readRemote(path.resolve(rootCwd, rel));
+    if (!url) continue;
+    const owner = parseGithubRemote(url);
+    if (owner && !out.includes(owner)) out.push(owner);
+  }
+  return out;
+}
+
+function defaultGitRemote(repoDir: string): string | null {
+  try {
+    return execFileSync('git', ['-C', repoDir, 'remote', 'get-url', 'origin'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    });
+  } catch {
+    return null;
+  }
 }
 
 /** 防模板引擎注入：issue 正文里的 {{ }} 会污染提示词渲染 */
@@ -135,6 +185,15 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
     });
   }
 
+  // I1：技能索引块——契约/方案可引用技能（skill:<name>），仓库里长出来的复利入口
+  const skillBlock = opts.skillIndex?.length
+    ? [
+        '',
+        `本空间技能库 ${opts.skillIndex.length} 项（沉淀过的做法，立约与方案优先复用，引用写法 skill:<name>）：`,
+        ...opts.skillIndex.map((s) => `- ${s.name}${s.description ? ` —— ${s.description}` : ''}`),
+      ].join('\n')
+    : '';
+
   const plannerPrompt = [
     '你是 PaneFlow 的任务下发规划员。用户任务描述：',
     `"""${task}"""`,
@@ -142,6 +201,7 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
     contractBlock,
     '当前空间可用的交付模板（ID — 说明）：',
     tplList || '（无）',
+    skillBlock,
     opts.rootCwd ? `空间主仓根：${opts.rootCwd}` : '',
     '',
     '请决策并把结论写入结果文件 .herdr/artifacts/planner.json 的 extra 字段：',

@@ -23,6 +23,7 @@ import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
 import { buildConventionBlock, loadRoles, type Role } from './roles.js';
 import { effectiveRules, matchRules } from './rules.js';
+import { buildSkillBlock } from './skills.js';
 import { buildGatewayEnv } from '../api/gateway.js';
 import { buildGithubEnv } from '../api/github-cred.js';
 
@@ -1541,14 +1542,20 @@ export class Engine {
     if (role?.prePrompt) parts.push(`${role.prePrompt}\n`);
     try {
       const profile = this.storeFor(run).readProfile();
-      const block = buildConventionBlock(profile.rootCwd, matchRules(effectiveRules(profile), profile.rootCwd, nodeCwd), (p) => {
+      const read = (p: string) => {
         try {
           return fs.readFileSync(p, 'utf8');
         } catch {
           return null;
         }
-      });
+      };
+      const hit = matchRules(effectiveRules(profile), profile.rootCwd, nodeCwd);
+      const block = buildConventionBlock(profile.rootCwd, hit, read);
       if (block) parts.push(block);
+      // I1：技能库走约定同款通道（整篇注入、大小上限复用），与命中规则同文件去重避免双份
+      const skillFiles = (profile.skills ?? []).filter((f) => !hit.some((r) => r.file === f));
+      const skillBlock = buildSkillBlock(profile.rootCwd, skillFiles, read);
+      if (skillBlock) parts.push(skillBlock);
     } catch {
       // profile unreadable — proceed without conventions
     }

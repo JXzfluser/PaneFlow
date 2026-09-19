@@ -37,7 +37,8 @@ interface UpdateIssueBody {
   body: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
-import { buildDispatchGraph, extractAcceptance, parseIssueRef, type IssueView } from './dispatch.js';
+import { buildDispatchGraph, candidateRepos, extractAcceptance, parseIssueRef, type IssueView } from './dispatch.js';
+import { readSkillIndex } from '../orchestrate/skills.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
@@ -554,9 +555,13 @@ export async function buildHttpServer(deps: HttpDeps) {
       const store0 = spaceStore(deps, req.query.space);
       let rootCwd: string | undefined;
       let plannerAgentKind: string | undefined;
+      let profileSkills: string[] | undefined;
+      let profileRepos: string[] | undefined;
       try {
         const profile = store0.readProfile();
         rootCwd = profile.rootCwd;
+        profileSkills = profile.skills;
+        profileRepos = profile.repos;
         // E'：Planner agent 取空间档案默认值；非法值回落缺省（buildDispatchGraph 内兜底）
         plannerAgentKind = profile.defaultAgentKind && (AGENT_KINDS as readonly string[]).includes(profile.defaultAgentKind)
           ? profile.defaultAgentKind
@@ -579,11 +584,21 @@ export async function buildHttpServer(deps: HttpDeps) {
       let issueContext: IssueView | undefined;
       let issueNote: string | undefined;
       if (issueId && /^\d+$/.test(issueId)) {
-        try {
-          issueContext = await fetchGithubIssue(Number(issueId), issueRepo);
-        } catch (err) {
-          issueNote = `Issue #${issueId} 正文读取失败（${(err as Error).message}），本次仅按任务描述执行`;
+        const attempts: (string | undefined)[] = [issueRepo];
+        // I1：裸 #123 且没配默认仓时，按空间 repos 登记的 origin 依次解析候选仓，首个命中即用
+        if (!issueRepo && !readGithubSettings(deps.dataDir).defaultRepo) {
+          attempts.push(...candidateRepos(profileRepos, rootCwd));
         }
+        let lastErr: Error | undefined;
+        for (const repo of attempts) {
+          try {
+            issueContext = await fetchGithubIssue(Number(issueId), repo);
+            break;
+          } catch (err) {
+            lastErr = err as Error;
+          }
+        }
+        if (!issueContext) issueNote = `Issue #${issueId} 正文读取失败（${lastErr?.message}），本次仅按任务描述执行`;
       }
       const templateList = store0
         .listGraphs()
@@ -615,6 +630,8 @@ export async function buildHttpServer(deps: HttpDeps) {
         contractTemplate: tplHit
           ? { stamp: `${tplHit.template.id}@${tplHit.sha}`, block: renderContractTemplateBlock(tplHit, contractLib) }
           : undefined,
+        // I1：技能索引进 Planner（一行一项；整篇注入在引擎节点侧另有通道）
+        skillIndex: readSkillIndex(rootCwd, profileSkills),
       });
       const run = await deps.engine.startRun(
         graph,

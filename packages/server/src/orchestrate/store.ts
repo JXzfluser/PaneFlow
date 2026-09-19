@@ -14,7 +14,7 @@ export interface SpaceProfile {
   conventionFiles?: string[];
   /** M3 作用域规范条目（配置文件管理，无编辑器）：{repo?, pathsGlob?, file, note?} */
   rules?: SpaceRule[];
-  /** 技能清单（相对主仓根） */
+  /** 技能清单（相对主仓根）；I1 起有运行期消费：约定同款通道注入节点 prompt + Planner 技能索引 */
   skills?: string[];
   /** 已登记仓库（相对主仓根，含 .git 的子目录）；M3 后作用域挂载点在 rules[].repo（目录名同源） */
   repos?: string[];

@@ -1739,3 +1739,58 @@ describe('v8-M3 作用域规范注入（rules）', () => {
     expect(pA.text).not.toContain('全局约定'); // 未命中不注入
   });
 });
+
+describe('v8-I1 skills 死配置激活（节点注入通道）', () => {
+  function twoNodeGraph(): DagGraph {
+    return {
+      version: 1,
+      name: 'skills-test',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'a', type: 'agent', label: '甲', config: { agentKind: 'fake', prompt: '做A', cwd: 'alpha/svc' } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'a' },
+        { id: 'e2', source: 'a', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+  }
+
+  it('profile.skills 整篇进节点 prompt（技能库措辞 + 标签）', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-i1-root-'));
+    fs.mkdirSync(path.join(root, 'alpha', 'svc'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'deploy-skill.md'), '技能做法：先跑门禁再发布');
+    store.writeProfile({
+      id: 'default',
+      name: 'default',
+      createdAt: '',
+      rootCwd: root,
+      skills: ['deploy-skill.md'],
+    });
+    const run = await runToCompletion(twoNodeGraph(), root);
+    expect(run.state).toBe('completed');
+    const pA = ops.prompts.find((p) => p.text.includes('做A'))!;
+    expect(pA.text).toContain('技能库');
+    expect(pA.text).toContain('技能做法：先跑门禁再发布');
+    expect(pA.text).toContain('<技能文档 name="deploy-skill.md">');
+  });
+
+  it('同一文件既在 rules 又在 skills：只注入一次（去重防双份）', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-i1-dedupe-'));
+    fs.writeFileSync(path.join(root, 'shared.md'), '共享做法文档');
+    store.writeProfile({
+      id: 'default',
+      name: 'default',
+      createdAt: '',
+      rootCwd: root,
+      rules: [{ file: 'shared.md' }],
+      skills: ['shared.md'],
+    });
+    const run = await runToCompletion(twoNodeGraph(), root);
+    expect(run.state).toBe('completed');
+    const pA = ops.prompts.find((p) => p.text.includes('做A'))!;
+    expect(pA.text.match(/共享做法文档/g)).toHaveLength(1);
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDispatchGraph, DISPATCH_AGENT_KIND, extractAcceptance, parseIssueRef, type IssueView } from './dispatch.js';
+import { buildDispatchGraph, candidateRepos, DISPATCH_AGENT_KIND, extractAcceptance, parseGithubRemote, parseIssueRef, type IssueView } from './dispatch.js';
 import { BUILTIN_TEMPLATES } from '../orchestrate/builtin-templates.js';
 import { applyVariables, validateDag } from '@paneflow/shared';
 
@@ -203,5 +203,52 @@ describe('v8-M6 契约骨架模板装配（buildDispatchGraph）', () => {
     const p = planner({ contractAssertions: ['3 秒内出结果'], contractTemplate: tpl });
     expect(p.config.prompt).not.toContain('契约骨架模板');
     expect((p.config.checks ?? []).some((c) => c.type === 'contract')).toBe(false);
+  });
+});
+
+describe('v8-I1 技能索引进 Planner + repos 候选仓解析', () => {
+  const templateList = [{ name: 't1' }];
+  const plannerPrompt = (opts: Partial<import('./dispatch.js').DispatchOptions>) =>
+    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...opts }).nodes.find((n) => n.id === 'planner')!.config.prompt!;
+
+  it('skillIndex 非空 → 索引一行一项并给出 skill:<name> 引用写法', () => {
+    const p = plannerPrompt({
+      skillIndex: [
+        { name: 'deploy', description: '灰度发布做法' },
+        { name: 'triage' },
+      ],
+    });
+    expect(p).toContain('本空间技能库 2 项');
+    expect(p).toContain('- deploy —— 灰度发布做法');
+    expect(p).toContain('- triage');
+    expect(p).toContain('引用写法 skill:<name>');
+  });
+
+  it('无技能 → 不出现技能库字样', () => {
+    expect(plannerPrompt({})).not.toContain('技能库');
+    expect(plannerPrompt({ skillIndex: [] })).not.toContain('技能库');
+  });
+
+  it('parseGithubRemote：scp 式 / ssh:// / https:// 都认，非 GitHub 不认', () => {
+    expect(parseGithubRemote('git@github.com:acme/app.git')).toBe('acme/app');
+    expect(parseGithubRemote('ssh://git@github.com/acme/app')).toBe('acme/app');
+    expect(parseGithubRemote('https://github.com/acme/app.git')).toBe('acme/app');
+    expect(parseGithubRemote('https://github.com/acme/app/')).toBe('acme/app');
+    expect(parseGithubRemote('https://gitea.example.com/a/b.git')).toBeNull();
+    expect(parseGithubRemote('git@gitlab.com:x/y.git')).toBeNull();
+    expect(parseGithubRemote('')).toBeNull();
+  });
+
+  it('candidateRepos：按登记顺序解析 origin、去重、读不到如实跳过', () => {
+    const remotes: Record<string, string | null> = {
+      '/root/alpha': 'git@github.com:o/alpha.git',
+      '/root/beta': 'https://github.com/o/alpha.git', // 同 owner/repo 去重
+      '/root/gamma': null, // 无 origin / 非 git 目录
+      '/root/delta': 'git@notgithub.com:x/y.git',
+    };
+    const readRemote = (dir: string) => remotes[dir] ?? null;
+    expect(candidateRepos(['alpha', 'beta', 'gamma', '../evil', 'delta'], '/root', readRemote)).toEqual(['o/alpha']);
+    expect(candidateRepos(undefined, '/root', readRemote)).toEqual([]);
+    expect(candidateRepos(['alpha'], undefined, readRemote)).toEqual([]);
   });
 });
