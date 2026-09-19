@@ -37,7 +37,7 @@ interface UpdateIssueBody {
   body: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
-import { buildDispatchGraph, candidateRepos, extractAcceptance, parseIssueRef, type IssueView } from './dispatch.js';
+import { buildDispatchGraph, candidateRepos, extractAcceptance, INTAKE_TEMPLATE_PATH, intakeTemplateMarkdown, parseIssueRef, type IssueView } from './dispatch.js';
 import { readSkillIndex } from '../orchestrate/skills.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -348,6 +348,58 @@ export async function buildHttpServer(deps: HttpDeps) {
       return reply.code(502).send({ error: (err as Error).message });
     }
   });
+
+  // -- M4 接单模板回写：让源头质量可检（锚点与 M1 机检同源，见 dispatch.ts） ----
+
+  app.post<{ Body: { repo?: string; overwrite?: boolean } }>(
+    '/api/github/intake-template',
+    async (req, reply) => {
+      const gh = readGithubSettings(deps.dataDir);
+      if (!gh.token) return reply.code(400).send({ error: '未配置 GitHub 凭据（设置页 → GitHub 凭据）' });
+      const repo = String(req.body?.repo ?? '').trim() || gh.defaultRepo;
+      if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+        return reply.code(400).send({ error: `缺少或非法 repo（需 owner/name，收到：${repo ?? '空'}）` });
+      }
+      const content = intakeTemplateMarkdown();
+      const api = `https://api.github.com/repos/${repo}/contents/${INTAKE_TEMPLATE_PATH}`;
+      const headers = {
+        Authorization: `Bearer ${gh.token}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      };
+      try {
+        // Contents API：先探存在（拿到 sha 才能更新），404=新建
+        const cur = await fetch(api, { headers, signal: AbortSignal.timeout(15_000) });
+        let sha: string | undefined;
+        if (cur.ok) {
+          const d = (await cur.json()) as { sha?: string; content?: string };
+          const existing = Buffer.from(d.content ?? '', 'base64').toString('utf8');
+          if (existing === content) return { written: false, unchanged: true, repo, path: INTAKE_TEMPLATE_PATH };
+          if (!req.body?.overwrite) {
+            return reply.code(409).send({ error: `${INTAKE_TEMPLATE_PATH} 已存在且内容不同——确认覆盖请带 overwrite=true` });
+          }
+          sha = d.sha;
+        } else if (cur.status !== 404) {
+          return reply.code(cur.status).send({ error: `读取现有模板失败：HTTP ${cur.status}` });
+        }
+        const res = await fetch(api, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({
+            message: 'chore: PaneFlow 接单模板（验收标准锚点与机检同源）',
+            content: Buffer.from(content, 'utf8').toString('base64'),
+            ...(sha ? { sha } : {}),
+          }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const data = (await res.json()) as { message?: string };
+        if (!res.ok) return reply.code(res.status).send({ error: data.message ?? `HTTP ${res.status}` });
+        return { written: true, updated: Boolean(sha), repo, path: INTAKE_TEMPLATE_PATH };
+      } catch (err) {
+        return reply.code(502).send({ error: (err as Error).message });
+      }
+    },
+  );
 
   // -- G1 Issue 读取器：真实需求载体的读侧（写侧见 create-issue/update-issue） ----
 

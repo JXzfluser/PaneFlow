@@ -216,6 +216,35 @@ function GithubCredCard() {
       log('error', `保存失败：${(e as Error).message}`);
     }
   };
+  const [writing, setWriting] = useState(false);
+  /** M4：一键回写接单模板（「验收标准」锚点与服务端机检同源），409 时二次确认覆盖 */
+  const writeIntake = async (overwrite = false) => {
+    setWriting(true);
+    try {
+      const d = await fetchJson<{ written: boolean; updated?: boolean; path: string }>(
+        'POST',
+        '/api/github/intake-template',
+        overwrite ? { overwrite: true } : undefined,
+      );
+      log(
+        'info',
+        d.written
+          ? `✅ 接单模板已${d.updated ? '覆盖' : '写入'}：${d.path}（新建 Issue 时可选「PaneFlow 接单单」）`
+          : `接单模板已是最新（${d.path}），无需改动`,
+      );
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg.includes('overwrite')) {
+        if (window.confirm(`${msg}\n确定要用 PaneFlow 模板覆盖它吗？`)) {
+          await writeIntake(true);
+        }
+      } else {
+        log('error', `接单模板回写失败：${msg}`);
+      }
+    } finally {
+      setWriting(false);
+    }
+  };
   return (
     <>
       <label>
@@ -236,6 +265,13 @@ function GithubCredCard() {
       <div className="settings-actions">
         <button className="primary" onClick={() => void save()}>
           保存凭据
+        </button>
+        <button
+          disabled={writing || !g.tokenConfigured}
+          title={g.tokenConfigured ? '向默认仓库写入 .github/ISSUE_TEMPLATE 接单模板（验收标准小节可被 PaneFlow 机检立约）' : '先保存 Token 与默认仓库'}
+          onClick={() => void writeIntake()}
+        >
+          {writing ? '回写中…' : '📋 回写接单模板 → 默认仓库'}
         </button>
       </div>
     </>

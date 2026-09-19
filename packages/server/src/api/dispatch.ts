@@ -116,13 +116,54 @@ export function extractAcceptance(text: string): string[] {
     if (/^#{1,6}\s/.test(line)) break;
     const item = line.match(/^\s*(?:[-*]|\d+[.、)])\s+(.+?)\s*$/);
     if (item) {
-      out.push(debraces(item[1]!));
+      // M4：模板用 DoR 勾选框（- [ ]），机检只认勾选框后的断言本体
+      out.push(debraces(item[1]!.replace(/^\[[ xX]\]\s*/, '')));
       continue;
     }
     // 列表已开始后遇到非列表非空行 = 小节结束了（下一段正文）
     if (out.length && line.trim() !== '') break;
   }
   return out.filter((s) => s !== '');
+}
+
+/** M4：接单模板回写路径（GitHub Issue 表单模板目录，新建 Issue 时可选） */
+export const INTAKE_TEMPLATE_PATH = '.github/ISSUE_TEMPLATE/paneflow-intake.md';
+
+/**
+ * M4·接单模板：回写给目标仓的 ISSUE_TEMPLATE。「验收标准」小节与上面
+ * extractAcceptance 的锚点同源（改锚点必改这里，测试互相咬合）——
+ * 让烂需求在源头就可检，模板本身就是给人看的 DoR checklist。
+ */
+export function intakeTemplateMarkdown(): string {
+  return [
+    '---',
+    'name: PaneFlow 接单单（Intake）',
+    'about: 写得出可验的「验收标准」才接单——PaneFlow 会按该小节机检立约，源头质量可检就不用回头 clarify。',
+    "title: ''",
+    "labels: ''",
+    '---',
+    '',
+    '## 要做什么',
+    '',
+    '一句话说清：谁 / 在哪个仓或模块 / 要达成什么可观察的结果。',
+    '',
+    '## 验收标准',
+    '',
+    '逐条写**可验证的结果句**（能判真伪，不写形容词），一条一行；此小节会被 PaneFlow 机检为本单契约并逐条核对：',
+    '',
+    '- [ ] AC-1：',
+    '- [ ] AC-2：',
+    '',
+    '## 边界（不动哪些）',
+    '',
+    '- 不改动：',
+    '',
+    '## 交付',
+    '',
+    '- 目标仓 / 期望分支：',
+    '- 预算上限（可选）：',
+    '',
+  ].join('\n');
 }
 
 const MAX_TASK_LEN = 4000;

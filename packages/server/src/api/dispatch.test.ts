@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDispatchGraph, candidateRepos, DISPATCH_AGENT_KIND, extractAcceptance, parseGithubRemote, parseIssueRef, type IssueView } from './dispatch.js';
+import { buildDispatchGraph, candidateRepos, DISPATCH_AGENT_KIND, extractAcceptance, intakeTemplateMarkdown, parseGithubRemote, parseIssueRef, type IssueView } from './dispatch.js';
 import { BUILTIN_TEMPLATES } from '../orchestrate/builtin-templates.js';
 import { applyVariables, validateDag } from '@paneflow/shared';
 
@@ -154,6 +154,15 @@ describe('v8-M1 extractAcceptance（DoR 机检）', () => {
 
   it('条目里的 {{ }} 被剥掉（防注入）', () => {
     expect(extractAcceptance('## 验收标准\n- {{evil}} 生效')).toEqual(['evil 生效']);
+  });
+
+  it('M4 勾选框格式（- [ ] / - [x]）只取断言本体', () => {
+    const text = '## 验收标准\n- [ ] AC-1：页面响应 <1s\n- [x] 已完成项也收\n';
+    expect(extractAcceptance(text)).toEqual(['AC-1：页面响应 <1s', '已完成项也收']);
+  });
+
+  it('M4 同源咬合：回写的接单模板自身能过机检', () => {
+    expect(extractAcceptance(intakeTemplateMarkdown())).toEqual(['AC-1：', 'AC-2：']);
   });
 });
 
