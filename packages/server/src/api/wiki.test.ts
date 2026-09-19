@@ -4,8 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import type { RunRecord } from '@paneflow/shared';
 import {
+  appendWikiLog,
   checkRepoVisibility,
   latestAssertionResults,
+  mergeWikiIndex,
   pickWikiExcerpts,
   publishableRun,
   readWikiPages,
@@ -53,10 +55,17 @@ function greenRun(over: Partial<RunRecord> = {}): RunRecord {
   } as RunRecord;
 }
 
-describe('v9-K1 renderWikiPage（frontmatter + 断言表 + 双链，纯函数）', () => {
-  it('页面含 frontmatter 字段、验收表（✅ ok + 证据）与 [[双链]]', () => {
-    const { file, markdown } = renderWikiPage(greenRun(), { repo: 'me/app', now: '2026-09-19T02:00:00Z' });
-    expect(file).toBe('修登录页样式-abc123.md');
+describe('v9-K1 + 首驾-llmwiki renderWikiPage（七字段 frontmatter + 分类目录 + 记账，纯函数）', () => {
+  it('AC-1/AC-2：落 summaries/ 小写 slug；frontmatter 七字段齐 + pf-* 溯源 + 验收表 + [[双链]]', () => {
+    const { file, markdown, indexEntry, logNote } = renderWikiPage(greenRun(), { repo: 'me/app', now: '2026-09-19T02:00:00Z' });
+    expect(file).toBe('summaries/修登录页样式-abc123.md');
+    expect(markdown).toContain('title: "修登录页样式（run run-abc123）"');
+    expect(markdown).toContain('type: summary');
+    expect(markdown).toContain('tags: [paneflow, run-record, demo]');
+    expect(markdown).toContain('created: 2026-09-19T01:00:00.000Z');
+    expect(markdown).toContain('updated: 2026-09-19T02:00:00Z');
+    expect(markdown).toContain('sources: ["paneflow:run/run-abc123", "repo:me/app", "dag:修登录页样式"]');
+    expect(markdown).toContain('confidence: high');
     expect(markdown).toContain('pf-run: run-abc123');
     expect(markdown).toContain('pf-repo: me/app');
     expect(markdown).toContain('pf-contract-source: input');
@@ -64,6 +73,22 @@ describe('v9-K1 renderWikiPage（frontmatter + 断言表 + 双链，纯函数）
     expect(markdown).toContain('[[修登录页样式]]');
     expect(markdown).toContain('unknown（agent 未自报，不估算）');
     expect(markdown).toContain('改了三处样式');
+    expect(indexEntry).toContain('](summaries/修登录页样式-abc123.md)');
+    expect(indexEntry).toContain('2/2 条验收通过');
+    expect(logNote).toContain('2026-09-19T02:00:00Z');
+    expect(logNote).toContain('run `run-abc123`');
+  });
+
+  it('AC-1 缺省兜底 + AC-2 大小写：无契约/无断言 → confidence medium；英文标题洗成小写连字符', () => {
+    const bare = greenRun({ contract: undefined, cost: undefined });
+    bare.nodes.verify!.artifact!.extra = {};
+    const { markdown } = renderWikiPage(bare, { repo: 'me/app', now: '2026-09-19T02:00:00Z' });
+    expect(markdown).toContain('confidence: medium');
+    expect(markdown).toContain('created: 2026-09-19T01:00:00.000Z');
+    expect(markdown).toContain('sources: ["paneflow:run/run-abc123", "repo:me/app", "dag:修登录页样式"]');
+    const eng = renderWikiPage(greenRun({ dagName: 'Fix Login Page!', spaceId: undefined }), { repo: 'me/app' });
+    expect(eng.file).toBe('summaries/fix-login-page-abc123.md');
+    expect(eng.markdown).toContain('tags: [paneflow, run-record]');
   });
 
   it('latestAssertionResults 取最后一份带结果的产物（终审覆盖自测）', () => {
@@ -72,6 +97,32 @@ describe('v9-K1 renderWikiPage（frontmatter + 断言表 + 双链，纯函数）
       assertionResults: [{ id: 'AC-1', status: 'fail', evidence: '初测未过' }],
     };
     expect(latestAssertionResults(run).find((x) => x.id === 'AC-1')!.status).toBe('ok');
+  });
+});
+
+describe('首驾-llmwiki AC-3 index/log 记账（纯函数：新增 + 去重 + 只追加）', () => {
+  const e1 = { file: 'summaries/a.md', line: '- [A](summaries/a.md) —— 摘要A' };
+  const e2 = { file: 'summaries/b.md', line: '- [B](summaries/b.md) —— 摘要B' };
+
+  it('mergeWikiIndex：空索引建头；新条目追加；同 file 重复沉淀原位替换不产生重复条目', () => {
+    const first = mergeWikiIndex('', e1);
+    expect(first).toContain('# 索引');
+    const second = mergeWikiIndex(first, e2);
+    expect(second).toContain('摘要A');
+    expect(second).toContain('摘要B');
+    const replaced = mergeWikiIndex(second, { file: e1.file, line: '- [A2](summaries/a.md) —— 新摘要' });
+    expect(replaced).toContain('新摘要');
+    expect(replaced).not.toContain('摘要A');
+    expect(replaced.split('summaries/a.md').length - 1).toBe(1);
+    expect(replaced).toContain('摘要B');
+  });
+
+  it('appendWikiLog：建头 + 旧记录逐字保留、只追加', () => {
+    const first = appendWikiLog('', '- 2026-09-19T02:00:00Z · run `r1` → `summaries/a.md`');
+    const second = appendWikiLog(first, '- 2026-09-20T02:00:00Z · run `r2` → `summaries/b.md`');
+    expect(second).toContain('# 沉淀日志');
+    expect(second.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(2);
+    expect(second.indexOf('r1')).toBeLessThan(second.indexOf('r2'));
   });
 });
 
@@ -103,7 +154,7 @@ describe('v9-K1 checkRepoVisibility', () => {
   });
 });
 
-describe('v9-K2 wiki 读回（本地缓存页挑选，宁缺毋滥）', () => {
+describe('v9-K2 + 首驾-llmwiki AC-4 wiki 读回（嵌套分类页与旧扁平页混放兼容）', () => {
   it('readWikiPages 从缓存目录读 md；pickWikiExcerpts 按词命中打分、无命中原样返回空', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wiki-'));
     const repo = 'me/app';
@@ -123,6 +174,26 @@ describe('v9-K2 wiki 读回（本地缓存页挑选，宁缺毋滥）', () => {
     expect(hit[0]!.text).not.toContain('引用行');
     expect(pickWikiExcerpts(pages, '完全无关的zzq词')).toEqual([]);
     expect(readWikiPages(dir, 'no/such')).toEqual([]);
+  });
+
+  it('AC-4：同一缓存混放 summaries/ 嵌套页与旧扁平页——列全不抛错，index/log 记账不进摘录池', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wiki-mix-'));
+    const repo = 'me/app';
+    const cache = wikiCacheDir(dir, repo);
+    fs.mkdirSync(path.join(cache, 'summaries'), { recursive: true });
+    fs.writeFileSync(
+      path.join(cache, 'summaries', '部署-checkout-流-ab12cd.md'),
+      '---\ntitle: "部署 checkout 流（run r-9）"\ntype: summary\n---\n\n# 部署 checkout 流\n\n正文讲 checkout 部署的踩坑与修法。',
+    );
+    fs.writeFileSync(path.join(cache, '旧扁平沉淀页.md'), '---\npf-run: old\n---\n\n旧页正文也讲 checkout 流程。');
+    fs.writeFileSync(path.join(cache, 'index.md'), '# 索引\n\n- [部署 checkout 流](summaries/部署-checkout-流-ab12cd.md) —— 摘要');
+    fs.writeFileSync(path.join(cache, 'log.md'), '# 沉淀日志\n\n- 2026-09-19T02:00:00Z · run `r-9` → `summaries/部署-checkout-流-ab12cd.md`');
+    const pages = readWikiPages(dir, repo);
+    expect(pages.map((p) => p.file).sort()).toEqual(['summaries/部署-checkout-流-ab12cd.md', '旧扁平沉淀页.md']);
+    expect(pages.find((p) => p.file.startsWith('summaries/'))!.title).toBe('部署 checkout 流（run r-9）');
+    const hits = pickWikiExcerpts(pages, 'checkout 部署 流程');
+    expect(hits.length).toBeGreaterThanOrEqual(1);
+    expect(hits.some((h) => h.label.includes('summaries/'))).toBe(true);
   });
 });
 

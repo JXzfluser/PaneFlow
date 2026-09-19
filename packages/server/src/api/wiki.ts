@@ -4,21 +4,30 @@ import path from 'node:path';
 import type { RunRecord } from '@paneflow/shared';
 
 /**
- * v9-K wiki 沉淀：绿 run + 用户点赞 → 蒸馏成带 frontmatter/双链的 md 页，
- * 浅克龙 `<repo>.wiki.git` 写页后 push。K2 读回复用同一缓存目录。
+ * v9-K wiki 沉淀 + 首驾-llmwiki（Issue #6）升级：绿 run + 用户点赞 → 蒸馏成
+ * llm-wiki 风格页（七字段 frontmatter + 分类目录），并维护 index.md / log.md 记账，
+ * 浅克龙 `<repo>.wiki.git` 写页后 push。K2 读回复用同一缓存目录，
+ * 兼容嵌套分类页与旧扁平页混放（不迁移旧数据）。
  * 所有 git/网络失败都抛可读错误（失败可见不吞）。
  */
 
-export interface AssertionRow {
-  id: string;
-  assertion: string;
-  status: string;
-  evidence: string;
-}
+export type WikiType = 'concept' | 'entity' | 'summary' | 'synthesis';
+
+const WIKI_DIRS: Record<WikiType, string> = {
+  concept: 'concepts',
+  entity: 'entities',
+  summary: 'summaries',
+  synthesis: 'syntheses',
+};
 
 export interface WikiPageDraft {
+  /** 相对 wiki 仓库根的路径，如 `summaries/修登录页样式-abc123.md` */
   file: string;
   markdown: string;
+  /** index.md 一行条目：markdown 相对链接 + 一行摘要（按 file 路径去重） */
+  indexEntry: string;
+  /** log.md 一条只追加记录：ISO 时间 + run id + 落页路径 */
+  logNote: string;
 }
 
 function clip(s: string, cap: number): string {
@@ -27,6 +36,20 @@ function clip(s: string, cap: number): string {
 
 function sanitizeTitle(s: string): string {
   return s.replace(/[/\\:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'run';
+}
+
+/** 文件名 slug：sanitize + 小写 + 只留字母数字/中文/连字符（llm-wiki 小写连字符约定） */
+function slugify(s: string): string {
+  const out = sanitizeTitle(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return out || 'run';
+}
+
+/** frontmatter 值安全：折行压平、去双引号 */
+function fmVal(s: string): string {
+  return s.replace(/[\r\n]+/g, ' ').replace(/"/g, "'").trim();
 }
 
 /** 产物 extra.assertionResults 里最后一份带结果的（验收/终审节点覆盖实现节点的自测） */
@@ -59,21 +82,39 @@ export function publishableRun(run: RunRecord | undefined): { ok: boolean; reaso
   return { ok: true };
 }
 
-/** 纯函数：run → wiki 页（frontmatter + 断言表 + 节点结论 + 经验账本 + 双链） */
-export function renderWikiPage(run: RunRecord, opts: { repo: string; now?: string }): WikiPageDraft {
+/**
+ * 纯函数：run → llm-wiki 页。七字段 frontmatter（title/type/tags/created/updated/
+ * sources/confidence，缺省有确定兜底）+ pf-* 溯源扩展键 + 断言表 + 节点结论 + 经验账本 + 双链；
+ * 附 index 条目与 log 记录两条记账字符串。
+ */
+export function renderWikiPage(
+  run: RunRecord,
+  opts: { repo: string; now?: string; type?: WikiType },
+): WikiPageDraft {
   const now = opts.now ?? new Date().toISOString();
-  const title = `${sanitizeTitle(run.dagName)}-${run.runId.slice(-6)}`;
-  const file = `${title}.md`;
+  const type: WikiType = opts.type ?? 'summary';
+  const slug = `${slugify(run.dagName)}-${run.runId.slice(-6).toLowerCase()}`;
+  const file = `${WIKI_DIRS[type]}/${slug}.md`;
+  const pageTitle = fmVal(`${run.dagName}（run ${run.runId}）`);
   const results = latestAssertionResults(run);
+  const sources = [`paneflow:run/${run.runId}`, `repo:${opts.repo}`, `dag:${fmVal(run.dagName)}`];
+  if (run.prUrl) sources.push(fmVal(run.prUrl));
+  const confidence = results.length && results.every((r) => r.status === 'ok') ? 'high' : 'medium';
   const lines: string[] = [];
   lines.push('---');
+  lines.push(`title: "${pageTitle}"`);
+  lines.push(`type: ${type}`);
+  lines.push(`tags: [paneflow, run-record${run.spaceId ? `, ${fmVal(run.spaceId)}` : ''}]`);
+  lines.push(`created: ${run.startedAt || now}`);
+  lines.push(`updated: ${now}`);
+  lines.push(`sources: [${sources.map((s) => `"${s}"`).join(', ')}]`);
+  lines.push(`confidence: ${confidence}`);
   lines.push(`pf-run: ${run.runId}`);
   lines.push(`pf-repo: ${opts.repo}`);
-  lines.push(`pf-dag: ${run.dagName}`);
+  lines.push(`pf-dag: ${fmVal(run.dagName)}`);
   if (run.spaceId) lines.push(`pf-space: ${run.spaceId}`);
   if (run.contract) lines.push(`pf-contract-source: ${run.contract.source}`);
   lines.push(`pf-published: ${now}`);
-  lines.push('tags: [paneflow, run-record]');
   lines.push('---');
   lines.push('');
   lines.push(`# ${run.dagName}（run \`${run.runId}\`）`);
@@ -117,7 +158,37 @@ export function renderWikiPage(run: RunRecord, opts: { repo: string; now?: strin
   }
   lines.push(`- 时间：起 ${run.startedAt.slice(0, 16).replace('T', ' ')}${run.finishedAt ? ` · 止 ${run.finishedAt.slice(0, 16).replace('T', ' ')}` : ''}`);
   lines.push('');
-  return { file, markdown: lines.join('\n') };
+  const total = run.contract?.assertions.length ?? results.length;
+  const passed = results.filter((r) => r.status === 'ok').length;
+  const digest = total ? `${passed}/${total} 条验收通过` : '无验收断言';
+  return {
+    file,
+    markdown: lines.join('\n'),
+    indexEntry: `- [${pageTitle}](${file}) —— ${digest}（run \`${run.runId}\`，${now.slice(0, 10)}）`,
+    logNote: `- ${now} · run \`${run.runId}\` → \`${file}\`（${digest}）`,
+  };
+}
+
+/** index.md 合并（纯函数）：同 file 路径的旧条目原位替换（去重），没有则追加 */
+export function mergeWikiIndex(
+  existing: string,
+  entry: { file: string; line: string },
+): string {
+  if (!existing.trim()) return `# 索引\n\n${entry.line}\n`;
+  const lines = existing.replace(/\r\n/g, '\n').split('\n');
+  const i = lines.findIndex((l) => l.includes(`](${entry.file})`));
+  if (i >= 0) {
+    lines[i] = entry.line;
+    return lines.join('\n');
+  }
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return `${lines.join('\n')}\n${entry.line}\n`;
+}
+
+/** log.md 追加（纯函数）：只追加不改动，旧记录逐字保留 */
+export function appendWikiLog(existing: string, note: string): string {
+  if (!existing.trim()) return `# 沉淀日志\n\n${note}\n`;
+  return `${existing.replace(/\s+$/, '')}\n${note}\n`;
 }
 
 // -- GitHub 可见性 + git 操作 -------------------------------------------------
@@ -181,30 +252,46 @@ export async function syncWikiCache(o: { dataDir: string; repo: string; token?: 
   }
 }
 
-/** K1 发布：同步缓存 → 写页 → commit → push。任何一步失败都抛（不吞）。 */
+function readIf(p: string): string {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+/** K1 发布：同步缓存 → 写页（分类目录）→ index/log 记账 → commit → push。任何一步失败都抛（不吞）。 */
 export async function publishWikiPage(o: {
   dataDir: string;
   repo: string;
   token: string;
   page: WikiPageDraft;
-}): Promise<{ url: string; cacheDir: string }> {
+}): Promise<{ url: string; cacheDir: string; files: string[] }> {
   await syncWikiCache({ dataDir: o.dataDir, repo: o.repo, token: o.token, maxAgeMs: 0 });
   const dir = wikiCacheDir(o.dataDir, o.repo);
-  fs.writeFileSync(path.join(dir, o.page.file), o.page.markdown);
-  await git(['add', o.page.file], dir);
+  const pageAbs = path.join(dir, o.page.file);
+  fs.mkdirSync(path.dirname(pageAbs), { recursive: true });
+  fs.writeFileSync(pageAbs, o.page.markdown);
+  fs.writeFileSync(path.join(dir, 'index.md'), mergeWikiIndex(readIf(path.join(dir, 'index.md')), { file: o.page.file, line: o.page.indexEntry }));
+  fs.writeFileSync(path.join(dir, 'log.md'), appendWikiLog(readIf(path.join(dir, 'log.md')), o.page.logNote));
+  const files = [o.page.file, 'index.md', 'log.md'];
+  await git(['add', '--', ...files], dir);
   await git(['commit', '-m', `PaneFlow 沉淀: ${o.page.file}`], dir).catch((e: Error) => {
     if (!/nothing to commit/i.test(e.message)) throw e;
   });
   await git(['push', authUrl(o.repo, o.token), 'HEAD:master'], dir);
+  const pageName = path.basename(o.page.file).replace(/\.md$/, '');
   return {
-    url: `https://github.com/${o.repo}/wiki/${o.page.file.replace(/\.md$/, '')}`,
+    url: `https://github.com/${o.repo}/wiki/${encodeURIComponent(pageName)}`,
     cacheDir: dir,
+    files,
   };
 }
 
 // -- K2 读回：本地页挑选 + 摘要 -------------------------------------------------
 
 export interface WikiPage {
+  /** 相对缓存根的路径：嵌套页如 `summaries/x.md`，旧扁平页如 `y.md` */
   file: string;
   title: string;
   text: string;
@@ -213,24 +300,48 @@ export interface WikiPage {
 const PAGE_CAP = 64;
 const PAGE_BYTES = 32 * 1024;
 
-/** 从缓存目录读 md 页（不含 frontmatter 的正文留给摘要） */
+/** 记账文件不参与读回/摘录（任何层级都排除） */
+function isBookkeeping(rel: string): boolean {
+  const base = path.basename(rel);
+  return base === 'index.md' || base === 'log.md';
+}
+
+/** 递归收集 .md 相对路径（跳过 .git/隐藏项）；旧扁平页与分类目录页混放也能列全 */
+function walkMarkdown(dir: string, rel: string, out: string[]): void {
+  let ents: fs.Dirent[];
+  try {
+    ents = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of ents) {
+    if (e.name.startsWith('.')) continue;
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) walkMarkdown(path.join(dir, e.name), r, out);
+    else if (e.name.endsWith('.md') && !isBookkeeping(r)) out.push(r);
+  }
+}
+
+function titleFromPath(rel: string): string {
+  return path.basename(rel).replace(/\.md$/, '').replace(/-/g, ' ');
+}
+
+/** 从缓存目录读 md 页：frontmatter title 优先，缺省回退文件名；正文留给摘要 */
 export function readWikiPages(dataDir: string, repo: string): WikiPage[] {
   const dir = wikiCacheDir(dataDir, repo);
-  let files: string[];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
-  } catch {
-    return [];
-  }
-  return files.slice(0, PAGE_CAP).map((f) => {
+  const files: string[] = [];
+  walkMarkdown(dir, '', files);
+  return files.sort().slice(0, PAGE_CAP).map((rel) => {
     let text = '';
     try {
-      text = fs.readFileSync(path.join(dir, f), 'utf8').slice(0, PAGE_BYTES);
+      text = fs.readFileSync(path.join(dir, rel), 'utf8').slice(0, PAGE_BYTES);
     } catch {
-      return { file: f, title: f.replace(/\.md$/, ''), text: '' };
+      return { file: rel, title: titleFromPath(rel), text: '' };
     }
+    const fm = text.startsWith('---\n') ? /^---\n([\s\S]*?)\n---/.exec(text)?.[1] : undefined;
+    const fmTitle = fm ? /^title:\s*["']?(.+?)["']?\s*$/m.exec(fm)?.[1]?.trim() : undefined;
     const body = text.replace(/^---[\s\S]*?---\n?/, '');
-    return { file: f, title: f.replace(/\.md$/, '').replace(/-/g, ' '), text: body };
+    return { file: rel, title: fmTitle || titleFromPath(rel), text: body };
   });
 }
 
