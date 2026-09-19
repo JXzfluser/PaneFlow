@@ -5,6 +5,7 @@ import { SideNav } from './components/SideNav.jsx';
 import { TasksView } from './components/TasksView.jsx';
 import { OrchestrateView } from './components/OrchestrateView.jsx';
 import { RunsCenter } from './components/RunsCenter.jsx';
+import { ProjectsView } from './components/ProjectsView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import { Guide } from './components/Guide.jsx';
 import { EnvWizard } from './components/EnvWizard.jsx';
@@ -95,7 +96,9 @@ export function App() {
                 ? 'ORCHESTRATE · 编排'
                 : view === 'runs'
                   ? 'RUNS · 运行中心'
-                  : 'SETTINGS · 设置'}
+                  : view === 'projects'
+                    ? 'PROJECTS · 项目'
+                    : 'SETTINGS · 设置'}
           </span>
           <div className="spacer" />
           <button
@@ -110,6 +113,7 @@ export function App() {
         {view === 'tasks' && <TasksView />}
         {view === 'orchestrate' && <OrchestrateView />}
         {view === 'runs' && <RunsCenter />}
+        {view === 'projects' && <ProjectsView />}
         {view === 'settings' && <SettingsView />}
       </div>
       {wizard && (

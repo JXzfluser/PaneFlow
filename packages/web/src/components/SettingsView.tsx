@@ -1134,7 +1134,7 @@ export function SettingsView() {
           {spaceId === 'default' ? (
             <>
               <p className="settings-hint">
-                默认项目用于快速体验。建议在左侧「+」新建一个项目（如 demo），再配置主仓根目录与约定文档。
+                默认项目用于快速体验。建议在左侧「项目」视图新建一个项目（如 demo），再配置主仓根目录与约定文档。
                 下面这几项（AE Agent 选择 / I2 经验注入）在默认项目同样可配：
               </p>
               {agentControls}

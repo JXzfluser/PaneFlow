@@ -31,11 +31,11 @@ function initialTheme(): ThemeName {
   applyTheme(t);
   return t;
 }
-export type AppView = 'tasks' | 'orchestrate' | 'runs' | 'settings';
+export type AppView = 'tasks' | 'orchestrate' | 'runs' | 'projects' | 'settings';
 
 /** 视图白名单 + 存储键：改默认落地页时递增版本号，让老用户也吃到新默认（A2） */
 const VIEW_KEY = 'pf-view-v2';
-const VIEWS: AppView[] = ['tasks', 'orchestrate', 'runs', 'settings'];
+const VIEWS: AppView[] = ['tasks', 'orchestrate', 'runs', 'projects', 'settings'];
 
 function initialView(): AppView {
   const saved = localStorage.getItem(VIEW_KEY) as AppView | null;
