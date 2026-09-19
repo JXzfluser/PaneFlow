@@ -1830,7 +1830,16 @@ export class Engine {
     const wtPath = path.join(os.tmpdir(), 'paneflow-wt', `${runId}-${nodeId}`);
     const branch = `paneflow/${runId}-${nodeId}`;
     fs.mkdirSync(path.dirname(wtPath), { recursive: true });
-    execFileSync('git', ['-C', repo, 'worktree', 'add', wtPath, '-b', branch], { timeout: 30_000 });
+    // 首驾-4 重试幂等：上轮尝试的 worktree/分支可能残留（回收只删目录不删分支；脏则保目录）——
+    // 目录在就直接续用，仅分支在就挂分支续用，都没有才 -b 新建；旧实现无条件 -b，重试必炸「分支已经存在」
+    if (fs.existsSync(wtPath)) {
+      console.log(`[engine] worktree 重建：续用残留目录 ${wtPath}`);
+    } else {
+      const hasBranch = execFileSync('git', ['-C', repo, 'branch', '--list', branch], { timeout: 10_000 }).toString().trim() !== '';
+      const args = hasBranch ? ['worktree', 'add', wtPath, branch] : ['worktree', 'add', wtPath, '-b', branch];
+      if (hasBranch) console.log(`[engine] worktree 重建：续用既有分支 ${branch}`);
+      execFileSync('git', ['-C', repo, ...args], { timeout: 30_000 });
+    }
     const entry = { runId, repo, path: wtPath, branch };
     this.liveWorktrees.push(entry);
     return entry;
