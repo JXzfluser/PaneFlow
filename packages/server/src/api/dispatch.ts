@@ -31,6 +31,12 @@ export interface DispatchOptions {
   contractTemplate?: { stamp: string; block: string };
   /** I1：空间技能索引（名字+首行描述）——注入 Planner 上下文，契约/方案可引用 skill:<name> */
   skillIndex?: { name: string; description?: string }[];
+  /**
+   * v9-B2 空间班底（调用方已对着全局角色库解析好 name；悬空 roleId 应在调用处滤掉）：
+   * 非空 → Planner 节点绑名册中的规划角色、prompt 点名册（拆步只从班底点人）；
+   * 空 → 回退旧行为，且在编排预告里明说「未配班底」。
+   */
+  team?: { roleId: string; name: string; alias?: string }[];
 }
 
 /** G1：Issue 读取器的出参形状（http 路由与下发注入共用） */
@@ -225,12 +231,20 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
         'extra.contract = { assertions: [{id:"AC-1", assertion:"一句可判真假的验收断言", verify_method:"如何核对"}, …（至少 2 条）], questions: ["必须向需求方澄清的问题", …] }。',
         '运行会停在契约接单门等你方与人工对齐：断言要具体到能被机器或人工逐条核验，提问直击模糊点。',
       ].join('\n');
+  // v9-B2 绑班底：planner 节点从名册取「规划」位（取不到就用第一位）；空班底不绑（旧行为）
+  const team = opts.team ?? [];
+  const plannerRole = team.length
+    ? (team.find((m) => /规划|plan/i.test(`${m.alias ?? ''}${m.name}${m.roleId}`)) ?? team[0])!
+    : undefined;
+  const teamLine = team.length
+    ? `班底 ${team.length} 人成军：${team.map((m) => m.alias || m.name).join('、')}（拆步派活只从这份名册点人）`
+    : '未配班底：按默认班底执行（不绑角色）——想固定人设去「设 · 项目档案 → 班底」一键装填标准五连';
   const checks: CheckSpec[] = [];
   if (!hasInputContract || opts.contractGate) checks.push({ type: 'contract', ...(tpl ? { template: tpl.stamp } : {}) });
   if (opts.preview) {
     checks.push({
       type: 'manual',
-      prompt: '编排预告：确认步骤计划后放行执行；拒绝则终止本次下发。',
+      prompt: `编排预告：确认步骤计划后放行执行；拒绝则终止本次下发。（${teamLine}）`,
     });
   }
 
@@ -243,6 +257,16 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
       ].join('\n')
     : '';
 
+  // B2：班底名册块——规划员拆步派活只能点名册里的人（复用的第一层：人固定，人设随角色库走）
+  const teamBlock = team.length
+    ? [
+        '',
+        `本空间班底名册（执行人员仅此 ${team.length} 位，名册之外没有角色可用）：`,
+        ...team.map((m) => `- ${m.alias || m.name}（roleId: ${m.roleId}）`),
+        '拆解步骤、指定负责人时只用以上名册（写别名即可）；不要虚构名册外的“工程师/测试”人设。',
+      ].join('\n')
+    : '';
+
   const plannerPrompt = [
     '你是 PaneFlow 的任务下发规划员。用户任务描述：',
     `"""${task}"""`,
@@ -251,6 +275,7 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
     '当前空间可用的交付模板（ID — 说明）：',
     tplList || '（无）',
     skillBlock,
+    teamBlock,
     opts.rootCwd ? `空间主仓根：${opts.rootCwd}` : '',
     '',
     '请决策并把结论写入结果文件 .herdr/artifacts/planner.json 的 extra 字段：',
@@ -273,6 +298,7 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
         label: 'Planner · 下发规划',
         config: {
           agentKind: opts.plannerAgentKind || DISPATCH_AGENT_KIND,
+          ...(plannerRole ? { role: plannerRole.roleId } : {}), // B2：planner 由班底里的规划位担当
           prompt: plannerPrompt,
           clarify: { maxRounds: 2 },
           retryCount: 1,

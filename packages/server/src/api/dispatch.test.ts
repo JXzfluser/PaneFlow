@@ -228,6 +228,51 @@ describe('v8-M6 契约骨架模板装配（buildDispatchGraph）', () => {
   });
 });
 
+describe('v9-B2 编排绑班底（buildDispatchGraph）', () => {
+  const templateList = [{ name: 't1' }];
+  const team = [
+    { roleId: 'std-implementer', name: '实现' },
+    { roleId: 'std-planner', name: '规划', alias: '阿规' },
+    { roleId: 'std-curator', name: '沉淀' },
+  ];
+  const build = (opts: Partial<import('./dispatch.js').DispatchOptions> = {}) =>
+    buildDispatchGraph({ task: '优化导出', cwd: '/tmp/x', templateList, ...opts });
+
+  it('带班底下发：planner 节点 role ∈ team，且优先取「规划」位', () => {
+    const g = build({ team });
+    const planner = g.nodes.find((n) => n.id === 'planner')!;
+    expect(team.map((t) => t.roleId)).toContain(planner.config.role);
+    expect(planner.config.role).toBe('std-planner');
+  });
+
+  it('没有规划位时回落名册第一位', () => {
+    const g = build({ team: team.filter((t) => t.roleId !== 'std-planner') });
+    expect(g.nodes.find((n) => n.id === 'planner')!.config.role).toBe('std-implementer');
+  });
+
+  it('planner prompt 点名册：人数/别名/roleId 可见，且禁止虚构名册外人', () => {
+    const p = build({ team }).nodes.find((n) => n.id === 'planner')!.config.prompt!;
+    expect(p).toContain('本空间班底名册（执行人员仅此 3 位');
+    expect(p).toContain('- 阿规（roleId: std-planner）');
+    expect(p).toContain('不要虚构名册外的');
+  });
+
+  it('空班底=回退旧行为：不绑 role，编排预告里明说未配班底', () => {
+    const g = build({ team: [], preview: true });
+    const planner = g.nodes.find((n) => n.id === 'planner')!;
+    expect(planner.config.role).toBeUndefined();
+    expect(planner.config.prompt).not.toContain('班底名册');
+    const manual = (planner.config.checks ?? []).find((c) => c.type === 'manual');
+    expect(manual?.prompt).toContain('未配班底');
+  });
+
+  it('有班底时编排预告写「班底 N 人成军」', () => {
+    const g = build({ team, preview: true });
+    const manual = (g.nodes.find((n) => n.id === 'planner')!.config.checks ?? []).find((c) => c.type === 'manual');
+    expect(manual?.prompt).toContain('班底 3 人成军：实现、阿规、沉淀');
+  });
+});
+
 describe('v8-I1 技能索引进 Planner + repos 候选仓解析', () => {
   const templateList = [{ name: 't1' }];
   const plannerPrompt = (opts: Partial<import('./dispatch.js').DispatchOptions>) =>

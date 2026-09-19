@@ -26,6 +26,15 @@ export interface SpaceProfile {
   maxConcurrentRuns?: number;
   /** I2 上次经验自动注入的全局开关；缺省=开，显式 false=关（绿 run 的变量/断言/成本不再进新单上下文） */
   experienceInjection?: boolean;
+  /** v9-B1 空间班底名册：roleId 指向全局角色库；alias 是空间内昵称（成员卡/Planner 名册用） */
+  team?: TeamMember[];
+}
+
+/** v9-B1 班底成员（弱引用全局角色库；角色库删了 id 时下发回退旧行为并明说） */
+export interface TeamMember {
+  roleId: string;
+  alias?: string;
+  note?: string;
 }
 
 export const DEFAULT_SPACE = 'default';

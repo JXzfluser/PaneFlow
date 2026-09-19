@@ -125,3 +125,76 @@ describe('PUT /api/spaces/:id 保存一致性（v7-A1）', () => {
     }
   });
 });
+
+describe('v9-B1 班底名册（team 机检 + 标准五连装填）', () => {
+  it('合法 team 存取一致；merge 不误伤其他键', async () => {
+    const { app } = await buildServer(tmp());
+    try {
+      const put = await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/demo',
+        headers: { host: HOST },
+        payload: { rootCwd: '/r', team: [{ roleId: 'std-planner', alias: '阿规' }, { roleId: 'x', note: '外聘' }] },
+      });
+      expect(put.statusCode).toBe(200);
+      const p = put.json();
+      expect(p.team).toEqual([{ roleId: 'std-planner', alias: '阿规' }, { roleId: 'x', note: '外聘' }]);
+      expect(p.rootCwd).toBe('/r');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('脏形状 400：非数组 / 缺 roleId / 超 16 项 / 重复入列', async () => {
+    const { app } = await buildServer(tmp());
+    try {
+      const bad: unknown[] = [
+        'nope',
+        [{ role: 'typo' }],
+        [{ roleId: '  ' }],
+        Array.from({ length: 17 }, (_, i) => ({ roleId: `r${i}` })),
+        [{ roleId: 'a' }, { roleId: 'a' }],
+      ];
+      for (const team of bad) {
+        const res = await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { team } });
+        expect(res.statusCode, JSON.stringify(team)).toBe(400);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('一键装填标准五连：team 落档案、std-* 角色进全局库、重复装填幂等', async () => {
+    const dir = tmp();
+    const { app } = await buildServer(dir);
+    try {
+      // 用户已有同名 id 的角色：装填不得覆盖
+      await app.inject({
+        method: 'PUT',
+        url: '/api/roles',
+        headers: { host: HOST },
+        payload: { roles: [{ id: 'std-planner', name: '我的规划师', prePrompt: '自定义' }] },
+      });
+      const res = await app.inject({ method: 'POST', url: '/api/spaces/demo/team/standard', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.profile.team.map((m: { roleId: string }) => m.roleId)).toEqual([
+        'std-planner',
+        'std-implementer',
+        'std-reviewer',
+        'std-verifier',
+        'std-curator',
+      ]);
+      expect(body.profile.team[0].alias).toBe('我的规划师'); // 已存在的角色按库里的名字，不塞标准名
+      const roles = JSON.parse(fs.readFileSync(path.join(dir, 'roles.json'), 'utf8')) as { id: string; name: string }[];
+      expect(roles.find((r) => r.id === 'std-planner')!.name).toBe('我的规划师');
+      expect(roles.filter((r) => r.id === 'std-implementer')).toHaveLength(1);
+      const again = await app.inject({ method: 'POST', url: '/api/spaces/demo/team/standard', headers: { host: HOST } });
+      const roles2 = JSON.parse(fs.readFileSync(path.join(dir, 'roles.json'), 'utf8')) as unknown[];
+      expect(roles2).toHaveLength(5); // 幂等：不重复追加
+      expect(again.json().profile.team).toEqual(body.profile.team);
+    } finally {
+      await app.close();
+    }
+  });
+});

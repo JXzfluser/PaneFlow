@@ -7,7 +7,7 @@ import type { DagGraph, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
-import type { SpaceProfile } from '../orchestrate/store.js';
+import type { SpaceProfile, TeamMember } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { loadContractLibrary, matchContractTemplate, renderContractTemplateBlock } from '../orchestrate/contract-templates.js';
 import { detectInstalledAgents, recommendAgentKind } from './env-check.js';
@@ -42,7 +42,7 @@ import { buildDispatchGraph, candidateRepos, extractAcceptance, INTAKE_TEMPLATE_
 import { readSkillIndex } from '../orchestrate/skills.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
+import { ensureStandardRoles, loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
 
 export const AGENT_KINDS = [
   'opencode',
@@ -106,7 +106,7 @@ export function isAllowedOrigin(opts: {
 const DEFAULT_SPACE = 'default';
 
 /** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面；maxConcurrentRuns=G3 队列上限，配置文件面） */
-const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'agentOverride', 'maxConcurrentRuns', 'experienceInjection'] as const;
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'agentOverride', 'maxConcurrentRuns', 'experienceInjection', 'team'] as const;
 
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
@@ -577,6 +577,21 @@ export async function buildHttpServer(deps: HttpDeps) {
       if (expInj !== undefined && typeof expInj !== 'boolean') {
         return reply.code(400).send({ error: 'experienceInjection 必须是布尔值' });
       }
+      // B1：班底名册写脏（roleId 缺失/重复）会让下发绑班底静默落空——机检 + 去重
+      const team = (req.body as Record<string, unknown> | undefined)?.team;
+      if (team !== undefined) {
+        if (
+          !Array.isArray(team) ||
+          team.some((x) => !x || typeof x !== 'object' || typeof (x as TeamMember).roleId !== 'string' || !(x as TeamMember).roleId.trim()) ||
+          team.length > 16
+        ) {
+          return reply.code(400).send({ error: 'team 必须是 ≤16 项、每项带非空 roleId 的数组' });
+        }
+        const ids = (team as TeamMember[]).map((m) => m.roleId);
+        if (new Set(ids).size !== ids.length) {
+          return reply.code(400).send({ error: '班底里同一角色不能重复入列' });
+        }
+      }
       // 白名单：只接受可编辑字段，id/name/createdAt 等身份字段不可经 body 注入
       const patch: Partial<SpaceProfile> = {};
       for (const key of PROFILE_EDITABLE_KEYS) {
@@ -587,6 +602,21 @@ export async function buildHttpServer(deps: HttpDeps) {
       return next;
     },
   );
+
+  // B1：一键装填标准五连班底（规划/实现/评审/验收/沉淀）——缺的角色补进全局库，班底整列写入空间档案
+  app.post<{ Params: { id: string } }>('/api/spaces/:id/team/standard', async (req, reply) => {
+    const store = spaceStore(deps, req.params.id);
+    const roles = ensureStandardRoles(deps.dataDir);
+    const profile = store.readProfile();
+    const next: SpaceProfile = {
+      ...profile,
+      team: roles.map((r) => ({ roleId: r.id, alias: r.name })),
+      id: req.params.id,
+    };
+    store.writeProfile(next);
+    reply.code(200);
+    return { profile: next, roleIds: roles.map((r) => r.id) };
+  });
 
   // -- health ---------------------------------------------------------------
 
@@ -719,11 +749,13 @@ export async function buildHttpServer(deps: HttpDeps) {
       let plannerAgentKind: string | undefined;
       let profileSkills: string[] | undefined;
       let profileRepos: string[] | undefined;
+      let profileTeam: TeamMember[] | undefined;
       try {
         const profile = store0.readProfile();
         rootCwd = profile.rootCwd;
         profileSkills = profile.skills;
         profileRepos = profile.repos;
+        profileTeam = profile.team;
         // E'+AE：Planner agent 取空间档案默认值；缺省回落自动推荐（已装优先 pi），最终兜底在 buildDispatchGraph 内
         plannerAgentKind = profile.defaultAgentKind && (AGENT_KINDS as readonly string[]).includes(profile.defaultAgentKind)
           ? profile.defaultAgentKind
@@ -778,6 +810,11 @@ export async function buildHttpServer(deps: HttpDeps) {
             `${task}\n${issueContext?.title ?? ''}\n${issueContext?.body ?? ''}`,
             contractLib,
           );
+      // B2：班底对着全局角色库解析（悬空 roleId 滤掉；全滤光=空班底回退旧行为）
+      const roleIndex = new Map(loadRoles(deps.dataDir).map((r) => [r.id, r]));
+      const dispatchTeam = (profileTeam ?? [])
+        .filter((m) => roleIndex.has(m.roleId))
+        .map((m) => ({ roleId: m.roleId, name: roleIndex.get(m.roleId)!.name, ...(m.alias ? { alias: m.alias } : {}) }));
       const graph = buildDispatchGraph({
         task,
         issueId: issueId || undefined,
@@ -794,6 +831,7 @@ export async function buildHttpServer(deps: HttpDeps) {
           : undefined,
         // I1：技能索引进 Planner（一行一项；整篇注入在引擎节点侧另有通道）
         skillIndex: readSkillIndex(rootCwd, profileSkills),
+        team: dispatchTeam,
       });
       const run = await deps.engine.startRun(
         graph,

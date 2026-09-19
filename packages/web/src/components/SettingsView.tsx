@@ -463,6 +463,158 @@ interface SpaceProfile {
   defaultAgentKind?: string;
   agentOverride?: boolean;
   experienceInjection?: boolean;
+  team?: TeamMember[];
+}
+
+/** v9-B1/B3 班底成员：roleId 指向全局角色库，alias 是本空间昵称 */
+interface TeamMember {
+  roleId: string;
+  alias?: string;
+  note?: string;
+}
+
+/** v9-B3 班底卡片：列成员 / 选角色 / 改昵称 / 移除 / 单人试跑 / 一键装填标准五连 */
+function TeamEditor({
+  team,
+  onChange,
+  rootCwd,
+}: {
+  team: TeamMember[];
+  onChange: (t: TeamMember[]) => void;
+  rootCwd: string | undefined;
+}) {
+  const log = useStore((s) => s.log);
+  const spaceId = useStore((s) => s.space);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const loadRoles = () =>
+    fetchJson<{ roles?: Role[] }>('GET', '/api/roles')
+      .then((d) => setRoles(d.roles ?? []))
+      .catch((e: Error) => log('error', `读取角色库失败：${e.message}`));
+  useEffect(() => {
+    void loadRoles();
+  }, []);
+
+  const patch = (idx: number, part: Partial<TeamMember>) =>
+    onChange(team.map((m, i) => (i === idx ? { ...m, ...part } : m)));
+  const remove = (idx: number) => onChange(team.filter((_, i) => i !== idx));
+
+  const installStandard = async () => {
+    setBusy(true);
+    try {
+      const r = await fetchJson<{ profile: { team?: TeamMember[] } }>(
+        'POST',
+        `/api/spaces/${encodeURIComponent(spaceId)}/team/standard`,
+      );
+      onChange(r.profile.team ?? []);
+      await loadRoles(); // 标准角色可能刚补进全局库
+      log('info', '标准五连已装填（规划/实现/评审/验收/沉淀）——记得点「保存档案」');
+    } catch (e) {
+      log('error', `装填失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** B3 单人试跑：start→agent(role)→end 的最小图，走现链路 */
+  const tryout = async (m: TeamMember) => {
+    if (!m.roleId) {
+      log('error', '这一位还没选角色');
+      return;
+    }
+    if (!rootCwd?.trim()) {
+      log('error', '单人试跑需要工作目录：先在上方填主仓根');
+      return;
+    }
+    const name = m.alias || roles.find((r) => r.id === m.roleId)?.name || m.roleId;
+    const now = new Date().toISOString();
+    try {
+      const r = await api.startRun(
+        {
+          version: 1,
+          name: `trial-${m.roleId}-${Date.now().toString(36)}`,
+          nodes: [
+            { id: 'start', type: 'start', label: '开始', config: {} },
+            {
+              id: 'run',
+              type: 'agent',
+              label: `试跑 · ${name}`,
+              config: {
+                role: m.roleId,
+                prompt: `这是成员「${name}」的单人试跑：请用 3-5 行自我介绍（专长、适合的活、交付习惯），不要读取或改动任何文件。`,
+              },
+            },
+            { id: 'end', type: 'end', label: '结束', config: {} },
+          ],
+          edges: [
+            { id: 't1', source: 'start', target: 'run' },
+            { id: 't2', source: 'run', target: 'end' },
+          ],
+          metadata: { createdAt: now, updatedAt: now, description: `单人试跑：${name}` },
+        },
+        rootCwd.trim(),
+      );
+      log('info', `已发起「${name}」的试跑（${r.runId}）——去「运 · 运行」页看结果`);
+    } catch (e) {
+      log('error', `试跑失败：${(e as Error).message}`);
+    }
+  };
+
+  return (
+    <>
+      <label title="班底=这个空间固定用的一组成员（取自全局角色库）；智能下发只会从班底点人">班底（{team.length} 人）</label>
+      {team.length === 0 && (
+        <p className="settings-hint">还没有班底：下发按默认班底跑。可一键装填「标准五连」（规划/实现/评审/验收/沉淀）。</p>
+      )}
+      {team.map((m, i) => {
+        const dangling = m.roleId !== '' && !roles.some((r) => r.id === m.roleId);
+        return (
+          <div className="team-row" key={i}>
+            <select
+              value={m.roleId}
+              onChange={(e) => patch(i, { roleId: e.target.value })}
+              title="班底成员对应的全局角色"
+            >
+              <option value="">（选角色）</option>
+              {roles.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+              {dangling && <option value={m.roleId}>{m.roleId}（库里已删）</option>}
+            </select>
+            <input
+              value={m.alias ?? ''}
+              onChange={(e) => patch(i, { alias: e.target.value || undefined })}
+              placeholder="昵称（可选）"
+              className="team-alias"
+            />
+            <input
+              value={m.note ?? ''}
+              onChange={(e) => patch(i, { note: e.target.value || undefined })}
+              placeholder="备注（可选：擅长边界）"
+              className="team-note"
+            />
+            <button className="link" onClick={() => void tryout(m)} title="单节点 run：只让这一位跑一句自我介绍">
+              ▶ 试跑
+            </button>
+            <button className="link" onClick={() => remove(i)} title="移出班底">
+              ✕
+            </button>
+          </div>
+        );
+      })}
+      <div className="team-actions">
+        <button onClick={() => onChange([...team, { roleId: '' }])} disabled={team.length >= 16}>
+          + 加成员
+        </button>
+        <button onClick={() => void installStandard()} disabled={busy}>
+          🪄 {busy ? '装填中…' : '一键装填标准五连'}
+        </button>
+      </div>
+    </>
+  );
 }
 
 /** 设置视图：左侧章节导航 + 右侧分区（原为 6 张卡片平铺 + 大量内联样式）。 */
@@ -542,6 +694,7 @@ export function SettingsView() {
         defaultAgentKind: profile.defaultAgentKind ?? '',
         agentOverride: !!profile.agentOverride,
         experienceInjection: profile.experienceInjection !== false,
+        team: profile.team ?? [], // v9-B1：漏发=保住旧班底，但清空必须发得出去
       });
       if (profile?.rootCwd) {
         const next = [profile.rootCwd, ...recentRoots.filter((x) => x !== profile.rootCwd)].slice(0, 5);
@@ -831,6 +984,11 @@ export function SettingsView() {
                 placeholder="一句话说明这个项目"
               />
               {agentControls}
+              <TeamEditor
+                team={profile?.team ?? []}
+                onChange={(t) => setProfile((p) => (p ? { ...p, team: t } : p))}
+                rootCwd={profile?.rootCwd}
+              />
               <div className="settings-actions">
                 <button className="primary" onClick={() => void saveProfile()}>
                   保存档案
