@@ -26,6 +26,9 @@ type IssuePreview =
   | { key: string; loading: true }
   | { key: string; loading: false; error?: string; data?: Awaited<ReturnType<typeof api.getIssue>> };
 
+/** v9-N1：扩写草稿（可编辑后采纳回任务框） */
+type Draft = { title: string; body: string; acceptance: string[]; openQuestions: string[] };
+
 export function TasksView() {
   const cwd = useStore((s) => s.cwd);
   const setCwd = useStore((s) => s.setCwd);
@@ -35,6 +38,8 @@ export function TasksView() {
   const [task, setTask] = useState('');
   const [issueId, setIssueId] = useState('');
   const [preview, setPreview] = useState<IssuePreview | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [draftBusy, setDraftBusy] = useState(false);
   const [confirmGate, setConfirmGate] = useState(
     () => localStorage.getItem('pf-dispatch-confirm') !== '0',
   );
@@ -108,6 +113,31 @@ export function TasksView() {
     }
   };
 
+  /** N1：一句话 → 网关扩写成 issue 草稿（浅=一次；深=两稿择优），草稿可编辑后采纳 */
+  const enhance = async (deep: boolean) => {
+    if (!task.trim()) {
+      log('error', '先写一句原始需求，再点扩写');
+      return;
+    }
+    setDraftBusy(true);
+    try {
+      const r = await api.enhanceIssue(task.trim(), cwd.trim() || undefined, deep);
+      setDraft(r.issue);
+      log('info', deep ? '深档扩写完成：两稿择优，可编辑后采纳' : '扩写完成：草稿可编辑，采纳后直接下发');
+    } catch (e) {
+      log('error', `扩写失败：${(e as Error).message}`);
+    } finally {
+      setDraftBusy(false);
+    }
+  };
+
+  const adoptDraft = () => {
+    if (!draft) return;
+    setTask(`${draft.title}\n\n${draft.body}`);
+    setDraft(null);
+    log('info', '草稿已采纳进任务框——现在可以下发了');
+  };
+
   return (
     <div className="tasks-view">
       <div className="tasks-hero">
@@ -122,6 +152,46 @@ export function TasksView() {
           onChange={(e) => setTask(e.target.value)}
           placeholder="例如：给绿化台账汇总做一次性能优化，并逐条验证结果；或：修复登录页在移动端的布局问题"
         />
+        <div className="tasks-enhance-row">
+          <button disabled={draftBusy} onClick={() => void enhance(false)}>
+            {draftBusy ? '扩写中（约 15-60 秒）…' : '✨ 扩写成完整需求'}
+          </button>
+          <button disabled={draftBusy} onClick={() => void enhance(true)}>
+            ✨✨ 深档（两稿择优，慢一倍）
+          </button>
+          <span className="tasks-sub">写得不具体也没关系：AI 会按项目上下文补出背景/细节/可机检验收标准，你改完采纳即可</span>
+        </div>
+        {draft && (
+          <div className="enhance-draft">
+            <div className="enhance-draft-head">
+              <b>📝 扩写草稿（可直接编辑）</b>
+              <button className="link" onClick={() => setDraft(null)}>弃用</button>
+            </div>
+            <input
+              className="enhance-draft-title"
+              value={draft.title}
+              onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+            />
+            <textarea
+              className="enhance-draft-body"
+              rows={10}
+              value={draft.body}
+              onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+            />
+            {draft.openQuestions.length > 0 && (
+              <ul className="enhance-draft-q">
+                {draft.openQuestions.map((q, i) => (
+                  <li key={i}>待确认：{q}</li>
+                ))}
+              </ul>
+            )}
+            <div>
+              <button className="primary" onClick={adoptDraft}>
+                ✔ 采纳进任务框
+              </button>
+            </div>
+          </div>
+        )}
         <div className="tasks-form-row">
           <div className="tasks-field">
             <label>

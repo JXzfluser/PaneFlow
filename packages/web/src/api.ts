@@ -125,6 +125,17 @@ export const api = {
       ...(issueId ? { issueId } : {}),
       ...(preview ? { preview: true } : {}),
     }),
+  /** v9-N1 需求增强器：一句话 → 接近可开工的 issue 草稿（网关未启用时 400） */
+  enhanceIssue: (text: string, cwd?: string, deep?: boolean) =>
+    json<{
+      ok: true;
+      issue: { title: string; body: string; acceptance: string[]; openQuestions: string[] };
+      candidates?: { title: string; body: string }[];
+    }>('POST', '/api/issues/enhance', {
+      text,
+      ...(cwd ? { cwd } : {}),
+      ...(deep ? { deep: true } : {}),
+    }),
   /** G3 批量派发：一个模板 × 一列 issue 编号 → N 个 run（空间并发达上限自动排队） */
   dispatchBatch: (template: string, issues: string, cwd: string, repo?: string) =>
     json<{

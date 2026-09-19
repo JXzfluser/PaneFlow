@@ -750,6 +750,14 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .issue-preview-body { white-space: pre-wrap; color: var(--text-1, #bbb); max-height: 120px; overflow: hidden; line-height: 1.5; }
 .issue-preview-foot { color: var(--text-2, #999); font-size: 11px; }
 .issue-preview-warn { color: var(--warn, #e0a03a); }
+/* N1: 一句话 → 扩写草稿（可编辑采纳） */
+.tasks-enhance-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.tasks-enhance-row .tasks-sub { flex-basis: 100%; margin-top: 2px; }
+.enhance-draft { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border, #333); border-radius: 8px; background: var(--bg-2, rgba(255,255,255,0.03)); display: flex; flex-direction: column; gap: 8px; }
+.enhance-draft-head { display: flex; align-items: baseline; justify-content: space-between; }
+.enhance-draft-title { font-weight: 600; }
+.enhance-draft-body { font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+.enhance-draft-q { margin: 0; padding-left: 18px; font-size: 12px; color: var(--warn, #e0a03a); }
 .tasks-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
 .tasks-check input { width: auto; margin: 0; }
 .tasks-actions .primary { margin-left: auto; padding: 8px 20px; }

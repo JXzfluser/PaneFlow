@@ -19,6 +19,7 @@ import {
   type Channel,
 } from './channels.js';
 import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, syncPiGatewayProvider, type ModelGatewaySettings } from './gateway.js';
+import { enhanceIssueText, gatewayChatFn } from './enhance.js';
 import { readGithubSettings, writeGithubSettings, buildGithubEnv, type GithubSettings } from './github-cred.js';
 
 interface CreateIssueBody {
@@ -653,6 +654,36 @@ export async function buildHttpServer(deps: HttpDeps) {
   app.delete<{ Params: { id: string }; Querystring: { space?: string } }>('/api/graphs/:id', async (req, reply) => {
     const ok = spaceStore(deps, req.query.space).deleteGraph(req.params.id);
     return { deleted: ok };
+  });
+
+  // -- v9-N1 需求增强器：一句话 → 接近可开工的 issue 文本 ------------------------
+
+  app.post<{
+    Body: { text?: string; cwd?: string; deep?: boolean };
+    Querystring: { space?: string };
+  }>('/api/issues/enhance', async (req, reply) => {
+    const text = String(req.body?.text ?? '').trim();
+    if (!text) return reply.code(400).send({ error: '缺少原始需求文本' });
+    const chat = gatewayChatFn(deps.dataDir);
+    if (!chat) return reply.code(400).send({ error: '网关未启用——先在「设 · 设置」配置并启用网关模型' });
+    const store0 = spaceStore(deps, req.query.space);
+    let cwd = String(req.body?.cwd ?? '').trim();
+    if (!cwd) {
+      try {
+        cwd = store0.readProfile().rootCwd ?? '';
+      } catch {
+        cwd = '';
+      }
+    }
+    if (!cwd || !fs.existsSync(cwd)) {
+      return reply.code(400).send({ error: `工作目录不存在，无法读取项目上下文：${cwd || '（未配置）'}` });
+    }
+    try {
+      const r = await enhanceIssueText({ text, cwd, deep: req.body?.deep === true }, chat);
+      return { ok: true, ...r };
+    } catch (e) {
+      return reply.code(502).send({ error: `模型扩写失败：${(e as Error).message}` });
+    }
   });
 
   // -- 智能下发（Smart Dispatch） ----------------------------------------------
