@@ -3,7 +3,7 @@ import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag } from '@paneflow/shared';
-import type { DagGraph } from '@paneflow/shared';
+import type { DagGraph, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
@@ -730,30 +730,150 @@ export async function buildHttpServer(deps: HttpDeps) {
     return reply.code(404).send({ error: '未找到归档记录' });
   });
 
-  // v7-A2 真删除：仅作用于已归档记录（主列表记录须先归档）
-  app.delete<{ Params: { id: string } }>('/api/runs/:id/archive', async (req, reply) => {
+  // v7-A2 真删除：仅作用于已归档记录（主列表记录须先归档）。
+  // v8-H2 联动：purgeArtifacts=1 时一并清理本 run 节点的产物文件（默认不清——留痕优先）
+  app.delete<{ Params: { id: string }; Querystring: { purgeArtifacts?: string } }>('/api/runs/:id/archive', async (req, reply) => {
     for (const sp of Store.listSpaces(deps.dataDir)) {
-      if (new Store(deps.dataDir, sp.id).deleteArchivedRun(req.params.id)) {
-        return { deleted: true };
+      const spaceStore = new Store(deps.dataDir, sp.id);
+      const rec = spaceStore.getArchivedRun(req.params.id);
+      if (!rec || !spaceStore.deleteArchivedRun(req.params.id)) continue;
+      let purgedArtifacts = 0;
+      if (req.query.purgeArtifacts === '1') {
+        const artDir = path.join(rec.cwd, '.herdr', 'artifacts');
+        const names = new Set((rec.graph?.nodes ?? []).map((n) => `${n.id}.json`));
+        try {
+          for (const f of fs.readdirSync(artDir)) {
+            if (!names.has(f)) continue;
+            try {
+              if (fs.statSync(path.join(artDir, f)).isFile()) {
+                fs.unlinkSync(path.join(artDir, f));
+                purgedArtifacts += 1;
+              }
+            } catch {
+              // 单个文件清不掉不阻断删除
+            }
+          }
+        } catch {
+          // 无产物目录 = 无可清理
+        }
       }
+      return { deleted: true, purgedArtifacts };
     }
     return reply.code(404).send({ error: '未找到归档记录（真删除只对已归档记录生效）' });
   });
 
+  /** v8-H2：run 记录寻址——内存 → 当前空间盘 → 各空间归档（导出/货架共用） */
+  const findRunRecord = (runId: string): RunRecord | undefined => {
+    const live = deps.engine.getRun(runId) ?? deps.store.getRun(runId);
+    if (live) return live;
+    for (const sp of Store.listSpaces(deps.dataDir)) {
+      const rec = new Store(deps.dataDir, sp.id).getArchivedRun(runId);
+      if (rec) return rec;
+    }
+    return undefined;
+  };
+
   // R5.1 导出单次 run 完整记录（v7-A2：归档记录跨空间可寻）
   app.get<{ Params: { id: string } }>('/api/runs/:id/export', async (req, reply) => {
-    let run = deps.engine.getRun(req.params.id) ?? deps.store.getRun(req.params.id);
-    if (!run) {
-      for (const sp of Store.listSpaces(deps.dataDir)) {
-        run = new Store(deps.dataDir, sp.id).getArchivedRun(req.params.id);
-        if (run) break;
-      }
-    }
+    const run = findRunRecord(req.params.id);
     if (!run) return reply.code(404).send({ error: 'not found' });
     reply.header('Content-Type', 'application/json');
     reply.header('Content-Disposition', `attachment; filename="${run.runId}.json"`);
     return run;
   });
+
+  // v8-H2 产物货架：列 <run.cwd>/.herdr/artifacts 下的产物文件（文件名能对上节点 ID 的挂上节点信息）
+  app.get<{ Params: { id: string } }>('/api/runs/:id/artifacts', async (req, reply) => {
+    const run = findRunRecord(req.params.id);
+    if (!run) return reply.code(404).send({ error: 'not found' });
+    const dir = path.join(run.cwd, '.herdr', 'artifacts');
+    type Entry = {
+      name: string;
+      size: number;
+      mtime: string;
+      nodeId?: string;
+      nodeLabel?: string;
+      nodeState?: string;
+      unverified?: boolean;
+    };
+    const files: Entry[] = [];
+    const walk = (d: string, rel: string) => {
+      if (files.length >= 300) return;
+      let ents: fs.Dirent[];
+      try {
+        ents = fs.readdirSync(d, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const ent of ents) {
+        const relName = rel ? `${rel}/${ent.name}` : ent.name;
+        if (ent.isDirectory()) {
+          walk(path.join(d, ent.name), relName);
+        } else if (ent.isFile()) {
+          try {
+            const st = fs.statSync(path.join(d, ent.name));
+            const e: Entry = { name: relName, size: st.size, mtime: st.mtime.toISOString() };
+            const m = relName.match(/^([^/]+)\.json$/);
+            const nodeId = m ? run.graph?.nodes.find((n) => n.id === m[1])?.id : undefined;
+            if (nodeId) {
+              e.nodeId = nodeId;
+              e.nodeLabel = run.graph?.nodes.find((n) => n.id === nodeId)?.label;
+              e.nodeState = run.nodes[nodeId]?.state;
+              e.unverified = run.nodes[nodeId]?.unverified;
+            }
+            files.push(e);
+          } catch {
+            // 竞态删除等：跳过
+          }
+          if (files.length >= 300) return;
+        }
+      }
+    };
+    walk(dir, '');
+    files.sort((a, b) => a.mtime < b.mtime ? -1 : 1);
+    return { runId: run.runId, dir, exists: fs.existsSync(dir), files };
+  });
+
+  // v8-H2 产物单文件读取：路径严格锁在产物目录内（防穿越）；raw=1 作下载
+  app.get<{ Params: { id: string }; Querystring: { path?: string; raw?: string } }>(
+    '/api/runs/:id/artifacts/file',
+    async (req, reply) => {
+      const run = findRunRecord(req.params.id);
+      if (!run) return reply.code(404).send({ error: 'not found' });
+      const dir = path.join(run.cwd, '.herdr', 'artifacts');
+      const rel = req.query.path ?? '';
+      if (!rel) return reply.code(400).send({ error: '缺少 path 参数' });
+      const full = path.resolve(dir, rel);
+      if (full !== dir && !full.startsWith(dir + path.sep)) {
+        return reply.code(400).send({ error: '路径非法（只允许读取产物目录内文件）' });
+      }
+      let st: fs.Stats;
+      try {
+        st = fs.statSync(full);
+      } catch {
+        return reply.code(404).send({ error: '文件不存在' });
+      }
+      if (!st.isFile()) return reply.code(400).send({ error: '不是文件' });
+      if (st.size > 5_000_000) return reply.code(413).send({ error: '产物文件过大（>5MB），请走导出或磁盘直读' });
+      if (req.query.raw === '1') {
+        const ext = path.extname(full).toLowerCase();
+        const type = ext === '.json' ? 'application/json' : ext === '.md' ? 'text/markdown' : 'text/plain';
+        reply.header('Content-Disposition', `attachment; filename="${path.basename(full)}"`);
+        return reply.type(`${type}; charset=utf-8`).send(fs.readFileSync(full));
+      }
+      const buf = fs.readFileSync(full);
+      const head = buf.subarray(0, 1024);
+      if (head.includes(0)) return reply.code(415).send({ error: '二进制文件，不内联预览（可下载）' });
+      const cap = 1_000_000;
+      return {
+        path: rel,
+        size: st.size,
+        truncated: st.size > cap,
+        content: buf.subarray(0, cap).toString('utf8'),
+      };
+    },
+  );
+
 
   app.post<{ Params: { id: string } }>('/api/runs/:id/stop', async (req, reply) => {
     const ok = deps.engine.stopRun(req.params.id);

@@ -5,6 +5,17 @@ import { api, fetchJson } from '../api.js';
 import { runCostLabel } from '../cost.js';
 import { RunTimeline } from './RunTimeline.js';
 
+/** v8-H2 产物货架的单个文件条目（<nodeId>.json 会挂上对应节点信息） */
+type ArtifactFile = {
+  name: string;
+  size: number;
+  mtime: string;
+  nodeId?: string;
+  nodeLabel?: string;
+  nodeState?: string;
+  unverified?: boolean;
+};
+
 function nodeDuration(r: NonNullable<ReturnType<typeof useStore.getState>['runs'][string]>, nodeId: string): number | null {
   const rec = r.nodes[nodeId];
   if (!rec?.startedAt) return null;
@@ -51,7 +62,7 @@ export function useRunNotifications(): void {
   }, [runs]);
 }
 
-/** v7-A2 归档面板：反归档回主列表 / 真删除（仅删记录，产物目录不联动清理）。 */
+/** v7-A2 归档面板：反归档回主列表 / 真删除（v8-H2：可选一并清理本 run 产物，默认保留）。 */
 function ArchivedPanel() {
   const log = useStore((s) => s.log);
   const [archived, setArchived] = useState<RunRecord[] | null>(null);
@@ -78,9 +89,17 @@ function ArchivedPanel() {
   };
 
   const purge = async (runId: string) => {
-    if (!window.confirm(`真删除 ${runId}？\n\n记录文件将从磁盘移除，不可恢复。\n注意：该 run 的产物目录（workspace 内 .herdr/artifacts）不会被自动清理，如需请先自行留存。`)) return;
+    if (!window.confirm(`真删除 ${runId}？\n\n记录文件将从磁盘移除，不可恢复。`)) return;
+    const alsoArtifacts = window.confirm(
+      '一并清理该 run 的产物文件？\n\n只删工作区 .herdr/artifacts 下与本 run 节点同名的结果文件，其它文件不动。\n点「取消」= 保留产物（默认）。',
+    );
     try {
-      await fetchJson<{ deleted: boolean }>('DELETE', `/api/runs/${encodeURIComponent(runId)}/archive`);
+      await fetchJson<{ deleted: boolean; purgedArtifacts: number }>(
+        'DELETE',
+        `/api/runs/${encodeURIComponent(runId)}/archive${alsoArtifacts ? '?purgeArtifacts=1' : ''}`,
+      ).then((d) => {
+        if (d.purgedArtifacts) log('info', `已连带清理 ${d.purgedArtifacts} 个产物文件`);
+      });
       setArchived((cur) => (cur ?? []).filter((r) => r.runId !== runId));
       log('info', `已真删除 ${runId}`);
     } catch (e) {
@@ -108,7 +127,7 @@ function ArchivedPanel() {
                 a.click();
               }}>⤓</button>
               <button title="恢复到主列表（反归档）" onClick={() => void unarchive(r.runId)}>↩</button>
-              <button className="danger" title="真删除（不可恢复，产物目录不联动）" onClick={() => void purge(r.runId)}>🗑</button>
+              <button className="danger" title="真删除（不可恢复；可选一并清理本 run 产物，默认保留）" onClick={() => void purge(r.runId)}>🗑</button>
             </div>
           </div>
         </div>
@@ -131,6 +150,47 @@ export function RunsCenter() {
   const [openTl, setOpenTl] = useState<string | null>(null);
   const [fetched, setFetched] = useState<Record<string, RunEvent[]>>({});
   const [loadingTl, setLoadingTl] = useState<string | null>(null);
+
+  // v8-H2 产物货架：展开时拉一次文件列表，查看按需拉单文件内容
+  const [openArts, setOpenArts] = useState<string | null>(null);
+  const [artLists, setArtLists] = useState<Record<string, { dir: string; exists: boolean; files: ArtifactFile[] }>>({});
+  const [artView, setArtView] = useState<Record<string, string>>({});
+
+  const toggleArtifacts = async (runId: string) => {
+    if (openArts === runId) {
+      setOpenArts(null);
+      return;
+    }
+    setOpenArts(runId);
+    if (artLists[runId]) return;
+    try {
+      const d = await fetchJson<{ dir: string; exists: boolean; files: ArtifactFile[] }>('GET', `/api/runs/${encodeURIComponent(runId)}/artifacts`);
+      setArtLists((c) => ({ ...c, [runId]: d }));
+    } catch (e) {
+      log('error', `读取产物列表失败：${(e as Error).message}`);
+    }
+  };
+
+  const viewArtifact = async (runId: string, name: string) => {
+    const key = `${runId}:${name}`;
+    if (artView[key]) {
+      setArtView((c) => {
+        const next = { ...c };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+    try {
+      const d = await fetchJson<{ content: string; truncated: boolean }>(
+        'GET',
+        `/api/runs/${encodeURIComponent(runId)}/artifacts/file?path=${encodeURIComponent(name)}`,
+      );
+      setArtView((c) => ({ ...c, [key]: d.content + (d.truncated ? '\n…（内容过大，已截断——用 ⤓ 下载看全文）' : '') }));
+    } catch (e) {
+      setArtView((c) => ({ ...c, [key]: `（无法内联预览：${(e as Error).message}——试 ⤓ 下载）` }));
+    }
+  };
 
   const toggleTimeline = async (runId: string, liveHasEvents: boolean) => {
     if (openTl === runId) {
@@ -264,6 +324,13 @@ export function RunsCenter() {
                 >
                   ⏱{eventCount ? ` ${eventCount}` : ''}
                 </button>
+                <button
+                  className={openArts === r.runId ? 'active' : ''}
+                  title={artLists[r.runId] ? `产物货架：这单落下了 ${artLists[r.runId]!.files.length} 个文件（可点开/下载）` : '产物货架：这单落下的交付文件（点开看清单）'}
+                  onClick={() => void toggleArtifacts(r.runId)}
+                >
+                  🗂{artLists[r.runId] ? ` ${artLists[r.runId]!.files.length}` : ''}
+                </button>
                 <button title="导出完整记录 JSON" onClick={() => {
                   const a = document.createElement('a');
                   a.href = `/api/runs/${r.runId}/export`;
@@ -312,6 +379,48 @@ export function RunsCenter() {
                 loading={loadingTl === r.runId}
                 emptyHint="这条运行没有事件记录（可能是埋点上线前的历史运行）。"
               />
+            )}
+            {openArts === r.runId && (
+              <div className="artifact-shelf">
+                {!artLists[r.runId] && <div className="artifact-row dim">产物列表加载中…</div>}
+                {artLists[r.runId]?.exists === false && (
+                  <div className="artifact-row dim">这单还没有产物文件（期望位置：{artLists[r.runId]!.dir}）。</div>
+                )}
+                {artLists[r.runId]?.files.map((f) => {
+                  const viewKey = `${r.runId}:${f.name}`;
+                  return (
+                    <div key={f.name} className="artifact-item">
+                      <div className="artifact-row">
+                        <b>{f.name}</b>
+                        {f.nodeLabel && (
+                          <span className="artifact-chip">
+                            {f.nodeLabel}
+                            {f.nodeState ? `·${f.nodeState}` : ''}
+                          </span>
+                        )}
+                        {f.unverified && (
+                          <span className="artifact-chip warn" title="该节点产物取自终端尾部兜底，未经文件验证">
+                            ⚠ 未验证
+                          </span>
+                        )}
+                        <span className="dim">
+                          {(f.size / 1024).toFixed(1)} KB · {f.mtime.slice(0, 19).replace('T', ' ')}
+                        </span>
+                        <button onClick={() => void viewArtifact(r.runId, f.name)}>{artView[viewKey] ? '收起' : '查看'}</button>
+                        <a
+                          className="artifact-dl"
+                          href={`/api/runs/${encodeURIComponent(r.runId)}/artifacts/file?path=${encodeURIComponent(f.name)}&raw=1`}
+                          download={f.name}
+                          title="下载原文件"
+                        >
+                          ⤓
+                        </a>
+                      </div>
+                      {artView[viewKey] && <pre className="artifact-content">{artView[viewKey]}</pre>}
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
         );

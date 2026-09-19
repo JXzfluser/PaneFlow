@@ -739,6 +739,16 @@ button.tl-node:hover { border-color: var(--accent); color: var(--accent); }
 .tasks-check input { width: auto; margin: 0; }
 .tasks-actions .primary { margin-left: auto; padding: 8px 20px; }
 
+/* H2: 产物货架（交付物看得见：列表/点开预览/下载） */
+.artifact-shelf { margin: 8px 0 4px; padding: 8px 10px; border: 1px solid var(--border, #333); border-radius: 8px; background: var(--bg-2, rgba(255,255,255,0.03)); font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.artifact-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.artifact-row .dim, .artifact-row.dim { color: var(--text-dim, #999); font-size: 11px; }
+.artifact-chip { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border, #333); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+.artifact-chip.warn { color: var(--warn, #e0a03a); border-color: var(--warn, #e0a03a); }
+.artifact-dl { text-decoration: none; color: var(--text-dim); }
+.artifact-content { max-height: 260px; overflow: auto; margin: 4px 0 8px; padding: 8px 10px; background: var(--bg-1, rgba(0,0,0,0.25)); border: 1px solid var(--border, #333); border-radius: 6px; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; }
+
+
 .tasks-recent { margin-top: 22px; }
 .tasks-recent-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 14px; color: var(--text); }
 .tasks-recent-head .link { margin-left: auto; }
