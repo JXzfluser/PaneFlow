@@ -17,6 +17,7 @@ import type {
   NodeCost,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf } from '@paneflow/shared';
+import { appendTemplateFeedback } from './contract-templates.js';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
@@ -1063,7 +1064,13 @@ export class Engine {
     if (!doc || doc.assertions.length === 0) return;
     const node = run.graph.nodes.find((n) => n.id === rec.nodeId);
     const gated = (node?.config.checks ?? []).some((c) => c.type === 'contract');
-    run.contract = { ...doc, source: gated ? 'generated' : 'input' };
+    // M6 留痕：无门直落路径也接产物自述的模板戳（有门路径以门配置为准，在 contractGate 里盖）
+    const claimedTpl = (rec.artifact?.extra?.contract as { template?: unknown } | undefined)?.template;
+    run.contract = {
+      ...doc,
+      source: gated ? 'generated' : 'input',
+      ...(typeof claimedTpl === 'string' && claimedTpl ? { template: claimedTpl } : {}),
+    };
     this.recordEvent(
       run,
       'run',
@@ -1156,6 +1163,11 @@ export class Engine {
     gate: { agentName: string; timeoutMs: number; artifactRel: string; blackboard: Map<string, Artifact> },
   ): Promise<string | null> {
     const { agentName, timeoutMs, artifactRel, blackboard } = gate;
+    // M6 留痕红线：门配置带的模板戳（id@sha）优先于产物自述——「按哪版约定干的」以派单时发出去的为准
+    const gateCheck = (run.graph.nodes.find((n) => n.id === nodeId)?.config.checks ?? [])
+      .find((c) => c.type === 'contract');
+    const claimedTpl = (rec.artifact?.extra?.contract as { template?: unknown } | undefined)?.template;
+    const stamp = gateCheck?.template ?? (typeof claimedTpl === 'string' && claimedTpl ? claimedTpl : undefined);
     for (;;) {
       if (this.cancels.has(run.runId)) return '已取消';
       const doc = contractOf(rec.artifact?.extra);
@@ -1180,21 +1192,34 @@ export class Engine {
       });
       rec.blockedPrompt = undefined;
       if (this.cancels.has(run.runId)) return '已取消';
-      if (action.action === 'reject') return '契约未确认：拒绝即终止本单（下游不派）';
+      if (action.action === 'reject') {
+        // M6 判例回流：整单被拒也值得记——多半是骨架/措辞误导
+        this.templateFeedback(run, nodeId, stamp, 'reject', {
+          assertions: doc.assertions.map((a) => `${a.id}: ${a.assertion.slice(0, 120)}`),
+        });
+        return '契约未确认：拒绝即终止本单（下游不派）';
+      }
       if (action.action === 'approve') {
-        // M2：放行即契约定稿——以批准时这一版内容落册并盖确认时刻
-        run.contract = { ...doc, source: 'generated', confirmedAt: new Date().toISOString() };
+        // M2：放行即契约定稿——以批准时这一版内容落册并盖确认时刻；M6：带上模板戳留痕
+        run.contract = {
+          ...doc,
+          source: 'generated',
+          confirmedAt: new Date().toISOString(),
+          ...(stamp ? { template: stamp } : {}),
+        };
         this.recordEvent(
           run,
           'approval',
           nodeId,
-          `契约确认放行：${doc.assertions.map((a) => a.id).join('、') || '（无断言，人工认可空契约）'}`,
+          `契约确认放行：${doc.assertions.map((a) => a.id).join('、') || '（无断言，人工认可空契约）'}${stamp ? `（按 ${stamp}）` : ''}`,
         );
         rec.state = 'done';
         this.persistAndNotify(run);
         return null;
       }
       if (action.action === 'input' && action.text) {
+        // M6 判例回流：门里被人工追问/改写的内容 = 模板修改建议的原料（判例喂养模板）
+        this.templateFeedback(run, nodeId, stamp, 'negotiate', { note: action.text.slice(0, 500) });
         const st = await this.promptAndSettle(run, rec, agentName, action.text, timeoutMs);
         rec.agentStatus = st;
         const tail = await this.ops.readOutput(agentName, 80).catch(() => '');
@@ -1204,6 +1229,25 @@ export class Engine {
         this.persistAndNotify(run);
       }
     }
+  }
+
+  /** M6 判例回流：契约门里被拒/被追问的内容记进空间 contract-feedback.jsonl，供人改模板 */
+  private templateFeedback(
+    run: RunRecord,
+    nodeId: string,
+    stamp: string | undefined,
+    kind: string,
+    payload: Record<string, unknown>,
+  ): void {
+    const spaceDir = path.join(this.store.root, 'spaces', run.spaceId ?? 'default');
+    appendTemplateFeedback(spaceDir, {
+      kind,
+      runId: run.runId,
+      nodeId,
+      template: stamp ?? null,
+      dag: run.dagName,
+      ...payload,
+    });
   }
 
   /**

@@ -90,7 +90,9 @@ export function TasksView() {
           (r.contract?.mode === 'extracted'
             ? `已机检验收标准 ${r.contract.assertions} 条，直接作为本单契约；`
             : r.contract?.mode === 'gate'
-              ? '输入无可机检验收标准——本单会先停在「契约接单门」立约等你确认；'
+              ? r.contract.template
+                ? `输入无可机检验收标准——已按契约骨架 ${r.contract.template} 实例化立约，运行会停在「契约接单门」等你确认；`
+                : '输入无可机检验收标准——本单会先停在「契约接单门」立约等你确认；'
               : '') +
           (confirmGate
             ? `已下发 ${r.runId}：Planner 正在规划，完成后会在这里给你「编排预告」等你确认`

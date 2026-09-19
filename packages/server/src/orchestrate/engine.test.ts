@@ -1335,6 +1335,78 @@ describe('v8-M2 契约成为 run 一等公民', () => {
   });
 });
 
+describe('v8-M6 契约留痕与判例回流（引擎侧）', () => {
+  const writeImpl = (cwd: string, obj: unknown) => {
+    fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.herdr/artifacts/impl.json'), JSON.stringify(obj));
+  };
+  const contractArt = (template?: string) => ({
+    summary: '规划',
+    extra: {
+      contract: {
+        assertions: [{ id: 'AC-1', assertion: '复现不再触发', verify_method: 'v' }],
+        questions: ['期望行为？'],
+        ...(template ? { template } : {}),
+      },
+    },
+  });
+  const gateGraph = (template?: string) => {
+    const g = serialGraph();
+    g.nodes[1]!.config.checks = [{ type: 'contract', ...(template ? { template } : {}) }];
+    return g;
+  };
+
+  it('留痕红线：门带 id@sha 配置 → approve 定稿的契约盖上模板戳（事件也带）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = () => writeImpl(cwd, contractArt());
+    const run = await engine.startRun(gateGraph('bugfix@deadbeef'), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.contract!.template).toBe('bugfix@deadbeef');
+    expect((final.events ?? []).some((e) => e.text.includes('契约确认放行') && e.text.includes('按 bugfix@deadbeef'))).toBe(true);
+  });
+
+  it('留痕红线：门配置戳压过产物自述（不信任执行方）；无门直落才接自述戳', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = () => writeImpl(cwd, contractArt('made-up@ffffffff'));
+    const run = await engine.startRun(gateGraph('bugfix@deadbeef'), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(engine.getRun(run.runId)!.contract!.template).toBe('bugfix@deadbeef');
+
+    // 无门直落路径：captureContract 接自述戳（无权威源可比，留痕优先）
+    const ops2 = new FakeHerdrOps();
+    const engine2 = new Engine(ops2, new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'pf-store6-'))), OPTS);
+    const plain = serialGraph();
+    ops2.onPrompt = () => writeImpl(cwd, contractArt('docs@12345678'));
+    const run2 = await engine2.startRun(plain, cwd);
+    await waitFor(() => engine2.getRun(run2.runId)!.state !== 'running');
+    expect(engine2.getRun(run2.runId)!.contract!.template).toBe('docs@12345678');
+  });
+
+  it('判例回流：门里 input 追问与 reject 都落到空间 contract-feedback.jsonl', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = () => writeImpl(cwd, contractArt());
+    const run = await engine.startRun(gateGraph('bugfix@deadbeef'), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'input', text: 'AC-1 太空泛，改成可执行的复现核对' });
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'reject' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const feedback = fs
+      .readFileSync(path.join(dataDir, 'spaces', 'default', 'contract-feedback.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as { kind: string; template: string; runId: string; note?: string });
+    expect(feedback.map((f) => f.kind)).toEqual(['negotiate', 'reject']);
+    expect(feedback[0]!.template).toBe('bugfix@deadbeef');
+    expect(feedback[0]!.note).toContain('改成可执行的复现核对');
+  });
+});
+
 describe('v8-H1 分支守卫 + pr_url 交付出口', () => {
   const git = (cwd: string, ...args: string[]) =>
     execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();

@@ -185,3 +185,23 @@ describe('v8-M1 契约门装配（buildDispatchGraph）', () => {
     expect((p.config.checks ?? []).map((c) => c.type)).toEqual(['manual']);
   });
 });
+
+describe('v8-M6 契约骨架模板装配（buildDispatchGraph）', () => {
+  const templateList = [{ name: 't1' }];
+  const tpl = { stamp: 'bugfix@1a2b3c4d', block: '本单命中契约骨架模板「bugfix@1a2b3c4d」（缺陷修复）——照抄骨架再填差异' };
+  const planner = (opts: Partial<import('./dispatch.js').DispatchOptions>) =>
+    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...opts }).nodes.find((n) => n.id === 'planner')!;
+
+  it('gate 模式 + 命中模板 → 骨架块注入立约指令且 contract 门带 id@sha 戳', () => {
+    const p = planner({ contractTemplate: tpl });
+    expect(p.config.prompt).toContain('本单命中契约骨架模板「bugfix@1a2b3c4d」');
+    expect(p.config.prompt).toContain('先立约再派工');
+    expect(p.config.checks).toEqual([{ type: 'contract', template: 'bugfix@1a2b3c4d' }]);
+  });
+
+  it('extracted 模式优先：有输入契约时模板不注入（机检 AC 就是契约，不需要骨架）', () => {
+    const p = planner({ contractAssertions: ['3 秒内出结果'], contractTemplate: tpl });
+    expect(p.config.prompt).not.toContain('契约骨架模板');
+    expect((p.config.checks ?? []).some((c) => c.type === 'contract')).toBe(false);
+  });
+});

@@ -115,8 +115,8 @@ export const api = {
       issueId?: string;
       issueFetched?: boolean;
       note?: string;
-      /** M1 接单门：extracted=输入自带验收标准；gate=无契约，run 会停在契约确认门 */
-      contract?: { mode: 'extracted' | 'gate'; assertions?: number };
+      /** M1 接单门：extracted=输入自带验收标准；gate=无契约，run 会停在契约确认门（M6 template=命中的骨架戳 id@sha） */
+      contract?: { mode: 'extracted' | 'gate'; assertions?: number; template?: string };
     }>('POST', '/api/dispatch', {
       task,
       cwd,

@@ -9,6 +9,7 @@ import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
 import type { SpaceProfile } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
+import { loadContractLibrary, matchContractTemplate, renderContractTemplateBlock } from '../orchestrate/contract-templates.js';
 import { detectInstalledAgents } from './env-check.js';
 import {
   dispatchChannels,
@@ -185,6 +186,27 @@ export async function buildHttpServer(deps: HttpDeps) {
     } catch {
       return null;
     }
+  });
+
+  // v8-M6 契约模板与断言语式库：空间资产是文本文件（改文件即改约定，不建编辑器）
+  app.get<{ Querystring: { space?: string } }>('/api/contract-templates', async (req) => {
+    const s = spaceStore(deps, req.query.space);
+    const lib = loadContractLibrary(path.join(s.root, 'spaces', s.spaceId));
+    return {
+      dir: lib.dir,
+      templates: lib.templates.map((lt) => ({
+        id: lt.template.id,
+        title: lt.template.title,
+        sha: lt.sha,
+        source: lt.source,
+        keywords: lt.template.matchKeywords,
+        assertions: lt.template.assertions.length,
+        questions: lt.template.questions.length,
+        file: lt.file ?? null,
+      })),
+      assertionPatterns: lib.assertionPatterns,
+      clarifyQuestions: lib.clarifyQuestions,
+    };
   });
 
   // -- global roles library ----------------------------------------------------
@@ -563,6 +585,14 @@ export async function buildHttpServer(deps: HttpDeps) {
       const contractAssertions = extractAcceptance(
         issueContext ? `${task}\n\n${issueContext.body}` : task,
       );
+      // M6：无机检契约时按关键词择契约骨架模板实例化（留痕戳进门的 check 里带走）
+      const contractLib = loadContractLibrary(path.join(store0.root, 'spaces', store0.spaceId));
+      const tplHit = contractAssertions.length
+        ? null
+        : matchContractTemplate(
+            `${task}\n${issueContext?.title ?? ''}\n${issueContext?.body ?? ''}`,
+            contractLib,
+          );
       const graph = buildDispatchGraph({
         task,
         issueId: issueId || undefined,
@@ -573,6 +603,9 @@ export async function buildHttpServer(deps: HttpDeps) {
         plannerAgentKind,
         issueContext,
         contractAssertions,
+        contractTemplate: tplHit
+          ? { stamp: `${tplHit.template.id}@${tplHit.sha}`, block: renderContractTemplateBlock(tplHit, contractLib) }
+          : undefined,
       });
       const run = await deps.engine.startRun(
         graph,
@@ -603,7 +636,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         note: issueNote,
         contract: contractAssertions.length
           ? { mode: 'extracted' as const, assertions: contractAssertions.length }
-          : { mode: 'gate' as const },
+          : { mode: 'gate' as const, template: tplHit ? `${tplHit.template.id}@${tplHit.sha}` : undefined },
       };
     },
   );

@@ -20,6 +20,8 @@ export interface DispatchOptions {
   issueContext?: IssueView;
   /** M1：服务端机检出的「验收标准」条目（非空=契约已在手，不设接单门） */
   contractAssertions?: string[];
+  /** M6：命中的契约骨架模板（stamp=id@sha 留痕；block=注入 Planner 的实例化指令） */
+  contractTemplate?: { stamp: string; block: string };
 }
 
 /** G1：Issue 读取器的出参形状（http 路由与下发注入共用） */
@@ -108,6 +110,8 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
   // M1 接单门：机检有「验收标准」→ 直接当契约注入（不设门）；无 → Planner 先立约 + 契约确认门
   const inputContract = (opts.contractAssertions ?? []).map((s) => s.trim()).filter(Boolean);
   const hasInputContract = inputContract.length > 0;
+  // M6：无机检契约时优先按骨架模板实例化（选骨架→填差异），替代现场自由发挥
+  const tpl = !hasInputContract && opts.contractTemplate ? opts.contractTemplate : undefined;
   const contractBlock = hasInputContract
     ? [
         '',
@@ -118,11 +122,12 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
     : [
         '',
         '输入未见可机检的「验收标准」小节——按 DoR 先立约再派工：',
+        ...(tpl ? [`${tpl.block}`, ''] : []),
         'extra.contract = { assertions: [{id:"AC-1", assertion:"一句可判真假的验收断言", verify_method:"如何核对"}, …（至少 2 条）], questions: ["必须向需求方澄清的问题", …] }。',
         '运行会停在契约接单门等你方与人工对齐：断言要具体到能被机器或人工逐条核验，提问直击模糊点。',
       ].join('\n');
   const checks: CheckSpec[] = [];
-  if (!hasInputContract) checks.push({ type: 'contract' });
+  if (!hasInputContract) checks.push({ type: 'contract', ...(tpl ? { template: tpl.stamp } : {}) });
   if (opts.preview) {
     checks.push({
       type: 'manual',
