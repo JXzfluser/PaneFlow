@@ -709,6 +709,25 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .settings-card .role-card-head select { width: 150px; flex: 0 0 auto; }
 .settings-card .role-card textarea { width: 100%; min-height: 56px; margin-top: 8px; }
 
+/* v10-U1 bot 阵容 */
+.role-roster { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.bot-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--panel); }
+.bot-head { display: flex; align-items: center; gap: 10px; }
+.bot-avatar { font-size: 22px; width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--bg); flex: 0 0 auto; }
+.bot-id { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.bot-id strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bot-meta { font-size: 11px; color: var(--text-dim); }
+.bot-duty { flex: 0 0 auto; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); }
+.bot-duty.idle { border-style: dashed; border-color: var(--border); color: var(--text-dim); }
+.bot-duty.starter { background: var(--accent); color: var(--bg); }
+.bot-persona { margin: 8px 0 4px; font-size: 12px; color: var(--text-dim); line-height: 1.5; min-height: 18px; }
+.settings-card .bot-edit summary { cursor: pointer; font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+.settings-card .bot-edit > input, .settings-card .bot-edit > textarea, .settings-card .bot-edit > select { width: 100%; margin-top: 8px; }
+.settings-card .bot-edit textarea { min-height: 72px; }
+.settings-card .bot-edit > label { display: block; margin-top: 8px; }
+.bot-card-foot { display: flex; justify-content: flex-end; margin-top: 6px; }
+.bot-ghosts { font-size: 12px; color: var(--warn, #b8860b); margin: 0 0 8px; }
+
 /* icon-only buttons */
 .tpl-item .tpl-ops button, .run-card-ops button, .tb-group button, .tb-status button {
   min-width: 30px; text-align: center;

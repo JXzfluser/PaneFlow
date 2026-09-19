@@ -596,14 +596,30 @@ interface Role {
   env?: Record<string, string>;
 }
 
+/** v10-U1 首发阵容链：标准五连打头，按规划→实现→评审→验收→沉淀排 */
+const BOT_ORDER = ['std-planner', 'std-implementer', 'std-reviewer', 'std-verifier', 'std-curator'];
+const BOT_ICONS: Record<string, string> = {
+  'std-planner': '🧭',
+  'std-implementer': '⚙️',
+  'std-reviewer': '🔍',
+  'std-verifier': '✅',
+  'std-curator': '📚',
+};
+type RoleUsage = { spaceId: string; name: string; alias?: string }[];
+
 function RolesEditor() {
   const log = useStore((s) => s.log);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [usage, setUsage] = useState<Record<string, RoleUsage>>({});
   const [agentKinds, setAgentKinds] = useState<string[]>([]);
   useEffect(() => {
     void fetchJson<{ roles?: Role[] }>('GET', '/api/roles')
       .then((d) => setRoles(d.roles ?? []))
       .catch((e: Error) => log('error', `读取角色库失败：${e.message}`));
+    // 部署数只是角标信息：拉不到不报错，阵容照画
+    void fetchJson<{ usage?: Record<string, RoleUsage> }>('GET', '/api/roles/usage')
+      .then((d) => setUsage(d.usage ?? {}))
+      .catch(() => undefined);
     void api.health().then((h) => setAgentKinds(h.agentKinds));
   }, []);
   const save = (next: Role[]) => {
@@ -612,57 +628,107 @@ function RolesEditor() {
       .then(() => log('info', '角色库已保存'))
       .catch((e: Error) => log('error', e.message));
   };
-  const patch = (idx: number, part: Partial<Role>) =>
-    setRoles((rs) => rs.map((r, i) => (i === idx ? { ...r, ...part } : r)));
+  const patch = (id: string, part: Partial<Role>) =>
+    setRoles((rs) => rs.map((r) => (r.id === id ? { ...r, ...part } : r)));
+  // 稳定排序：标准五连按链序打头，其余按入库顺序
+  const sorted = [...roles].sort((a, b) => {
+    const ia = BOT_ORDER.indexOf(a.id);
+    const ib = BOT_ORDER.indexOf(b.id);
+    return (ia < 0 ? 100 : ia) - (ib < 0 ? 100 : ib);
+  });
+  const ghosts = Object.entries(usage).filter(([id]) => !roles.some((r) => r.id === id));
   return (
     <>
-      {roles.map((r, i) => (
-        <div className="role-card" key={r.id}>
-          <div className="role-card-head">
-            <input
-              value={r.name}
-              onChange={(e) => patch(i, { name: e.target.value })}
-              placeholder="角色名"
-              className="role-name"
-            />
-            <select
-              value={r.agentKind ?? ''}
-              onChange={(e) => patch(i, { agentKind: e.target.value || undefined })}
-              title="该角色默认使用的 Agent 类型"
-            >
-              <option value="">（默认 Agent）</option>
-              {agentKinds.map((k) => (
-                <option key={k} value={k}>
-                  {k}
-                </option>
-              ))}
-            </select>
-            <button className="icon danger" title="删除角色" onClick={() => save(roles.filter((x) => x.id !== r.id))}>
-              🗑
-            </button>
-          </div>
-          <textarea
-            value={r.prePrompt ?? ''}
-            onChange={(e) => patch(i, { prePrompt: e.target.value })}
-            placeholder="角色前置提示（渲染在节点指令之前），如：你是后端开发工程师，遵守团队分支与提交规范…"
-          />
-          <label>角色环境变量（每行 key=值；典型：模型网关地址，节点级可覆盖）</label>
-          <input
-            value={Object.entries(r.env ?? {})
-              .map(([k, v]) => `${k}=${v}`)
-              .join('  ')}
-            onChange={(e) => {
-              const env: Record<string, string> = {};
-              for (const line of e.target.value.split(/\s+/)) {
-                const idx = line.indexOf('=');
-                if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-              }
-              patch(i, { env: Object.keys(env).length ? env : undefined });
-            }}
-            placeholder="ANTHROPIC_BASE_URL=http://127.0.0.1:4000"
-          />
-        </div>
-      ))}
+      {roles.length === 0 && (
+        <p className="settings-hint">
+          班底还是空的。到「项目档案」里点「一键装填标准五连」，五个首发 bot（规划/实现/评审/验收/沉淀）就会到位。
+        </p>
+      )}
+      <div className="role-roster">
+        {sorted.map((r) => {
+          const on = usage[r.id] ?? [];
+          const persona = (r.prePrompt ?? '')
+            .split('\n')
+            .map((l) => l.trim())
+            .find(Boolean);
+          return (
+            <div className="bot-card" key={r.id}>
+              <div className="bot-head">
+                <span className="bot-avatar" aria-hidden>
+                  {BOT_ICONS[r.id] ?? '🤖'}
+                </span>
+                <div className="bot-id">
+                  <strong>{r.name}</strong>
+                  <span className="bot-meta">{r.agentKind ? `⚡ ${r.agentKind}` : '⚡ 默认 Agent'}</span>
+                </div>
+                <span
+                  className={on.length ? `bot-duty${BOT_ORDER.includes(r.id) ? ' starter' : ''}` : 'bot-duty idle'}
+                  title={on.map((p) => (p.alias ? `${p.name} · ${p.alias}` : p.name)).join('、')}
+                >
+                  {on.length ? `已部署 ${on.length} 个项目` : '待命'}
+                </span>
+              </div>
+              <p className="bot-persona">{persona ? `${persona.slice(0, 64)}${persona.length > 64 ? '…' : ''}` : '还没写人设——展开下方卡背补上'}</p>
+              <details className="bot-edit">
+                <summary>编辑这张卡</summary>
+                <input
+                  value={r.name}
+                  onChange={(e) => patch(r.id, { name: e.target.value })}
+                  placeholder="角色名"
+                  className="role-name"
+                />
+                <select
+                  value={r.agentKind ?? ''}
+                  onChange={(e) => patch(r.id, { agentKind: e.target.value || undefined })}
+                  title="该角色默认使用的 Agent 类型"
+                >
+                  <option value="">（默认 Agent）</option>
+                  {agentKinds.map((k) => (
+                    <option key={k} value={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
+                <textarea
+                  value={r.prePrompt ?? ''}
+                  onChange={(e) => patch(r.id, { prePrompt: e.target.value })}
+                  placeholder="角色人设（渲染在节点指令之前），如：你是后端开发工程师，遵守团队分支与提交规范…"
+                />
+                <label>环境变量（每行 key=值；典型：模型网关地址，节点级可覆盖）</label>
+                <input
+                  value={Object.entries(r.env ?? {})
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join('  ')}
+                  onChange={(e) => {
+                    const env: Record<string, string> = {};
+                    for (const line of e.target.value.split(/\s+/)) {
+                      const idx = line.indexOf('=');
+                      if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+                    }
+                    patch(r.id, { env: Object.keys(env).length ? env : undefined });
+                  }}
+                  placeholder="ANTHROPIC_BASE_URL=http://127.0.0.1:4000"
+                />
+                <div className="bot-card-foot">
+                  <button
+                    className="ghost"
+                    onClick={() => save(roles.filter((x) => x.id !== r.id))}
+                    title="从角色库删除（各项目班底里的引用会悬空，界面会标出）"
+                  >
+                    🗑 删除角色
+                  </button>
+                </div>
+              </details>
+            </div>
+          );
+        })}
+      </div>
+      {ghosts.length > 0 && (
+        <p className="bot-ghosts">
+          ⚠️ 班底里还引用着已不在库的角色：
+          {ghosts.map(([id, ps]) => ` ${id}（${ps.map((p) => p.name).join('、')}）`).join('；')}
+        </p>
+      )}
       <button
         className="ghost"
         onClick={() => save([...roles, { id: `role-${Date.now().toString(36)}`, name: `角色 ${roles.length + 1}` }])}

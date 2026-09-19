@@ -198,3 +198,46 @@ describe('v9-B1 班底名册（team 机检 + 标准五连装填）', () => {
     }
   });
 });
+
+describe('v10-U1 GET /api/roles/usage 部署聚合', () => {
+  it('按 roleId 聚合各项目班底；alias 带上；无 team 的项目不产条目；悬空 roleId 也返回', async () => {
+    const { app } = await buildServer(tmp());
+    try {
+      await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/alpha',
+        headers: { host: HOST },
+        payload: { team: [{ roleId: 'std-planner', alias: '阿规' }, { roleId: 'ghost', note: '库里没有的角色' }] },
+      });
+      await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/beta',
+        headers: { host: HOST },
+        payload: { team: [{ roleId: 'std-planner' }] },
+      });
+      await app.inject({ method: 'PUT', url: '/api/spaces/gamma', headers: { host: HOST }, payload: { description: '无班底' } });
+      const res = await app.inject({ method: 'GET', url: '/api/roles/usage', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      const { usage } = res.json() as { usage: Record<string, { spaceId: string; name: string; alias?: string }[]> };
+      expect(usage['std-planner']).toEqual([
+        { spaceId: 'alpha', name: 'alpha', alias: '阿规' },
+        { spaceId: 'beta', name: 'beta' },
+      ]);
+      expect(usage['ghost']).toEqual([{ spaceId: 'alpha', name: 'alpha' }]);
+      expect(usage['std-curator']).toBeUndefined(); // 没被任何班底引用的角色不占键
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('空数据目录 → usage 为 {}（不抛）', async () => {
+    const { app } = await buildServer(tmp());
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/roles/usage', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ usage: {} });
+    } finally {
+      await app.close();
+    }
+  });
+});

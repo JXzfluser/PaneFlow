@@ -240,6 +240,17 @@ export async function buildHttpServer(deps: HttpDeps) {
     return { saved: roles.length };
   });
 
+  // v10-U1 角色部署聚合：每个 bot 角色在哪些项目的班底里（悬空 roleId 也返回，由前端展示语义处理）
+  app.get('/api/roles/usage', async () => {
+    const usage: Record<string, { spaceId: string; name: string; alias?: string }[]> = {};
+    for (const sp of Store.listSpaces(deps.dataDir)) {
+      for (const m of sp.team ?? []) {
+        (usage[m.roleId] ??= []).push({ spaceId: sp.id, name: sp.name, ...(m.alias ? { alias: m.alias } : {}) });
+      }
+    }
+    return { usage };
+  });
+
   // -- model gateway ----------------------------------------------------------
 
   app.get('/api/gateway', async () => {
