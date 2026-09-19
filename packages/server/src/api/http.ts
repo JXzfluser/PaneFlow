@@ -20,7 +20,17 @@ import {
 } from './channels.js';
 import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, syncPiGatewayProvider, listGatewayProfiles, setCurrentGateway, deleteGatewayProfile, upsertGatewayProfile, type ModelGatewaySettings } from './gateway.js';
 import { draftAcceptance, enhanceIssueText, gatewayChatFn } from './enhance.js';
-import { readGithubSettings, writeGithubSettings, buildGithubEnv, importFromGhCli, type GithubSettings } from './github-cred.js';
+import {
+  readGithubSettings,
+  writeGithubSettings,
+  buildGithubEnv,
+  importFromGhCli,
+  ghCliToken,
+  resolveGithubToken,
+  describeGithubCred,
+  removeStoredToken,
+  type GithubSettings,
+} from './github-cred.js';
 import { maskCandidate, readSwitcherFile } from './switcher-import.js';
 import {
   checkRepoVisibility,
@@ -86,6 +96,8 @@ export interface HttpDeps {
   authToken?: string | null;
   /** G2：CORS / 跨站 Origin 白名单（空数组 = 默认拒绝跨站） */
   corsOrigins?: string[];
+  /** U2：gh 登录态 token 读取器（缺省真调 `gh auth token`；测试注入以保证确定性） */
+  readGhCliToken?: () => Promise<string>;
 }
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -395,9 +407,16 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   // -- github credentials ------------------------------------------------------
 
+  // U2：动作侧取 token 统一走「存储 PAT > gh 登录态兜底」；读取器可注入保测试确定性
+  const ghTokenOrNull = (): Promise<string | null> =>
+    resolveGithubToken(deps.dataDir, deps.readGhCliToken ?? ghCliToken);
+  const NO_CRED =
+    '未配置 GitHub 凭据：设置页存 PAT，或本机 gh auth login 后直接用（无需落盘）';
+
   app.get('/api/github/cred', async () => {
     const g = readGithubSettings(deps.dataDir);
-    return { tokenConfigured: Boolean(g.token), defaultRepo: g.defaultRepo ?? '' };
+    const d = await describeGithubCred(deps.dataDir, deps.readGhCliToken ?? ghCliToken);
+    return { tokenConfigured: Boolean(g.token), defaultRepo: g.defaultRepo ?? '', ...d };
   });
 
   app.put<{ Body: GithubSettings }>('/api/github/cred', async (req, reply) => {
@@ -413,9 +432,15 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   // D1：本机 gh CLI 已登录 → 一键导入 token；拿不到就给最小权限 PAT 指引（不猜）
   app.post('/api/github/cred/import-gh', async (req, reply) => {
-    const r = await importFromGhCli(deps.dataDir);
+    const r = await importFromGhCli(deps.dataDir, deps.readGhCliToken ?? ghCliToken);
     if (!r.ok) return reply.code(400).send({ error: r.error });
     return { imported: true, defaultRepo: r.defaultRepo ?? '' };
+  });
+
+  // U2：解绑=只清落盘 PAT（默认仓库等留着；gh 登录态本就没存，清完自动回落兜底通道）
+  app.post('/api/github/cred/unlink', async () => {
+    const { defaultRepo } = removeStoredToken(deps.dataDir);
+    return { unlinked: true, defaultRepo };
   });
 
   // -- github deterministic actions（服务端用配置的 PAT 直调 API，Agent 只需 curl 本地） --
@@ -424,7 +449,8 @@ export async function buildHttpServer(deps: HttpDeps) {
     '/api/github/create-issue',
     async (req, reply) => {
       const gh = readGithubSettings(deps.dataDir);
-      if (!gh.token) return reply.code(400).send({ error: '未配置 GitHub 凭据（设置页 → GitHub 凭据）' });
+      const token = await ghTokenOrNull();
+      if (!token) return reply.code(400).send({ error: NO_CRED });
       const repo = req.body.repo ?? gh.defaultRepo;
       if (!repo) return reply.code(400).send({ error: '缺少 repo（未配置默认仓库）' });
       const title = String(req.body.title ?? '').trim();
@@ -433,7 +459,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${gh.token}`,
+            Authorization: `Bearer ${token}`,
             Accept: 'application/vnd.github+json',
             'Content-Type': 'application/json',
           },
@@ -451,7 +477,8 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   app.patch<{ Body: UpdateIssueBody }>('/api/github/update-issue', async (req, reply) => {
     const gh = readGithubSettings(deps.dataDir);
-    if (!gh.token) return reply.code(400).send({ error: '未配置 GitHub 凭据' });
+    const token = await ghTokenOrNull();
+    if (!token) return reply.code(400).send({ error: NO_CRED });
     const repo = req.body.repo ?? gh.defaultRepo;
     if (!repo) return reply.code(400).send({ error: '缺少 repo（未配置默认仓库）' });
     const number = Number(req.body.number);
@@ -461,7 +488,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       const res = await fetch(`https://api.github.com/repos/${repo}/issues/${number}`, {
         method: 'PATCH',
         headers: {
-          Authorization: `Bearer ${gh.token}`,
+          Authorization: `Bearer ${token}`,
           Accept: 'application/vnd.github+json',
           'Content-Type': 'application/json',
         },
@@ -482,7 +509,8 @@ export async function buildHttpServer(deps: HttpDeps) {
     '/api/github/intake-template',
     async (req, reply) => {
       const gh = readGithubSettings(deps.dataDir);
-      if (!gh.token) return reply.code(400).send({ error: '未配置 GitHub 凭据（设置页 → GitHub 凭据）' });
+      const token = await ghTokenOrNull();
+      if (!token) return reply.code(400).send({ error: NO_CRED });
       const repo = String(req.body?.repo ?? '').trim() || gh.defaultRepo;
       if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
         return reply.code(400).send({ error: `缺少或非法 repo（需 owner/name，收到：${repo ?? '空'}）` });
@@ -490,7 +518,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       const content = intakeTemplateMarkdown();
       const api = `https://api.github.com/repos/${repo}/contents/${INTAKE_TEMPLATE_PATH}`;
       const headers = {
-        Authorization: `Bearer ${gh.token}`,
+        Authorization: `Bearer ${token}`,
         Accept: 'application/vnd.github+json',
         'Content-Type': 'application/json',
       };
@@ -530,13 +558,14 @@ export async function buildHttpServer(deps: HttpDeps) {
 
   // -- G1 Issue 读取器：真实需求载体的读侧（写侧见 create-issue/update-issue） ----
 
-  /** 拉取 issue 正文+评论（REST 直调，凭据走既有 GH_TOKEN→dataDir 回退链）；失败抛错由调用方降级 */
+  /** 拉取 issue 正文+评论（REST 直调；凭据 = 存储 PAT → gh 登录态兜底，U2）；失败抛错由调用方降级 */
   const fetchGithubIssue = async (number: number, repoOverride?: string): Promise<IssueView> => {
     const gh = readGithubSettings(deps.dataDir);
-    if (!gh.token) throw new Error('未配置 GitHub 凭据（设置页 → GitHub 凭据）');
+    const token = await ghTokenOrNull();
+    if (!token) throw new Error(NO_CRED);
     const repo = repoOverride?.trim() || gh.defaultRepo;
     if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`repo 非法或缺少（收到：${repo ?? '空'}）`);
-    const headers = { Authorization: `Bearer ${gh.token}`, Accept: 'application/vnd.github+json' };
+    const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' };
     const res = await fetch(`https://api.github.com/repos/${repo}/issues/${number}`, { headers, signal: AbortSignal.timeout(15_000) });
     const data = (await res.json()) as {
       number?: number; title?: string; body?: string | null; state?: string; html_url?: string;
@@ -806,12 +835,13 @@ export async function buildHttpServer(deps: HttpDeps) {
     if (!cwd || !fs.existsSync(cwd)) {
       return reply.code(400).send({ error: `工作目录不存在，无法读取项目上下文：${cwd || '（未配置）'}` });
     }
-    // K2 wiki 读回：有凭据有默认仓就带相关沉淀页进上下文；仓库不存在/网断静默跳过（绝不打断扩写）
+    // K2 wiki 读回：有凭据（存储 PAT 或 gh 登录态兜底）有默认仓就带相关沉淀页进上下文；仓库不存在/网断静默跳过（绝不打断扩写）
     let extraBlocks: { label: string; text: string }[] = [];
     const ghCred = readGithubSettings(deps.dataDir);
-    if (ghCred.token && ghCred.defaultRepo?.includes('/')) {
+    const ghReadTk = await ghTokenOrNull();
+    if (ghReadTk && ghCred.defaultRepo?.includes('/')) {
       try {
-        await syncWikiCache({ dataDir: deps.dataDir, repo: ghCred.defaultRepo, token: ghCred.token });
+        await syncWikiCache({ dataDir: deps.dataDir, repo: ghCred.defaultRepo, token: ghReadTk });
         extraBlocks = pickWikiExcerpts(readWikiPages(deps.dataDir, ghCred.defaultRepo), text);
       } catch {
         /* 该仓还没开 wiki：视作无沉淀 */
@@ -831,7 +861,8 @@ export async function buildHttpServer(deps: HttpDeps) {
     '/api/wiki/publish',
     async (req, reply) => {
       const gh = readGithubSettings(deps.dataDir);
-      if (!gh.token) return reply.code(400).send({ error: '未配置 GitHub 凭据（设置页 → GitHub 凭据，或「从 gh CLI 一键导入」）' });
+      const token = await ghTokenOrNull();
+      if (!token) return reply.code(400).send({ error: `${NO_CRED}；沉淀到 wiki 需要对目标仓有写权限` });
       const run = deps.engine.getRun(String(req.body?.runId ?? ''));
       const verdict = publishableRun(run);
       if (!verdict.ok) return reply.code(400).send({ error: verdict.reason });
@@ -840,7 +871,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       // 门控：wiki 对仓库可见性同级公开——public 仓须用户显式二次确认
       let visibility: 'public' | 'private';
       try {
-        visibility = await checkRepoVisibility(repo, gh.token);
+        visibility = await checkRepoVisibility(repo, token);
       } catch (e) {
         return reply.code(502).send({ error: `查仓库可见性失败：${(e as Error).message}` });
       }
@@ -853,7 +884,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       }
       try {
         const page = renderWikiPage(run!, { repo });
-        const r = await publishWikiPage({ dataDir: deps.dataDir, repo, token: gh.token, page });
+        const r = await publishWikiPage({ dataDir: deps.dataDir, repo, token, page });
         return { ok: true, file: page.file, url: r.url, visibility };
       } catch (e) {
         return reply.code(502).send({ error: `wiki 推送失败：${(e as Error).message}` });

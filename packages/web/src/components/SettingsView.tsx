@@ -195,14 +195,25 @@ function ChannelsEditor() {
   );
 }
 
+/** v10-U2：GET /api/github/cred 带来源视图（token 本体永不出服务端） */
+interface GithubCredState {
+  tokenConfigured: boolean;
+  defaultRepo: string;
+  source?: 'stored-pat' | 'gh-cli' | 'none';
+  tokenTail?: string;
+  ghLoggedIn?: boolean;
+}
+
 function GithubCredCard() {
   const log = useStore((s) => s.log);
-  const [g, setG] = useState<{ tokenConfigured: boolean; defaultRepo: string }>({ tokenConfigured: false, defaultRepo: '' });
+  const [g, setG] = useState<GithubCredState>({ tokenConfigured: false, defaultRepo: '' });
   const [token, setToken] = useState('');
-  useEffect(() => {
-    void fetchJson<{ tokenConfigured: boolean; defaultRepo: string }>('GET', '/api/github/cred')
+  const refresh = () =>
+    fetchJson<GithubCredState>('GET', '/api/github/cred')
       .then(setG)
       .catch((e: Error) => log('error', `读取 GitHub 凭据状态失败：${e.message}`));
+  useEffect(() => {
+    void refresh();
   }, []);
   const save = async () => {
     try {
@@ -212,12 +223,24 @@ function GithubCredCard() {
       });
       setG((x) => ({ ...x, tokenConfigured: d.tokenConfigured }));
       log('info', 'GitHub 凭据已保存（新启动的 Agent Pane 生效）');
+      void refresh();
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
     }
   };
   const [writing, setWriting] = useState(false);
   const [importing, setImporting] = useState(false);
+  /** U2：解绑=只清本机存的 PAT，gh 登录态兜底还在 */
+  const unlink = async () => {
+    if (!window.confirm('清除本机存储的 PAT？默认仓库等配置会保留；本机 gh 登录态仍可当兜底凭据。')) return;
+    try {
+      await fetchJson<{ unlinked: boolean }>('POST', '/api/github/cred/unlink');
+      log('info', '已解绑本机存储的 PAT');
+      void refresh();
+    } catch (e) {
+      log('error', `解绑失败：${(e as Error).message}`);
+    }
+  };
   /** v9-D1：本机 gh 已登录 → 一键把 token 搬进来；拿不到时错误里自带路 A/路 B 指引 */
   const importGh = async () => {
     setImporting(true);
@@ -264,6 +287,11 @@ function GithubCredCard() {
       <label>
         GitHub Token {g.tokenConfigured && <span className="inline-ok">（已配置，留空保持不变）</span>}
       </label>
+      <p className="settings-hint">
+        {g.source === 'stored-pat' && <>来源：本机存储的 PAT · 尾号 {g.tokenTail}{g.ghLoggedIn ? '；gh 登录态可作兜底' : ''}</>}
+        {g.source === 'gh-cli' && <>来源：本机 gh 登录态（现取现用，未写盘）。动作侧照常可用；想让它也喂给 Agent Pane 里的 gh，可一键导入落盘。</>}
+        {g.source === 'none' && <>来源：无。要么贴一个 PAT，要么本机 gh auth login——登录后无需任何存储即可直连。</>}
+      </p>
       <input
         type="password"
         value={token}
@@ -283,9 +311,18 @@ function GithubCredCard() {
         <button title="读取本机 `gh auth token` 的登录态并存入（gh 未登录会给出两条备选路）" disabled={importing} onClick={() => void importGh()}>
           {importing ? '导入中…' : '🔑 从 gh CLI 一键导入'}
         </button>
+        {g.source === 'stored-pat' && (
+          <button className="ghost" title="只清本机存的 PAT（默认仓库保留；gh 登录态兜底不受影响）" onClick={() => void unlink()}>
+            🔓 解绑本机存储
+          </button>
+        )}
         <button
-          disabled={writing || !g.tokenConfigured}
-          title={g.tokenConfigured ? '向默认仓库写入 .github/ISSUE_TEMPLATE 接单模板（验收标准小节可被 PaneFlow 机检立约）' : '先保存 Token 与默认仓库'}
+          disabled={writing || !(g.tokenConfigured || g.source === 'gh-cli')}
+          title={
+            g.tokenConfigured || g.source === 'gh-cli'
+              ? '向默认仓库写入 .github/ISSUE_TEMPLATE 接单模板（验收标准小节可被 PaneFlow 机检立约）'
+              : '先配好凭据（存 PAT 或本机 gh 登录）与默认仓库'
+          }
           onClick={() => void writeIntake()}
         >
           {writing ? '回写中…' : '📋 回写接单模板 → 默认仓库'}

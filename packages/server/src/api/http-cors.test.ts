@@ -16,6 +16,10 @@ function buildServer(dataDir: string, corsOrigins?: string[]) {
     herdrSocketPath: path.join(dataDir, 'herdr.sock'),
     dataDir,
     corsOrigins,
+    // U2：GET /api/github/cred 会探 gh 登录态——桩掉，不依赖本机钥匙串
+    readGhCliToken: async () => {
+      throw new Error('test: gh not logged in');
+    },
   });
 }
 

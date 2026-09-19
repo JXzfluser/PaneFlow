@@ -144,6 +144,10 @@ function buildServer(dataDir: string, run: RunRecord | undefined) {
     ops: {} as unknown as HerdrOps,
     herdrSocketPath: path.join(dataDir, 'herdr.sock'),
     dataDir,
+    // U2：不注入的话无存储 PAT 用例会真调本机 gh——固定为未登录，保 400 门可测
+    readGhCliToken: async () => {
+      throw new Error('test: gh not logged in');
+    },
   });
 }
 

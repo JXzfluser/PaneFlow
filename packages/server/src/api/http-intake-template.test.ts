@@ -34,6 +34,10 @@ async function build(dir: string) {
     ops: {} as unknown as HerdrOps,
     herdrSocketPath: path.join(dir, 'herdr.sock'),
     dataDir: dir,
+    // U2：无存储 PAT 用例会兜底探 gh——桩为未登录，保 400 门可测
+    readGhCliToken: async () => {
+      throw new Error('test: gh not logged in');
+    },
   });
 }
 

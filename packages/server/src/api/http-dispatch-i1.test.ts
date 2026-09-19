@@ -29,6 +29,10 @@ function buildServer(dataDir: string, onRun: (graph: DagGraph) => void) {
     ops: {} as unknown as HerdrOps,
     herdrSocketPath: path.join(dataDir, 'herdr.sock'),
     dataDir,
+    // U2：issue 拉取兜底探 gh——桩为未登录，测试不碰本机钥匙串
+    readGhCliToken: async () => {
+      throw new Error('test: gh not logged in');
+    },
   });
 }
 

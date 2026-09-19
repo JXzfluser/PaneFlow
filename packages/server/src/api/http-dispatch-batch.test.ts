@@ -58,6 +58,10 @@ function buildServer(dataDir: string, calls: StartRunCall[], state: 'running' | 
     ops: {} as unknown as HerdrOps,
     herdrSocketPath: path.join(dataDir, 'herdr.sock'),
     dataDir,
+    // U2：兜底探 gh 桩死，测试不碰本机钥匙串
+    readGhCliToken: async () => {
+      throw new Error('test: gh not logged in');
+    },
   });
 }
 

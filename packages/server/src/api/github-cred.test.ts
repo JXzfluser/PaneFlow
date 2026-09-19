@@ -15,26 +15,28 @@ type FetchHandler = (url: string, method: string, body: unknown) => { status: nu
 
 /** 对齐 github-sync.test.ts 的 makeFetch 语义（handler 分派 + 脚本化 json/status），
  *  并用 vi.stubGlobal 挂到全局，锁定 http.ts 内真实 fetch 调用面。 */
-function stubFetch(handler: FetchHandler): { requests: { url: string; method: string; body: unknown }[] } {
-  const requests: { url: string; method: string; body: unknown }[] = [];
-  vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: { method?: string; body?: string }) => {
+function stubFetch(handler: FetchHandler): { requests: { url: string; method: string; body: unknown; headers?: Record<string, string> }[] } {
+  const requests: { url: string; method: string; body: unknown; headers?: Record<string, string> }[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: { method?: string; body?: string; headers?: Record<string, string> }) => {
     const method = init?.method ?? 'GET';
     const body = init?.body ? (JSON.parse(init.body) as unknown) : undefined;
-    requests.push({ url: String(url), method, body });
+    requests.push({ url: String(url), method, body, headers: init?.headers });
     const r = handler(String(url), method, body);
     return new Response(JSON.stringify(r.json), { status: r.status });
   }));
   return { requests };
 }
 
-/** github 端点只消费 deps.dataDir；其余依赖以最小桩补齐（buildHttpServer 注册期无需真实实现）。 */
-function buildServer(dataDir: string) {
+/** github 端点只消费 deps.dataDir + readGhCliToken；其余依赖以最小桩补齐（buildHttpServer 注册期无需真实实现）。 */
+function buildServer(dataDir: string, readGhCliToken?: () => Promise<string>) {
   return buildHttpServer({
-    engine: { onChange: () => {} } as unknown as Engine,
+    engine: { onChange: () => {}, getRun: () => undefined } as unknown as Engine,
     store: {} as unknown as Store,
     ops: {} as unknown as HerdrOps,
     herdrSocketPath: path.join(dataDir, 'herdr.sock'),
     dataDir,
+    // U2：默认注入「gh 未登录」桩，避免测试受本机钥匙串状态摆布
+    readGhCliToken: readGhCliToken ?? (async () => { throw new Error('gh not logged in (test stub)'); }),
   });
 }
 
@@ -43,13 +45,19 @@ describe('github endpoints', () => {
     vi.unstubAllGlobals();
   });
 
-  it('GET /api/github/cred 无凭据文件时 tokenConfigured=false', async () => {
+  it('GET /api/github/cred 无凭据且 gh 未登录 → source=none', async () => {
     const dir = tmp();
     const { app } = await buildServer(dir);
     try {
       const res = await app.inject({ method: 'GET', url: '/api/github/cred' });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ tokenConfigured: false, defaultRepo: '' });
+      expect(res.json()).toEqual({
+        tokenConfigured: false,
+        defaultRepo: '',
+        source: 'none',
+        tokenTail: '',
+        ghLoggedIn: false,
+      });
     } finally {
       await app.close();
     }
@@ -66,9 +74,15 @@ describe('github endpoints', () => {
       });
       expect(put.statusCode).toBe(200);
       expect(put.json()).toEqual({ saved: true, tokenConfigured: true });
-      // GET 从磁盘回读，验证持久化
+      // GET 从磁盘回读，验证持久化（U2：带来源与尾号）
       const get = await app.inject({ method: 'GET', url: '/api/github/cred' });
-      expect(get.json()).toEqual({ tokenConfigured: true, defaultRepo: 'owner/repo' });
+      expect(get.json()).toEqual({
+        tokenConfigured: true,
+        defaultRepo: 'owner/repo',
+        source: 'stored-pat',
+        tokenTail: 'cret',
+        ghLoggedIn: false,
+      });
     } finally {
       await app.close();
     }
@@ -194,5 +208,86 @@ describe('v9-D1 importFromGhCli（gh 一键导入，失败给最小权限 PAT �
     const r = await importFromGhCli(dir, async () => '   ');
     expect(r.ok).toBe(false);
     expect(readGithubSettings(dir)).toEqual({});
+  });
+});
+
+describe('v10-U2 凭据来源可见 + gh 兜底 + 解绑', () => {
+  it('describeGithubCred 三态：stored-pat 带尾号 / gh-cli / none', async () => {
+    const { describeGithubCred, writeGithubSettings } = await import('./github-cred.js');
+    const noGh = async () => {
+      throw new Error('no gh');
+    };
+    const okGh = async () => ' ghs_login ';
+    const dir = tmp();
+    expect(await describeGithubCred(dir, noGh)).toEqual({ source: 'none', tokenTail: '', ghLoggedIn: false });
+    expect(await describeGithubCred(dir, okGh)).toEqual({ source: 'gh-cli', tokenTail: '', ghLoggedIn: true });
+    writeGithubSettings(dir, { token: 'ghp_mysecret99', defaultRepo: 'a/b' });
+    expect(await describeGithubCred(dir, okGh)).toEqual({ source: 'stored-pat', tokenTail: 'et99', ghLoggedIn: true });
+  });
+
+  it('resolveGithubToken：存储优先（gh 不被调用）→ gh 兜底 → 双空 null', async () => {
+    const { resolveGithubToken, writeGithubSettings } = await import('./github-cred.js');
+    let ghCalls = 0;
+    const gh = async () => {
+      ghCalls++;
+      return 'ghtok';
+    };
+    const dir = tmp();
+    writeGithubSettings(dir, { token: 'stored' });
+    expect(await resolveGithubToken(dir, gh)).toBe('stored');
+    expect(ghCalls).toBe(0);
+    writeGithubSettings(dir, {});
+    expect(await resolveGithubToken(dir, gh)).toBe('ghtok');
+    expect(
+      await resolveGithubToken(dir, async () => {
+        throw new Error('no gh');
+      }),
+    ).toBeNull();
+    expect(await resolveGithubToken(dir, async () => '  ')).toBeNull();
+  });
+
+  it('POST unlink：只清 PAT，defaultRepo 留着；GET 随即回落 source=gh-cli', async () => {
+    const dir = tmp();
+    const { app } = await buildServer(dir, async () => 'ghtok12345');
+    try {
+      await app.inject({ method: 'PUT', url: '/api/github/cred', payload: { token: 'ghp_ab', defaultRepo: 'me/repo' } });
+      const r = await app.inject({ method: 'POST', url: '/api/github/cred/unlink' });
+      expect(r.statusCode).toBe(200);
+      expect(r.json()).toEqual({ unlinked: true, defaultRepo: 'me/repo' });
+      const get = await app.inject({ method: 'GET', url: '/api/github/cred' });
+      expect(get.json()).toMatchObject({ tokenConfigured: false, source: 'gh-cli', tokenTail: '', ghLoggedIn: true, defaultRepo: 'me/repo' });
+      expect(JSON.parse(fs.readFileSync(path.join(dir, 'github.json'), 'utf8'))).toEqual({ defaultRepo: 'me/repo' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('create-issue 无存储 PAT → gh 登录态兜底直调（Authorization 用 gh token）', async () => {
+    const dir = tmp();
+    const { writeGithubSettings } = await import('./github-cred.js');
+    writeGithubSettings(dir, { defaultRepo: 'owner/repo' }); // 只有仓库，没有 token
+    const { app } = await buildServer(dir, async () => 'ghtok-9527');
+    try {
+      const { requests } = stubFetch(() => ({ status: 201, json: { number: 7, html_url: 'https://gh/o/r/i/7' } }));
+      const res = await app.inject({ method: 'POST', url: '/api/github/create-issue', payload: { title: 't' } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ number: 7 });
+      expect(requests[0]!.headers?.Authorization).toBe('Bearer ghtok-9527');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('wiki publish 无存储 PAT 也过凭据门（gh 兜底后进到 repo/绿单门，不再报未配置）', async () => {
+    const dir = tmp();
+    const { app } = await buildServer(dir, async () => 'ghtok');
+    try {
+      const res = await app.inject({ method: 'POST', url: '/api/wiki/publish', payload: { runId: 'x' } });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('找不到'); // 凭据门已过（gh 兜底），卡在查无此 run
+      expect(res.json().error).not.toContain('凭据');
+    } finally {
+      await app.close();
+    }
   });
 });

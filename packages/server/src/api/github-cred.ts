@@ -66,3 +66,49 @@ export async function importFromGhCli(
   writeGithubSettings(dataDir, { ...cur, token });
   return { ok: true, ...(cur.defaultRepo ? { defaultRepo: cur.defaultRepo } : {}) };
 }
+
+/** v10-U2 凭据来源：本机存储 PAT > gh CLI 登录态（不落盘直接用）> 无 */
+export type GithubCredSource = 'stored-pat' | 'gh-cli' | 'none';
+
+/**
+ * 动作侧取 token：存储 PAT 优先，未存则现取 gh 登录态兜底（pane 内 gh 本就吃钥匙串，
+ * 服务端确定性调用没理由要求用户多抄一遍 PAT）。取不到返回 null，由调用方决定报错文案。
+ */
+export async function resolveGithubToken(
+  dataDir: string,
+  readToken: () => Promise<string> = ghCliToken,
+): Promise<string | null> {
+  const stored = readGithubSettings(dataDir).token;
+  if (stored) return stored;
+  try {
+    return (await readToken()).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** 设置页可见性：来源 + 尾号 + gh 是否登录（只探不写，token 本身不出这里） */
+export async function describeGithubCred(
+  dataDir: string,
+  readToken: () => Promise<string> = ghCliToken,
+): Promise<{ source: GithubCredSource; tokenTail: string; ghLoggedIn: boolean }> {
+  const g = readGithubSettings(dataDir);
+  let ghLoggedIn = false;
+  try {
+    ghLoggedIn = (await readToken()).trim() !== '';
+  } catch {
+    ghLoggedIn = false;
+  }
+  return {
+    source: g.token ? 'stored-pat' : ghLoggedIn ? 'gh-cli' : 'none',
+    tokenTail: g.token ? g.token.slice(-4) : '',
+    ghLoggedIn,
+  };
+}
+
+/** 解绑：只清存储的 PAT（班底/仓库配置留着）；gh 登录态本就未落盘，无需动 */
+export function removeStoredToken(dataDir: string): { defaultRepo: string } {
+  const cur = readGithubSettings(dataDir);
+  writeGithubSettings(dataDir, cur.defaultRepo ? { defaultRepo: cur.defaultRepo } : {});
+  return { defaultRepo: cur.defaultRepo ?? '' };
+}
