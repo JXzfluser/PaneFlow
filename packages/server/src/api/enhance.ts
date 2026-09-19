@@ -197,10 +197,10 @@ export async function draftAcceptance(text: string, chat: ChatFn): Promise<strin
  * 模型/网关调用失败直接抛错（端点转 502，让用户知道是网关问题）；JSON 解析失败则整段收为 body。
  */
 export async function enhanceIssueText(
-  opts: { text: string; cwd: string; deep?: boolean },
+  opts: { text: string; cwd: string; deep?: boolean; /** K2：wiki 读回等调用方自备的附加上下文 */ extraBlocks?: { label: string; text: string }[] },
   chat: ChatFn,
 ): Promise<{ issue: EnhancedIssue; candidates?: EnhancedIssue[] }> {
-  const blocks = gatherEnhanceContext(opts.cwd);
+  const blocks = [...gatherEnhanceContext(opts.cwd), ...(opts.extraBlocks ?? [])];
   const context = blocks.map((b) => `【${b.label}】\n${b.text}`).join('\n\n');
   const gen = async (variant: string): Promise<EnhancedIssue> => {
     const raw = await chat(SYSTEM, userPrompt(opts.text, context, variant));

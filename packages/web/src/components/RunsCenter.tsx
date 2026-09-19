@@ -243,6 +243,30 @@ export function RunsCenter() {
     }
   };
 
+  // v9-K1/K3：点赞式沉淀——只出现在绿的完成单上；公开仓库服务端会先要二次确认（409）
+  const [publishing, setPublishing] = useState<string | null>(null);
+  const publishWiki = async (r: RunRecord, confirm = false) => {
+    setPublishing(r.runId);
+    try {
+      const d = await fetchJson<{ url: string; file: string }>('POST', '/api/wiki/publish', {
+        runId: r.runId,
+        ...(confirm ? { confirm: true } : {}),
+      });
+      log('info', `✅ 已沉淀到 wiki：${d.url}`);
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg.includes('对全世界可读')) {
+        if (window.confirm(`${msg}\n\n（取消 = 不沉淀）`)) {
+          await publishWiki(r, true).catch((e2: Error) => log('error', `沉淀失败：${e2.message}`));
+        }
+      } else {
+        log('error', `沉淀失败：${msg}`);
+      }
+    } finally {
+      setPublishing(null);
+    }
+  };
+
   const progress = (r: (typeof list)[number]): { done: number; total: number } => {
     const all = Object.values(r.nodes);
     const done = all.filter((n) => ['done', 'failed', 'skipped', 'cancelled'].includes(n.state)).length;
@@ -333,6 +357,15 @@ export function RunsCenter() {
                 >
                   🗂{artLists[r.runId] ? ` ${artLists[r.runId]!.files.length}` : ''}
                 </button>
+                {r.state === 'completed' && !Object.values(r.nodes).some((n) => n.unverified) && (
+                  <button
+                    disabled={publishing === r.runId}
+                    title="点赞沉淀：这单的契约/验收结论/经验蒸馏成 wiki 页推到仓库 wiki（公开仓库会先要你确认；宁缺毋滥，手动触发）"
+                    onClick={() => void publishWiki(r)}
+                  >
+                    {publishing === r.runId ? '⏳ 沉淀中' : '👍 沉淀'}
+                  </button>
+                )}
                 <button title="导出完整记录 JSON" onClick={() => {
                   const a = document.createElement('a');
                   a.href = `/api/runs/${r.runId}/export`;

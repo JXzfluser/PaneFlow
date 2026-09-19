@@ -22,6 +22,15 @@ import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, syncPiGatewa
 import { draftAcceptance, enhanceIssueText, gatewayChatFn } from './enhance.js';
 import { readGithubSettings, writeGithubSettings, buildGithubEnv, importFromGhCli, type GithubSettings } from './github-cred.js';
 import { maskCandidate, readSwitcherFile } from './switcher-import.js';
+import {
+  checkRepoVisibility,
+  pickWikiExcerpts,
+  publishWikiPage,
+  publishableRun,
+  readWikiPages,
+  renderWikiPage,
+  syncWikiCache,
+} from './wiki.js';
 
 interface CreateIssueBody {
   title: string;
@@ -786,13 +795,60 @@ export async function buildHttpServer(deps: HttpDeps) {
     if (!cwd || !fs.existsSync(cwd)) {
       return reply.code(400).send({ error: `工作目录不存在，无法读取项目上下文：${cwd || '（未配置）'}` });
     }
+    // K2 wiki 读回：有凭据有默认仓就带相关沉淀页进上下文；仓库不存在/网断静默跳过（绝不打断扩写）
+    let extraBlocks: { label: string; text: string }[] = [];
+    const ghCred = readGithubSettings(deps.dataDir);
+    if (ghCred.token && ghCred.defaultRepo?.includes('/')) {
+      try {
+        await syncWikiCache({ dataDir: deps.dataDir, repo: ghCred.defaultRepo, token: ghCred.token });
+        extraBlocks = pickWikiExcerpts(readWikiPages(deps.dataDir, ghCred.defaultRepo), text);
+      } catch {
+        /* 该仓还没开 wiki：视作无沉淀 */
+      }
+    }
     try {
-      const r = await enhanceIssueText({ text, cwd, deep: req.body?.deep === true }, chat);
-      return { ok: true, ...r };
+      const r = await enhanceIssueText({ text, cwd, deep: req.body?.deep === true, extraBlocks }, chat);
+      return { ok: true, ...r, wikiPages: extraBlocks.length };
     } catch (e) {
       return reply.code(502).send({ error: `模型扩写失败：${(e as Error).message}` });
     }
   });
+
+  // -- v9-K1/K3 wiki 沉淀：绿 run + 点赞（手动触发）→ push 到 <repo>.wiki.git ----
+
+  app.post<{ Body: { runId?: string; repo?: string; confirm?: boolean } }>(
+    '/api/wiki/publish',
+    async (req, reply) => {
+      const gh = readGithubSettings(deps.dataDir);
+      if (!gh.token) return reply.code(400).send({ error: '未配置 GitHub 凭据（设置页 → GitHub 凭据，或「从 gh CLI 一键导入」）' });
+      const run = deps.engine.getRun(String(req.body?.runId ?? ''));
+      const verdict = publishableRun(run);
+      if (!verdict.ok) return reply.code(400).send({ error: verdict.reason });
+      const repo = String(req.body?.repo ?? gh.defaultRepo ?? '');
+      if (!repo.includes('/')) return reply.code(400).send({ error: '缺少目标仓库（设置页配默认仓库，或请求带 repo）' });
+      // 门控：wiki 对仓库可见性同级公开——public 仓须用户显式二次确认
+      let visibility: 'public' | 'private';
+      try {
+        visibility = await checkRepoVisibility(repo, gh.token);
+      } catch (e) {
+        return reply.code(502).send({ error: `查仓库可见性失败：${(e as Error).message}` });
+      }
+      if (visibility === 'public' && req.body?.confirm !== true) {
+        return reply.code(409).send({
+          needsConfirm: true,
+          visibility,
+          error: `仓库 ${repo} 是公开的，沉淀页将对全世界可读。确认请再点一次。`,
+        });
+      }
+      try {
+        const page = renderWikiPage(run!, { repo });
+        const r = await publishWikiPage({ dataDir: deps.dataDir, repo, token: gh.token, page });
+        return { ok: true, file: page.file, url: r.url, visibility };
+      } catch (e) {
+        return reply.code(502).send({ error: `wiki 推送失败：${(e as Error).message}` });
+      }
+    },
+  );
 
   // -- 智能下发（Smart Dispatch） ----------------------------------------------
 
