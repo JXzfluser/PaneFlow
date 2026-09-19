@@ -214,7 +214,9 @@ export class Engine {
     // R3.3 启动前脏检查：git 仓库有未提交改动时拒绝（不覆盖用户工作区）
     const dirtyErr = this.checkDirtyRepos(graph, cwd, spaceId);
     if (dirtyErr) throw new Error(dirtyErr);
-    const applied = applyVariables(graph, variables);
+    // H1：runId 先行生成——内置变量 run_id 注入模板（交付分支名 pf/<run_id> 与守卫期望同源）
+    const runId = randomUUID().slice(0, 8);
+    const applied = applyVariables(graph, { run_id: runId, ...variables });
     if (applied.missing.length) {
       throw new Error(`缺少必填参数：${applied.missing.join('、')}`);
     }
@@ -247,7 +249,6 @@ export class Engine {
     }
 
     const order = topoSort(graph.nodes.map((n) => n.id), graph.edges)!;
-    const runId = randomUUID().slice(0, 8);
     const nodes: Record<string, NodeRunRecord> = {};
     for (const n of graph.nodes) {
       nodes[n.id] = { nodeId: n.id, state: 'pending', attempts: 0 };
@@ -963,6 +964,8 @@ export class Engine {
 
       // M2 契约落册：产物写了 extra.contract 且本 run 尚无契约 → 成为 run 的一等公民产物
       this.captureContract(run, rec);
+      // H1 交付出口：任一节点产物写了合法 pr_url → 落册到 run（先到先得）
+      this.capturePrUrl(run, rec);
 
       // F1 验收机器门：产物写了 assertionResults 且有未通过项时不许静默 done
       const gateFail = await this.assertionGate(run, rec, nodeId, agentName, timeoutMs, artifactRel, blackboard);
@@ -998,6 +1001,14 @@ export class Engine {
       if (this.cancels.has(run.runId)) return '已取消';
       if (c.type === 'contract') {
         const err = await this.contractGate(run, rec, nodeId, gate);
+        if (err) return err;
+        continue;
+      }
+      if (c.type === 'delivery-branch') {
+        const err = await this.deliveryBranchGuard(run, rec, nodeId, nodeCwd, c.expectBranch, {
+          agentName: gate.agentName,
+          timeoutMs: gate.timeoutMs,
+        });
         if (err) return err;
         continue;
       }
@@ -1061,6 +1072,18 @@ export class Engine {
         ? `契约落册（谈判中，待契约门确认）：断言 ${doc.assertions.length} 条`
         : `契约落册（自带，无需批准）：断言 ${doc.assertions.length} 条`,
     );
+    this.persistAndNotify(run);
+  }
+
+  /** H1：交付出口捕获——extra.pr_url 是合法 http(s) 链接才落册（拒收垃圾字符串充数）。 */
+  private capturePrUrl(run: RunRecord, rec: NodeRunRecord): void {
+    if (run.prUrl) return;
+    const raw = rec.artifact?.extra?.pr_url;
+    if (typeof raw !== 'string') return;
+    const url = raw.trim();
+    if (!/^https?:\/\/\S+$/.test(url)) return;
+    run.prUrl = url;
+    this.recordEvent(run, 'run', rec.nodeId, `交付出口：PR 已开出 ${url}`);
     this.persistAndNotify(run);
   }
 
@@ -1178,6 +1201,75 @@ export class Engine {
         rec.artifact = await this.extractArtifact(nodeId, artifactRel, run, tail);
         rec.unverified = rec.artifact.source === 'output-fallback';
         blackboard.set(nodeId, rec.artifact);
+        this.persistAndNotify(run);
+      }
+    }
+  }
+
+  /**
+   * H1 分支守卫（引擎侧真约束——「只推工作分支」不能只写在提示词里）：
+   * 在节点工作区跑 git rev-parse --abbrev-ref HEAD，核验在交付分支（缺省 pf/<runId>）上。
+   * HEAD 是 main/master → 直接失败，不给放行路径；不符 → blocked 不静默；非 git 仓 → 警示跳过。
+   */
+  private async deliveryBranchGuard(
+    run: RunRecord,
+    rec: NodeRunRecord,
+    nodeId: string,
+    nodeCwd: string,
+    expectBranch: string | undefined,
+    gate: { agentName: string; timeoutMs: number },
+  ): Promise<string | null> {
+    const expect = (expectBranch ?? `pf/${run.runId}`).trim();
+    if (/^(main|master)$/.test(expect)) return `分支守卫：期望分支 ${expect} 即默认分支——不给推 main 的交付路径`;
+    const readHead = async (): Promise<string | null> => {
+      try {
+        const out = await execFileAsync('git', ['-C', nodeCwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+          cwd: nodeCwd,
+          timeout: 10_000,
+        });
+        return out.stdout.trim();
+      } catch {
+        return null;
+      }
+    };
+    let cur = await readHead();
+    if (cur === null) {
+      this.recordEvent(run, 'node', nodeId, '分支守卫：工作区非 git 仓库，跳过分支校验（无远程交付可言）');
+      return null;
+    }
+    for (;;) {
+      if (this.cancels.has(run.runId)) return '已取消';
+      if (cur === expect) {
+        this.recordEvent(run, 'node', nodeId, `分支守卫通过：${cur}`);
+        return null;
+      }
+      if (/^(main|master)$/.test(cur)) {
+        return `分支守卫：当前在默认分支「${cur}」——推 main 无放行路径，请把成果挪到 ${expect} 分支后重跑交付`;
+      }
+      rec.state = 'blocked';
+      rec.blockedPrompt = [
+        `分支守卫卡住：当前分支「${cur}」≠ 期望交付分支「${expect}」`,
+        `放行=确认按「${cur}」交付继续；拒绝=节点失败；补充输入=让 Agent 切分支后复核`,
+      ].join('\n');
+      this.recordEvent(run, 'approval', nodeId, `分支守卫拦截：${cur} ≠ ${expect}`);
+      this.persistAndNotify(run);
+      const action = await new Promise<ApprovalAction>((resolve) => {
+        this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
+      });
+      rec.blockedPrompt = undefined;
+      if (this.cancels.has(run.runId)) return '已取消';
+      if (action.action === 'reject') return `分支守卫未通过：交付分支不符（${cur} ≠ ${expect}）`;
+      if (action.action === 'approve') {
+        this.recordEvent(run, 'approval', nodeId, `分支守卫人工放行：按「${cur}」继续`);
+        rec.state = 'done';
+        this.persistAndNotify(run);
+        return null;
+      }
+      if (action.action === 'input' && action.text) {
+        const { agentName, timeoutMs } = gate;
+        const st = await this.promptAndSettle(run, rec, agentName, action.text, timeoutMs);
+        rec.agentStatus = st;
+        cur = (await readHead()) ?? cur;
         this.persistAndNotify(run);
       }
     }

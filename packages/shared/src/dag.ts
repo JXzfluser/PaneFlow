@@ -84,7 +84,13 @@ export type CheckSpec =
   | { type: 'regex'; file: string; pattern: string }
   | { type: 'manual'; prompt: string }
   /** M1 契约接单门：产物 extra.contract（候选断言+澄清提问）必须人工批准才放下游 */
-  | { type: 'contract' };
+  | { type: 'contract' }
+  /**
+   * H1 分支守卫（引擎侧真约束，不靠提示词）：push 前用 git rev-parse 核验节点工作区
+   * HEAD 在交付分支上（缺省期望 pf/<runId>）。不符 → blocked 不静默；
+   * HEAD 是 main/master → 直接失败——守卫生与提示词两侧都不给「推默认分支」留路径。
+   */
+  | { type: 'delivery-branch'; expectBranch?: string };
 
 export interface DagNode {
   id: string;
@@ -365,6 +371,8 @@ export interface RunRecord {
   archived?: boolean;
   /** M2 契约一等公民：本单按什么约定在干（F1 门/H1 守卫/预算的共同引用） */
   contract?: RunContract;
+  /** H1 交付出口：wrapup/deliver 回写 extra.pr_url 后引擎捕获至此（运行卡绿灯判据） */
+  prUrl?: string;
 }
 
 export interface RunEvent {

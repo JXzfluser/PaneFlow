@@ -244,6 +244,18 @@ export function RunsCenter() {
                   📜 契约 {r.contract.assertions.length} 条{r.contract.source === 'generated' && !r.contract.confirmedAt ? '·待确认' : ''}
                 </span>
               )}
+              {r.prUrl && (
+                <a
+                  className="run-cost-chip"
+                  href={r.prUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ borderColor: 'var(--ok, var(--accent))', color: 'var(--ok, var(--accent))', textDecoration: 'none' }}
+                  title={`交付出口：${r.prUrl}（人类可 review 的东西已经出网）`}
+                >
+                  🔗 PR
+                </a>
+              )}
               <div className="run-card-ops">
                 <button
                   className={open ? 'active' : ''}

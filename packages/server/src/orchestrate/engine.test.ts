@@ -1335,6 +1335,142 @@ describe('v8-M2 契约成为 run 一等公民', () => {
   });
 });
 
+describe('v8-H1 分支守卫 + pr_url 交付出口', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+
+  /** 干净可交付的本地 git 仓库：main 上有初始提交，.herdr/（产物目录）已忽略 */
+  function makeRepo(branch?: string): string {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-repo-'));
+    git(cwd, 'init', '-b', 'main');
+    git(cwd, 'config', 'user.email', 'pf@test.local');
+    git(cwd, 'config', 'user.name', 'pf-test');
+    fs.writeFileSync(path.join(cwd, '.gitignore'), '.herdr/\n');
+    fs.writeFileSync(path.join(cwd, 'README.md'), '# t\n');
+    git(cwd, 'add', '-A');
+    git(cwd, 'commit', '-m', 'init');
+    if (branch) git(cwd, 'checkout', '-b', branch);
+    return cwd;
+  }
+
+  const writeImpl = (cwd: string, obj: unknown) => {
+    fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.herdr/artifacts/impl.json'), JSON.stringify(obj));
+  };
+  const guardGraph = (expectBranch?: string) => {
+    const g = serialGraph();
+    g.nodes[1]!.config.checks = [{ type: 'delivery-branch', ...(expectBranch ? { expectBranch } : {}) }];
+    return g;
+  };
+
+  it('当前就在期望交付分支 → 直接通过并留事件', async () => {
+    const cwd = makeRepo('pf/x');
+    const run = await runToCompletion(guardGraph('pf/x'), cwd);
+    expect(run.state).toBe('completed');
+    expect((run.events ?? []).some((e) => e.text.includes('分支守卫通过：pf/x'))).toBe(true);
+  });
+
+  it('HEAD 在 main → 硬失败，无人工放行路径', async () => {
+    const cwd = makeRepo();
+    const run = await runToCompletion(guardGraph('pf/x'), cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['impl']!.error).toContain('当前在默认分支「main」');
+  });
+
+  it('expectBranch 配成 main → 直接拒绝交付路径', async () => {
+    const cwd = makeRepo();
+    const run = await runToCompletion(guardGraph('main'), cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['impl']!.error).toContain('即默认分支');
+  });
+
+  it('分支不符 → blocked 列明两分支；reject → 节点失败', async () => {
+    const cwd = makeRepo('topic');
+    const run = await engine.startRun(guardGraph('pf/x'), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    const prompt = engine.getRun(run.runId)!.nodes['impl']!.blockedPrompt!;
+    expect(prompt).toContain('「topic」');
+    expect(prompt).toContain('「pf/x」');
+    await engine.approve(run.runId, 'impl', { action: 'reject' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(engine.getRun(run.runId)!.state).toBe('failed');
+    expect(engine.getRun(run.runId)!.nodes['impl']!.error).toContain('分支守卫未通过');
+  });
+
+  it('分支不符 → approve 人工放行按当前分支继续', async () => {
+    const cwd = makeRepo('topic');
+    const run = await engine.startRun(guardGraph('pf/x'), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    expect((final.events ?? []).some((e) => e.text.includes('分支守卫人工放行：按「topic」继续'))).toBe(true);
+  });
+
+  it('分支不符 → input 让 agent 切分支后复核：HEAD 已是期望分支则放行', async () => {
+    const cwd = makeRepo('topic');
+    const run = await engine.startRun(guardGraph('pf/x'), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    git(cwd, 'checkout', '-b', 'pf/x'); // 模拟 agent 按补充指令切了交付分支
+    await engine.approve(run.runId, 'impl', { action: 'input', text: '请切到 pf/x 分支再继续' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    expect((final.events ?? []).some((e) => e.text.includes('分支守卫通过：pf/x'))).toBe(true);
+  });
+
+  it('非 git 工作区 → 告警跳过不拦', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-nogit-'));
+    const run = await runToCompletion(guardGraph('pf/x'), cwd);
+    expect(run.state).toBe('completed');
+    expect((run.events ?? []).some((e) => e.text.includes('跳过分支校验'))).toBe(true);
+  });
+
+  it('无 expectBranch 时默认期望 pf/<runId>（与内置变量 run_id 同源）', async () => {
+    const cwd = makeRepo();
+    const run = await engine.startRun(guardGraph(), cwd);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    // 在 main 上：默认分支硬失败路径即证明默认期望生效且未被误判通过
+    expect(run.nodes['impl']!.error ?? engine.getRun(run.runId)!.nodes['impl']!.error).toContain('当前在默认分支');
+  });
+
+  it('extra.pr_url 合法 https → 落册 run.prUrl + 交付出口事件；非法字符串拒收', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const good = serialGraph();
+    ops.onPrompt = () => writeImpl(cwd, { summary: 'x', extra: { pr_url: 'https://github.com/acme/app/pull/9' } });
+    const run = await runToCompletion(good, cwd);
+    expect(run.prUrl).toBe('https://github.com/acme/app/pull/9');
+    expect((run.events ?? []).some((e) => e.text.includes('交付出口：PR 已开出'))).toBe(true);
+
+    const ops2 = new FakeHerdrOps();
+    const engine2 = new Engine(ops2, new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'pf-store2-'))), OPTS);
+    const bad = serialGraph();
+    ops2.onPrompt = () => writeImpl(cwd, { summary: 'x', extra: { pr_url: '见聊天记录' } });
+    const run2 = await engine2.startRun(bad, cwd);
+    await waitFor(() => engine2.getRun(run2.runId)!.state !== 'running');
+    expect(engine2.getRun(run2.runId)!.prUrl).toBeUndefined();
+  });
+
+  it('内置变量 run_id：startRun 注入实际运行编号；未声明则原样保留', async () => {
+    const cwd = makeRepo();
+    const g = serialGraph();
+    g.variables = [{ key: 'run_id', label: '运行编号', required: false }];
+    g.nodes[1]!.config.prompt = '在分支 pf/{{run_id}} 上完成交付';
+    const run = await engine.startRun(g, cwd);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(ops.prompts[0]!.text).toContain(`在分支 pf/${run.runId} 上完成交付`);
+
+    const ops2 = new FakeHerdrOps();
+    const engine2 = new Engine(ops2, new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'pf-store3-'))), OPTS);
+    const undeclared = serialGraph();
+    undeclared.nodes[1]!.config.prompt = '分支 pf/{{run_id}}';
+    const run2 = await engine2.startRun(undeclared, cwd);
+    await waitFor(() => engine2.getRun(run2.runId)!.state !== 'running');
+    expect(ops2.prompts[0]!.text).toContain('pf/{{run_id}}'); // applyVariables 只替换已声明变量
+  });
+});
+
 describe('v8-F2 审批等待重启可活（paused）', () => {
   it('boot：磁盘 running 记录里 blocked 节点转 paused 且审批上下文保留', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-boot-'));

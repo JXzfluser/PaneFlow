@@ -329,7 +329,7 @@ const issueTriage: DagGraph = graph(
   ],
 );
 
-/** 通用兜底：对齐（断言注入）→ 方案拆解（断言映射）→ 动态扇出并行实现（断言自测）→ 汇总 → 验收断言核对 → 归档收口 */
+/** 通用兜底：对齐（断言注入）→ 方案拆解（断言映射）→ 动态扇出并行实现（断言自测）→ 汇总 → 验收断言核对 → 归档收口（守卫+推前人工门）→ 交付出网 push+PR */
 const genericDeliveryNodes: DagGraph['nodes'] = [
   start(),
   agent(
@@ -369,9 +369,32 @@ const genericDeliveryNodes: DagGraph['nodes'] = [
   ),
   agent(
     'wrapup',
-    '归档收口',
-    '各任务结果：{{impl.artifact.summary}}；验收断言核对结论：{{verify.artifact.summary}}。汇总本轮交付（做了什么/遗留什么/验证情况）写入结果文件。若工作目录是 git 仓库且产生变更：git add -A 并提交（Conventional Commits，正文注明关联 Issue），再把交付摘要作为评论回贴到关联 Issue（gh issue comment）。',
-    { onFail: 'continue' },
+    '归档收口 + 交付准备',
+    '各任务结果：{{impl.artifact.summary}}；验收断言核对结论：{{verify.artifact.summary}}。汇总本轮交付（做了什么/遗留什么/验证情况）写入结果文件。' +
+      '若工作目录是 git 仓库且产生变更：先确保工作分支 pf/{{run_id}}（不在则 git checkout -b pf/{{run_id}}，已在则继续），把全部变更提交到该分支' +
+      '（Conventional Commits，正文注明关联 Issue）——红线：绝不在 main/master 上提交或推送任何东西。' +
+      '再把 PR 草案写进结果文件 extra.pr_title（一句祈使式标题）与 extra.pr_body（变更摘要+验收断言逐条状态），供下游交付节点直接使用；' +
+      '并把交付摘要作为评论回贴到关联 Issue（gh issue comment）。无变更/非 git 仓时如实写明并让下游知道无需出网。',
+    {
+      onFail: 'abort', // H1：守卫或人工门拒绝 = 不交付，下游 deliver 不得继续推
+      checks: [
+        { type: 'delivery-branch' }, // 引擎侧核验：HEAD 必须在 pf/<run_id> 上（main/master 直接失败）
+        {
+          type: 'manual',
+          prompt: '推前确认门：放行后下一节点将 push 本分支并向 GitHub 开 PR（人工确认这一次才推）。',
+        },
+      ],
+    },
+  ),
+  agent(
+    'deliver',
+    '交付出网（push + PR）',
+    '人工已放行推网。先自证分支：git rev-parse --abbrev-ref HEAD 必须输出 pf/{{run_id}}；' +
+      '若不符或在 main/master 上，立即停止并在结果文件写 extra.blocked_reason（不推任何东西、不建 PR）。' +
+      '相符则：git push -u origin pf/{{run_id}}；随后 gh pr create（base 用仓库默认分支，head pf/{{run_id}}，' +
+      '标题与正文取 {{wrapup.artifact.summary}} 所属交付摘要及仓库惯例）。' +
+      '成功后结果文件写 extra.pr_url=PR 的完整 https 链接（这是本单交付出口，引擎会落册到运行记录）；失败写 extra.push_error 原文。',
+    { onFail: 'continue', retryCount: 1 }, // 出网失败不抹掉已完成的本地工作，缺 pr_url 本身就是红灯
   ),
   end(),
 ];
@@ -381,7 +404,7 @@ const genericDeliveryNodes: DagGraph['nodes'] = [
 const genericDelivery: DagGraph = {
   ...graph(
     'builtin-generic-issue-delivery',
-    '通用 Issue 交付兜底：需求对齐 + 验收断言注入 → 方案拆解（断言覆盖映射）→ 按任务动态扇出并行实现（断言自测）→ 汇总验证 → 验收断言核对 → 归档收口。没有专门模板时的自动流程',
+    '通用 Issue 交付兜底：需求对齐 + 验收断言注入 → 方案拆解（断言覆盖映射）→ 按任务动态扇出并行实现（断言自测）→ 汇总验证 → 验收断言核对 → 归档收口（分支守卫+推前确认门）→ push+PR 出网。没有专门模板时的自动流程',
     genericDeliveryNodes,
     [
       e('e1', 'start', 'align'),
@@ -391,12 +414,14 @@ const genericDelivery: DagGraph = {
       e('e5', 'impl', 'merge'),
       e('e6', 'merge', 'verify'),
       e('e7', 'verify', 'wrapup'),
-      e('e8', 'wrapup', 'end'),
+      e('e8', 'wrapup', 'deliver'),
+      e('e9', 'deliver', 'end'),
     ],
   ),
   variables: [
     { key: 'issue_id', label: '主 Issue 编号', required: false },
     { key: 'task', label: '任务描述（智能下发注入）', required: false },
+    { key: 'run_id', label: '运行编号（引擎内置注入，交付分支名同源）', required: false },
   ],
 };
 
