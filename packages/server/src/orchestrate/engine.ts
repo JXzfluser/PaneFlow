@@ -266,6 +266,22 @@ export class Engine {
     }
 
     const order = topoSort(graph.nodes.map((n) => n.id), graph.edges)!;
+    // I2 上次经验自动注入 v0（仅变量层——B1 黑板别名未做前不碰产物层）：
+    // 同空间+同模板存在绿 run 时，把其「实填变量+断言清单+成本画像」附入
+    // 执行序首个 agent 节点的 prompt；透明性红线——run 事件明示注入了什么
+    const experience = resumeOf ? null : this.findGreenPredecessor(spaceId, graph.name);
+    let expNodeTarget: string | undefined;
+    if (experience) {
+      const expNodeId = order.find((id) => {
+        const n = graph.nodes.find((x) => x.id === id);
+        return n?.type === 'agent' && Boolean(n.config.prompt);
+      });
+      const expNode = expNodeId ? graph.nodes.find((x) => x.id === expNodeId) : undefined;
+      if (expNode) {
+        expNode.config.prompt = `${expNode.config.prompt}\n\n${Engine.buildExperienceBlock(experience)}`;
+        expNodeTarget = expNode.id;
+      }
+    }
     const nodes: Record<string, NodeRunRecord> = {};
     for (const n of graph.nodes) {
       nodes[n.id] = { nodeId: n.id, state: 'pending', attempts: 0 };
@@ -280,10 +296,19 @@ export class Engine {
       ...(issueId ? { issueId } : {}),
       nodes,
       startedAt: new Date().toISOString(),
+      ...(variables && Object.keys(variables).length ? { variables: { ...variables } } : {}),
       ...(opts?.contract ? { contract: opts.contract } : {}),
     };
     this.runs.set(runId, run);
     this.recordEvent(run, 'run', undefined, `运行启动：${graph.name}（${order.length} 个节点）`);
+    if (experience && expNodeTarget) {
+      this.recordEvent(
+        run,
+        'run',
+        expNodeTarget,
+        `经验注入（I2 v0，仅变量层）：沿用同模板绿 run ${experience.runId} 的实填变量/断言 ${experience.contract?.assertions.length ?? 0} 条/成本画像，已附入「${expNodeTarget}」上下文；全局关闭=空间档案 experienceInjection=false`,
+      );
+    }
     if (unresolved.length) {
       const detail = unresolved.slice(0, 6).map((u) => `${u.where} 的 ${u.ref}`).join('、');
       this.recordEvent(
@@ -401,6 +426,55 @@ export class Engine {
     this.recordEvent(run, 'run', undefined, '出队启动：并发额度腾出，排队放行');
     this.persistAndNotify(run);
     this.launch(run);
+  }
+
+  /**
+   * I2：找同空间+同模板最近一次绿 run（归档的也算——历史即经验）。
+   * 全局关：空间档案 experienceInjection=false（缺省开）。
+   */
+  private findGreenPredecessor(spaceId: string | undefined, dagName: string): RunRecord | null {
+    try {
+      const profile =
+        spaceId && spaceId !== this.store.spaceId
+          ? new Store(this.store.root, spaceId).readProfile()
+          : this.store.readProfile();
+      if (profile.experienceInjection === false) return null;
+    } catch {
+      // 档案不可读 = 默认开
+    }
+    let best: RunRecord | null = null;
+    for (const r of this.runs.values()) {
+      if (r.state !== 'completed' || r.dagName !== dagName) continue;
+      if ((r.spaceId ?? 'default') !== (spaceId ?? 'default')) continue;
+      if (!best || (r.finishedAt ?? r.startedAt) > (best.finishedAt ?? best.startedAt)) best = r;
+    }
+    return best;
+  }
+
+  /** I2 经验块（仅变量层）：实填变量 + 断言清单 + 成本画像；剥 {{}} 防污染运行期插值 */
+  static buildExperienceBlock(prev: RunRecord): string {
+    const safe = (s: string) => s.replace(/\{\{|\}\}/g, '').slice(0, 160);
+    const vars = Object.entries(prev.variables ?? {});
+    const varLine = vars.length ? vars.map(([k, v]) => `${k}=${safe(v)}`).join('；') : '（无实填变量记录）';
+    const acs = prev.contract?.assertions ?? [];
+    const acBlock = acs.length
+      ? acs.map((a) => `  - ${safe(a.id)}：${safe(a.assertion)}`).join('\n')
+      : '  （该单无在册契约）';
+    const c = prev.cost;
+    const costLine = c
+      ? `总耗时 ${(c.totalMs / 60_000).toFixed(1)} 分、重试 ${c.retries} 次、tokens ${
+          c.tokens ? `in ${c.tokens.input}/out ${c.tokens.output}` : '未知（agent 未自报）'
+        }`
+      : '未知（无成本记录）';
+    return [
+      `【上次经验 · I2 自动注入，仅变量层】同空间同模板（${safe(prev.dagName)}）的绿 run ${prev.runId}` +
+        `${prev.finishedAt ? `（完成于 ${prev.finishedAt.slice(0, 16).replace('T', ' ')}）` : ''}：`,
+      `· 当时实填变量：${varLine}`,
+      `· 当时的断言清单（措辞与颗粒度可借鉴；本单以自身契约为准）：`,
+      acBlock,
+      `· 成本画像：${costLine}`,
+      `——以上是历史经验参考，不是本单需求；不要因为「上次这么干过」就照抄路径。`,
+    ].join('\n');
   }
 
   stopRun(runId: string): boolean {

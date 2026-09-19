@@ -105,7 +105,7 @@ export function isAllowedOrigin(opts: {
 const DEFAULT_SPACE = 'default';
 
 /** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面；maxConcurrentRuns=G3 队列上限，配置文件面） */
-const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'maxConcurrentRuns'] as const;
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'maxConcurrentRuns', 'experienceInjection'] as const;
 
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
@@ -528,6 +528,11 @@ export async function buildHttpServer(deps: HttpDeps) {
       const cap = (req.body as Record<string, unknown> | undefined)?.maxConcurrentRuns;
       if (cap !== undefined && (typeof cap !== 'number' || !Number.isFinite(cap) || cap < 1 || cap > 64)) {
         return reply.code(400).send({ error: 'maxConcurrentRuns 必须是 1–64 之间的数字' });
+      }
+      // I2：经验注入开关只认真布尔（false 必须能存下去）
+      const expInj = (req.body as Record<string, unknown> | undefined)?.experienceInjection;
+      if (expInj !== undefined && typeof expInj !== 'boolean') {
+        return reply.code(400).send({ error: 'experienceInjection 必须是布尔值' });
       }
       // 白名单：只接受可编辑字段，id/name/createdAt 等身份字段不可经 body 注入
       const patch: Partial<SpaceProfile> = {};

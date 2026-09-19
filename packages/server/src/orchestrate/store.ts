@@ -22,6 +22,8 @@ export interface SpaceProfile {
   defaultAgentKind?: string;
   /** G3 空间级并发 run 上限（超出的 startRun 排队）；缺省=营地上限（maxConcurrentPanes） */
   maxConcurrentRuns?: number;
+  /** I2 上次经验自动注入的全局开关；缺省=开，显式 false=关（绿 run 的变量/断言/成本不再进新单上下文） */
+  experienceInjection?: boolean;
 }
 
 export const DEFAULT_SPACE = 'default';

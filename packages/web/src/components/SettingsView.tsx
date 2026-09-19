@@ -443,6 +443,7 @@ interface SpaceProfile {
   skills?: string[];
   repos?: string[];
   defaultAgentKind?: string;
+  experienceInjection?: boolean;
 }
 
 /** 设置视图：左侧章节导航 + 右侧分区（原为 6 张卡片平铺 + 大量内联样式）。 */
@@ -515,6 +516,7 @@ export function SettingsView() {
         skills: profile.skills ?? [],
         repos: profile.repos ?? [],
         defaultAgentKind: profile.defaultAgentKind ?? '',
+        experienceInjection: profile.experienceInjection !== false,
       });
       if (profile?.rootCwd) {
         const next = [profile.rootCwd, ...recentRoots.filter((x) => x !== profile.rootCwd)].slice(0, 5);
@@ -728,6 +730,14 @@ export function SettingsView() {
                   </option>
                 ))}
               </select>
+              <label title="同模板有绿 run 时，其「实填变量+断言清单+成本画像」会自动附进新单首个 Agent 节点的上下文（时间线有一条注入事件）。关掉即恢复纯现场发挥。">
+                <input
+                  type="checkbox"
+                  checked={profile?.experienceInjection !== false}
+                  onChange={(e) => setProfile((p) => (p ? { ...p, experienceInjection: e.target.checked } : p))}
+                />{' '}
+                I2 · 上次经验自动注入（缺省开）
+              </label>
               <div className="settings-actions">
                 <button className="primary" onClick={() => void saveProfile()}>
                   保存档案

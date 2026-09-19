@@ -1866,3 +1866,66 @@ describe('v8-G3 空间级轻队列', () => {
     expect(engine2.getRun(r1.runId)!.state).toBe('failed');
   });
 });
+
+describe('v8-I2 上次经验自动注入 v0（仅变量层）', () => {
+  async function greenRun(cwd: string, variables?: Record<string, string>) {
+    const run = await engine.startRun(twoNodeGraph(), cwd, undefined, variables);
+    await waitFor(() => engine.getRun(run.runId)!.state === 'completed');
+    return engine.getRun(run.runId)!;
+  }
+
+  it('实填变量留档在册；同模板再有绿 run → 经验块进首个 agent 节点 + 注入事件上时间线', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-i2-'));
+    const first = await greenRun(cwd, { 目标: '优化台账汇总' });
+    expect(first.variables).toEqual({ 目标: '优化台账汇总' });
+
+    const second = await greenRun(cwd);
+    const designPrompt = second.graph.nodes.find((n) => n.id === 'design')!.config.prompt!;
+    expect(designPrompt).toContain('【上次经验');
+    expect(designPrompt).toContain(`绿 run ${first.runId}`);
+    expect(designPrompt).toContain('目标=优化台账汇总');
+    expect(designPrompt).toContain('（该单无在册契约）');
+    expect(designPrompt).toContain('历史经验参考，不是本单需求');
+    expect((second.events ?? []).some((e) => e.text.includes('经验注入') && e.text.includes(first.runId))).toBe(true);
+    // 进的是真提示词通道：agent 实际收到的 prompt 也带经验块
+    const sent = ops.prompts.filter((p) => p.text.includes('【上次经验'));
+    expect(sent.length).toBeGreaterThanOrEqual(1);
+    // 第二单自己也是绿 run：注入不应递归污染（run3 的经验块仍指向最新绿单且只有一块）
+    const third = await greenRun(cwd);
+    const p3 = third.graph.nodes.find((n) => n.id === 'design')!.config.prompt!;
+    expect(p3.match(/【上次经验/g)).toHaveLength(1);
+    expect(p3).toContain(`绿 run ${second.runId}`);
+  });
+
+  it('全局关：experienceInjection=false 不再注入，也不发事件', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-i2-off-'));
+    await greenRun(cwd, { 目标: 'X' });
+    store.writeProfile({ id: 'default', name: 'default', createdAt: '', experienceInjection: false });
+    const second = await greenRun(cwd);
+    expect(second.graph.nodes.find((n) => n.id === 'design')!.config.prompt).toBe('设计');
+    expect((second.events ?? []).some((e) => e.text.includes('经验注入'))).toBe(false);
+  });
+
+  it('模板不同名 / 未完成的 run 都不算经验源；断言清单进块（本单契约优先措辞）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-i2-mix-'));
+    // 绿 run 带契约
+    const withContract = await engine.startRun(twoNodeGraph(), cwd, undefined, undefined, undefined, undefined, {
+      contract: {
+        assertions: [{ id: 'AC-1', assertion: '10 万行 3 秒出结果', verify_method: '人工' }],
+        questions: [],
+        source: 'input',
+      },
+    });
+    await waitFor(() => engine.getRun(withContract.runId)!.state === 'completed');
+    // 异名模板（gatedGraph 复制版改名 exp-other）→ 无注入
+    const other = serialGraph();
+    other.name = 'exp-other';
+    const foreign = await runToCompletion(other, cwd);
+    expect(foreign.graph.nodes.some((n) => (n.config.prompt ?? '').includes('【上次经验'))).toBe(false);
+    // 同名 → 注入且断言在列
+    const same = await greenRun(cwd);
+    const designPrompt = same.graph.nodes.find((n) => n.id === 'design')!.config.prompt!;
+    expect(designPrompt).toContain('AC-1：10 万行 3 秒出结果');
+    expect(designPrompt).toContain('本单以自身契约为准');
+  });
+});

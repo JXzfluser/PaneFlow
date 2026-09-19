@@ -363,6 +363,8 @@ export interface RunRecord {
   dagName: string;
   /** 关联需求 Issue（可检索/展示） */
   issueId?: string;
+  /** I2：本单实填的模板变量值（startRun 传入的映射原样留档；经验注入与表单回填补数据） */
+  variables?: Record<string, string>;
   graph: DagGraph;
   state: RunState;
   cwd: string;
