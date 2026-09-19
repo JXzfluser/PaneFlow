@@ -472,11 +472,10 @@ export function SettingsView() {
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (spaceId !== 'default') {
-      void fetchJson<SpaceProfile>('GET', `/api/spaces/${encodeURIComponent(spaceId)}`)
-        .then(setProfile)
-        .catch((e: Error) => log('error', `读取项目档案失败：${e.message}`));
-    }
+    // AE：默认空间也要能配「空间默认 Agent/统一覆盖」——档案照常读取（表单仅呈现可配项）
+    void fetchJson<SpaceProfile>('GET', `/api/spaces/${encodeURIComponent(spaceId)}`)
+      .then(setProfile)
+      .catch((e: Error) => log('error', `读取项目档案失败：${e.message}`));
     void api.health().then(setEnv);
   }, [spaceId]);
 
@@ -537,6 +536,48 @@ export function SettingsView() {
     }
   };
 
+  // AE/I2 Agent 选择控件：默认空间档案表单虽精简，这几个必须可配（实机阻塞点）
+  const agentControls = (
+    <>
+      <label title="AE：节点/角色没指定 Agent 类型时用它；智能下发 Planner 也用它。留空=自动推荐（本机已装优先：pi > opencode > codex > claude）">
+        空间默认 Agent（节点未指定时用它；Planner 同款）
+      </label>
+      <select
+        value={profile?.defaultAgentKind ?? ''}
+        onChange={(e) => setProfile((p) => (p ? { ...p, defaultAgentKind: e.target.value } : p))}
+      >
+        <option value="">
+          自动推荐{env?.recommendedAgentKind ? `（当前：${env.recommendedAgentKind}）` : '（检测中…）'}
+        </option>
+        {agentKinds.map((k) => (
+          <option key={k} value={k}>
+            {k}{env?.env.agentsInstalled.includes(k) ? ' ·已装' : ' ·未装'}
+          </option>
+        ))}
+      </select>
+      <label
+        title="勾选后本空间所有 Agent 一律用上面的默认值——包括模板/节点里已钉死的类型。配合「模型网关」即可实现：启动的 agent 全部统一走网关模型。"
+        style={!profile?.defaultAgentKind ? { opacity: 0.5 } : undefined}
+      >
+        <input
+          type="checkbox"
+          disabled={!profile?.defaultAgentKind}
+          checked={!!profile?.agentOverride}
+          onChange={(e) => setProfile((p) => (p ? { ...p, agentOverride: e.target.checked } : p))}
+        />{' '}
+        AE · 统一覆盖：强制全部节点改用空间默认 Agent
+      </label>
+      <label title="同模板有绿 run 时，其「实填变量+断言清单+成本画像」会自动附进新单首个 Agent 节点的上下文（时间线有一条注入事件）。关掉即恢复纯现场发挥。">
+        <input
+          type="checkbox"
+          checked={profile?.experienceInjection !== false}
+          onChange={(e) => setProfile((p) => (p ? { ...p, experienceInjection: e.target.checked } : p))}
+        />{' '}
+        I2 · 上次经验自动注入（缺省开）
+      </label>
+    </>
+  );
+
   return (
     <div className="settings-view">
       <nav className="settings-nav" aria-label="设置章节">
@@ -557,9 +598,18 @@ export function SettingsView() {
           <h3>项目档案</h3>
           <p className="settings-hint">当前空间：<b>{spaceId}</b></p>
           {spaceId === 'default' ? (
-            <p className="settings-hint">
-              默认空间用于快速体验。建议在左侧「+」新建一个项目空间（如 demo），再配置主仓根目录与约定文档。
-            </p>
+            <>
+              <p className="settings-hint">
+                默认空间用于快速体验。建议在左侧「+」新建一个项目空间（如 demo），再配置主仓根目录与约定文档。
+                下面这几项（AE Agent 选择 / I2 经验注入）在默认空间同样可配：
+              </p>
+              {agentControls}
+              <div className="settings-actions">
+                <button className="primary" onClick={() => void saveProfile()}>
+                  保存档案
+                </button>
+              </div>
+            </>
           ) : (
             <>
               <label>主仓根目录（仓库/文档/技能发现的基准路径）</label>
@@ -726,42 +776,7 @@ export function SettingsView() {
                 onChange={(e) => setProfile((p) => (p ? { ...p, description: e.target.value } : p))}
                 placeholder="一句话说明这个项目"
               />
-              <label title="AE：节点/角色没指定 Agent 类型时用它；智能下发 Planner 也用它。留空=自动推荐（本机已装优先：pi > opencode > codex > claude）">
-                空间默认 Agent（节点未指定时用它；Planner 同款）
-              </label>
-              <select
-                value={profile?.defaultAgentKind ?? ''}
-                onChange={(e) => setProfile((p) => (p ? { ...p, defaultAgentKind: e.target.value } : p))}
-              >
-                <option value="">
-                  自动推荐{env?.recommendedAgentKind ? `（当前：${env.recommendedAgentKind}）` : '（检测中…）'}
-                </option>
-                {agentKinds.map((k) => (
-                  <option key={k} value={k}>
-                    {k}{env?.env.agentsInstalled.includes(k) ? ' ·已装' : ' ·未装'}
-                  </option>
-                ))}
-              </select>
-              <label
-                title="勾选后本空间所有 Agent 一律用上面的默认值——包括模板/节点里已钉死的类型。配合「模型网关」即可实现：启动的 agent 全部统一走网关模型。"
-                style={!profile?.defaultAgentKind ? { opacity: 0.5 } : undefined}
-              >
-                <input
-                  type="checkbox"
-                  disabled={!profile?.defaultAgentKind}
-                  checked={!!profile?.agentOverride}
-                  onChange={(e) => setProfile((p) => (p ? { ...p, agentOverride: e.target.checked } : p))}
-                />{' '}
-                AE · 统一覆盖：强制全部节点改用空间默认 Agent
-              </label>
-              <label title="同模板有绿 run 时，其「实填变量+断言清单+成本画像」会自动附进新单首个 Agent 节点的上下文（时间线有一条注入事件）。关掉即恢复纯现场发挥。">
-                <input
-                  type="checkbox"
-                  checked={profile?.experienceInjection !== false}
-                  onChange={(e) => setProfile((p) => (p ? { ...p, experienceInjection: e.target.checked } : p))}
-                />{' '}
-                I2 · 上次经验自动注入（缺省开）
-              </label>
+              {agentControls}
               <div className="settings-actions">
                 <button className="primary" onClick={() => void saveProfile()}>
                   保存档案
