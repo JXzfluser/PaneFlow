@@ -1232,6 +1232,109 @@ describe('v8-M1 契约接单门（contractGate）', () => {
   });
 });
 
+describe('v8-M2 契约成为 run 一等公民', () => {
+  const writeImpl = (cwd: string, obj: unknown) => {
+    fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.herdr/artifacts/impl.json'), JSON.stringify(obj));
+  };
+  const contractObj = (assertion: string) => ({
+    summary: '规划',
+    extra: {
+      contract: {
+        assertions: [{ id: 'AC-1', assertion, verify_method: '人工核对' }],
+        questions: [],
+        scopeNotes: '不动 test/ 目录',
+      },
+    },
+  });
+
+  it('无门节点产物写 extra.contract → 完成前落册为 input 契约并带时间线事件', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    ops.onPrompt = () => writeImpl(cwd, contractObj('导出可被调用'));
+    const run = await runToCompletion(graph, cwd);
+    expect(run.contract).toBeTruthy();
+    expect(run.contract!.source).toBe('input');
+    expect(run.contract!.assertions[0]!.assertion).toBe('导出可被调用');
+    expect(run.contract!.scopeNotes).toBe('不动 test/ 目录');
+    expect(run.contract!.confirmedAt).toBeUndefined();
+    expect((run.events ?? []).some((e) => e.text.includes('契约落册'))).toBe(true);
+    // 持久化在盘上（store 读回一致）
+    expect(store.getRun(run.runId)!.contract!.assertions.length).toBe(1);
+  });
+
+  it('契约门 approve → 契约定稿：source=generated 且 confirmedAt 盖时刻', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    graph.nodes[1]!.config.checks = [{ type: 'contract' }];
+    ops.onPrompt = () => writeImpl(cwd, contractObj('按契约干'));
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const c = engine.getRun(run.runId)!.contract!;
+    expect(c.source).toBe('generated');
+    expect(c.confirmedAt).toBeTruthy();
+  });
+
+  it('startRun 显式契约随单落册；产物再写 contract 不覆盖（先到先得）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    ops.onPrompt = () => writeImpl(cwd, contractObj('后来的'));
+    const run = await engine.startRun(graph, cwd, undefined, undefined, undefined, undefined, {
+      contract: {
+        assertions: [{ id: 'AC-1', assertion: '机检自带', verify_method: '' }],
+        questions: [],
+        source: 'input',
+      },
+    });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.contract!.assertions[0]!.assertion).toBe('机检自带');
+  });
+
+  it('F1 门判定回指契约：契约内正常列、契约外 id 标注出来', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    ops.onPrompt = () =>
+      writeImpl(cwd, {
+        summary: 'x',
+        extra: {
+          contract: { assertions: [{ id: 'AC-1', assertion: '契约内断言', verify_method: 'v' }], questions: [] },
+          assertionResults: [
+            { id: 'AC-1', status: 'fail', evidence: '没做到' },
+            { id: 'AC-7', status: 'fail', evidence: '来路不明' },
+          ],
+        },
+      });
+    const run = await engine.startRun(graph, cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    const prompt = engine.getRun(run.runId)!.nodes['impl']!.blockedPrompt!;
+    expect(prompt).toContain('按本单契约 1 条对照');
+    expect(prompt).toContain('- AC-1: 没做到');
+    expect(prompt).not.toContain('AC-1: 没做到（');
+    expect(prompt).toContain('AC-7: 来路不明（此 id 不在契约内——执行方自增/写错）');
+  });
+
+  it('断点续跑继承源 run 的契约', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = serialGraph();
+    ops.onPrompt = () => writeImpl(cwd, { summary: 'x' }); // impl 不写产物也能完成（兜底）
+    const src = await runToCompletion(graph, cwd);
+    const patched = structuredClone(src);
+    patched.contract = {
+      assertions: [{ id: 'AC-1', assertion: '源单契约', verify_method: '' }],
+      questions: [],
+      source: 'generated',
+      confirmedAt: '2026-01-01T00:00:00.000Z',
+    };
+    store.saveRun(patched);
+    const run2 = await engine.startRun(graph, cwd, undefined, undefined, undefined, src.runId);
+    expect(run2.contract!.assertions[0]!.assertion).toBe('源单契约');
+    await waitFor(() => engine.getRun(run2.runId)!.state !== 'running');
+  });
+});
+
 describe('v8-F2 审批等待重启可活（paused）', () => {
   it('boot：磁盘 running 记录里 blocked 节点转 paused 且审批上下文保留', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-boot-'));

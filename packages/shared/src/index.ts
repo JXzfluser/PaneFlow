@@ -24,6 +24,7 @@ export {
   failedAssertionsOf,
   contractOf,
   type ContractDoc,
+  type RunContract,
   topoSort,
   upstreamOf,
   renderPromptTemplate,

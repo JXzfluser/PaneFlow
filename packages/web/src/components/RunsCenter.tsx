@@ -232,6 +232,18 @@ export function RunsCenter() {
                   ⚠ 未验证产物
                 </span>
               )}
+              {r.contract && (
+                <span
+                  className="run-cost-chip"
+                  title={[
+                    `这单按以下约定在干（${r.contract.source === 'input' ? '需求自带' : '契约门谈定'}${r.contract.confirmedAt ? `・${r.contract.confirmedAt.slice(0, 19).replace('T', ' ')} 已确认` : '・待确认'}）：`,
+                    ...r.contract.assertions.map((a) => `${a.id}: ${a.assertion}`),
+                    ...(r.contract.scopeNotes ? [`边界：${r.contract.scopeNotes}`] : []),
+                  ].join('\n')}
+                >
+                  📜 契约 {r.contract.assertions.length} 条{r.contract.source === 'generated' && !r.contract.confirmedAt ? '·待确认' : ''}
+                </span>
+              )}
               <div className="run-card-ops">
                 <button
                   className={open ? 'active' : ''}

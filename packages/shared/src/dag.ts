@@ -209,13 +209,40 @@ export function failedAssertionsOf(extra: Record<string, unknown> | undefined): 
 export interface ContractDoc {
   assertions: AcceptanceAssertion[];
   questions: string[];
+  /** 范围边界：本次不动哪些文件/模块（自由文本，人读 also 机读） */
+  scopeNotes?: string;
+  /** 预算上限（M2 v0 只记账展示；B5 未做前不强制熔断） */
+  budget?: { maxMinutes?: number; maxTokens?: number };
+  /** 目标仓 / 分支（H1 交付守卫的锚点） */
+  repo?: string;
+  branch?: string;
+}
+
+/**
+ * M2 run 一等公民契约：持久化在 RunRecord 上的首个结构化产物。
+ * F1 验收机器门、H1 交付守卫、预算顶都引用同一份契约——三处约束是它的三个执行点。
+ */
+export interface RunContract extends ContractDoc {
+  /** input=需求自带（机检提取）；generated=Planner 立约、经契约门人工确认 */
+  source: 'input' | 'generated';
+  /** M6 预留：本单按哪版契约模板干的（id@sha），留痕红线 */
+  template?: string;
+  /** 契约门人工批准时刻；input 契约无需批准为空 */
+  confirmedAt?: string;
 }
 
 /** 从产物 extra 读契约；无 contract 对象返回 null（写了但条目非法则逐条宽松过滤）。 */
 export function contractOf(extra: Record<string, unknown> | undefined): ContractDoc | null {
   const raw = extra?.contract;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const c = raw as { assertions?: unknown; questions?: unknown };
+  const c = raw as {
+    assertions?: unknown;
+    questions?: unknown;
+    scopeNotes?: unknown;
+    budget?: unknown;
+    repo?: unknown;
+    branch?: unknown;
+  };
   const assertions: AcceptanceAssertion[] = [];
   if (Array.isArray(c.assertions)) {
     for (const item of c.assertions) {
@@ -232,7 +259,18 @@ export function contractOf(extra: Record<string, unknown> | undefined): Contract
   const questions = Array.isArray(c.questions)
     ? c.questions.filter((q): q is string => typeof q === 'string' && q.trim() !== '')
     : [];
-  return { assertions, questions };
+  const doc: ContractDoc = { assertions, questions };
+  if (typeof c.scopeNotes === 'string' && c.scopeNotes.trim()) doc.scopeNotes = c.scopeNotes.trim();
+  if (c.budget && typeof c.budget === 'object') {
+    const b = c.budget as { maxMinutes?: unknown; maxTokens?: unknown };
+    const budget: NonNullable<ContractDoc['budget']> = {};
+    if (typeof b.maxMinutes === 'number') budget.maxMinutes = b.maxMinutes;
+    if (typeof b.maxTokens === 'number') budget.maxTokens = b.maxTokens;
+    if (Object.keys(budget).length) doc.budget = budget;
+  }
+  if (typeof c.repo === 'string' && c.repo.trim()) doc.repo = c.repo.trim();
+  if (typeof c.branch === 'string' && c.branch.trim()) doc.branch = c.branch.trim();
+  return doc;
 }
 
 /**
@@ -325,6 +363,8 @@ export interface RunRecord {
   cost?: RunCost;
   /** R5.1 归档标记（归档后移出运行中心主列表，记录保留可检索） */
   archived?: boolean;
+  /** M2 契约一等公民：本单按什么约定在干（F1 门/H1 守卫/预算的共同引用） */
+  contract?: RunContract;
 }
 
 export interface RunEvent {

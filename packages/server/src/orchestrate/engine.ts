@@ -11,6 +11,7 @@ import type {
   DagEdge,
   DagGraph,
   NodeRunRecord,
+  RunContract,
   RunRecord,
   RunCost,
   NodeCost,
@@ -198,6 +199,8 @@ export class Engine {
     variables?: Record<string, string>,
     issueId?: string,
     resumeOf?: string,
+    /** M2：机检契约随单落册（input 模式）；generated 模式由引擎在产物提取时捕获 */
+    opts?: { contract?: RunContract },
   ): Promise<RunRecord> {
     // R3.4 同 issue 幂等锁：同空间同 issue 已有运行中流水线时拒绝重复下发
     if (issueId) {
@@ -259,6 +262,7 @@ export class Engine {
       ...(issueId ? { issueId } : {}),
       nodes,
       startedAt: new Date().toISOString(),
+      ...(opts?.contract ? { contract: opts.contract } : {}),
     };
     this.runs.set(runId, run);
     this.recordEvent(run, 'run', undefined, `运行启动：${graph.name}（${order.length} 个节点）`);
@@ -284,6 +288,8 @@ export class Engine {
       if (inherited) {
         this.recordEvent(run, 'run', undefined, `断点续跑：继承 ${resumeOf} 的 ${inherited} 个已完成节点`);
       }
+      // M2：续跑沿用同一份契约（除非本次显式给了新的）
+      if (resumeSource.contract && !run.contract) run.contract = structuredClone(resumeSource.contract);
     }
     this.persistAndNotify(run);
 
@@ -955,6 +961,9 @@ export class Engine {
         this.persistAndNotify(run);
       }
 
+      // M2 契约落册：产物写了 extra.contract 且本 run 尚无契约 → 成为 run 的一等公民产物
+      this.captureContract(run, rec);
+
       // F1 验收机器门：产物写了 assertionResults 且有未通过项时不许静默 done
       const gateFail = await this.assertionGate(run, rec, nodeId, agentName, timeoutMs, artifactRel, blackboard);
       if (gateFail) return gateFail;
@@ -1034,6 +1043,28 @@ export class Engine {
   }
 
   /**
+   * M2 契约落册：run 的首个结构化产物。写了 extra.contract（且含断言）的节点产物
+   * 被捕获到 RunContract——source 按该节点是否挂契约门判定（有门=谈出来的，无门=自带的）。
+   */
+  private captureContract(run: RunRecord, rec: NodeRunRecord): void {
+    if (run.contract) return;
+    const doc = contractOf(rec.artifact?.extra);
+    if (!doc || doc.assertions.length === 0) return;
+    const node = run.graph.nodes.find((n) => n.id === rec.nodeId);
+    const gated = (node?.config.checks ?? []).some((c) => c.type === 'contract');
+    run.contract = { ...doc, source: gated ? 'generated' : 'input' };
+    this.recordEvent(
+      run,
+      'run',
+      rec.nodeId,
+      gated
+        ? `契约落册（谈判中，待契约门确认）：断言 ${doc.assertions.length} 条`
+        : `契约落册（自带，无需批准）：断言 ${doc.assertions.length} 条`,
+    );
+    this.persistAndNotify(run);
+  }
+
+  /**
    * F1 验收机器门：节点产物 extra.assertionResults 存在未通过断言（status 非 ok/n/a）时，
    * 节点不得静默 done——复用审批循环：reject→节点失败；approve→人工追认放行；
    * input→追加一轮指令、重新提取产物后复核。无断言结果或全过则直接放行（向后兼容）。
@@ -1052,9 +1083,17 @@ export class Engine {
       if (failed.length === 0) return null;
       if (this.cancels.has(run.runId)) return '已取消';
       rec.state = 'blocked';
+      const contractIds = new Set((run.contract?.assertions ?? []).map((a) => a.id));
       rec.blockedPrompt =
-        `验收断言未全过（${failed.length} 条）：\n` +
-        failed.map((f) => `- ${f.id}: ${f.evidence.slice(0, 160) || '（无证据）'}`).join('\n');
+        `验收断言未全过（${failed.length} 条）${run.contract ? `——按本单契约 ${contractIds.size} 条对照` : ''}：\n` +
+        failed
+          .map(
+            (f) =>
+              `- ${f.id}: ${f.evidence.slice(0, 160) || '（无证据）'}${
+                run.contract && !contractIds.has(f.id) ? '（此 id 不在契约内——执行方自增/写错）' : ''
+              }`,
+          )
+          .join('\n');
       this.recordEvent(run, 'approval', nodeId, `验收机器门拦截：${failed.map((f) => f.id).join('、')}`);
       this.persistAndNotify(run);
       const action = await new Promise<ApprovalAction>((resolve) => {
@@ -1120,6 +1159,8 @@ export class Engine {
       if (this.cancels.has(run.runId)) return '已取消';
       if (action.action === 'reject') return '契约未确认：拒绝即终止本单（下游不派）';
       if (action.action === 'approve') {
+        // M2：放行即契约定稿——以批准时这一版内容落册并盖确认时刻
+        run.contract = { ...doc, source: 'generated', confirmedAt: new Date().toISOString() };
         this.recordEvent(
           run,
           'approval',

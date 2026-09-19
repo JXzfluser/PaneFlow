@@ -574,7 +574,28 @@ export async function buildHttpServer(deps: HttpDeps) {
         issueContext,
         contractAssertions,
       });
-      const run = await deps.engine.startRun(graph, cwd, req.query.space, { task }, issueId || undefined);
+      const run = await deps.engine.startRun(
+        graph,
+        cwd,
+        req.query.space,
+        { task },
+        issueId || undefined,
+        undefined,
+        // M2：机检契约随单落册（run 的首个结构化产物）；无契约模式由契约门谈定后落
+        contractAssertions.length
+          ? {
+              contract: {
+                assertions: contractAssertions.map((a, i) => ({
+                  id: `AC-${i + 1}`,
+                  assertion: a,
+                  verify_method: '',
+                })),
+                questions: [],
+                source: 'input' as const,
+              },
+            }
+          : undefined,
+      );
       return {
         runId: run.runId,
         issueId: issueId || undefined,
