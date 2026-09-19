@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { aggregateSse, enhanceIssueText, gatherEnhanceContext, type ChatFn } from './enhance.js';
+import { aggregateSse, draftAcceptance, enhanceIssueText, gatherEnhanceContext, type ChatFn } from './enhance.js';
 
 function projectWith(files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-enhance-'));
@@ -31,6 +31,29 @@ describe('v9-N1 SSE 聚合', () => {
       'data: [DONE]',
     ].join('\n\n');
     expect(aggregateSse(raw)).toBe('{"title":"x"}');
+  });
+});
+
+describe('v9-N2 draftAcceptance（只补验收断言的轻调用）', () => {
+  it('标准 JSON 直接收；空/非数组 → 空', async () => {
+    const chat: ChatFn = async () => '{"acceptance":["导出 10 万行不超时"," CSV 可被 Excel 打开 ",""]}';
+    expect(await draftAcceptance('x', chat)).toEqual(['导出 10 万行不超时', 'CSV 可被 Excel 打开']);
+    const chat2: ChatFn = async () => '{"acceptance":[]}';
+    expect(await draftAcceptance('x', chat2)).toEqual([]);
+  });
+
+  it('非 JSON 时按列表行兜底（勾选框也剥）', async () => {
+    const chat: ChatFn = async () => '- [ ] 首屏 <2s\n2. 导出不崩\n随便一句不算';
+    expect(await draftAcceptance('x', chat)).toEqual(['首屏 <2s', '导出不崩']);
+  });
+
+  it('超过 5 条截断；chat 抛错原样上抛（调用方兜底回落门）', async () => {
+    const chat: ChatFn = async () => JSON.stringify({ acceptance: ['1', '2', '3', '4', '5', '6'] });
+    expect(await draftAcceptance('x', chat)).toEqual(['1', '2', '3', '4', '5']);
+    const bad: ChatFn = async () => {
+      throw new Error('网关对话失败');
+    };
+    await expect(draftAcceptance('x', bad)).rejects.toThrow('网关对话失败');
   });
 });
 

@@ -193,6 +193,19 @@ describe('v8-M1 契约门装配（buildDispatchGraph）', () => {
     const p = planner({ preview: true, contractAssertions: ['一条'] });
     expect((p.config.checks ?? []).map((c) => c.type)).toEqual(['manual']);
   });
+
+  // N2 三级序列的第三形态：AI 补出的草案契约——注入 AC 但门保留（需人确认）
+  it('autofilled 契约（contractGate）→ prompt 标「AI 起草」且 contract 门保留', () => {
+    const p = planner({ contractAssertions: ['导出 10 万行不超时'], contractGate: true });
+    expect(p.config.prompt).toContain('AI 依需求起草的契约草案 1 条');
+    expect(p.config.prompt).toContain('- AC-1: 导出 10 万行不超时');
+    expect(p.config.checks).toEqual([{ type: 'contract' }]);
+  });
+
+  it('autofilled + preview → contract 门在前、manual 门在后', () => {
+    const p = planner({ preview: true, contractAssertions: ['一条'], contractGate: true });
+    expect((p.config.checks ?? []).map((c) => c.type)).toEqual(['contract', 'manual']);
+  });
 });
 
 describe('v8-M6 契约骨架模板装配（buildDispatchGraph）', () => {

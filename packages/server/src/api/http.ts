@@ -19,7 +19,7 @@ import {
   type Channel,
 } from './channels.js';
 import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, syncPiGatewayProvider, type ModelGatewaySettings } from './gateway.js';
-import { enhanceIssueText, gatewayChatFn } from './enhance.js';
+import { draftAcceptance, enhanceIssueText, gatewayChatFn } from './enhance.js';
 import { readGithubSettings, writeGithubSettings, buildGithubEnv, type GithubSettings } from './github-cred.js';
 
 interface CreateIssueBody {
@@ -754,11 +754,22 @@ export async function buildHttpServer(deps: HttpDeps) {
         .listGraphs()
         .filter((g) => g.name !== 'builtin-issue-triage')
         .map((g) => ({ name: g.name, description: g.metadata.description }));
-      // M1 接单门：先机检 DoR——任务/Issue 正文里有「验收标准」小节就直接当契约用，
-      // 没有则由 Planner 立约 + 引擎契约门拦住（契约未确认下游不派）。
-      const contractAssertions = extractAcceptance(
-        issueContext ? `${task}\n\n${issueContext.body}` : task,
-      );
+      // M1→N2 三级序列：机检「验收标准」→ 缺则 AI 补约（留确认门）→ 仍缺才空手立约问人。
+      const sourceText = issueContext ? `${task}\n\n${issueContext.body}` : task;
+      let contractAssertions = extractAcceptance(sourceText);
+      let autofilled = false;
+      if (!contractAssertions.length) {
+        const chat = gatewayChatFn(deps.dataDir);
+        if (chat) {
+          try {
+            const draft = await draftAcceptance(sourceText, chat);
+            autofilled = draft.length > 0;
+            contractAssertions = draft;
+          } catch {
+            /* 补约失败不拦接单——回落原「Planner 立约 + 门」流程 */
+          }
+        }
+      }
       // M6：无机检契约时按关键词择契约骨架模板实例化（留痕戳进门的 check 里带走）
       const contractLib = loadContractLibrary(path.join(store0.root, 'spaces', store0.spaceId));
       const tplHit = contractAssertions.length
@@ -777,6 +788,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         plannerAgentKind,
         issueContext,
         contractAssertions,
+        contractGate: autofilled,
         contractTemplate: tplHit
           ? { stamp: `${tplHit.template.id}@${tplHit.sha}`, block: renderContractTemplateBlock(tplHit, contractLib) }
           : undefined,
@@ -810,9 +822,11 @@ export async function buildHttpServer(deps: HttpDeps) {
         issueId: issueId || undefined,
         issueFetched: Boolean(issueContext),
         note: issueNote,
-        contract: contractAssertions.length
-          ? { mode: 'extracted' as const, assertions: contractAssertions.length }
-          : { mode: 'gate' as const, template: tplHit ? `${tplHit.template.id}@${tplHit.sha}` : undefined },
+        contract: autofilled
+          ? { mode: 'autofilled' as const, assertions: contractAssertions.length }
+          : contractAssertions.length
+            ? { mode: 'extracted' as const, assertions: contractAssertions.length }
+            : { mode: 'gate' as const, template: tplHit ? `${tplHit.template.id}@${tplHit.sha}` : undefined },
       };
     },
   );

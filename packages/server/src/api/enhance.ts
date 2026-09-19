@@ -171,6 +171,27 @@ const VARIANTS = [
   '按“改动面与回归风险”来写，验收标准包含不破坏既有行为。',
 ];
 
+/** N2：只起草验收断言的轻调用（dispatch 补约用，不要整篇 body） */
+export async function draftAcceptance(text: string, chat: ChatFn): Promise<string[]> {
+  const raw = await chat(
+    '读下述需求，起草可对照产物逐条核对的验收断言 2-5 条（一句一条、可判真假、不臆造未提及的技术栈）。只输出 JSON：{"acceptance":["…"]}',
+    text.slice(0, 2000),
+  );
+  const list = (items: unknown): string[] =>
+    Array.isArray(items)
+      ? items.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim()).slice(0, 5)
+      : [];
+  const s = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  try {
+    const j = JSON.parse(s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)) as { acceptance?: unknown };
+    const hit = list(j.acceptance);
+    if (hit.length) return hit;
+  } catch {
+    /* 没按 JSON 来就走下面的行抽取兜底 */
+  }
+  return list(s.split('\n').map((l) => l.match(/^\s*(?:[-*]|\d+[.、)])\s+(?:\[[ xX]\]\s*)?(.+?)\s*$/)?.[1]).filter(Boolean) as unknown[]);
+}
+
 /**
  * 扩写主流程。浅档（默认）：一次生成；深档：两次不同视角生成 + 一次模型择优选出最终稿。
  * 模型/网关调用失败直接抛错（端点转 502，让用户知道是网关问题）；JSON 解析失败则整段收为 body。

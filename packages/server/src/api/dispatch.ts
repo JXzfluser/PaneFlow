@@ -22,6 +22,11 @@ export interface DispatchOptions {
   issueContext?: IssueView;
   /** M1：服务端机检出的「验收标准」条目（非空=契约已在手，不设接单门） */
   contractAssertions?: string[];
+  /**
+   * N2：AI 自动补出来的契约——断言直接注入 Planner（同 M1 extracted 链路），
+   * 但契约确认门保留：AI 起草的措辞需要人过目才派下游。
+   */
+  contractGate?: boolean;
   /** M6：命中的契约骨架模板（stamp=id@sha 留痕；block=注入 Planner 的实例化指令） */
   contractTemplate?: { stamp: string; block: string };
   /** I1：空间技能索引（名字+首行描述）——注入 Planner 上下文，契约/方案可引用 skill:<name> */
@@ -198,7 +203,8 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
       ].join('\n')
     : '';
 
-  // M1 接单门：机检有「验收标准」→ 直接当契约注入（不设门）；无 → Planner 先立约 + 契约确认门
+  // M1 接单门：机检有「验收标准」→ 直接当契约注入（不设门）；无 → Planner 先立约 + 契约确认门。
+  // N2 改版：机检无但 AI 已补出草案（contractGate）→ 草案注入 + 门保留（AI 起草需人过目）。
   const inputContract = (opts.contractAssertions ?? []).map((s) => s.trim()).filter(Boolean);
   const hasInputContract = inputContract.length > 0;
   // M6：无机检契约时优先按骨架模板实例化（选骨架→填差异），替代现场自由发挥
@@ -206,7 +212,9 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
   const contractBlock = hasInputContract
     ? [
         '',
-        `输入已含可机检的验收标准 ${inputContract.length} 条——这就是本单契约，执行方将逐条核对：`,
+        opts.contractGate
+          ? `输入原本缺「验收标准」——以下为 AI 依需求起草的契约草案 ${inputContract.length} 条，运行会停在契约接单门等人工确认（确认后才派下游）：`
+          : `输入已含可机检的验收标准 ${inputContract.length} 条——这就是本单契约，执行方将逐条核对：`,
         ...inputContract.map((a, i) => `- AC-${i + 1}: ${a}`),
         'extra.contract.assertions 原样透传以上条目（id 用 AC-N，assertion 用原文，verify_method 写你建议的核对方式）；extra.contract.questions 无疑问可留空。',
       ].join('\n')
@@ -218,7 +226,7 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
         '运行会停在契约接单门等你方与人工对齐：断言要具体到能被机器或人工逐条核验，提问直击模糊点。',
       ].join('\n');
   const checks: CheckSpec[] = [];
-  if (!hasInputContract) checks.push({ type: 'contract', ...(tpl ? { template: tpl.stamp } : {}) });
+  if (!hasInputContract || opts.contractGate) checks.push({ type: 'contract', ...(tpl ? { template: tpl.stamp } : {}) });
   if (opts.preview) {
     checks.push({
       type: 'manual',
