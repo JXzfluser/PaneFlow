@@ -981,6 +981,22 @@ export class Engine {
 
   /** One full attempt: pane → agent → ready → prompt → (approval) → artifact. */
   private async attemptNode(run: RunRecord, nodeId: string, blackboard: Map<string, Artifact>): Promise<'ok' | string> {
+    // 首驾-3：跨 run 软锁必须随节点尝试结束而释放——旧实现 claim 只写不还，
+    // 派发父 run 的 planner 跑完后仍「持锁」，其 pipeline 子 run 的 align 排队等锁直到超时，
+    // 而父 run 又在等子 run 结束 = 环形等待（首驾实抓：3b559054/align 卡「等待仓库锁 47015711/planner」）。
+    const cfg0 = run.graph.nodes.find((n) => n.id === nodeId)!.config;
+    const repo = gitRepoRoot(cfg0.cwd ? path.resolve(run.cwd, cfg0.cwd) : run.cwd);
+    try {
+      return await this.doAttemptNode(run, nodeId, blackboard);
+    } finally {
+      if (repo) {
+        const claim = this.repoClaims.get(repo);
+        if (claim && claim.runId === run.runId && claim.nodeId === nodeId) this.repoClaims.delete(repo);
+      }
+    }
+  }
+
+  private async doAttemptNode(run: RunRecord, nodeId: string, blackboard: Map<string, Artifact>): Promise<'ok' | string> {
     const node = run.graph.nodes.find((n) => n.id === nodeId)!;
     const rec = run.nodes[nodeId]!;
     const cfg = node.config;

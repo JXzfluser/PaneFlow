@@ -840,6 +840,35 @@ describe('Engine (serial DAG)', () => {
     expect(branches).toContain('paneflow/');
   });
 
+  it('首驾-3 跨 run 软锁随节点尝试结束释放：run1 审批放行后，同仓排队等待的 run2 得以跑完（旧实现 claim 只写不还 → 等锁必至超时）', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-lock-'));
+    execFileSync('git', ['-C', repo, 'init']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 't@t']);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'base');
+    execFileSync('git', ['-C', repo, 'add', '-A']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'base']);
+
+    const g1 = serialGraph();
+    g1.name = 'lock-holder';
+    g1.nodes[1]!.config.checks = [{ type: 'manual', prompt: '确认放行' }];
+    // fake 节点会把结果文件写进仓库 → 同仓第二 run 会被脏检查挡（非本测试主题），借正式开关放行
+    process.env.PF_DIRTY_CHECK = '0';
+    try {
+      const r1 = await engine.startRun(g1, repo);
+      await waitFor(() => engine.getRun(r1.runId)!.nodes['impl']!.state === 'blocked');
+      const g2 = serialGraph();
+      g2.name = 'lock-waiter';
+      const r2 = await engine.startRun(g2, repo);
+      await waitFor(() => (engine.getRun(r2.runId)!.nodes['impl']!.error ?? '').includes('等待仓库锁'));
+      await engine.approve(r1.runId, 'impl', { action: 'approve' });
+      await waitFor(() => engine.getRun(r1.runId)!.state === 'completed');
+      await waitFor(() => engine.getRun(r2.runId)!.state === 'completed');
+    } finally {
+      delete process.env.PF_DIRTY_CHECK;
+    }
+  });
+
   it('R6.5 resume: done nodes inherited, failed node re-executes only', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
     const graph = twoNodeGraph();
