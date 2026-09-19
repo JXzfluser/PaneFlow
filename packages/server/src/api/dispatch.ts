@@ -238,7 +238,7 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
     : undefined;
   const teamLine = team.length
     ? `班底 ${team.length} 人成军：${team.map((m) => m.alias || m.name).join('、')}（拆步派活只从这份名册点人）`
-    : '未配班底：按默认班底执行（不绑角色）——想固定人设去「设 · 项目档案 → 班底」一键装填标准五连';
+    : '未配班底：按默认班底执行（不绑角色）——想固定人设去「项目 → 编辑档案 → 班底」一键装填标准五连';
   const checks: CheckSpec[] = [];
   if (!hasInputContract || opts.contractGate) checks.push({ type: 'contract', ...(tpl ? { template: tpl.stamp } : {}) });
   if (opts.preview) {
