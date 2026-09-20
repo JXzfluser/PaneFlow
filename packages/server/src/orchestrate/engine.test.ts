@@ -2078,3 +2078,49 @@ describe('v8-AE Agent 选择链与网关统一', () => {
     expect(ops.starts.at(-1)!.args).toEqual([]);
   });
 });
+
+/** v11-D2：节点异常失败（stalled 等）时错误信息尽力附带 agent 终端输出尾行 */
+describe('v11-D2 失败信息带报错尾行', () => {
+  /** 确认窗内 agent 始终 idle → promptAndSettle 抛 agent_prompt_stalled → 走异常失败路径 */
+  async function stalledRun(tailOutput: () => Promise<string>): Promise<string | undefined> {
+    const e2 = new Engine(ops, store, { ...OPTS, promptConfirmWindowMs: 1_500 });
+    ops.readOutput = tailOutput;
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d2-'));
+    const run = await e2.startRun(serialGraph(), cwd);
+    await waitFor(() => e2.getRun(run.runId)!.state !== 'running');
+    const final = e2.getRun(run.runId)!;
+    expect(final.state).toBe('failed');
+    return final.nodes['impl']!.error;
+  }
+
+  it('失败且输出含报错行 → error 保留原 message 在最前、尾附输出末段（保尾截断 ~800 字符）', async () => {
+    const output = `HEAD-MARKER${'x'.repeat(2000)}\nError: real boom in tail`;
+    const err = await stalledRun(async () => output);
+    expect(err).toBeDefined();
+    expect(err!.startsWith('agent_prompt_stalled')).toBe(true);
+    expect(err).toContain('（输出尾部：');
+    expect(err).toContain('Error: real boom in tail');
+    expect(err).not.toContain('HEAD-MARKER'); // 超长只保尾部
+    const tailPart = err!.slice(err!.indexOf('（输出尾部：') + '（输出尾部：'.length, -'）'.length);
+    expect(tailPart.length).toBeLessThanOrEqual(800);
+    expect(tailPart.endsWith('Error: real boom in tail')).toBe(true);
+  });
+
+  it('输出短于 800 字符 → 原样尾附', async () => {
+    const err = await stalledRun(async () => 'Error: tiny failure');
+    expect(err).toContain('（输出尾部：Error: tiny failure）');
+  });
+
+  it('readOutput 抛错 → 静默降级，error 仍是原 message 不炸', async () => {
+    const err = await stalledRun(async () => {
+      throw new Error('probe boom');
+    });
+    expect(err).toMatch(/^agent_prompt_stalled/);
+    expect(err).not.toContain('输出尾部');
+  });
+
+  it('readOutput 返回空/纯空白 → 静默降级为裸 message', async () => {
+    expect(await stalledRun(async () => '')).not.toContain('输出尾部');
+    expect(await stalledRun(async () => '  \n\t \n')).not.toContain('输出尾部');
+  });
+});

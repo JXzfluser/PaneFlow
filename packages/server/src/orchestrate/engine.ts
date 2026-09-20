@@ -1257,10 +1257,22 @@ export class Engine {
       this.persistAndNotify(run);
       return 'ok';
     } catch (err) {
-      return (err as Error).message;
+      return await this.errorWithOutputTail(agentName, (err as Error).message);
     } finally {
       unsub?.();
     }
+  }
+
+  /**
+   * v11-D2：节点异常失败时，终端里往往就有真正的报错行——尽力把 agent 输出末尾
+   * ~800 字符（保尾截断）附到错误信息后；抓不到/抓输出自身失败静默降级为裸 message，
+   * 绝不因采集本身再抛错。err.message 恒在最前，供上层按原有前缀匹配。
+   */
+  private async errorWithOutputTail(agentName: string, message: string): Promise<string> {
+    const tail = await this.ops.readOutput(agentName, 80).catch(() => '');
+    const trimmed = (typeof tail === 'string' ? tail : '').trimEnd();
+    if (!trimmed.trim()) return message;
+    return `${message}（输出尾部：${trimmed.slice(-800)}）`;
   }
 
   /** Evaluate node check gates; returns an error message on failure, null when all pass. */
