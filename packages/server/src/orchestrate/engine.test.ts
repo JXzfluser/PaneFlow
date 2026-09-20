@@ -238,8 +238,8 @@ describe('Engine (serial DAG)', () => {
     const run = await runToCompletion(graph, cwd);
     // two attempts made
     expect(run.nodes['impl']!.attempts).toBe(2);
-    // onFail=continue → pipeline completes, end node done
-    expect(run.state).toBe('completed');
+    // v11-D3 语义修正：onFail=continue 带失败收口不再假装全绿——如实 completed-with-failures
+    expect(run.state).toBe('completed-with-failures');
   });
 
   it('aborts remaining nodes when onFail=abort and the node fails', async () => {
@@ -355,7 +355,8 @@ describe('Engine (serial DAG)', () => {
       }
     };
     const run = await runToCompletion(graph, cwd);
-    expect(run.state).toBe('completed');
+    // v11-D3 语义修正：宽松 fan-in 收口时有 failed 分支 → completed-with-failures（不再洗绿）
+    expect(run.state).toBe('completed-with-failures');
     expect(run.nodes['fb']!.state).toBe('failed');
     expect(run.nodes['merge']!.state).toBe('done');
     expect(run.nodes['end']!.state).toBe('done');
@@ -2122,5 +2123,35 @@ describe('v11-D2 失败信息带报错尾行', () => {
   it('readOutput 返回空/纯空白 → 静默降级为裸 message', async () => {
     expect(await stalledRun(async () => '')).not.toContain('输出尾部');
     expect(await stalledRun(async () => '  \n\t \n')).not.toContain('输出尾部');
+  });
+});
+
+describe('v11-D3 run 状态分级（completed-with-failures）', () => {
+  it('全绿收口：无失败节点 → completed', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.state).toBe('completed');
+    expect(run.events?.some((e) => e.text.includes('运行结束：completed（'))).toBe(true);
+  });
+
+  it('onFail=continue 带一个失败节点收口 → completed-with-failures（不再洗绿）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph = twoNodeGraph();
+    graph.nodes.find((n) => n.id === 'design')!.config.onFail = 'continue';
+    ops.onPrompt = (target) => {
+      if (target.includes('-design-')) {
+        // agent errors out: working → unknown (unclearable) → treated as failure
+        ops.setStatus(target, 'working');
+        setTimeout(() => ops.setStatus(target, 'unknown'), 10);
+      }
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.nodes['design']!.state).toBe('failed');
+    expect(run.nodes['impl']!.state).toBe('skipped'); // 上游失败，合法跳过不另计
+    expect(run.nodes['end']!.state).toBe('done');
+    expect(run.state).toBe('completed-with-failures');
+    expect(run.events?.some((e) => e.text.includes('运行结束：completed-with-failures'))).toBe(true);
+    expect(run.cost).toBeTruthy(); // R6a 成本记账照常（视同已结束）
+    expect(engine.stopRun(run.runId)).toBe(false); // 已结束不可再停：与 completed 同路
   });
 });

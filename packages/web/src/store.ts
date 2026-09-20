@@ -10,6 +10,7 @@ import {
   type EdgeChange,
 } from '@xyflow/react';
 import type { DagGraph, DagNode, DagNodeType, EdgeCondition, NodeRunState, RunRecord, TemplateVariable } from '@paneflow/shared';
+import { runHasEnded } from '@paneflow/shared';
 import { autosaveChanged, graphToRfParts, rfToGraph, type GraphMeta, type PfEdgeData, type PfNode, type PfNodeData } from './graph-serialization.js';
 import { setSpace as setApiSpace, getSpace, api } from './api.js';
 import { validateDag } from '@paneflow/shared';
@@ -362,12 +363,20 @@ export const useStore = create<PfStore>((set, get) => ({
       }),
     }));
     // log terminal states exactly once per run (WS replays must not spam)
-    const finished = ['completed', 'failed', 'cancelled'].includes(run.state);
-    const alreadyLogged = prev && ['completed', 'failed', 'cancelled'].includes(prev.state);
+    const finished = runHasEnded(run.state);
+    const alreadyLogged = prev && runHasEnded(prev.state);
     if (finished && !alreadyLogged) {
       get().log(
-        run.state === 'completed' ? 'info' : 'error',
-        `流水线 ${run.runId} ${run.state === 'completed' ? '已完成 ✅' : run.state === 'failed' ? '失败 ❌' : '已取消'}（耗时 ${((new Date(run.finishedAt ?? Date.now()).getTime() - new Date(run.startedAt).getTime()) / 1000).toFixed(0)} 秒）`,
+        run.state === 'completed' ? 'info' : run.state === 'completed-with-failures' ? 'warn' : 'error',
+        `流水线 ${run.runId} ${
+          run.state === 'completed'
+            ? '已完成 ✅'
+            : run.state === 'completed-with-failures'
+              ? '完成但有失败节点 ⚠'
+              : run.state === 'failed'
+                ? '失败 ❌'
+                : '已取消'
+        }（耗时 ${((new Date(run.finishedAt ?? Date.now()).getTime() - new Date(run.startedAt).getTime()) / 1000).toFixed(0)} 秒）`,
       );
     }
   },

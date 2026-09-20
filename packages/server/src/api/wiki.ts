@@ -75,6 +75,9 @@ export function latestAssertionResults(run: RunRecord): { id: string; status: st
 /** 绿 run 判据（K3 宁缺毋滥的门面）：completed + 全节点 done + 无兜底产物 + 断言无 fail */
 export function publishableRun(run: RunRecord | undefined): { ok: boolean; reason?: string } {
   if (!run) return { ok: false, reason: '找不到该 run' };
+  // v11-D3：带失败收口的单不沉淀——宁缺毋滥对「有失败节点」同样成立，明示拒绝语免得误读
+  if (run.state === 'completed-with-failures')
+    return { ok: false, reason: '本单收口时带有失败节点（completed-with-failures），宁缺毋滥不沉淀' };
   if (run.state !== 'completed') return { ok: false, reason: `只有跑完且绿的单能沉淀（当前状态：${run.state}）` };
   const nodes = Object.values(run.nodes);
   if (nodes.some((n) => n.unverified)) return { ok: false, reason: '有节点的产物来自终端兜底（未经验证），不沉淀' };

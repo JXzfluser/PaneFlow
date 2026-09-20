@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, runHasEnded, topoSort, validateDag } from '@paneflow/shared';
 import type { DagGraph, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
@@ -1119,6 +1119,13 @@ export async function buildHttpServer(deps: HttpDeps) {
         issueId: issueId || undefined,
         issueFetched: Boolean(issueContext),
         note: issueNote,
+        // v11-A1 CLI：节点清单摘要（id/name/deps）——派活方在网页前也能报清这单要跑什么
+        nodes: graph.nodes.map((n) => ({
+          id: n.id,
+          name: n.label ?? n.id,
+          type: n.type,
+          dependsOn: graph.edges.filter((e) => e.target === n.id).map((e) => e.source),
+        })),
         contract: autofilled
           ? { mode: 'autofilled' as const, assertions: contractAssertions.length }
           : contractAssertions.length
@@ -1299,7 +1306,22 @@ export async function buildHttpServer(deps: HttpDeps) {
   app.get<{ Params: { id: string } }>('/api/runs/:id', async (req, reply) => {
     const run = deps.engine.getRun(req.params.id);
     if (!run) return reply.code(404).send({ error: 'not found' });
-    return run;
+    // v11-A1 CLI watch 的只读聚合字段：审批门显式信号（blocked=待批，paused=F2 重启后的待批；
+    // run 未终态、有门节点且无任何推进中节点 = 停在人身上）。只加不改不删既有字段。
+    const recs = Object.values(run.nodes ?? {});
+    const gateNodeIds = recs
+      .filter((n) => n.state === 'blocked' || n.state === 'paused')
+      .map((n) => n.nodeId);
+    const anyActive = recs.some((n) =>
+      ['working', 'starting', 'retrying', 'queued'].includes(n.state),
+    );
+    return {
+      ...run,
+      awaitingApproval: {
+        nodeIds: gateNodeIds,
+        waiting: run.state === 'running' && gateNodeIds.length > 0 && !anyActive,
+      },
+    };
   });
 
   // R5.3 事件时间线
@@ -1614,7 +1636,8 @@ export async function buildHttpServer(deps: HttpDeps) {
     const events: ('blocked' | 'completed' | 'failed')[] = [];
     if (Object.values(run.nodes).some((n) => n.state === 'blocked')) events.push('blocked');
     if (run.state === 'completed') events.push('completed');
-    if (run.state === 'failed') events.push('failed');
+    // v11-D3：带失败收口走 'failed' 订阅通道（保证订了失败的人收到），标题如实说「完成（有失败）」
+    if (run.state === 'completed-with-failures' || run.state === 'failed') events.push('failed');
 
     const seen = notified.get(run.runId) ?? new Set<string>();
     notified.set(run.runId, seen);
@@ -1625,14 +1648,22 @@ export async function buildHttpServer(deps: HttpDeps) {
       seen.add(ev);
       dispatchChannels(deps.dataDir, {
         event: ev,
-        title: `PaneFlow ${ev === 'blocked' ? '⛔ 等待审批' : ev === 'completed' ? '✅ 已完成' : '❌ 失败'}`,
+        title: `PaneFlow ${
+          ev === 'blocked'
+            ? '⛔ 等待审批'
+            : ev === 'completed'
+              ? '✅ 已完成'
+              : run.state === 'completed-with-failures'
+                ? '⚠ 完成（有失败）'
+                : '❌ 失败'
+        }`,
         body: `${run.dagName}（run ${run.runId}）${ev === 'blocked' ? `节点 ${blocked.join('、')} 等待人工审批` : ''}`,
         runId: run.runId,
         dagName: run.dagName,
         ...(ev === 'blocked' ? { nodeIds: blocked } : {}),
       });
     }
-    if (run.state === 'completed' || run.state === 'failed' || run.state === 'cancelled') {
+    if (runHasEnded(run.state)) {
       notified.delete(run.runId);
     }
   });

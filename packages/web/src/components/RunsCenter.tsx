@@ -54,9 +54,9 @@ export function useRunNotifications(): void {
         sessionStorage.setItem(key('blocked'), '1');
         new Notification(`PaneFlow ⛔ 等待审批`, { body: `${r.dagName}（${r.runId}）：${blocked.map((n) => n.nodeId).join('、')}` });
       }
-      if (['completed', 'failed'].includes(r.state) && !sessionStorage.getItem(key(r.state))) {
+      if (['completed', 'failed', 'completed-with-failures'].includes(r.state) && !sessionStorage.getItem(key(r.state))) {
         sessionStorage.setItem(key(r.state), '1');
-        new Notification(`PaneFlow ${r.state === 'completed' ? '✅ 已完成' : '❌ 失败'}`, { body: `${r.dagName}（${r.runId}）` });
+        new Notification(`PaneFlow ${r.state === 'completed' ? '✅ 已完成' : r.state === 'completed-with-failures' ? '⚠ 完成（有失败）' : '❌ 失败'}`, { body: `${r.dagName}（${r.runId}）` });
       }
     }
   }, [runs]);
@@ -115,8 +115,8 @@ function ArchivedPanel() {
         <div key={r.runId} className="run-card" style={{ opacity: 0.85 }}>
           <div className="run-card-head">
             <b>#{r.runId}</b> <span style={{ fontFamily: 'var(--font-display)', fontSize: 13.5 }}>{r.dagName}</span>
-            <span className={`badge ${r.state === 'completed' ? 'done' : r.state === 'failed' ? 'failed' : ''}`}>
-              {r.state === 'completed' ? '完成' : r.state === 'failed' ? '失败' : r.state}
+            <span className={`badge ${r.state === 'completed' ? 'done' : r.state === 'failed' || r.state === 'completed-with-failures' ? 'failed' : ''}`}>
+              {r.state === 'completed' ? '完成' : r.state === 'completed-with-failures' ? '完成（有失败）' : r.state === 'failed' ? '失败' : r.state}
             </span>
             <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{r.startedAt.slice(0, 16).replace('T', ' ')}</span>
             <div className="run-card-ops">
@@ -306,8 +306,8 @@ export function RunsCenter() {
           <div key={r.runId} className="run-card">
             <div className="run-card-head">
               <b>{r.issueId ? `#${r.issueId}` : `#${r.runId}`}</b> <span style={{ fontFamily: 'var(--font-display)', fontSize: 13.5 }}>{r.dagName}</span>
-              <span className={`badge ${r.state === 'completed' ? 'done' : r.state === 'failed' ? 'failed' : r.state === 'running' ? 'working' : ''}`}>
-                {r.state === 'running' ? '运行中' : r.state === 'queued' ? '⏳ 排队中' : r.state === 'completed' ? '完成 ✅' : r.state === 'failed' ? '失败 ❌' : '已取消'}
+              <span className={`badge ${r.state === 'completed' ? 'done' : r.state === 'failed' || r.state === 'completed-with-failures' ? 'failed' : r.state === 'running' ? 'working' : ''}`}>
+                {r.state === 'running' ? '运行中' : r.state === 'queued' ? '⏳ 排队中' : r.state === 'completed' ? '完成 ✅' : r.state === 'completed-with-failures' ? '完成（有失败）⚠' : r.state === 'failed' ? '失败 ❌' : '已取消'}
               </span>
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{r.state === 'queued' ? `已等 ${elapsed}s` : `${elapsed}s`}</span>
               {runCostLabel(r) && (
@@ -397,7 +397,7 @@ export function RunsCenter() {
               <div className="run-progress-bar">
                 <div
                   className="run-progress-fill"
-                  style={{ width: `${p.total ? (p.done / p.total) * 100 : 0}%`, background: r.state === 'failed' ? 'var(--err)' : 'var(--ok)' }}
+                  style={{ width: `${p.total ? (p.done / p.total) * 100 : 0}%`, background: r.state === 'failed' ? 'var(--err)' : r.state === 'completed-with-failures' ? 'var(--warn)' : 'var(--ok)' }}
                 />
               </div>
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{p.done}/{p.total} 节点</span>

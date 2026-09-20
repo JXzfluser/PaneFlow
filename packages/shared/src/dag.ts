@@ -355,8 +355,20 @@ export type RunState =
   /** G3 轻队列：空间并发 run 达上限时待启排队，额度腾出自动出队启动 */
   | 'queued'
   | 'completed'
+  /**
+   * v11-D3（摩擦账 #12）：全节点到达终态、run 本身没死，但 ≥1 个节点 failed
+   * （onFail=continue / 宽松 fan-in 收口）——不再假装全绿收口成 completed。
+   * 消费红线：调度/锁释放/归档等「视同已结束」的场合等同 completed；
+   * UI 绿标/wiki 沉淀/统计「成功数」等「视同全绿」的场合必须区分。
+   */
+  | 'completed-with-failures'
   | 'failed'
   | 'cancelled';
+
+/** v11-D3：run 已收口到终态（不论成败）——队列放行、去重释放、归档门槛等用它 */
+export function runHasEnded(state: RunState): boolean {
+  return state === 'completed' || state === 'completed-with-failures' || state === 'failed' || state === 'cancelled';
+}
 
 export interface RunRecord {
   runId: string;

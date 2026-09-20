@@ -576,11 +576,27 @@ function isManualGated(run: RunRecord): boolean {
 }
 
 function stateBadge(state: RunRecord['state']): string {
-  return state === 'completed' ? 'done' : state === 'failed' ? 'failed' : state === 'running' ? 'working' : '';
+  return state === 'completed'
+    ? 'done'
+    : state === 'failed' || state === 'completed-with-failures'
+      ? 'failed'
+      : state === 'running'
+        ? 'working'
+        : '';
 }
 
 function stateText(state: RunRecord['state']): string {
-  return state === 'completed' ? '已完成' : state === 'failed' ? '失败' : state === 'running' ? '运行中' : state === 'queued' ? '⏳ 排队中' : '已取消';
+  return state === 'completed'
+    ? '已完成'
+    : state === 'completed-with-failures'
+      ? '完成（有失败）'
+      : state === 'failed'
+        ? '失败'
+        : state === 'running'
+          ? '运行中'
+          : state === 'queued'
+            ? '⏳ 排队中'
+            : '已取消';
 }
 
 /* ===================== v10-U3b 项目班底条 ===================== */

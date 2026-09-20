@@ -501,6 +501,7 @@ export class Engine {
     }
     let best: RunRecord | null = null;
     for (const r of this.runs.values()) {
+      // 经验注入只认全绿 completed；v11-D3 的 completed-with-failures 有失败节点，不算绿
       if (r.state !== 'completed' || r.dagName !== dagName) continue;
       if ((r.spaceId ?? 'default') !== (spaceId ?? 'default')) continue;
       if (!best || (r.finishedAt ?? r.startedAt) > (best.finishedAt ?? best.startedAt)) best = r;
@@ -635,7 +636,13 @@ export class Engine {
 
       if (this.cancels.has(run.runId)) run.state = 'cancelled';
       else if (abort) run.state = 'failed';
-      else run.state = 'completed';
+      else {
+        // v11-D3（摩擦账 #12）：onFail=continue/宽松 fan-in 收口时若仍有 failed 节点，
+        // 如实收口成 completed-with-failures，不再假装全绿。skipped 不计失败——
+        // 条件剪枝、fanout 展开占位都是合法形态；上游失败致的跳过已由那个 failed 节点计入。
+        const failedCount = Object.values(run.nodes).filter((n) => n.state === 'failed').length;
+        run.state = failedCount ? 'completed-with-failures' : 'completed';
+      }
       const done = Object.values(run.nodes).filter((n) => n.state === 'done').length;
       const total = Object.keys(run.nodes).length;
       const secs = Math.round((Date.now() - new Date(run.startedAt).getTime()) / 1000);
@@ -1661,6 +1668,8 @@ export class Engine {
         }
         const cur = this.getRun(child.runId);
         if (cur && cur.state !== 'running') {
+          // 只有全绿 completed 算成功；v11-D3 带失败收口（completed-with-failures）如实上抛，
+          // 父节点标 failed——失败可见原则，pipeline 节点不在这里替子 run 洗绿
           if (cur.state === 'completed') return null;
           return `子运行 ${child.runId} 结束于 ${cur.state}`;
         }
