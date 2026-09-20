@@ -252,7 +252,7 @@ export function RunsCenter() {
         runId: r.runId,
         ...(confirm ? { confirm: true } : {}),
       });
-      log('info', `✅ 已沉淀到 wiki：${d.url}`);
+      log('info', `✅ 已沉淀到仓库 llm-wiki/ 目录：${d.url}`);
     } catch (e) {
       const msg = (e as Error).message;
       if (msg.includes('对全世界可读')) {
@@ -360,7 +360,7 @@ export function RunsCenter() {
                 {r.state === 'completed' && !Object.values(r.nodes).some((n) => n.unverified) && (
                   <button
                     disabled={publishing === r.runId}
-                    title="点赞沉淀：这单的契约/验收结论/经验蒸馏成 wiki 页推到仓库 wiki（公开仓库会先要你确认；宁缺毋滥，手动触发）"
+                    title="点赞沉淀：这单的契约/验收结论/经验蒸馏成沉淀页推到仓库 llm-wiki/ 目录（公开仓库会先要你确认；宁缺毋滥，手动触发）"
                     onClick={() => void publishWiki(r)}
                   >
                     {publishing === r.runId ? '⏳ 沉淀中' : '👍 沉淀'}

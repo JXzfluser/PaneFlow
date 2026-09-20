@@ -38,6 +38,7 @@ import {
   pickWikiExcerpts,
   publishWikiPage,
   publishableRun,
+  readWikiCacheBranch,
   readWikiPages,
   renderWikiPage,
   syncWikiCache,
@@ -908,7 +909,7 @@ export async function buildHttpServer(deps: HttpDeps) {
     async (req, reply) => {
       const gh = readGithubSettings(deps.dataDir);
       const token = await ghTokenOrNull();
-      if (!token) return reply.code(400).send({ error: `${NO_CRED}；沉淀到 wiki 需要对目标仓有写权限` });
+      if (!token) return reply.code(400).send({ error: `${NO_CRED}；沉淀到仓库 llm-wiki/ 目录需要对目标仓有写权限` });
       const run = deps.engine.getRun(String(req.body?.runId ?? ''));
       const verdict = publishableRun(run);
       if (!verdict.ok) return reply.code(400).send({ error: verdict.reason });
@@ -948,7 +949,8 @@ export async function buildHttpServer(deps: HttpDeps) {
       syncedAt = '';
     }
     const pages = readWikiPages(deps.dataDir, repo).map((p) => ({ file: p.file, title: p.title }));
-    return { repo, pageCount: pages.length, pages, syncedAt };
+    // v11-C0：带 branch（前端拼 blob 链接要用）；无缓存回退 'main'
+    return { repo, branch: readWikiCacheBranch(deps.dataDir, repo), pageCount: pages.length, pages, syncedAt };
   };
 
   app.get<{ Querystring: { repo?: string } }>('/api/wiki/state', async (req, reply) => {

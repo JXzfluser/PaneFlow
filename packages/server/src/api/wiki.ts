@@ -217,6 +217,20 @@ export function wikiCacheDir(dataDir: string, repo: string): string {
 /** Issue #7：沉淀落点 = 主仓默认分支的 `llm-wiki/` 目录（只依赖 Contents 权限，细粒度 PAT 可推） */
 export const WIKI_ROOT = 'llm-wiki';
 
+/**
+ * v11-C0：零网络读本地缓存克隆的当前分支——直接读 .git/HEAD 符号引用
+ * （wikiState 是同步函数，不复用 syncWikiCache 里的 async git rev-parse）。
+ * 缓存不存在 / detached HEAD / 读不到一律回退 'main'。
+ */
+export function readWikiCacheBranch(dataDir: string, repo: string): string {
+  try {
+    const head = fs.readFileSync(path.join(wikiCacheDir(dataDir, repo), '.git', 'HEAD'), 'utf8').trim();
+    return /^ref: refs\/heads\/(.+)$/.exec(head)?.[1] ?? 'main';
+  } catch {
+    return 'main';
+  }
+}
+
 function git(args: string[], cwd?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('git', args, { cwd, timeout: 60_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {

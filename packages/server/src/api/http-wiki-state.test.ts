@@ -46,14 +46,14 @@ describe('v10-X GET /api/wiki/state（沉淀可见化：只读本地缓存，零
     }
   });
 
-  it('有默认仓但缓存为空 → pageCount=0（还没沉淀过，不是错误）', async () => {
+  it('有默认仓但缓存为空 → pageCount=0（还没沉淀过，不是错误）；无缓存 branch 回退 main', async () => {
     const dir = tmp();
     fs.writeFileSync(path.join(dir, 'github.json'), JSON.stringify({ defaultRepo: 'me/repo' }));
     const { app } = await buildServer(dir);
     try {
       const res = await app.inject({ method: 'GET', url: '/api/wiki/state' });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ repo: 'me/repo', pageCount: 0, pages: [], syncedAt: '' });
+      expect(res.json()).toEqual({ repo: 'me/repo', branch: 'main', pageCount: 0, pages: [], syncedAt: '' });
     } finally {
       await app.close();
     }
@@ -71,10 +71,29 @@ describe('v10-X GET /api/wiki/state（沉淀可见化：只读本地缓存，零
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({
         repo: 'other/repo',
+        branch: 'main', // 缓存没 .git（伪缓存）→ 读不到分支，回退 main
         pageCount: 1,
         pages: [{ file: 'Login-Fix.md', title: 'Login Fix' }],
         syncedAt: '2026-09-19T02:00:00.000Z',
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('缓存克隆 .git/HEAD 有符号分支 → branch 跟随；detached HEAD 回退 main（零网络）', async () => {
+    const dir = tmp();
+    fs.writeFileSync(path.join(dir, 'github.json'), JSON.stringify({ defaultRepo: 'me/repo' }));
+    seedCache(dir, 'me/repo', { 'A.md': '# A\n' });
+    const gitDir = path.join(wikiCacheDir(dir, 'me/repo'), '.git');
+    fs.mkdirSync(gitDir, { recursive: true });
+    const head = path.join(gitDir, 'HEAD');
+    const { app } = await buildServer(dir);
+    try {
+      fs.writeFileSync(head, 'ref: refs/heads/feature/x\n');
+      expect((await app.inject({ method: 'GET', url: '/api/wiki/state' })).json()).toMatchObject({ branch: 'feature/x' });
+      fs.writeFileSync(head, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n');
+      expect((await app.inject({ method: 'GET', url: '/api/wiki/state' })).json()).toMatchObject({ branch: 'main' });
     } finally {
       await app.close();
     }

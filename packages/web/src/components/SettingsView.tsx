@@ -342,6 +342,8 @@ function GithubCredCard() {
 /** v10-X wiki 沉淀可见化：状态只读本地缓存（GET /api/wiki/state，零网络）；「拉取远端」显式同步 */
 interface WikiStateView {
   repo: string;
+  /** v11-C0：缓存克隆所在分支（无缓存时服务端回退 'main'），拼线上链接用 */
+  branch: string;
   pageCount: number;
   pages: { file: string; title: string }[];
   syncedAt: string;
@@ -386,20 +388,22 @@ function WikiSedimentCard() {
       </p>
     );
   }
+  // v11-C0：落点是主仓默认分支的 llm-wiki/ 目录（Issue #7），不再是 <repo>.wiki
+  const treeUrl = st ? `https://github.com/${st.repo}/tree/${st.branch}/llm-wiki` : '';
   return (
     <div className="wiki-sediment">
       <div className="wiki-sed-head">
         <b>📚 wiki 沉淀（知识复利）</b>
         {st && (
-          <a className="link" href={`https://github.com/${st.repo}/wiki`} target="_blank" rel="noreferrer">
-            github.com/{st.repo}/wiki ↗
+          <a className="link" href={treeUrl} target="_blank" rel="noreferrer">
+            github.com/{st.repo}/tree/{st.branch}/llm-wiki ↗
           </a>
         )}
       </div>
       {!st && <p className="settings-hint">读取中…</p>}
       {st && st.pageCount === 0 && (
         <p className="settings-hint">
-          还没有沉淀页：到「执行中心」给一条绿单点赞即可推页。扩写需求时会自动读本仓沉淀页进上下文。
+          还没有沉淀页：到「执行中心」给一条绿单点赞，即可把结论推到仓库 llm-wiki/ 目录。扩写需求时会自动读本仓沉淀页进上下文。
         </p>
       )}
       {st && st.pageCount > 0 && (
@@ -410,13 +414,13 @@ function WikiSedimentCard() {
           <ul className="wiki-page-list">
             {st.pages.slice(0, 8).map((p) => (
               <li key={p.file}>
-                <a href={`https://github.com/${st.repo}/wiki/${p.file.replace(/\.md$/, '')}`} target="_blank" rel="noreferrer">
+                <a href={`https://github.com/${st.repo}/blob/${st.branch}/llm-wiki/${p.file}`} target="_blank" rel="noreferrer">
                   {p.title}
                 </a>
               </li>
             ))}
           </ul>
-          {st.pages.length > 8 && <p className="settings-hint">…其余 {st.pages.length - 8} 页见线上 wiki</p>}
+          {st.pages.length > 8 && <p className="settings-hint">…其余 {st.pages.length - 8} 页见仓库 llm-wiki/ 目录</p>}
         </>
       )}
       <div className="settings-actions">

@@ -78,12 +78,12 @@ pnpm dev:web        # 画布开发服务（http://127.0.0.1:4311，代理 API）
 | `PF_WORKSPACE_PREFIX` | `paneflow-` | 流水线 workspace 标签前缀（自动回收依据） |
 | `PF_PROMPT_CONFIRM_MS` | `45000` | prompt 提交确认窗（ms）：提交后 agent 状态须在此窗口内离开 idle，超时判 `agent_prompt_stalled` 走节点失败/重试；`0` 关闭（fire-and-forget） |
 | `PF_CORS_ORIGINS` | 空 | 跨站请求白名单（逗号分隔 origin）。默认不回 CORS 头且拦截一切跨站写操作；同源部署与 curl 不受影响，反向代理改写 Host 时需显式配置 |
-| `PF_GITHUB_REPO` | 空 | 启用 GitHub 模板沉淀（`owner/name`） |
+| `PF_GITHUB_REPO` | 空 | 启用模板云端同步（`owner/name`） |
 | `PF_GITHUB_TOKEN` | 空 | GitHub PAT（需 Contents 读写权限；只从环境变量读取，永不入库/入日志） |
-| `PF_GITHUB_BRANCH` | `main` | 沉淀分支 |
-| `PF_GITHUB_DIR` | `templates` | 沉淀目录 |
+| `PF_GITHUB_BRANCH` | `main` | 同步分支 |
+| `PF_GITHUB_DIR` | `templates` | 同步目录 |
 
-配置后顶栏出现「☁️ 沉淀 / ⬇️ 拉取」：沉淀把本地全部模板异步推送到仓库 `templates/*.json`；拉取反向合并到本地。默认关闭，断网不影响任何核心功能。
+配置后顶栏出现「☁️ 同步 / ⬇️ 拉取」：同步把本地全部模板异步推送到仓库 `templates/*.json`；拉取反向合并到本地。默认关闭，断网不影响任何核心功能。（注意与「wiki 沉淀」区分：后者是 run 结论推主仓 `llm-wiki/`，此处是编排模板的云端互为备份。）
 
 ## 核心机制
 
@@ -120,4 +120,4 @@ git tag v0.2.0 && git push origin v0.2.0
 
 ## 边界（明确不做）
 
-AI 动态生成 DAG、公网 SaaS/多租户、改造 Herdr 内核、复用第三方 DAG 引擎。OpenViking / OmniRoute / GitHub 沉淀 / Electron 为后置可选插件，MVP 不含。
+AI 动态生成 DAG、公网 SaaS/多租户、改造 Herdr 内核、复用第三方 DAG 引擎。OpenViking / OmniRoute / 模板云端同步 / Electron 为后置可选插件，MVP 不含。

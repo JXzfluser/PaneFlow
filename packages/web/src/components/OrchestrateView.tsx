@@ -83,13 +83,13 @@ export function OrchestrateView() {
     try {
       const st = await api.syncStatus();
       if (!st.configured) {
-        log('warn', 'GitHub 沉淀未启用：请到设置页配置 GitHub Token 与默认目标仓库（owner/name）；环境变量 PF_GITHUB_REPO/PF_GITHUB_TOKEN 亦可，env 优先');
+        log('warn', '模板云端同步未启用：请到设置页配置 GitHub Token 与默认目标仓库（owner/name）；环境变量 PF_GITHUB_REPO/PF_GITHUB_TOKEN 亦可，env 优先');
         return;
       }
       await api.syncPush();
-      log('info', `模板沉淀已启动（异步推送到 ${st.repo}）`);
+      log('info', `模板云端同步已启动（异步推送到 ${st.repo}）`);
     } catch (e) {
-      log('error', `沉淀失败：${(e as Error).message}`);
+      log('error', `模板同步失败：${(e as Error).message}`);
     }
   };
 
@@ -156,7 +156,7 @@ export function OrchestrateView() {
             </select>
           )}
           <div className="tb-more">
-            <button title="更多（变量 / 云端沉淀 / 清空）" onClick={() => setMoreOpen((v) => !v)}>
+            <button title="更多（变量 / 云端同步 / 清空）" onClick={() => setMoreOpen((v) => !v)}>
               ⋯ 更多
             </button>
             {moreOpen && (
@@ -172,7 +172,7 @@ export function OrchestrateView() {
                   >
                     ⎇ 模板变量
                   </button>
-                  <button onClick={() => { void syncPush(); setMoreOpen(false); }}>☁️ 沉淀到 GitHub</button>
+                  <button onClick={() => { void syncPush(); setMoreOpen(false); }}>☁️ 同步模板到 GitHub</button>
                   <button onClick={() => { void syncPull(); setMoreOpen(false); }}>⬇️ 从 GitHub 拉取</button>
                   <button
                     onClick={() => {
