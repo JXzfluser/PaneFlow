@@ -115,7 +115,11 @@ export function upsertGatewayProfile(
   input: { id?: string; name: string; baseUrl: string; apiKey?: string; freeModel?: string; enabled?: boolean },
 ): GatewayProfile {
   const doc = readGatewayDoc(dataDir);
-  const id = input.id && PROFILE_ID_RE.test(input.id) ? input.id : `gw-${Date.now().toString(36)}`;
+  // 纯时间戳 id 同毫秒必撞（第二档会覆盖第一档）——补随机后缀保生成唯一
+  const genId = () => `gw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const generated = !(input.id && PROFILE_ID_RE.test(input.id));
+  let id = generated ? genId() : input.id!;
+  while (generated && doc.profiles.some((p) => p.id === id)) id = genId();
   const existing = doc.profiles.find((p) => p.id === id);
   const next: GatewayProfile = {
     id,
@@ -271,4 +275,32 @@ export function syncPiGatewayProvider(
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
   return { synced: true, path: file };
+}
+
+/**
+ * 拉一档网关的模型清单（OpenAI 兼容 GET <base>/v1/models）。
+ * 纯函数：fetch 可注入保测试确定性；失败以 error 返回不抛；返回值永不含密钥。
+ */
+export async function probeGatewayModels(
+  settings: ModelGatewaySettings,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ models: string[]; error?: string }> {
+  if (!settings.enabled || !settings.baseUrl || !settings.apiKey) {
+    return { models: [], error: '网关未配置或未启用' };
+  }
+  const base = settings.baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+  try {
+    const res = await fetchImpl(`${base}/v1/models`, {
+      headers: { Authorization: `Bearer ${settings.apiKey}` },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return { models: [], error: `HTTP ${res.status}` };
+    const body = (await res.json()) as { data?: { id?: unknown }[] };
+    const models = (body.data ?? [])
+      .map((m) => (typeof m.id === 'string' ? m.id : ''))
+      .filter(Boolean);
+    return { models };
+  } catch (err) {
+    return { models: [], error: `${(err as Error).message}`.slice(0, 160) };
+  }
 }

@@ -18,7 +18,7 @@ import {
   writeChannels,
   type Channel,
 } from './channels.js';
-import { readGateway, writeGateway, buildGatewayEnv, gatewayActive, syncPiGatewayProvider, listGatewayProfiles, setCurrentGateway, deleteGatewayProfile, upsertGatewayProfile, type ModelGatewaySettings } from './gateway.js';
+import { readGateway, readGatewayDoc, writeGateway, buildGatewayEnv, gatewayActive, syncPiGatewayProvider, listGatewayProfiles, setCurrentGateway, deleteGatewayProfile, upsertGatewayProfile, probeGatewayModels, type ModelGatewaySettings } from './gateway.js';
 import { draftAcceptance, enhanceIssueText, gatewayChatFn } from './enhance.js';
 import {
   readGithubSettings,
@@ -409,6 +409,38 @@ export async function buildHttpServer(deps: HttpDeps) {
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
+  });
+
+  // v11-prep：网关模型清单（agent/CLI 的单一事实源）——每档实探 <base>/v1/models，5min 缓存，refresh=1 强刷
+  const catalogCache = new Map<string, { at: number; models: string[]; error?: string }>();
+  app.get<{ Querystring: { profile?: string; refresh?: string } }>('/api/gateway/catalog', async (req, reply) => {
+    const doc = readGatewayDoc(deps.dataDir);
+    const targets = req.query.profile ? doc.profiles.filter((p) => p.id === req.query.profile) : doc.profiles;
+    if (req.query.profile && !targets.length) return reply.code(404).send({ error: `没有档位 ${req.query.profile}` });
+    const force = req.query.refresh === '1';
+    const profiles = await Promise.all(
+      targets.map(async (p) => {
+        let hit = !force ? catalogCache.get(p.id) : undefined;
+        if (hit && Date.now() - hit.at >= 5 * 60_000) hit = undefined;
+        if (!hit) {
+          const { id: _id, name: _name, ...settings } = p;
+          const probe = await probeGatewayModels(settings);
+          hit = { at: Date.now(), models: probe.models, error: probe.error };
+          catalogCache.set(p.id, hit);
+        }
+        return {
+          id: p.id,
+          name: p.name,
+          baseUrl: p.baseUrl ?? '',
+          freeModel: p.freeModel ?? '',
+          isCurrent: p.id === doc.current,
+          models: hit.models,
+          error: hit.error,
+          cached: Date.now() - hit.at > 50,
+        };
+      }),
+    );
+    return { profiles };
   });
 
   // -- github credentials ------------------------------------------------------

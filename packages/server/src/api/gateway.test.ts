@@ -7,6 +7,7 @@ import {
   deleteGatewayProfile,
   listGatewayProfiles,
   PI_GATEWAY_PROVIDER,
+  probeGatewayModels,
   readGateway,
   setCurrentGateway,
   syncPiGatewayProvider,
@@ -194,5 +195,46 @@ describe('v9-D2 多网关档（profiles + current，旧扁平读侧兼容）', (
     // 被钉档停用则不注入（即使 current 是启用档）——钉了就按钉的算
     upsertGatewayProfile(dir, { id: 'pin', name: '钉住', baseUrl: 'http://pin', apiKey: 'kp', enabled: false });
     expect(buildGatewayEnv(dir, 'pin')).toEqual({});
+  });
+});
+
+describe('v11-prep probeGatewayModels：网关模型清单探针', () => {
+  it('成功：剥 /v1 去重后拼 <base>/v1/models，带 Bearer，返回 id 清单且不含密钥', async () => {
+    const calls: { url: string; auth?: string }[] = [];
+    const fakeFetch = (async (url: string | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({ url: String(url), auth: headers.get('Authorization') ?? undefined });
+      return new Response(JSON.stringify({ data: [{ id: 'glm-4.7' }, { id: 'auto' }, { nope: 1 }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const r = await probeGatewayModels({ baseUrl: 'http://gw.example/v1', apiKey: 'sk-abc', enabled: true }, fakeFetch);
+    expect(r).toEqual({ models: ['glm-4.7', 'auto'] });
+    expect(calls[0]!.url).toBe('http://gw.example/v1/models');
+    expect(calls[0]!.auth).toBe('Bearer sk-abc');
+    expect(JSON.stringify(r)).not.toContain('sk-abc');
+  });
+
+  it('未配置/停用 → error 不发请求；非 2xx → HTTP 状态；网络炸 → message，全部不抛', async () => {
+    const never = (async () => {
+      throw new Error('不该被调用');
+    }) as unknown as typeof fetch;
+    expect(await probeGatewayModels({ baseUrl: 'http://gw', apiKey: 'k', enabled: false }, never)).toEqual({
+      models: [],
+      error: '网关未配置或未启用',
+    });
+    expect(await probeGatewayModels({ apiKey: 'k', enabled: true }, never)).toEqual({
+      models: [],
+      error: '网关未配置或未启用',
+    });
+    const bad = (async () => new Response('', { status: 503 })) as unknown as typeof fetch;
+    expect(await probeGatewayModels({ baseUrl: 'http://gw', apiKey: 'k', enabled: true }, bad)).toEqual({
+      models: [],
+      error: 'HTTP 503',
+    });
+    const boom = (async () => {
+      throw new Error('socket hang up');
+    }) as unknown as typeof fetch;
+    const r = await probeGatewayModels({ baseUrl: 'http://gw', apiKey: 'k', enabled: true }, boom);
+    expect(r.models).toEqual([]);
+    expect(r.error).toContain('socket hang up');
   });
 });

@@ -119,3 +119,54 @@ describe('v9-D 网关多档与导入路由', () => {
     }
   });
 });
+
+describe('v11-prep GET /api/gateway/catalog：每档模型清单+缓存', () => {
+  it('全档清单：带 models/isCurrent，不回显密钥；命中 5min 缓存不再发请求；refresh=1 强刷', async () => {
+    const dir = tmp();
+    let hits = 0;
+    vi.stubGlobal('fetch', async (url: string | URL) => {
+      hits++;
+      return new Response(JSON.stringify({ data: [{ id: `m-${new URL(String(url)).port}` }] }), { status: 200 });
+    });
+    const { app } = await buildServer(dir);
+    try {
+      const a = (await app.inject({ method: 'POST', url: '/api/gateway/profile', payload: { name: '甲', baseUrl: 'http://127.0.0.1:19001', apiKey: 'ka' } })).json().id as string;
+      const b = (await app.inject({ method: 'POST', url: '/api/gateway/profile', payload: { name: '乙', baseUrl: 'http://127.0.0.1:19002', apiKey: 'kb' } })).json().id as string;
+      const first = await app.inject({ method: 'GET', url: '/api/gateway/catalog' });
+      expect(first.statusCode).toBe(200);
+      const ps = first.json().profiles as { id: string; models: string[]; isCurrent: boolean }[];
+      expect(ps.map((p) => p.id).sort()).toEqual([a, b].sort());
+      expect(ps.find((p) => p.id === a)!.models).toEqual(['m-19001']);
+      expect(ps.find((p) => p.id === a)!.isCurrent).toBe(true);
+      expect(JSON.stringify(ps)).not.toContain('ka');
+      expect(hits).toBe(2);
+      const second = await app.inject({ method: 'GET', url: '/api/gateway/catalog' });
+      expect((second.json().profiles as { models: string[] }[])[0]!.models).toEqual(['m-19001']);
+      expect(hits).toBe(2); // 缓存命中
+      await app.inject({ method: 'GET', url: `/api/gateway/catalog?profile=${b}&refresh=1` });
+      expect(hits).toBe(3); // 强刷只打乙一档
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('档位探活失败不拖垮整表：error 字段可见、其余档正常', async () => {
+    const dir = tmp();
+    vi.stubGlobal('fetch', async (url: string | URL) =>
+      String(url).includes('19002') ? new Response('', { status: 503 }) : new Response(JSON.stringify({ data: [{ id: 'ok' }] }), { status: 200 }),
+    );
+    const { app } = await buildServer(dir);
+    try {
+      const a = (await app.inject({ method: 'POST', url: '/api/gateway/profile', payload: { name: '甲', baseUrl: 'http://127.0.0.1:19001', apiKey: 'k' } })).json().id as string;
+      const b = (await app.inject({ method: 'POST', url: '/api/gateway/profile', payload: { name: '乙', baseUrl: 'http://127.0.0.1:19002', apiKey: 'k' } })).json().id as string;
+      const res = await app.inject({ method: 'GET', url: '/api/gateway/catalog' });
+      const ps = res.json().profiles as { id: string; models: string[]; error?: string }[];
+      expect(ps.find((p) => p.id === a)!.models).toEqual(['ok']);
+      expect(ps.find((p) => p.id === b)!.error).toBe('HTTP 503');
+      const missing = await app.inject({ method: 'GET', url: '/api/gateway/catalog?profile=nope' });
+      expect(missing.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+});
