@@ -4,10 +4,11 @@ import path from 'node:path';
 import type { RunRecord } from '@paneflow/shared';
 
 /**
- * v9-K wiki 沉淀 + 首驾-llmwiki（Issue #6）升级：绿 run + 用户点赞 → 蒸馏成
- * llm-wiki 风格页（七字段 frontmatter + 分类目录），并维护 index.md / log.md 记账，
- * 浅克龙 `<repo>.wiki.git` 写页后 push。K2 读回复用同一缓存目录，
- * 兼容嵌套分类页与旧扁平页混放（不迁移旧数据）。
+ * v9-K wiki 沉淀 + 首驾-llmwiki（Issue #6）+ Issue #7 落点改造：绿 run + 用户点赞 →
+ * 蒸馏成 llm-wiki 风格页（七字段 frontmatter + 分类目录）+ index/log 记账，
+ * push 到**主仓默认分支的 `llm-wiki/` 目录**（只依赖 Contents 权限，细粒度 PAT 可推；
+ * 不再走 `<repo>.wiki.git`——dotcom 上该仓库需网页人工初始化且不支持细粒度 PAT）。
+ * K2 读回复用同一缓存目录，只认 `llm-wiki/` 子树。
  * 所有 git/网络失败都抛可读错误（失败可见不吞）。
  */
 
@@ -213,6 +214,9 @@ export function wikiCacheDir(dataDir: string, repo: string): string {
   return path.join(dataDir, 'wiki-cache', repo.replace(/[^a-zA-Z0-9._-]+/g, '_'));
 }
 
+/** Issue #7：沉淀落点 = 主仓默认分支的 `llm-wiki/` 目录（只依赖 Contents 权限，细粒度 PAT 可推） */
+export const WIKI_ROOT = 'llm-wiki';
+
 function git(args: string[], cwd?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('git', args, { cwd, timeout: 60_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
@@ -222,12 +226,19 @@ function git(args: string[], cwd?: string): Promise<string> {
   });
 }
 
-function authUrl(repo: string, token: string): string {
-  return `https://x-access-token:${token}@github.com/${repo}.wiki.git`;
+function repoPlainUrl(repo: string): string {
+  return `https://github.com/${repo}.git`;
 }
 
-/** clone/pull wiki 仓库到缓存目录（token 不进 .git/config：clone 后把 origin 洗回无密钥地址） */
-export async function syncWikiCache(o: { dataDir: string; repo: string; token?: string; maxAgeMs?: number }): Promise<void> {
+function repoAuthUrl(repo: string, token: string): string {
+  return `https://x-access-token:${token}@github.com/${repo}.git`;
+}
+
+/**
+ * clone/更新主仓缓存到默认分支最新（shallow + sparse 只物化 llm-wiki/ 子树）。
+ * token 不进 .git/config：操作完把 origin 洗回无密钥地址。返回本地所在分支（=克隆时的默认分支）。
+ */
+export async function syncWikiCache(o: { dataDir: string; repo: string; token?: string; maxAgeMs?: number }): Promise<{ branch: string }> {
   const dir = wikiCacheDir(o.dataDir, o.repo);
   const marker = path.join(dir, '.pf-synced');
   const fresh = (() => {
@@ -237,19 +248,23 @@ export async function syncWikiCache(o: { dataDir: string; repo: string; token?: 
       return false;
     }
   })();
-  const plain = `https://github.com/${o.repo}.wiki.git`;
-  const remote = o.token ? authUrl(o.repo, o.token) : plain;
+  const plain = repoPlainUrl(o.repo);
+  const remote = o.token ? repoAuthUrl(o.repo, o.token) : plain;
   if (!fresh) {
     if (!fs.existsSync(path.join(dir, '.git'))) {
       fs.mkdirSync(path.dirname(dir), { recursive: true });
-      await git(['clone', '--depth', '1', remote, dir]);
+      await git(['clone', '--depth', '1', '--sparse', remote, dir]);
     } else {
-      await git(['fetch', '--depth', '1', remote, 'master'], dir);
+      await git(['remote', 'set-url', 'origin', plain], dir).catch(() => undefined);
+      await git(['fetch', '--depth', '1', remote, 'HEAD'], dir);
       await git(['reset', '--hard', 'FETCH_HEAD'], dir);
     }
+    await git(['sparse-checkout', 'set', WIKI_ROOT], dir);
     await git(['remote', 'set-url', 'origin', plain], dir).catch(() => undefined);
     fs.writeFileSync(marker, new Date().toISOString());
   }
+  const branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'], dir).catch(() => 'main')).trim() || 'main';
+  return { branch };
 }
 
 function readIf(p: string): string {
@@ -260,38 +275,58 @@ function readIf(p: string): string {
   }
 }
 
-/** K1 发布：同步缓存 → 写页（分类目录）→ index/log 记账 → commit → push。任何一步失败都抛（不吞）。 */
+/** 一次落点尝试：同步 → 写页（llm-wiki/<分类>/）→ index/log 记账 → commit → push 默认分支。失败抛错（不吞）。 */
+async function publishAttempt(o: {
+  dataDir: string;
+  repo: string;
+  token: string;
+  page: WikiPageDraft;
+}): Promise<{ url: string; cacheDir: string; files: string[]; branch: string }> {
+  const { branch } = await syncWikiCache({ dataDir: o.dataDir, repo: o.repo, token: o.token, maxAgeMs: 0 });
+  const dir = wikiCacheDir(o.dataDir, o.repo);
+  const root = path.join(dir, WIKI_ROOT);
+  const pageAbs = path.join(root, o.page.file);
+  fs.mkdirSync(path.dirname(pageAbs), { recursive: true });
+  fs.writeFileSync(pageAbs, o.page.markdown);
+  fs.writeFileSync(path.join(root, 'index.md'), mergeWikiIndex(readIf(path.join(root, 'index.md')), { file: o.page.file, line: o.page.indexEntry }));
+  fs.writeFileSync(path.join(root, 'log.md'), appendWikiLog(readIf(path.join(root, 'log.md')), o.page.logNote));
+  const files = [`${WIKI_ROOT}/${o.page.file}`, `${WIKI_ROOT}/index.md`, `${WIKI_ROOT}/log.md`];
+  await git(['add', '--', ...files], dir);
+  await git(['commit', '-m', `PaneFlow 沉淀: ${o.page.file}`], dir).catch((e: Error) => {
+    if (!/nothing to commit/i.test(e.message)) throw e;
+  });
+  await git(['push', repoAuthUrl(o.repo, o.token), `HEAD:${branch}`], dir);
+  return {
+    url: `https://github.com/${o.repo}/blob/${branch}/${WIKI_ROOT}/${o.page.file}`,
+    cacheDir: dir,
+    files,
+    branch,
+  };
+}
+
+/**
+ * Issue #7 发布：落点为主仓 `llm-wiki/` 目录（只吃 Contents 权限，不再依赖 `<repo>.wiki.git`）。
+ * push 撞远端前移（交付链刚推过 main）时重同步再试一次，仍失败才抛。
+ */
 export async function publishWikiPage(o: {
   dataDir: string;
   repo: string;
   token: string;
   page: WikiPageDraft;
 }): Promise<{ url: string; cacheDir: string; files: string[] }> {
-  await syncWikiCache({ dataDir: o.dataDir, repo: o.repo, token: o.token, maxAgeMs: 0 });
-  const dir = wikiCacheDir(o.dataDir, o.repo);
-  const pageAbs = path.join(dir, o.page.file);
-  fs.mkdirSync(path.dirname(pageAbs), { recursive: true });
-  fs.writeFileSync(pageAbs, o.page.markdown);
-  fs.writeFileSync(path.join(dir, 'index.md'), mergeWikiIndex(readIf(path.join(dir, 'index.md')), { file: o.page.file, line: o.page.indexEntry }));
-  fs.writeFileSync(path.join(dir, 'log.md'), appendWikiLog(readIf(path.join(dir, 'log.md')), o.page.logNote));
-  const files = [o.page.file, 'index.md', 'log.md'];
-  await git(['add', '--', ...files], dir);
-  await git(['commit', '-m', `PaneFlow 沉淀: ${o.page.file}`], dir).catch((e: Error) => {
-    if (!/nothing to commit/i.test(e.message)) throw e;
-  });
-  await git(['push', authUrl(o.repo, o.token), 'HEAD:master'], dir);
-  const pageName = path.basename(o.page.file).replace(/\.md$/, '');
-  return {
-    url: `https://github.com/${o.repo}/wiki/${encodeURIComponent(pageName)}`,
-    cacheDir: dir,
-    files,
-  };
+  try {
+    return await publishAttempt(o);
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (!/git push 失败/.test(msg)) throw e;
+    return await publishAttempt(o);
+  }
 }
 
 // -- K2 读回：本地页挑选 + 摘要 -------------------------------------------------
 
 export interface WikiPage {
-  /** 相对缓存根的路径：嵌套页如 `summaries/x.md`，旧扁平页如 `y.md` */
+  /** 相对 `llm-wiki/` 落点根的路径：嵌套页如 `summaries/x.md`，扁平页如 `y.md` */
   file: string;
   title: string;
   text: string;
@@ -326,9 +361,9 @@ function titleFromPath(rel: string): string {
   return path.basename(rel).replace(/\.md$/, '').replace(/-/g, ' ');
 }
 
-/** 从缓存目录读 md 页：frontmatter title 优先，缺省回退文件名；正文留给摘要 */
+/** 从缓存的主仓 `llm-wiki/` 子树读 md 页：frontmatter title 优先，缺省回退文件名；正文留给摘要。落点缺失/为空返回空不抛。 */
 export function readWikiPages(dataDir: string, repo: string): WikiPage[] {
-  const dir = wikiCacheDir(dataDir, repo);
+  const dir = path.join(wikiCacheDir(dataDir, repo), WIKI_ROOT);
   const files: string[] = [];
   walkMarkdown(dir, '', files);
   return files.sort().slice(0, PAGE_CAP).map((rel) => {

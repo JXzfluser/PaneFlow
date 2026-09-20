@@ -26,10 +26,11 @@ function buildServer(dataDir: string, readGhCliToken?: () => Promise<string>) {
 }
 
 function seedCache(dataDir: string, repo: string, files: Record<string, string>, syncedAt?: string): string {
-  const dir = wikiCacheDir(dataDir, repo);
+  // Issue #7 落点：页在主仓缓存的 llm-wiki/ 子树下
+  const dir = path.join(wikiCacheDir(dataDir, repo), 'llm-wiki');
   fs.mkdirSync(dir, { recursive: true });
   for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body);
-  if (syncedAt) fs.writeFileSync(path.join(dir, '.pf-synced'), syncedAt);
+  if (syncedAt) fs.writeFileSync(path.join(path.dirname(dir), '.pf-synced'), syncedAt);
   return dir;
 }
 

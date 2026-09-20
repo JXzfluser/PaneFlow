@@ -154,11 +154,11 @@ describe('v9-K1 checkRepoVisibility', () => {
   });
 });
 
-describe('v9-K2 + 首驾-llmwiki AC-4 wiki 读回（嵌套分类页与旧扁平页混放兼容）', () => {
-  it('readWikiPages 从缓存目录读 md；pickWikiExcerpts 按词命中打分、无命中原样返回空', () => {
+describe('v9-K2 + Issue #7 wiki 读回（只认主仓 llm-wiki/ 子树，嵌套+扁平混放兼容）', () => {
+  it('readWikiPages 从缓存 llm-wiki/ 子树读 md；pickWikiExcerpts 按词命中打分、无命中原样返回空', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wiki-'));
     const repo = 'me/app';
-    const cache = wikiCacheDir(dir, repo);
+    const cache = path.join(wikiCacheDir(dir, repo), 'llm-wiki');
     fs.mkdirSync(cache, { recursive: true });
     fs.writeFileSync(
       path.join(cache, '登录页样式修复.md'),
@@ -176,18 +176,21 @@ describe('v9-K2 + 首驾-llmwiki AC-4 wiki 读回（嵌套分类页与旧扁平�
     expect(readWikiPages(dir, 'no/such')).toEqual([]);
   });
 
-  it('AC-4：同一缓存混放 summaries/ 嵌套页与旧扁平页——列全不抛错，index/log 记账不进摘录池', () => {
+  it('AC-4：llm-wiki/ 下混放 summaries/ 嵌套页与扁平页——列全不抛错，index/log 记账不进摘录池；缓存根散页不算数', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wiki-mix-'));
     const repo = 'me/app';
     const cache = wikiCacheDir(dir, repo);
-    fs.mkdirSync(path.join(cache, 'summaries'), { recursive: true });
+    const root = path.join(cache, 'llm-wiki');
+    fs.mkdirSync(path.join(root, 'summaries'), { recursive: true });
     fs.writeFileSync(
-      path.join(cache, 'summaries', '部署-checkout-流-ab12cd.md'),
+      path.join(root, 'summaries', '部署-checkout-流-ab12cd.md'),
       '---\ntitle: "部署 checkout 流（run r-9）"\ntype: summary\n---\n\n# 部署 checkout 流\n\n正文讲 checkout 部署的踩坑与修法。',
     );
-    fs.writeFileSync(path.join(cache, '旧扁平沉淀页.md'), '---\npf-run: old\n---\n\n旧页正文也讲 checkout 流程。');
-    fs.writeFileSync(path.join(cache, 'index.md'), '# 索引\n\n- [部署 checkout 流](summaries/部署-checkout-流-ab12cd.md) —— 摘要');
-    fs.writeFileSync(path.join(cache, 'log.md'), '# 沉淀日志\n\n- 2026-09-19T02:00:00Z · run `r-9` → `summaries/部署-checkout-流-ab12cd.md`');
+    fs.writeFileSync(path.join(root, '旧扁平沉淀页.md'), '---\npf-run: old\n---\n\n旧页正文也讲 checkout 流程。');
+    fs.writeFileSync(path.join(root, 'index.md'), '# 索引\n\n- [部署 checkout 流](summaries/部署-checkout-流-ab12cd.md) —— 摘要');
+    fs.writeFileSync(path.join(root, 'log.md'), '# 沉淀日志\n\n- 2026-09-19T02:00:00Z · run `r-9` → `summaries/部署-checkout-流-ab12cd.md`');
+    // 缓存根（llm-wiki/ 外）散落的仓内文档不参与读回
+    fs.writeFileSync(path.join(cache, 'README.md'), '# 主仓 README\n\ncheckout 流程说明。');
     const pages = readWikiPages(dir, repo);
     expect(pages.map((p) => p.file).sort()).toEqual(['summaries/部署-checkout-流-ab12cd.md', '旧扁平沉淀页.md']);
     expect(pages.find((p) => p.file.startsWith('summaries/'))!.title).toBe('部署 checkout 流（run r-9）');

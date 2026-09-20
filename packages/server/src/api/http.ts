@@ -869,7 +869,7 @@ export async function buildHttpServer(deps: HttpDeps) {
     }
   });
 
-  // -- v9-K1/K3 wiki 沉淀：绿 run + 点赞（手动触发）→ push 到 <repo>.wiki.git ----
+  // -- v9-K1/K3 + Issue #7 wiki 沉淀：绿 run + 点赞（手动触发）→ push 到主仓 llm-wiki/ 目录 ----
 
   app.post<{ Body: { runId?: string; repo?: string; confirm?: boolean } }>(
     '/api/wiki/publish',
