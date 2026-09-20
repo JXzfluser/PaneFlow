@@ -85,4 +85,15 @@ R1 范围膨胀→批次全为还债/补链无新表面；R2 关键路径长→C
 
 ## 实施状态
 
-（开工后按 v10 样式补：项 / commit / 验证三列。）
+| 项 | commit | 验证 |
+|---|---|---|
+| D2 报错尾行 | `c288bb8` | 实机：4170c22a 复盘形态可钩；stalled 单测 4 例；317→全绿 |
+| C0 迁移还账 | `17cf43f` | 实机：/api/wiki/state 回 branch=main、pageCount=2；设置卡链改 tree//blob/llm-wiki；「沉淀」双义全线改「模板云端同步」（含 OrchestrateView/README 追加 6 处）|
+| D3 状态分级 | `6f0f9d0` | 单测两态+两处旧断言语义修正；消费点裁决清单见 commit（队列/锁/归档视同结束，沉淀/I2/子 run 镜像只认全绿）|
+| A1 CLI | `6f0f9d0` | 实机：`pnpm paneflow runs/status/watch` 打真 server 退出码 0；watch 404→1；cli 27 例全绿；release launcher 合流 esbuild 打包、else 分支逐字节旧行为 |
+| A2 说明书 | `6f0f9d0` | AGENTS.md 新建，命令逐条实跑可复核 |
+| D1 网关限流 | `6eb98fe` | mock 503 注入回归 15 例（排队→退避重放→错峰收口）；env 五旋钮 PF_GW_*；覆盖面如实声明（吞错的超时路径不认，闸恒生效兜底）|
+| D5 草稿落点 | `6eb98fe` | draft_dir 内置变量+血缘共享+prompt 新旧口径静态测试 8 例；实机：两内置模板重播带 draft_dir（副本已备份 .bak-v11d5）|
+| D4 孤儿漏网 | — | 未开工：需实机复现漏网形态（gate0），列入波次后续 |
+
+（多智能体批次一：2026-09-20，server 346 测试+tsc+web build 净；D5 实现者断线由收尾 agent 盘点补完，摩擦账 #19。第二批未开工项按批次序：C2→C5→C3a→C1→C3b→E1。）
