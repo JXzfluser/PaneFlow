@@ -108,6 +108,40 @@ export interface HttpDeps {
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+// -- v11-C5：仓库可见性本地缓存（publish 查到就落盘；preview 只读它，零网络） ----------------
+
+function visibilityCachePath(dataDir: string): string {
+  return path.join(dataDir, 'wiki-visibility.json');
+}
+
+/** 读缓存的 repo 可见性；没查过/读不到 → undefined（preview 不因此报错，前端靠 publish 409 兜底） */
+function readVisibilityCache(dataDir: string, repo: string): 'public' | 'private' | undefined {
+  try {
+    const m = JSON.parse(fs.readFileSync(visibilityCachePath(dataDir), 'utf8')) as Record<string, { visibility?: unknown }>;
+    const v = m[repo]?.visibility;
+    return v === 'public' || v === 'private' ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 写穿缓存（发布链路只多一次本地文件写，失败绝不影响发布本身） */
+function cacheRepoVisibility(dataDir: string, repo: string, visibility: 'public' | 'private'): void {
+  const p = visibilityCachePath(dataDir);
+  let m: Record<string, { visibility: string; checkedAt: string }> = {};
+  try {
+    m = JSON.parse(fs.readFileSync(p, 'utf8')) as typeof m;
+  } catch {
+    /* 首次或坏档：重建 */
+  }
+  m[repo] = { visibility, checkedAt: new Date().toISOString() };
+  try {
+    fs.writeFileSync(p, JSON.stringify(m, null, 2), { mode: 0o600 });
+  } catch {
+    /* 缓存写失败无所谓 */
+  }
+}
+
 /**
  * G2 跨站 Origin 校验（纯函数便于单测）。放行：
  * ①无 Origin 头——curl/脚本/CLI/服务端代理等非浏览器来源；
@@ -930,6 +964,8 @@ export async function buildHttpServer(deps: HttpDeps) {
       } catch (e) {
         return reply.code(502).send({ error: `查仓库可见性失败：${(e as Error).message}` });
       }
+      // v11-C5：查到的可见性落本地缓存，供零网络的 /api/wiki/preview 读（弹层据此决定「我确认公开」勾选）
+      cacheRepoVisibility(deps.dataDir, repo, visibility);
       if (visibility === 'public' && req.body?.confirm !== true) {
         return reply.code(409).send({
           needsConfirm: true,
@@ -944,6 +980,44 @@ export async function buildHttpServer(deps: HttpDeps) {
       } catch (e) {
         return reply.code(502).send({ error: `wiki 推送失败：${(e as Error).message}` });
       }
+    },
+  );
+
+  // -- v11-C5 沉淀推前预览：只读、零网络、零 push——门判 + 离线渲染将推草稿 --------------
+  // kind 缺省按 run 状态自动选门（failed / completed-with-failures 预选反面教材侧门）；
+  // 门不过也回 reason（前端据此禁用「推到仓库」），过门回完整 markdown 草稿。
+  // visibility 只读 publish 落下的本地缓存，绝不查远端；publish 路由语义不受影响。
+
+  app.get<{ Querystring: { runId?: string; kind?: string; repo?: string } }>(
+    '/api/wiki/preview',
+    async (req, reply) => {
+      const runId = String(req.query?.runId ?? '').trim();
+      if (!runId) return reply.code(400).send({ error: '缺少 runId' });
+      const run = deps.engine.getRun(runId);
+      if (!run) return reply.code(404).send({ error: `找不到该 run：${runId}` });
+      const autoKind: WikiPublishKind =
+        run.state === 'failed' || run.state === 'completed-with-failures' ? 'counterexample' : 'green';
+      const rawKind = req.query?.kind === undefined || req.query.kind === '' ? autoKind : String(req.query.kind);
+      if (rawKind !== 'green' && rawKind !== 'counterexample')
+        return reply.code(400).send({ error: `kind 只支持 green / counterexample（收到：${String(req.query?.kind)}）` });
+      const kind: WikiPublishKind = rawKind;
+      const gate = publishableRun(run, kind);
+      const repo = String(req.query?.repo ?? readGithubSettings(deps.dataDir).defaultRepo ?? '').trim();
+      const visibility = repo.includes('/') ? readVisibilityCache(deps.dataDir, repo) : undefined;
+      // 缺目标仓库也折进门 reason：前端一套禁用逻辑就够，不用另辨「门绿但推不动」
+      const verdict =
+        gate.ok && !repo.includes('/')
+          ? { ok: false as const, reason: '缺少目标仓库（设置页配默认仓库，或请求带 repo）' }
+          : gate;
+      if (!verdict.ok) return { gate: verdict, kind, page: null, repo, ...(visibility ? { visibility } : {}) };
+      const page = renderWikiPage(run, { repo, kind });
+      return {
+        gate: verdict,
+        kind,
+        page: { file: page.file, markdown: page.markdown },
+        repo,
+        ...(visibility ? { visibility } : {}),
+      };
     },
   );
 

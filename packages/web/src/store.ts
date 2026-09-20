@@ -76,6 +76,8 @@ interface PfStore {
   space: string;
   graphVariables: TemplateVariable[];
   graphMeta: GraphMeta;
+  /** v11-C5：沉淀发布成功计数——WikiSedimentCard 订阅它即时重拉 /api/wiki/state */
+  wikiPublishTick: number;
 
   setView: (view: AppView) => void;
   /** 切换项目：更新 api 上下文 + 刷新模板 + 清空画布 */
@@ -88,6 +90,8 @@ interface PfStore {
   setAgentKinds: (kinds: string[]) => void;
   setDefaultAgentKind: (kind: string) => void;
   setTemplates: (graphs: DagGraph[]) => void;
+  /** v11-C5：沉淀发布成功后 bump wikiPublishTick，设置页卡片据此重拉状态 */
+  notifyWikiPublished: () => void;
   /** 批量并入运行记录（任务视图挂载时拉历史；按当前项目过滤） */
   mergeRuns: (records: RunRecord[]) => void;
   log: (level: ConsoleLog['level'], text: string) => void;
@@ -140,6 +144,7 @@ export const useStore = create<PfStore>((set, get) => ({
   space: getSpace(),
   graphVariables: [],
   graphMeta: {},
+  wikiPublishTick: 0,
 
   setView: (view) => {
     localStorage.setItem(VIEW_KEY, view);
@@ -176,6 +181,7 @@ export const useStore = create<PfStore>((set, get) => ({
   setAgentKinds: (agentKinds) => set({ agentKinds }),
   setDefaultAgentKind: (defaultAgentKind) => set({ defaultAgentKind }),
   setTemplates: (templateList) => set({ templateList }),
+  notifyWikiPublished: () => set((s) => ({ wikiPublishTick: s.wikiPublishTick + 1 })),
   mergeRuns: (records) =>
     set((s) => {
       const mySpace = localStorage.getItem('pf-space') || 'default';

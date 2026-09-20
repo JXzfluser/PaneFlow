@@ -3,6 +3,7 @@ import type { RunEvent, RunRecord } from '@paneflow/shared';
 import { useStore } from '../store.js';
 import { api, fetchJson } from '../api.js';
 import { runCostLabel } from '../cost.js';
+import { needsPublicConfirm, type WikiPreviewRes } from '../wiki-sediment.js';
 import { RunTimeline } from './RunTimeline.js';
 
 /** v8-H2 产物货架的单个文件条目（<nodeId>.json 会挂上对应节点信息） */
@@ -136,6 +137,96 @@ function ArchivedPanel() {
   );
 }
 
+/** v9-K1/K3 + v11-C5：点赞沉淀弹层——先 GET /api/wiki/preview（零网络零 push）看将推草稿，
+ * 门不过亮红因并禁按钮；public 仓用「我确认公开」勾选替代旧 window.confirm 二次确认舞。 */
+function WikiPublishModal({ run, preview, onClose }: { run: RunRecord; preview: WikiPreviewRes; onClose: () => void }) {
+  const log = useStore((s) => s.log);
+  const [publicChecked, setPublicChecked] = useState(false);
+  const [serverPublic, setServerPublic] = useState(false); // preview 没缓存可见性时的兜底：publish 409 现场告知
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const gateOk = preview.gate.ok;
+  const publicWarn = needsPublicConfirm(preview, serverPublic);
+  const canPush = gateOk && (!publicWarn || publicChecked) && !busy;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const push = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const d = await fetchJson<{ url: string; file: string }>('POST', '/api/wiki/publish', {
+        runId: run.runId,
+        kind: preview.kind,
+        ...(publicWarn ? { confirm: true } : {}),
+      });
+      log('info', `✅ 已沉淀到仓库 llm-wiki/ 目录：${d.url}`);
+      useStore.getState().notifyWikiPublished(); // 设置页沉淀卡据此即时重拉状态
+      onClose();
+    } catch (e) {
+      const msg = (e as Error).message;
+      // 可见性此前没缓存过：409 回来就在弹层内升级为勾选，不换窗口、不重走三段
+      if (msg.includes('对全世界可读')) setServerPublic(true);
+      else setErr(msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-mask" onClick={onClose}>
+      <div className="modal modal-wiki" role="dialog" aria-modal="true" aria-label="沉淀预览" onClick={(e) => e.stopPropagation()}>
+        <h2>👍 沉淀预览 · {run.dagName}</h2>
+        <div className="wiki-pv-meta">
+          <span>
+            目标仓 <b>{preview.repo || '（未配置）'}</b>
+          </span>
+          <span>
+            落点 <b>{preview.page?.file ?? '—'}</b>
+          </span>
+          <span className={gateOk ? 'ok' : 'bad'}>{gateOk ? '✅ 已过沉淀门' : '⛔ 门不过'}</span>
+        </div>
+        {preview.kind === 'counterexample' && (
+          <p className="wiki-pv-counter">
+            ⚠ 反面教材侧门：这单带失败收口，将以低置信（confidence: low + 页首 ⚠ 警示 + index 条目 ⚠ 标记）入仓——
+            只沉淀教训供后来人避坑，结论与做法不可照抄。
+          </p>
+        )}
+        {!gateOk && <p className="wiki-pv-gate">{preview.gate.reason ?? '沉淀门未通过'}</p>}
+        {preview.page && <pre className="wiki-pv-md">{preview.page.markdown}</pre>}
+        {publicWarn && (
+          <label className="wiki-pv-confirm">
+            <input type="checkbox" checked={publicChecked} disabled={busy} onChange={(e) => setPublicChecked(e.target.checked)} />
+            <span>
+              仓库 {preview.repo} 是公开的，沉淀页将<b>对全世界可读</b>——我确认公开
+            </span>
+          </label>
+        )}
+        {err && <p className="wiki-pv-gate">推送失败：{err}</p>}
+        <div className="close-row">
+          <button onClick={onClose} disabled={busy}>
+            取消
+          </button>
+          <button
+            className="primary"
+            disabled={!canPush}
+            title={!gateOk ? '沉淀门不过，推不动' : publicWarn && !publicChecked ? '先勾选「我确认公开」' : '把这份草稿推到仓库 llm-wiki/ 目录'}
+            onClick={() => void push()}
+          >
+            {busy ? '⏳ 推送中' : '推到仓库'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** 运行中心（B9 第一版）：全部空间的运行总览、进度、操作。 */
 export function RunsCenter() {
   const runs = useStore((s) => s.runs);
@@ -243,27 +334,17 @@ export function RunsCenter() {
     }
   };
 
-  // v9-K1/K3：点赞式沉淀——只出现在绿的完成单上；公开仓库服务端会先要二次确认（409）
-  const [publishing, setPublishing] = useState<string | null>(null);
-  const publishWiki = async (r: RunRecord, confirm = false) => {
-    setPublishing(r.runId);
+  // v11-C5：推前预览弹层替代旧「409→window.confirm→重发」三段舞——先拉 preview（零网络零 push），
+  // 草稿看过门过过再推；failed / completed-with-failures 单服务端自动预选反面教材侧门。
+  const [wikiPreview, setWikiPreview] = useState<{ run: RunRecord; loading: boolean; res: WikiPreviewRes | null } | null>(null);
+  const openWikiPreview = async (r: RunRecord) => {
+    setWikiPreview({ run: r, loading: true, res: null });
     try {
-      const d = await fetchJson<{ url: string; file: string }>('POST', '/api/wiki/publish', {
-        runId: r.runId,
-        ...(confirm ? { confirm: true } : {}),
-      });
-      log('info', `✅ 已沉淀到仓库 llm-wiki/ 目录：${d.url}`);
+      const p = await fetchJson<WikiPreviewRes>('GET', `/api/wiki/preview?runId=${encodeURIComponent(r.runId)}`);
+      setWikiPreview((cur) => (cur && cur.run.runId === r.runId ? { run: r, loading: false, res: p } : cur));
     } catch (e) {
-      const msg = (e as Error).message;
-      if (msg.includes('对全世界可读')) {
-        if (window.confirm(`${msg}\n\n（取消 = 不沉淀）`)) {
-          await publishWiki(r, true).catch((e2: Error) => log('error', `沉淀失败：${e2.message}`));
-        }
-      } else {
-        log('error', `沉淀失败：${msg}`);
-      }
-    } finally {
-      setPublishing(null);
+      setWikiPreview(null);
+      log('error', `拉取沉淀预览失败：${(e as Error).message}`);
     }
   };
 
@@ -357,13 +438,17 @@ export function RunsCenter() {
                 >
                   🗂{artLists[r.runId] ? ` ${artLists[r.runId]!.files.length}` : ''}
                 </button>
-                {r.state === 'completed' && !Object.values(r.nodes).some((n) => n.unverified) && (
+                {['completed', 'failed', 'completed-with-failures'].includes(r.state) && (
                   <button
-                    disabled={publishing === r.runId}
-                    title="点赞沉淀：这单的契约/验收结论/经验蒸馏成沉淀页推到仓库 llm-wiki/ 目录（公开仓库会先要你确认；宁缺毋滥，手动触发）"
-                    onClick={() => void publishWiki(r)}
+                    disabled={wikiPreview?.run.runId === r.runId && wikiPreview.loading}
+                    title={
+                      r.state === 'completed'
+                        ? '点赞沉淀：先看这单沉淀页草稿（契约/验收结论/经验），确认后推到仓库 llm-wiki/ 目录（宁缺毋滥，手动触发）'
+                        : '沉淀教训：这单带失败收口，走反面教材侧门（低置信 ⚠ 页，只供避坑）；推送前同样先看草稿'
+                    }
+                    onClick={() => void openWikiPreview(r)}
                   >
-                    {publishing === r.runId ? '⏳ 沉淀中' : '👍 沉淀'}
+                    {wikiPreview?.run.runId === r.runId && wikiPreview.loading ? '⏳ 预览中' : r.state === 'completed' ? '👍 沉淀' : '👍 沉淀教训'}
                   </button>
                 )}
                 <button title="导出完整记录 JSON" onClick={() => {
@@ -462,6 +547,9 @@ export function RunsCenter() {
         );
       })}
         </>
+      )}
+      {wikiPreview && !wikiPreview.loading && wikiPreview.res && (
+        <WikiPublishModal run={wikiPreview.run} preview={wikiPreview.res} onClose={() => setWikiPreview(null)} />
       )}
     </div>
   );

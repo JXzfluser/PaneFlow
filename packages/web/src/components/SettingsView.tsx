@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, fetchJson, type Channel, type ChannelType, type NotifyEvent } from '../api.js';
 import { useStore } from '../store.js';
+import { groupWikiPages, WIKI_GROUP_CAP } from '../wiki-sediment.js';
 
 /** 设置页章节：v10-W 起「项目档案」已迁往「项目」视图，这里只留全局项 */
 const SECTIONS: { id: string; label: string; icon: string }[] = [
@@ -351,6 +352,8 @@ interface WikiStateView {
 
 function WikiSedimentCard() {
   const log = useStore((s) => s.log);
+  // v11-C5：执行中心发布成功会 bump 这个计数——卡片订阅它即时重拉，不再等手动刷新
+  const wikiPublishTick = useStore((s) => s.wikiPublishTick);
   const [st, setSt] = useState<WikiStateView | null>(null);
   const [noRepo, setNoRepo] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -367,7 +370,7 @@ function WikiSedimentCard() {
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [wikiPublishTick]);
   const sync = async () => {
     setSyncing(true);
     try {
@@ -390,6 +393,8 @@ function WikiSedimentCard() {
   }
   // v11-C0：落点是主仓默认分支的 llm-wiki/ 目录（Issue #7），不再是 <repo>.wiki
   const treeUrl = st ? `https://github.com/${st.repo}/tree/${st.branch}/llm-wiki` : '';
+  // v11-C5：页列表按顶级目录分组；单组不多时全展开，多组时只默认展开首组
+  const groups = st ? groupWikiPages(st.pages) : [];
   return (
     <div className="wiki-sediment">
       <div className="wiki-sed-head">
@@ -411,16 +416,29 @@ function WikiSedimentCard() {
           <p className="settings-hint">
             {st.pageCount} 页在库{st.syncedAt ? ` · 缓存同步于 ${new Date(st.syncedAt).toLocaleString()}` : ' · 本地缓存还没同步过'}
           </p>
-          <ul className="wiki-page-list">
-            {st.pages.slice(0, 8).map((p) => (
-              <li key={p.file}>
-                <a href={`https://github.com/${st.repo}/blob/${st.branch}/llm-wiki/${p.file}`} target="_blank" rel="noreferrer">
-                  {p.title}
-                </a>
-              </li>
+          {/* v11-C5：按 file 顶级目录分组（summaries/…、concepts/…，旧扁平页归「其他」垫底），
+              每组展示前 5 条；多组时非首组折叠在 <details> 里 */}
+          <div className="wiki-page-groups">
+            {groups.map((g, i) => (
+              <details key={g.dir || '__flat'} className="wiki-page-group" open={i === 0 || groups.length <= 2}>
+                <summary>
+                  {g.label} · {g.pages.length} 页
+                </summary>
+                <ul className="wiki-page-list">
+                  {g.pages.slice(0, WIKI_GROUP_CAP).map((p) => (
+                    <li key={p.file}>
+                      <a href={`https://github.com/${st.repo}/blob/${st.branch}/llm-wiki/${p.file}`} target="_blank" rel="noreferrer">
+                        {p.title}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+                {g.pages.length > WIKI_GROUP_CAP && (
+                  <p className="settings-hint">…本组另有 {g.pages.length - WIKI_GROUP_CAP} 页，见仓库 llm-wiki/{g.dir}/ 目录</p>
+                )}
+              </details>
             ))}
-          </ul>
-          {st.pages.length > 8 && <p className="settings-hint">…其余 {st.pages.length - 8} 页见仓库 llm-wiki/ 目录</p>}
+          </div>
         </>
       )}
       <div className="settings-actions">
