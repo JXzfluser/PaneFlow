@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -2405,5 +2405,52 @@ describe('v11-D5 run 草稿落点（draft_dir 内置变量）', () => {
     expect(fs.readdirSync(cwd).filter((f) => f !== '.gitignore')).toEqual([]); // cwd 只读：草稿全在 draft_dir
     engine.stopRun(run.runId);
     await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+  });
+});
+
+// -- v11-C1 自动蒸挂点：绿收口后 fire-and-forget；默认 off；非绿不蒸；蒸炸不弄红收口 ----
+describe('v11-C1 engine 收口后自动蒸馏挂点（注入 wikiDistillRun 以绝网络/git）', () => {
+  afterEach(() => {
+    delete process.env.PF_WIKI_DISTILL;
+  });
+
+  it('默认 off：env 未设时绿收口也不起蒸（自动推 main 未经用户点头，宁缺毋滥）', async () => {
+    delete process.env.PF_WIKI_DISTILL;
+    const spy = vi.fn(async (_run: RunRecord) => {});
+    engine = new Engine(ops, store, { ...OPTS, wikiDistillRun: spy });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.state).toBe('completed');
+    await new Promise((s) => setTimeout(s, 50));
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('开关 on：绿收口后收到终态 run；执行体 reject 也只静默，收口状态不受影响（不阻塞证明）', async () => {
+    const spy = vi.fn(async (_run: RunRecord) => {
+      throw new Error('蒸馏炸了');
+    });
+    engine = new Engine(ops, store, { ...OPTS, wikiDistill: 'on', wikiDistillRun: spy });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    await waitFor(() => spy.mock.calls.length > 0);
+    expect(run.state).toBe('completed');
+    expect(spy.mock.calls[0]![0]!.runId).toBe(run.runId);
+    // fire-and-forget：收口路径没 await 过它——终态持久化已完成、状态没被改回
+    await new Promise((s) => setTimeout(s, 30));
+    expect(engine.getRun(run.runId)!.state).toBe('completed');
+  });
+
+  it('非绿收口（failed）不触发自动蒸', async () => {
+    const spy = vi.fn(async (_run: RunRecord) => {});
+    engine = new Engine(ops, store, { ...OPTS, wikiDistill: 'on', wikiDistillRun: spy });
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'unknown'), 10);
+    };
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.state).toBe('failed');
+    await new Promise((s) => setTimeout(s, 50));
+    expect(spy).not.toHaveBeenCalled();
   });
 });

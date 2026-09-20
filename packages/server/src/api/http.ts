@@ -45,6 +45,7 @@ import {
   wikiCacheDir,
   type WikiPublishKind,
 } from './wiki.js';
+import { buildDistillPreview } from './wiki-distill.js';
 
 interface CreateIssueBody {
   title: string;
@@ -104,6 +105,8 @@ export interface HttpDeps {
   readGhCliToken?: () => Promise<string>;
   /** v10-X：token → 登录名探测器（缺省 GET api.github.com/user；测试注入以保证确定性） */
   lookupGithubLogin?: (token: string) => Promise<string | null>;
+  /** v11-C1 蒸馏预览前的 wiki 缓存刷新（缺省 syncWikiCache；测试注入以绝真实 git/网络） */
+  wikiDistillSync?: (o: { dataDir: string; repo: string; token: string; maxAgeMs?: number }) => Promise<{ branch: string }>;
 }
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -1020,6 +1023,27 @@ export async function buildHttpServer(deps: HttpDeps) {
       };
     },
   );
+
+  // -- v11-C1 蒸馏预览：绿单经验 → concepts 主题页操作集（只读规划，零 push） ----------
+  // 复用 C5 预览弹层的精神：先看清要动哪些页（新建/改写）再谈落库——本端点同步缓存、
+  // 跑 LLM 提取、出操作集预览，但不 push；自动路（PF_WIKI_DISTILL=on）才直推。
+  // 门不过/查询失败回 reason（400/502），与 publish 端点同一套失败可见姿势。
+
+  app.post<{ Body: { runId?: string; repo?: string } }>('/api/wiki/distill', async (req, reply) => {
+    const runId = String(req.body?.runId ?? '').trim();
+    const run = deps.engine.getRun(runId);
+    if (!run) return reply.code(404).send({ error: `找不到该 run：${runId || '（未传 runId）'}` });
+    const gate = publishableRun(run);
+    if (!gate.ok) return reply.code(400).send({ error: gate.reason });
+    const gh = readGithubSettings(deps.dataDir);
+    const repo = String(req.body?.repo ?? gh.defaultRepo ?? '').trim();
+    if (!repo.includes('/')) return reply.code(400).send({ error: '缺少目标仓库（设置页配默认仓库，或请求带 repo）' });
+    const token = await ghTokenOrNull();
+    if (!token) return reply.code(400).send({ error: `${NO_CRED}；蒸馏需读目标仓 llm-wiki/ 的最新 concept 页清单` });
+    const r = await buildDistillPreview({ dataDir: deps.dataDir, run, repo, token }, { sync: deps.wikiDistillSync });
+    if (r.error) return reply.code(502).send({ error: r.error });
+    return { ok: true, repo, gate: { ok: true }, entries: r.entries, ops: r.ops };
+  });
 
   // -- v10-X wiki 沉淀可见化：状态只读本地缓存（零网络）；sync 显式拉远端最新 ------
 

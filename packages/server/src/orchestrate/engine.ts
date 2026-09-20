@@ -29,6 +29,7 @@ import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
 import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
 import { buildGithubEnv, readGithubSettings } from '../api/github-cred.js';
+import { autoDistillEnabled, autoDistillRun } from '../api/wiki-distill.js';
 import {
   buildReadbackBlock,
   isReadbackTarget,
@@ -71,6 +72,10 @@ export interface EngineOptions {
   wikiReadback?: 'on' | 'off';
   /** v11-C3a wiki 缓存后台刷新（默认 resolveGithubToken+syncWikiCache；测试注入以绝网络） */
   wikiCacheRefresh?: (repo: string) => Promise<void>;
+  /** v11-C1 绿 run 收口后自动蒸馏开关；缺省回落 env PF_WIKI_DISTILL，两者皆缺=**off**（理由见 wiki-distill.ts autoDistillEnabled 注释） */
+  wikiDistill?: 'on' | 'off';
+  /** v11-C1 自动蒸馏执行体（默认 wiki-distill.autoDistillRun：直连网关提取 + 一次 commit 多文件 push；测试注入以绝网络/git） */
+  wikiDistillRun?: (run: RunRecord) => Promise<unknown>;
 }
 
 export interface ApprovalAction {
@@ -832,6 +837,26 @@ export class Engine {
       run.cost = this.computeRunCost(run); // R6a：先记账再广播（持久化含 cost）
       this.persistAndNotify(run);
       this.pumpQueue(run.spaceId ?? 'default'); // G3：终态腾出额度，队列放行
+      // v11-C1：绿 run 收口后自动蒸馏（只加不改——收口判定/调度/prompt 注入区均未动）。
+      // 纯 fire-and-forget：void + maybeAutoDistill 内部全捕获，永不 reject，
+      // 收口路径不 await 任何 LLM/git/网络，蒸馏炸与否都流不回终态广播。
+      if (run.state === 'completed') void this.maybeAutoDistill(run);
+    }
+  }
+
+  /**
+   * v11-C1 自动蒸挂点：开关（opts.wikiDistill > env PF_WIKI_DISTILL，默认 off）+
+   * fail-closed 绿门（autoDistillRun 内复用 publishableRun）都过了才起后台任务。
+   * 默认 off 的理由写在 wiki-distill.ts autoDistillEnabled 注释（自动路未经用户
+   * 点头直推 main，宁缺毋滥门风不动，开不开等 C4 实证）。任何异常就地吞掉。
+   */
+  private async maybeAutoDistill(run: RunRecord): Promise<void> {
+    try {
+      if (!autoDistillEnabled(this.opts.wikiDistill)) return;
+      const distill = this.opts.wikiDistillRun ?? ((r: RunRecord) => autoDistillRun(this.store.root, r));
+      await distill(run);
+    } catch {
+      // 蒸馏是纯加分项：任何意外都不许流回收口路径
     }
   }
 

@@ -1,4 +1,4 @@
-# llm-wiki 沉淀 schema（Issue #6 / 首驾-llmwiki + Issue #7 落点改造 + v11-C2 双门）
+# llm-wiki 沉淀 schema（Issue #6 / 首驾-llmwiki + Issue #7 落点改造 + v11-C2 双门 + v11-C1 蒸馏改写）
 
 PaneFlow 把一条绿 run 蒸馏成 **llm-wiki 风格**的知识页，push 到**主仓默认分支的
 `llm-wiki/` 目录**（Issue #7：不再走 `<repo>.wiki.git`——GitHub dotcom 上 wiki 仓库
@@ -63,15 +63,59 @@ index 条目带 `⚠ ` 前缀（条目面复用、按 file 去重语义不变）
 **兼容读（v11-C2）**：读回解析 `confidence`；旧页（Issue #6 时代无此键）视为正页，
 不降权、不报错。
 
-## 改动落点
+## v11-C1 蒸馏条目面（concepts/ 主题页：同主题改写，不再只堆流水账）
 
+绿 run 的经验除了落 `summaries/` 一页流水账，还可**蒸馏**进 `concepts/` 主题页：
+LLM（服务端直连网关 `/v1/chat/completions`，`model=gateway.freeModel`）从 run 的
+契约断言+实测结果、节点结论、终端尾部提取 ≤5 条 `{topic, statement, evidenceRun}`，
+纯函数核按**主题归一化**（slugify 后再抹连字符；与页 slug 相等或互为包含即命中）
+决定改写旧页还是新建：
+
+```markdown
+---
+title: "登录页样式守则"
+type: concept
+tags: [paneflow, concept, demo]
+created: 2026-09-19T02:00:00.000Z   # 改写时逐字保留首次建页时刻
+updated: 2026-09-20T02:00:00.000Z   # 改写时前进——复利可见
+sources: ["paneflow:run/run-abc123", "repo:me/app", "paneflow:run/run-xyz789"]
+confidence: high                     # 只从过绿门（publishableRun）的单蒸出
+pf-repo: me/app
+pf-runs: [run-abc123, run-xyz789]    # 证据 run 并集（C3b 回链数据源）
+---
+
+# 登录页样式守则
+
+> PaneFlow 蒸馏主题页：…条目须有 run 证据背书…
+
+## 经验条目
+
+- container query 断点实测干掉 iOS 100vh 坑（来源: run `run-abc123` · 2026-09-19）
+- 错误态必须带 aria-live，终审 e2e 补抓通过（来源: run `run-xyz789` · 2026-09-20）
+```
+
+- 正文合并策略：新经验作为 bullet 行追加进「## 经验条目」小节末尾，按陈述词面
+  （空白归一）行级去重；全重复不出空操作。
+- 记账：index 条目与原页同 file → `mergeWikiIndex` 原位替换，**改写永不增条**；
+  log.md 每次动作追加一条（新建 +N 条｜改写 +N 条）。
+- 触发双路：手动 `POST /api/wiki/distill {runId, repo?}` 只回**操作集预览**
+  （零 push，C5 弹层精神；门不过 400、查询失败 502 均带 reason）；自动路在绿 run
+  收口后 fire-and-forget，env `PF_WIKI_DISTILL=on` 才开（**默认 off**：自动直推
+  main 未经用户点头，宁缺毋滥门风等 C4 实证）。
+- 多文件落库：`publishWikiPages({pages})` 一次同步、一次 commit（新页/改写混合）、
+  一次 push，push 撞远端前移重试一次；`publishWikiPage({page})` 是其单页壳，
+  手动点赞路签名兼容。
+- LLM 失败面：网关未配/HTTP 红/超时(90s)/破烂 JSON 一律回空 entries=静默弃，
+  绝不阻塞或弄红任何收口路径。
+
+## 改动落点
 - `packages/server/src/api/wiki.ts`
   - `publishableRun(run, kind)`：双门判据（v11-C2 fail-closed 正门 + counterexample 侧门，互斥）。
   - `renderWikiPage`：纯函数，run → 页（七字段 frontmatter + 分类相对路径）+ `indexEntry`/`logNote` 记账串；
     `kind:'counterexample'` 出侧门页三特征（confidence low / 正文首行 ⚠ 警示 / index 条目 ⚠ 前缀）。
   - `mergeWikiIndex` / `appendWikiLog`：index 合并（同 file 原位替换去重，⚠ 前缀条目同样按 `](file)` 命中）、log 只追加。
   - `syncWikiCache`：shallow + sparse-checkout 只物化主仓缓存的 `llm-wiki/` 子树，返回默认分支名；token 不落 .git/config。
-  - `publishWikiPage`：写页到 `llm-wiki/<分类>/`，落页后写 `llm-wiki/index.md`/`log.md`，三文件一起 `git add` 提交、push 到默认分支；撞远端前移重同步重试一次。
+  - `publishWikiPage`：写页到 `llm-wiki/<分类>/`，落页后写 `llm-wiki/index.md`/`log.md`，三文件一起 `git add` 提交、push 到默认分支；撞远端前移重同步重试一次。v11-C1 起为多页发布 `publishWikiPages({pages})` 的单页便捷壳（一次 commit 新页/改写混合，重试语义不变）。
   - `readWikiPages`：只递归 `llm-wiki/` 子树（相对该根返回路径），排除 `index.md`/`log.md`，
     frontmatter `title` 优先、文件名回退；v11-C2 另解析 `confidence` 入 `WikiPage.confidence`
     （旧页无键 → undefined，兼容读视为正页）；缓存缺失/落点为空返回空不抛。
@@ -81,4 +125,9 @@ index 条目带 `⚠ ` 前缀（条目面复用、按 file 去重语义不变）
 - 读侧消费：`http.ts` 的 `/api/wiki/publish`（v11-C2 起 body 多一可选 `kind`，缺省 `green`
   零回归）、`/api/wiki/state`、`/api/issues/enhance`（`pickWikiExcerpts(readWikiPages(...))`
   自动覆盖两种结构与降权）。
-- 单测：`wiki.test.ts`（AC-1..AC-4 纯函数 + 混放读回 + v11-C2 双门两向/侧门页三特征/读回降权/旧页兼容/路由 kind 门）、`http-wiki-state.test.ts`（路由门）。
+- v11-C1 蒸馏新模块 `packages/server/src/api/wiki-distill.ts`：`planDistill`（纯函数：
+  entries+既有 concept 页 → 页操作集）、`distillEntries`（网关直连 LLM 提取，永不抛）、
+  `buildDistillPreview`（手动端点编排，只预览）、`autoDistillRun`（自动路执行体，
+  fail-closed 绿门+永不 reject）、`autoDistillEnabled`（`PF_WIKI_DISTILL`，默认 off）。
+  挂点在 `orchestrate/engine.ts` execute() 收口 finally 尾部（fire-and-forget）。
+- 单测：`wiki.test.ts`（AC-1..AC-4 纯函数 + 混放读回 + v11-C2 双门两向/侧门页三特征/读回降权/旧页兼容/路由 kind 门）、`http-wiki-state.test.ts`（路由门）、`wiki-distill.test.ts`（同主题两单恰一页且 index 不增条/去重/LLM 破烂 JSON 静默弃/多文件 commit 与 push 重试/开关默认 off/手动端点两路，git 与 fetch 全 mock）、`engine.test.ts`（收口后挂点三态）。

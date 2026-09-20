@@ -39,8 +39,9 @@ function sanitizeTitle(s: string): string {
   return s.replace(/[/\\:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'run';
 }
 
-/** 文件名 slug：sanitize + 小写 + 只留字母数字/中文/连字符（llm-wiki 小写连字符约定） */
-function slugify(s: string): string {
+/** 文件名 slug：sanitize + 小写 + 只留字母数字/中文/连字符（llm-wiki 小写连字符约定）；
+ * v11-C1 起 wiki-distill 的主题归一化复用同一把尺子，蒸馏匹配与落盘命名口径一致 */
+export function slugify(s: string): string {
   const out = sanitizeTitle(s)
     .toLowerCase()
     .replace(/[^a-z0-9\u4e00-\u9fa5-]+/g, '-')
@@ -344,29 +345,43 @@ function readIf(p: string): string {
   }
 }
 
-/** 一次落点尝试：同步 → 写页（llm-wiki/<分类>/）→ index/log 记账 → commit → push 默认分支。失败抛错（不吞）。 */
+/** 一次落点尝试：同步 → 写页集（llm-wiki/<分类>/）→ index/log 记账 → commit → push 默认分支。失败抛错（不吞）。
+ * v11-C1：从「一次一页」扩成「一次一组页操作」——蒸馏产出新页/改写页混合，一次 commit 多文件；
+ * 记账沿用 mergeWikiIndex 按 file 去重（改写不增条）与 appendWikiLog 只追加语义。 */
 async function publishAttempt(o: {
   dataDir: string;
   repo: string;
   token: string;
-  page: WikiPageDraft;
+  pages: WikiPageDraft[];
 }): Promise<{ url: string; cacheDir: string; files: string[]; branch: string }> {
   const { branch } = await syncWikiCache({ dataDir: o.dataDir, repo: o.repo, token: o.token, maxAgeMs: 0 });
   const dir = wikiCacheDir(o.dataDir, o.repo);
   const root = path.join(dir, WIKI_ROOT);
-  const pageAbs = path.join(root, o.page.file);
-  fs.mkdirSync(path.dirname(pageAbs), { recursive: true });
-  fs.writeFileSync(pageAbs, o.page.markdown);
-  fs.writeFileSync(path.join(root, 'index.md'), mergeWikiIndex(readIf(path.join(root, 'index.md')), { file: o.page.file, line: o.page.indexEntry }));
-  fs.writeFileSync(path.join(root, 'log.md'), appendWikiLog(readIf(path.join(root, 'log.md')), o.page.logNote));
-  const files = [`${WIKI_ROOT}/${o.page.file}`, `${WIKI_ROOT}/index.md`, `${WIKI_ROOT}/log.md`];
+  let indexText = readIf(path.join(root, 'index.md'));
+  let logText = readIf(path.join(root, 'log.md'));
+  const pageFiles: string[] = [];
+  for (const page of o.pages) {
+    const pageAbs = path.join(root, page.file);
+    fs.mkdirSync(path.dirname(pageAbs), { recursive: true });
+    fs.writeFileSync(pageAbs, page.markdown);
+    indexText = mergeWikiIndex(indexText, { file: page.file, line: page.indexEntry });
+    logText = appendWikiLog(logText, page.logNote);
+    pageFiles.push(`${WIKI_ROOT}/${page.file}`);
+  }
+  fs.writeFileSync(path.join(root, 'index.md'), indexText);
+  fs.writeFileSync(path.join(root, 'log.md'), logText);
+  const files = [...new Set([...pageFiles, `${WIKI_ROOT}/index.md`, `${WIKI_ROOT}/log.md`])];
   await git(['add', '--', ...files], dir);
-  await git(['commit', '-m', `PaneFlow 沉淀: ${o.page.file}`], dir).catch((e: Error) => {
+  const summary =
+    o.pages.length === 1
+      ? `PaneFlow 沉淀: ${o.pages[0]!.file}`
+      : `PaneFlow 沉淀: ${o.pages.length} 页（${o.pages.map((p) => p.file).join('、')}）`;
+  await git(['commit', '-m', summary], dir).catch((e: Error) => {
     if (!/nothing to commit/i.test(e.message)) throw e;
   });
   await git(['push', repoAuthUrl(o.repo, o.token), `HEAD:${branch}`], dir);
   return {
-    url: `https://github.com/${o.repo}/blob/${branch}/${WIKI_ROOT}/${o.page.file}`,
+    url: `https://github.com/${o.repo}/blob/${branch}/${WIKI_ROOT}/${o.pages[0]!.file}`,
     cacheDir: dir,
     files,
     branch,
@@ -374,15 +389,16 @@ async function publishAttempt(o: {
 }
 
 /**
- * Issue #7 发布：落点为主仓 `llm-wiki/` 目录（只吃 Contents 权限，不再依赖 `<repo>.wiki.git`）。
- * push 撞远端前移（交付链刚推过 main）时重同步再试一次，仍失败才抛。
+ * v11-C1 多文件发布：一组页操作（新页/改写混合）一次同步、一次 commit、一次 push。
+ * push 撞远端前移（交付链刚推过 main）时重同步再试一次，仍失败才抛（语义与单页一致）。
  */
-export async function publishWikiPage(o: {
+export async function publishWikiPages(o: {
   dataDir: string;
   repo: string;
   token: string;
-  page: WikiPageDraft;
+  pages: WikiPageDraft[];
 }): Promise<{ url: string; cacheDir: string; files: string[] }> {
+  if (!o.pages.length) return { url: '', cacheDir: wikiCacheDir(o.dataDir, o.repo), files: [] };
   try {
     return await publishAttempt(o);
   } catch (e) {
@@ -390,6 +406,19 @@ export async function publishWikiPage(o: {
     if (!/git push 失败/.test(msg)) throw e;
     return await publishAttempt(o);
   }
+}
+
+/**
+ * Issue #7 发布：落点为主仓 `llm-wiki/` 目录（只吃 Contents 权限，不再依赖 `<repo>.wiki.git`）。
+ * 单页便捷壳——签名对既有调用方（手动点赞路）保持兼容，内部走多页发布。
+ */
+export async function publishWikiPage(o: {
+  dataDir: string;
+  repo: string;
+  token: string;
+  page: WikiPageDraft;
+}): Promise<{ url: string; cacheDir: string; files: string[] }> {
+  return publishWikiPages({ ...o, pages: [o.page] });
 }
 
 // -- K2 读回：本地页挑选 + 摘要 -------------------------------------------------
