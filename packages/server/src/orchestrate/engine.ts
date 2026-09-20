@@ -25,6 +25,7 @@ import { buildConventionBlock, loadRoles, type Role } from './roles.js';
 import { effectiveRules, matchRules } from './rules.js';
 import { buildSkillBlock } from './skills.js';
 import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
+import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
 import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
 import { buildGithubEnv } from '../api/github-cred.js';
 
@@ -45,6 +46,16 @@ export interface EngineOptions {
   maxConcurrentPanes?: number;
   /** AE 自动推荐的探针（默认查本机已装 CLI，60s 缓存）；测试注入以保确定性 */
   recommendAgentKind?: () => Promise<string | null>;
+  /** v11-D1 同一网关主机上允许同时在跑的节点数；0=关闭。缺省 env PF_GW_MAX_CONCURRENT，再缺省 2 */
+  gwMaxConcurrent?: number;
+  /** v11-D1 命中一次网关限流后该主机闸临时收紧的基础窗口（ms）。缺省 env PF_GW_TIGHTEN_MS，再缺省 15000 */
+  gwTightenMs?: number;
+  /** v11-D1 限流退避基数（ms，指数递增封顶 60s）。缺省 env PF_GW_BACKOFF_BASE_MS，再缺省 3000 */
+  gwBackoffBaseMs?: number;
+  /** v11-D1 纯限流失败在节点自身 retryCount 之外的额外重试次数。缺省 env PF_GW_THROTTLE_RETRIES，再缺省 2 */
+  gwThrottleRetries?: number;
+  /** v11-D1 等闸轮询间隔（ms），仅测试调小；生产默认 250 */
+  gwPollMs?: number;
 }
 
 export interface ApprovalAction {
@@ -83,12 +94,23 @@ export class Engine {
   private readonly runQueues = new Map<string, string[]>();
   /** G3 排队 run 随身携带的启动参数（order/续跑黑板），出队即用；重启后从 graph 重算 */
   private readonly pendingLaunches = new Map<string, { order: string[]; preload?: Map<string, Artifact> }>();
+  /** v11-D1：跨 run 共享的按网关主机在途并发闸（第三层限流，与 paneSlots/run 额度取交集） */
+  private readonly gwGate: GwConcurrencyGate;
+  private readonly gwBackoffBaseMs: number;
+  private readonly gwThrottleRetries: number;
 
   constructor(
     private readonly ops: HerdrOps,
     private readonly store: Store,
     private readonly opts: EngineOptions,
   ) {
+    this.gwGate = new GwConcurrencyGate({
+      maxConcurrent: opts.gwMaxConcurrent ?? envInt('PF_GW_MAX_CONCURRENT', 2),
+      tightenMs: Math.max(0, opts.gwTightenMs ?? envInt('PF_GW_TIGHTEN_MS', 15_000)),
+      pollMs: opts.gwPollMs ?? 250,
+    });
+    this.gwBackoffBaseMs = Math.max(0, opts.gwBackoffBaseMs ?? envInt('PF_GW_BACKOFF_BASE_MS', 3_000));
+    this.gwThrottleRetries = Math.max(0, opts.gwThrottleRetries ?? envInt('PF_GW_THROTTLE_RETRIES', 2));
     // surface past runs (from disk, across all spaces) in listings after boot.
     // Runs persisted as 'running' belong to a dead process — their workspaces
     // were reclaimed by the orphan sweep; mark them interrupted.
@@ -163,6 +185,33 @@ export class Engine {
     return run.spaceId ? new Store(this.store.root, run.spaceId) : this.store;
   }
 
+  /**
+   * v11-D5（摩擦账 #13）：run 草稿目录 = <dataDir>/spaces/<space>/runs/drafts/<血缘根 runId>/。
+   * align/受理等草稿型产物一律落这里，不再写用户工作区（cwd git status 保持干净，
+   * 也不再把同仓下一次 startRun 的 R3.3 脏检查挡死）。与 runs/archive 同级，随 run 记录留存。
+   */
+  private ensureDraftDir(spaceId: string | undefined, runKey: string): string {
+    const dir = path.join(this.store.root, 'spaces', spaceId ?? 'default', 'runs', 'drafts', runKey);
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  /**
+   * v11-D5：沿 parentRunId 链上溯到血缘根 run——父子 run 共用一个草稿目录
+   * （受理 run 写好 issue-draft.json，其 pipeline 子 run 的 align 才读得到同一份）。
+   */
+  private draftOwnerRunId(parentRunId?: string): string | undefined {
+    let cur = parentRunId;
+    const seen = new Set<string>();
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      const parent = this.runs.get(cur);
+      if (!parent?.parentRunId) return cur;
+      cur = parent.parentRunId;
+    }
+    return cur;
+  }
+
   /** v9-D2：空间档案钉的网关档 id；未钉/读不到返回 undefined → 网关读侧回落全局 current 档 */
   private gatewayPinFor(run: RunRecord): string | undefined {
     try {
@@ -170,6 +219,21 @@ export class Engine {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * v11-D1：「该 run 走哪个网关」= 生效档（空间钉档优先）baseUrl 的主机键。
+   * 未配/未启用网关、或 baseUrl 解析不了 → null（免闸）。
+   */
+  private gatewayHostFor(run: RunRecord): string | null {
+    const pin = this.gatewayPinFor(run);
+    if (!gatewayActive(this.store.root, pin)) return null;
+    return gatewayHostOf(readGateway(this.store.root, pin).baseUrl);
+  }
+
+  /** v11-D1 诊断/测试：各网关主机闸的在途数与收紧窗截止时刻快照 */
+  gwGateSnapshot(): Record<string, { active: number; cooldownUntil: number; streak: number }> {
+    return this.gwGate.snapshot();
   }
 
   onChange(listener: RunListener): () => void {
@@ -246,7 +310,10 @@ export class Engine {
     if (dirtyErr) throw new Error(dirtyErr);
     // H1：runId 先行生成——内置变量 run_id 注入模板（交付分支名 pf/<run_id> 与守卫期望同源）
     const runId = randomUUID().slice(0, 8);
-    const applied = applyVariables(graph, { run_id: runId, ...variables });
+    // v11-D5：内置变量 draft_dir——dataDir 下的 run 草稿目录（模板声明后才替换，与 run_id 同机制）；
+    // 显式传同名 variables 可覆盖（留调试后门），默认父子 run 共享血缘根目录
+    const draftDir = this.ensureDraftDir(spaceId, this.draftOwnerRunId(opts?.parentRunId) ?? runId);
+    const applied = applyVariables(graph, { run_id: runId, draft_dir: draftDir, ...variables });
     if (applied.missing.length) {
       throw new Error(`缺少必填参数：${applied.missing.join('、')}`);
     }
@@ -968,8 +1035,12 @@ export class Engine {
   private async runAgentNode(run: RunRecord, nodeId: string, blackboard: Map<string, Artifact>): Promise<'done' | 'failed' | 'abort'> {
     const node = run.graph.nodes.find((n) => n.id === nodeId)!;
     const rec = run.nodes[nodeId]!;
-    const maxAttempts = 1 + Math.max(0, node.config.retryCount ?? 0);
+    let maxAttempts = 1 + Math.max(0, node.config.retryCount ?? 0);
     const onFail = node.config.onFail ?? 'abort';
+    // v11-D1：本 run 走网关时按主机限在途并发；限流失败还有专属额外重试预算（不占节点 retryCount）
+    const gwHost = this.gatewayHostFor(run);
+    let throttleBudget = gwHost ? this.gwThrottleRetries : 0;
+    let throttleStreak = 0;
 
     let lastError = '未知错误';
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -982,7 +1053,23 @@ export class Engine {
       }
       this.persistAndNotify(run);
 
-      lastError = await this.attemptNode(run, node.id, blackboard);
+      let gated = false;
+      if (gwHost) {
+        // 起 agent 前领取该主机的在途额度；排不上就地轮询等（可被停止打断），不另起调度器
+        rec.error = `网关限流排队：${gwHost} 在途并发已达上限，等待起窗`;
+        this.persistAndNotify(run);
+        const granted = await this.gwGate.acquire(gwHost, () => this.cancels.has(run.runId));
+        if (!granted) return 'abort';
+        gated = true;
+        rec.error = undefined;
+      }
+      let attemptResult: string;
+      try {
+        attemptResult = await this.attemptNode(run, node.id, blackboard);
+      } finally {
+        if (gated) this.gwGate.release(gwHost!);
+      }
+      lastError = attemptResult;
       if (lastError === 'ok') return 'done';
       if (this.cancels.has(run.runId)) return 'abort';
 
@@ -990,8 +1077,41 @@ export class Engine {
       rec.error = lastError;
       rec.finishedAt = new Date().toISOString();
       this.persistAndNotify(run);
+
+      if (gwHost && looksLikeGatewayThrottle(lastError)) {
+        throttleStreak += 1;
+        // 命中限流：该主机闸临时收紧——后续起窗错峰，别在同一刻再撞整点 503
+        const tightenMs = this.gwGate.penalize(gwHost);
+        if (attempt >= maxAttempts && throttleBudget > 0) {
+          throttleBudget -= 1;
+          maxAttempts = attempt + 1;
+        }
+        if (attempt < maxAttempts) {
+          const backoffMs = Math.min(this.gwBackoffBaseMs * 2 ** (throttleStreak - 1), 60_000);
+          this.recordEvent(
+            run,
+            'node',
+            nodeId,
+            `检测到网关限流（429/503）：${gwHost} 闸收紧 ${tightenMs}ms 错峰，退避 ${backoffMs}ms 后重试`,
+          );
+          if (!(await this.cancellableSleep(backoffMs, run))) return 'abort';
+        }
+      } else {
+        throttleStreak = 0;
+      }
     }
     return onFail === 'continue' ? 'failed' : 'abort';
+  }
+
+  /** 退避等待：期间停止指令可打断（返回 false = 已取消），不把人质在睡眠里 */
+  private async cancellableSleep(ms: number, run: RunRecord): Promise<boolean> {
+    const endAt = Date.now() + ms;
+    for (;;) {
+      if (this.cancels.has(run.runId)) return false;
+      const left = endAt - Date.now();
+      if (left <= 0) return true;
+      await sleep(Math.min(100, left));
+    }
   }
 
   /** One full attempt: pane → agent → ready → prompt → (approval) → artifact. */

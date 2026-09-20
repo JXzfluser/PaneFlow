@@ -324,7 +324,7 @@ const issueTriage: DagGraph = {
       agent(
         'triage',
         '创建 Issue 并建议模板',
-        '基于探索结论 {{explore.artifact.summary}}：\n1. 把需求整理为规范 Issue（背景/目标/验收标准/风险），将草稿写入文件 issue-draft.json，然后用 shell 调用本地编排服务创建（确定性，无需 gh 登录）：`curl -s -X POST http://127.0.0.1:4310/api/github/create-issue -H "Content-Type: application/json" -d @issue-draft.json`；记录返回 JSON 里的 number 与 url；\n2. 在结果文件的 extra.suggestedTemplate 写入建议的交付模板名（只能从以下精确 ID 中选：builtin-bug-fix-pipeline / builtin-parallel-module-dev / builtin-standard-dev-flow / builtin-role-team-review；都不合适才写 builtin-generic-issue-delivery）；\n3. 把 issue 编号写入 extra.issue_id。探索详情：{{explore.artifact.output}}',
+        '基于探索结论 {{explore.artifact.summary}}：\n草稿落点约定（cwd 只读）：issue-draft.json 等一切草稿/临时文件只准写引擎注入的 run 草稿目录 {{draft_dir}}（已创建），严禁落进工作目录（git 仓库）——那会弄脏用户工作区并挡死同仓后续 run。\n1. 把需求整理为规范 Issue（背景/目标/验收标准/风险），将草稿写入 {{draft_dir}}/issue-draft.json，然后用 shell 调用本地编排服务创建（确定性，无需 gh 登录）：`curl -s -X POST http://127.0.0.1:4310/api/github/create-issue -H "Content-Type: application/json" -d @{{draft_dir}}/issue-draft.json`；记录返回 JSON 里的 number 与 url，并把 number 回填进 {{draft_dir}}/issue-draft.json（下游 align 兜底读它）；\n2. 在结果文件的 extra.suggestedTemplate 写入建议的交付模板名（只能从以下精确 ID 中选：builtin-bug-fix-pipeline / builtin-parallel-module-dev / builtin-standard-dev-flow / builtin-role-team-review；都不合适才写 builtin-generic-issue-delivery）；\n3. 把 issue 编号写入 extra.issue_id。探索详情：{{explore.artifact.output}}',
         { retryCount: 2, onFail: 'abort' },
       ),
       {
@@ -351,7 +351,10 @@ const issueTriage: DagGraph = {
       e('e4', 'route', 'end'),
     ],
   ),
-  variables: [{ key: 'brief', label: '需求描述（一句话）', required: false }],
+  variables: [
+    { key: 'brief', label: '需求描述（一句话）', required: false },
+    { key: 'draft_dir', label: '本 run 草稿目录（引擎内置注入绝对路径，草稿禁落 cwd）', required: false },
+  ],
 };
 
 /** 通用兜底：对齐（断言注入）→ 方案拆解（断言映射）→ 动态扇出并行实现（断言自测）→ 汇总 → 验收断言核对 → 归档收口（守卫+推前人工门）→ 交付出网 push+PR */
@@ -360,15 +363,16 @@ const genericDeliveryNodes: DagGraph['nodes'] = [
   agent(
     'align',
     '需求对齐 + 验收断言注入',
-    '你负责「需求对齐 + 验收断言注入」。围绕该 Issue（编号 {{issue_id}}，可能为空）做：\n' +
-      '1. 读取本地需求源 issue-draft.json（在工作目录；含 背景/目标/验收标准/风险，由受理阶段起草）。若文件缺失，则以运行参数中的任务描述「{{task}}」为需求来源生成骨架（{{task}} 为空时按 Issue 标题／当前工作目录上下文推断），并落盘为 issue-draft.json。\n' +
-      '2. 把需求拆解为显式、可测试的验收断言：每条断言为 AC-N 编号 + 可验证断言 + 验证方法。就地覆写 issue-draft.json 的「验收标准」小节为编号断言面（保留其余小节）：\n' +
+    '你负责「需求对齐 + 验收断言注入」。草稿落点约定（cwd 只读）：本 run 的一切草稿/临时文件只准写引擎注入的草稿目录 {{draft_dir}}（已创建），严禁在任务工作目录（git 仓库）里丢 issue-draft 等临时文件——那会弄脏用户工作区并挡死同仓后续 run。\n' +
+      '围绕该 Issue（编号 {{issue_id}}，可能为空）做：\n' +
+      '1. 读取需求草稿 {{draft_dir}}/issue-draft.json（含 背景/目标/验收标准/风险，由受理阶段起草；受理 run 与本 run 同血缘共享该目录）。若文件缺失，则以运行参数中的任务描述「{{task}}」为需求来源生成骨架（{{task}} 为空时按 Issue 标题／当前工作目录上下文推断），并落盘为 {{draft_dir}}/issue-draft.json。\n' +
+      '2. 把需求拆解为显式、可测试的验收断言：每条断言为 AC-N 编号 + 可验证断言 + 验证方法。就地覆写 {{draft_dir}}/issue-draft.json 的「验收标准」小节为编号断言面（保留其余小节）：\n' +
       'AC-1：<可验证断言>（验证方法：<方法>）\n' +
       'AC-2：<可验证断言>（验证方法：<方法>）\n' +
       '...（N 通常 3-10 条，须覆盖需求全部关键点、可被下游实现/核对客观判定）\n' +
       '3. 构造远程 Issue 完整正文（背景/目标/验收标准/风险，验收标准用上面的 AC-N 断言面），用 shell 调本地编排服务的 update-issue 端点就地更新远程 Issue 正文（确定性、无需 gh 登录，省略 repo 时用已配置默认仓库）：\n' +
       'curl -s -X PATCH http://127.0.0.1:4310/api/github/update-issue -H "Content-Type: application/json" -d \'{"number":<issue 编号>,"body":"<完整正文>"}\'\n' +
-      'issue 编号取 {{issue_id}}，为空则回退读 issue-draft.json 中的 number 字段；两者都拿不到就跳过远程更新（不改动远程 Issue）。远程更新失败不阻断交付，把原因记入结果文件 errors。\n' +
+      'issue 编号取 {{issue_id}}，为空则回退读 {{draft_dir}}/issue-draft.json 中的 number 字段；两者都拿不到就跳过远程更新（不改动远程 Issue）。远程更新失败不阻断交付，把原因记入结果文件 errors。\n' +
       '4. 结果文件写：summary=断言清单（Markdown 编号列表，每行 AC-N：<断言>（验证方法：<方法>），下游 plan/impl/verify 都照抄此清单）、extra.acceptance=[{id:"AC-1",assertion:"...",verify_method:"..."},...]（与 Markdown 面一一对应）、aligned=true。仍不确定的点可写入 extra.questions 并置 aligned=false 进入澄清轮。',
     { clarify: { maxRounds: 3 }, onFail: 'abort' },
   ),
@@ -447,6 +451,7 @@ const genericDelivery: DagGraph = {
     { key: 'issue_id', label: '主 Issue 编号', required: false },
     { key: 'task', label: '任务描述（智能下发注入）', required: false },
     { key: 'run_id', label: '运行编号（引擎内置注入，交付分支名同源）', required: false },
+    { key: 'draft_dir', label: '本 run 草稿目录（引擎内置注入绝对路径，草稿禁落 cwd）', required: false },
   ],
 };
 

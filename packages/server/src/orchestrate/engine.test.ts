@@ -2155,3 +2155,255 @@ describe('v11-D3 run 状态分级（completed-with-failures）', () => {
     expect(engine.stopRun(run.runId)).toBe(false); // 已结束不可再停：与 completed 同路
   });
 });
+
+/**
+ * v11-D1 网关感知限流（摩擦账 #10）：注入 503 的 mock 网关回归——
+ * 排队（按主机闸串行）→ 错峰重放（收紧窗）→ 收口。
+ */
+describe('v11-D1 网关感知限流（闸 + 退避错峰）', () => {
+  function enableFreeGateway() {
+    fs.writeFileSync(
+      path.join(dataDir, 'gateway.json'),
+      JSON.stringify({ baseUrl: 'http://gw-limit.local:4444/', apiKey: 'sk-test', enabled: true }),
+    );
+  }
+  /** 包一层 startAgent：记录每次起窗时刻；只对命中谓词的首次起窗注入 503（重试同名判定不可靠——agent 名带全局序号） */
+  function spyStarts(throttleMatch?: (name: string) => boolean): { name: string; at: number }[] {
+    const orig = ops.startAgent.bind(ops);
+    const starts: { name: string; at: number }[] = [];
+    let matched = 0;
+    ops.startAgent = async (paneId, name, kind, args) => {
+      starts.push({ name, at: Date.now() });
+      if (throttleMatch?.(name) && ++matched === 1) {
+        throw new Error('herdr: agent.start rejected: gateway responded HTTP 503 Service Unavailable');
+      }
+      await orig(paneId, name, kind, args);
+    };
+    return starts;
+  }
+
+  it('排队：网关闸 cap=1 时三分支并行节点串行起窗（与 pane 额度取交集）', async () => {
+    enableFreeGateway();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d1-q-'));
+    ops.promptDelayMs = 120;
+    engine = new Engine(ops, store, { ...OPTS, maxConcurrentPanes: 8, gwMaxConcurrent: 1, gwPollMs: 10 });
+    const run = await runToCompletion(fanoutGraph(), cwd);
+    expect(run.state).toBe('completed');
+    expect(ops.maxConcurrent).toBe(1); // pane 给到 8 也全走闸排队
+    for (const id of ['fa', 'fb', 'fc']) expect(run.nodes[id]!.state).toBe('done');
+    expect(engine.gwGateSnapshot()['gw-limit.local:4444']!.active).toBe(0); // 收口后无在途残留
+  });
+
+  it('免闸：未配网关的 run 不受主机闸影响', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d1-ngw-'));
+    ops.promptDelayMs = 120;
+    engine = new Engine(ops, store, { ...OPTS, maxConcurrentPanes: 8, gwMaxConcurrent: 1, gwPollMs: 10 });
+    const run = await runToCompletion(fanoutGraph(), cwd);
+    expect(run.state).toBe('completed');
+    expect(ops.maxConcurrent).toBe(3);
+  });
+
+  it('退避重放：起窗即吃 503 → 限流专属额外重试 + 退避后成功收口', async () => {
+    enableFreeGateway();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d1-bo-'));
+    const starts = spyStarts((name) => name.includes('-impl-'));
+    engine = new Engine(ops, store, {
+      ...OPTS,
+      gwMaxConcurrent: 2,
+      gwPollMs: 10,
+      gwBackoffBaseMs: 30,
+      gwTightenMs: 60,
+    });
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['impl']!.state).toBe('done');
+    expect(run.nodes['impl']!.attempts).toBe(2); // retryCount=0 也吃限流专属预算
+    expect(starts.filter((s) => s.name.includes('-impl-'))).toHaveLength(2);
+    expect(run.events?.some((e) => e.text.includes('检测到网关限流（429/503）'))).toBe(true);
+    expect(run.events?.some((e) => e.text.includes('第 1 次重试'))).toBe(true);
+  });
+
+  it('错峰：一次 503 后同网关后续起窗被收紧窗推迟（不挤在同一时刻重放）', async () => {
+    enableFreeGateway();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d1-st-'));
+    const starts = spyStarts((name) => name.includes('-fa-'));
+    engine = new Engine(ops, store, {
+      ...OPTS,
+      maxConcurrentPanes: 8,
+      gwMaxConcurrent: 2,
+      gwPollMs: 10,
+      gwBackoffBaseMs: 40,
+      gwTightenMs: 400,
+    });
+    ops.promptDelayMs = 150;
+    const run = await runToCompletion(fanoutGraph(), cwd);
+    expect(run.state).toBe('completed');
+    const t0 = starts.find((s) => s.name.includes('-fa-'))!.at;
+    expect(starts).toHaveLength(4); // fa 两次起窗 + fb/fc 各一次
+    // 闸 cap=2：与 fa 首批同窗的一个节点照常起，其余两次（fa 重放 + 被挡的）落在 400ms 收紧窗之后
+    const late = starts.filter((s) => s.at - t0 >= 300);
+    const early = starts.filter((s) => s.at - t0 < 300);
+    expect(early).toHaveLength(2);
+    expect(late).toHaveLength(2);
+    for (const id of ['fa', 'fb', 'fc']) expect(run.nodes[id]!.state).toBe('done');
+  });
+
+  it('PF_GW_MAX_CONCURRENT=0：显式关闸，网关 run 不再被额外串行化', async () => {
+    enableFreeGateway();
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d1-off-'));
+    process.env.PF_GW_MAX_CONCURRENT = '0';
+    try {
+      ops.promptDelayMs = 120;
+      const e2 = new Engine(ops, store, { ...OPTS, maxConcurrentPanes: 8, gwPollMs: 10 });
+      const run = await e2.startRun(fanoutGraph(), cwd);
+      await waitFor(() => e2.getRun(run.runId)!.state !== 'running');
+      expect(e2.getRun(run.runId)!.state).toBe('completed');
+      expect(ops.maxConcurrent).toBe(3);
+    } finally {
+      delete process.env.PF_GW_MAX_CONCURRENT;
+    }
+  });
+});
+
+/**
+ * v11-D5（摩擦账 #13）：run 草稿落点移出 cwd——引擎内置变量 draft_dir 解析为
+ * <dataDir>/spaces/<space>/runs/drafts/<血缘根 runId>/（启动即建目录），
+ * 父子 run 沿 parentRunId 血缘共享同一份；草稿永不落 run 的 working directory。
+ */
+describe('v11-D5 run 草稿落点（draft_dir 内置变量）', () => {
+  /** 单 agent 节点图：prompt 用哨兵包住 {{draft_dir}}，解析后可精确捕获落点 */
+  function draftGraph(name: string, marker: string): DagGraph {
+    const g = serialGraph();
+    g.name = name;
+    g.variables = [{ key: 'draft_dir', label: '本 run 草稿目录', required: false }];
+    g.nodes[1]!.config.prompt = `${marker}→{{draft_dir}}|end。参考 {{design.artifact.summary}}`;
+    return g;
+  }
+  const re = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  function draftDirOf(promptWithMarker: string | undefined, marker: string): string {
+    expect(promptWithMarker, `prompt 应含标记 ${marker}`).toBeTruthy();
+    const m = promptWithMarker!.match(new RegExp(`${re(marker)}→([^|]+)\\|`));
+    expect(m, 'prompt 里 draft_dir 应已解析为绝对路径').not.toBeNull();
+    return m![1]!;
+  }
+  function promptOf(marker: string): string {
+    const p = ops.prompts.find((x) => x.text.includes(`${marker}→`));
+    expect(p, `ops 应收到含标记 ${marker} 的 prompt`).toBeTruthy();
+    return p!.text;
+  }
+
+  it('节点 prompt 的 {{draft_dir}} 解析为 dataDir 下真实存在的 run 草稿目录，无裸占位符残留', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d5-'));
+    const run = await runToCompletion(draftGraph('d5-root', 'ROOT'), cwd);
+    expect(run.state).toBe('completed');
+    const dir = draftDirOf(promptOf('ROOT'), 'ROOT');
+    expect(dir).toBe(path.join(dataDir, 'spaces', 'default', 'runs', 'drafts', run.runId));
+    expect(fs.statSync(dir).isDirectory()).toBe(true); // 引擎启动即 mkdir，agent 落笔即可用
+    expect(ops.prompts[0]!.text).not.toContain('{{draft_dir}}');
+  });
+
+  it('非默认空间：草稿目录落在该空间分区下', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d5-space-'));
+    const run = await engine.startRun(draftGraph('d5-space', 'SP'), cwd, 'beta');
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(draftDirOf(promptOf('SP'), 'SP')).toBe(path.join(dataDir, 'spaces', 'beta', 'runs', 'drafts', run.runId));
+  });
+
+  it('父子血缘：带 parentRunId 的子 run（及其子）与血缘根共享同一草稿目录，父写的草稿文件子可见', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d5-lineage-'));
+    const parent = await runToCompletion(draftGraph('d5-parent', 'PAR'), cwd);
+    const parentDir = draftDirOf(promptOf('PAR'), 'PAR');
+    // 模拟受理阶段落稿：issue-draft.json 写进血缘根草稿目录
+    fs.writeFileSync(path.join(parentDir, 'issue-draft.json'), JSON.stringify({ title: '血缘草稿' }));
+
+    const childRun = await engine.startRun(draftGraph('d5-child', 'CHI'), cwd, undefined, undefined, undefined, undefined, {
+      parentRunId: parent.runId,
+    });
+    expect(childRun.parentRunId).toBe(parent.runId);
+    await waitFor(() => engine.getRun(childRun.runId)!.state !== 'running');
+    const childDir = draftDirOf(promptOf('CHI'), 'CHI');
+    expect(childDir).toBe(parentDir); // 不是自己的目录：上溯到血缘根
+    expect(fs.existsSync(path.join(childDir, 'issue-draft.json'))).toBe(true);
+
+    // 孙辈继续上溯到同一血缘根
+    const grand = await engine.startRun(draftGraph('d5-grand', 'GRA'), cwd, undefined, undefined, undefined, undefined, {
+      parentRunId: childRun.runId,
+    });
+    expect(grand.parentRunId).toBe(childRun.runId);
+    await waitFor(() => engine.getRun(grand.runId)!.state !== 'running');
+    expect(draftDirOf(promptOf('GRA'), 'GRA')).toBe(parentDir);
+  });
+
+  it.each([
+    { tag: 'plain', name: 'd5-inv-a', make: () => fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d5-inv-')) },
+    {
+      tag: 'repo',
+      name: 'd5-inv-b',
+      make: () => {
+        const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d5-inv-repo-'));
+        execFileSync('git', ['init', '-q', d]);
+        return d;
+      },
+    },
+  ])('核心不变式（#13）：draft_dir 永不落在 run 的 cwd 之内（$tag 工作目录）', async ({ name, make }) => {
+    const cwd = make();
+    await runToCompletion(draftGraph(name, 'INV'), cwd);
+    const dir = draftDirOf(promptOf('INV'), 'INV');
+    expect(dir).not.toBe(cwd);
+    expect(dir.startsWith(cwd + path.sep)).toBe(false);
+    expect(dir.startsWith(path.join(dataDir, 'spaces'))).toBe(true);
+    // 草稿型 run 走完 cwd 无草稿产物（.gitignore 是既有运行卫生守护的写入，非草稿）
+    expect(fs.readdirSync(cwd).filter((f) => !['.git', '.gitignore'].includes(f))).toEqual([]);
+    if (name === 'd5-inv-b') {
+      const status = execFileSync('git', ['-C', cwd, 'status', '--porcelain']).toString().trim();
+      expect(status === '' || status === '?? .gitignore').toBe(true);
+    }
+  });
+
+  it('模板未声明 draft_dir：占位符原样保留（与 run_id 同机制）并挂 G2 未解析告警，不炸 run', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d5-und-'));
+    const g = serialGraph();
+    g.name = 'd5-undeclared';
+    g.nodes[1]!.config.prompt = '草稿写进 {{draft_dir}}';
+    const run = await runToCompletion(g, cwd);
+    expect(run.state).toBe('completed');
+    expect(ops.prompts[0]!.text).toContain('{{draft_dir}}'); // applyVariables 只替换已声明变量
+    expect(run.events?.some((e) => e.text.includes('引用未解析') && e.text.includes('draft_dir'))).toBe(true);
+  });
+
+  it('内置模板口径：triage/align 声明并只准往 draft_dir 写草稿；其余模板不再出现 issue-draft 约定', () => {
+    const triage = BUILTIN_TEMPLATES.find((t) => t.name === 'builtin-issue-triage')!;
+    const delivery = BUILTIN_TEMPLATES.find((t) => t.name === 'builtin-generic-issue-delivery')!;
+    for (const t of [triage, delivery]) {
+      expect((t.variables ?? []).some((v) => v.key === 'draft_dir'), t.name).toBe(true);
+    }
+    const triagePrompt = triage.nodes.find((n) => n.id === 'triage')!.config.prompt!;
+    const alignPrompt = delivery.nodes.find((n) => n.id === 'align')!.config.prompt!;
+    expect(triagePrompt).toContain('只准写引擎注入的 run 草稿目录 {{draft_dir}}');
+    expect(triagePrompt).toContain('{{draft_dir}}/issue-draft.json');
+    expect(alignPrompt).toContain('只准写引擎注入的草稿目录 {{draft_dir}}');
+    expect(alignPrompt).toContain('{{draft_dir}}/issue-draft.json');
+    // 旧口径（草稿在工作目录）清零
+    expect(alignPrompt).not.toContain('在工作目录');
+    for (const t of BUILTIN_TEMPLATES) {
+      if (t === triage || t === delivery) continue;
+      expect(JSON.stringify(t.nodes), `${t.name} 不应再有 issue-draft 草稿约定`).not.toContain('issue-draft');
+    }
+  });
+
+  it('真跑内置 generic-delivery：align 节点 prompt 带解析后的 draft_dir 绝对路径，工作目录零写入', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-d5-live-'));
+    const tmpl = BUILTIN_TEMPLATES.find((t) => t.name === 'builtin-generic-issue-delivery')!;
+    const run = await engine.startRun(tmpl, cwd, 'default', { task: '给导出模块加空值兜底' });
+    await waitFor(() => ops.prompts.some((p) => p.target.includes('align')));
+    const align = ops.prompts.find((p) => p.target.includes('align'))!;
+    const dir = path.join(dataDir, 'spaces', 'default', 'runs', 'drafts', run.runId);
+    expect(align.text).toContain(`只准写引擎注入的草稿目录 ${dir}（已创建）`);
+    expect(align.text).toContain(`${dir}/issue-draft.json`);
+    expect(align.text).not.toContain('{{draft_dir}}');
+    expect(fs.statSync(dir).isDirectory()).toBe(true);
+    expect(fs.readdirSync(cwd).filter((f) => f !== '.gitignore')).toEqual([]); // cwd 只读：草稿全在 draft_dir
+    engine.stopRun(run.runId);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+  });
+});
