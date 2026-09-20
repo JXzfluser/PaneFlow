@@ -72,17 +72,55 @@ export function latestAssertionResults(run: RunRecord): { id: string; status: st
   return best;
 }
 
-/** 绿 run 判据（K3 宁缺毋滥的门面）：completed + 全节点 done + 无兜底产物 + 断言无 fail */
-export function publishableRun(run: RunRecord | undefined): { ok: boolean; reason?: string } {
+/** v11-C2：正门（绿沉淀）与反面教材侧门两种发布通道 */
+export type WikiPublishKind = 'green' | 'counterexample';
+
+/**
+ * v11-C2 沉淀门（宁缺毋滥的门面，fail-closed）。绿门与侧门共用同一 {ok, reason} 语义面。
+ * - kind='green'（正门，缺省）：completed + 全节点非兜底 + 断言**≥1 条 status=ok**
+ *   且无 fail——0 条、全没跑、只有 n/a 一律拒：断言没跑≠绿（钻空收口，摩擦账 #17）。
+ * - kind='counterexample'（反面教材侧门）：只收带失败收口的单（failed /
+ *   completed-with-failures）；能过正门的绿单一律拒走侧门——侧门只准沉淀教训，
+ *   不准给正页贴反例标签，两门互斥。
+ */
+export function publishableRun(
+  run: RunRecord | undefined,
+  kind: WikiPublishKind = 'green',
+): { ok: boolean; reason?: string } {
   if (!run) return { ok: false, reason: '找不到该 run' };
-  // v11-D3：带失败收口的单不沉淀——宁缺毋滥对「有失败节点」同样成立，明示拒绝语免得误读
+  if (kind === 'counterexample') {
+    const greenPass = publishableRun(run, 'green');
+    if (greenPass.ok)
+      return { ok: false, reason: '这单能过正门（绿 + 断言有实打实的通过），请直接走正门，别贴反面教材标签' };
+    if (run.state !== 'failed' && run.state !== 'completed-with-failures')
+      return {
+        ok: false,
+        reason: `只有带失败收口的单（failed / completed-with-failures）能走反面教材侧门（当前状态：${run.state}）`,
+      };
+    return { ok: true };
+  }
+  // v11-D3：带失败收口的单不沉淀正页——宁缺毋滥对「有失败节点」同样成立，明示拒绝语免得误读（教训走侧门）
   if (run.state === 'completed-with-failures')
-    return { ok: false, reason: '本单收口时带有失败节点（completed-with-failures），宁缺毋滥不沉淀' };
+    return {
+      ok: false,
+      reason: '本单收口时带有失败节点（completed-with-failures），宁缺毋滥不沉淀；确有教训可带 kind=counterexample 走反面教材侧门',
+    };
   if (run.state !== 'completed') return { ok: false, reason: `只有跑完且绿的单能沉淀（当前状态：${run.state}）` };
   const nodes = Object.values(run.nodes);
   if (nodes.some((n) => n.unverified)) return { ok: false, reason: '有节点的产物来自终端兜底（未经验证），不沉淀' };
-  const failed = latestAssertionResults(run).filter((r) => r.status === 'fail');
+  const results = latestAssertionResults(run);
+  const failed = results.filter((r) => r.status === 'fail');
   if (failed.length) return { ok: false, reason: `验收断言有 ${failed.length} 条未过，不沉淀` };
+  // v11-C2 fail-closed：断言行必须 ≥1 条 status=ok 才放行——「没跑」不是「通过」的同义词
+  const passed = results.filter((r) => r.status === 'ok').length;
+  if (passed === 0) {
+    return {
+      ok: false,
+      reason: results.length
+        ? `断言 ${results.length} 条里 0 条实打实通过（全没跑/仅 n/a 不算绿）——断言没跑≠绿，不沉淀`
+        : '本单没有跑过任何验收断言（0 条结果），断言没跑≠绿，不沉淀',
+    };
+  }
   return { ok: true };
 }
 
@@ -90,25 +128,29 @@ export function publishableRun(run: RunRecord | undefined): { ok: boolean; reaso
  * 纯函数：run → llm-wiki 页。七字段 frontmatter（title/type/tags/created/updated/
  * sources/confidence，缺省有确定兜底）+ pf-* 溯源扩展键 + 断言表 + 节点结论 + 经验账本 + 双链；
  * 附 index 条目与 log 记录两条记账字符串。
+ * v11-C2：`kind:'counterexample'`（反面教材侧门页）——同风格三特征：frontmatter
+ * `confidence: low`、正文页首一行固定 `> ⚠ 反面教材…` 警示、index 条目带 ⚠ 前缀；
+ * 旧调用不传 kind 行为不变（正门页）。
  */
 export function renderWikiPage(
   run: RunRecord,
-  opts: { repo: string; now?: string; type?: WikiType },
+  opts: { repo: string; now?: string; type?: WikiType; kind?: WikiPublishKind },
 ): WikiPageDraft {
   const now = opts.now ?? new Date().toISOString();
   const type: WikiType = opts.type ?? 'summary';
+  const counter = opts.kind === 'counterexample';
   const slug = `${slugify(run.dagName)}-${run.runId.slice(-6).toLowerCase()}`;
   const file = `${WIKI_DIRS[type]}/${slug}.md`;
   const pageTitle = fmVal(`${run.dagName}（run ${run.runId}）`);
   const results = latestAssertionResults(run);
   const sources = [`paneflow:run/${run.runId}`, `repo:${opts.repo}`, `dag:${fmVal(run.dagName)}`];
   if (run.prUrl) sources.push(fmVal(run.prUrl));
-  const confidence = results.length && results.every((r) => r.status === 'ok') ? 'high' : 'medium';
+  const confidence = counter ? 'low' : results.length && results.every((r) => r.status === 'ok') ? 'high' : 'medium';
   const lines: string[] = [];
   lines.push('---');
   lines.push(`title: "${pageTitle}"`);
   lines.push(`type: ${type}`);
-  lines.push(`tags: [paneflow, run-record${run.spaceId ? `, ${fmVal(run.spaceId)}` : ''}]`);
+  lines.push(`tags: [paneflow, run-record${run.spaceId ? `, ${fmVal(run.spaceId)}` : ''}${counter ? ', counterexample' : ''}]`);
   lines.push(`created: ${run.startedAt || now}`);
   lines.push(`updated: ${now}`);
   lines.push(`sources: [${sources.map((s) => `"${s}"`).join(', ')}]`);
@@ -121,9 +163,18 @@ export function renderWikiPage(
   lines.push(`pf-published: ${now}`);
   lines.push('---');
   lines.push('');
+  if (counter) {
+    // 反面教材侧门：正文页首一行固定警示，读者第一眼就知道这页只能避坑不能照抄
+    lines.push(`> ⚠ 反面教材：本单（run \`${run.runId}\`）带失败收口（${fmVal(run.state)}），此页只沉淀教训供避坑，结论与做法不可照抄。同类单子看 [[${sanitizeTitle(run.dagName)}]]，总入口 [[Home]]。`);
+    lines.push('');
+  }
   lines.push(`# ${run.dagName}（run \`${run.runId}\`）`);
   lines.push('');
-  lines.push(`> 本页由 PaneFlow 从一条绿 run 自动沉淀。同类单子看 [[${sanitizeTitle(run.dagName)}]]，总入口 [[Home]]。`);
+  lines.push(
+    counter
+      ? `> 本页由 PaneFlow 从一条带失败的 run 显式沉淀为教训页（confidence: low）。`
+      : `> 本页由 PaneFlow 从一条绿 run 自动沉淀。同类单子看 [[${sanitizeTitle(run.dagName)}]]，总入口 [[Home]]。`,
+  );
   lines.push('');
   lines.push('## 任务与交付');
   lines.push(`- 工作目录：\`${run.cwd}\``);
@@ -168,7 +219,8 @@ export function renderWikiPage(
   return {
     file,
     markdown: lines.join('\n'),
-    indexEntry: `- [${pageTitle}](${file}) —— ${digest}（run \`${run.runId}\`，${now.slice(0, 10)}）`,
+    // 侧门页 index 条目带 ⚠ 前缀；条目面不变（`](file)` 仍在），mergeWikiIndex 按 file 去重语义不变
+    indexEntry: `- ${counter ? '⚠ ' : ''}[${pageTitle}](${file}) —— ${digest}（run \`${run.runId}\`，${now.slice(0, 10)}）`,
     logNote: `- ${now} · run \`${run.runId}\` → \`${file}\`（${digest}）`,
   };
 }
@@ -347,6 +399,11 @@ export interface WikiPage {
   file: string;
   title: string;
   text: string;
+  /**
+   * v11-C2 读回降权用：frontmatter confidence 原文（high|medium|low）。
+   * 旧页无 confidence 或解析不到 → undefined，视为正页（兼容读）。
+   */
+  confidence?: string;
 }
 
 const PAGE_CAP = 64;
@@ -392,8 +449,10 @@ export function readWikiPages(dataDir: string, repo: string): WikiPage[] {
     }
     const fm = text.startsWith('---\n') ? /^---\n([\s\S]*?)\n---/.exec(text)?.[1] : undefined;
     const fmTitle = fm ? /^title:\s*["']?(.+?)["']?\s*$/m.exec(fm)?.[1]?.trim() : undefined;
+    // v11-C2：读 confidence 做降权；旧页无此键 → undefined 视为正页（兼容读）
+    const confidence = fm ? /^confidence:\s*["']?([A-Za-z]+)["']?\s*$/m.exec(fm)?.[1]?.toLowerCase() : undefined;
     const body = text.replace(/^---[\s\S]*?---\n?/, '');
-    return { file: rel, title: fmTitle || titleFromPath(rel), text: body };
+    return { file: rel, title: fmTitle || titleFromPath(rel), text: body, confidence };
   });
 }
 
@@ -401,7 +460,12 @@ function tokens(q: string): string[] {
   return (q.toLowerCase().match(/[a-z0-9_]+|[\u4e00-\u9fa5]{2,8}/g) ?? []).filter((t) => t.length >= 2);
 }
 
-/** 与需求文本相关度 top-N：标题命中加权，正文按出现次数；无命中返回空（宁缺毋滥） */
+/** v11-C2：反面教材页（confidence: low）读回降权系数——相关度折半但绝不丢 */
+const LOW_CONFIDENCE_PENALTY = 0.5;
+
+/** 与需求文本相关度 top-N：标题命中加权，正文按出现次数；无命中返回空（宁缺毋滥）。
+ * v11-C2：`confidence: low` 的反面教材页排序靠后（相关度折半 + 同分正页优先），
+ * 但唯一相关的反例仍会被选中——它就是经验；命中时在 label 上明示反面教材身份。 */
 export function pickWikiExcerpts(
   pages: WikiPage[],
   query: string,
@@ -423,17 +487,21 @@ export function pickWikiExcerpts(
           score += 1;
         }
       }
-      return { p, score };
+      const low = p.confidence === 'low';
+      return { p, score, effective: low ? score * LOW_CONFIDENCE_PENALTY : score, low };
     })
     .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.effective - a.effective || Number(a.low) - Number(b.low))
     .slice(0, limit);
-  return scored.map(({ p }) => {
+  return scored.map(({ p, low }) => {
     const para =
       p.text
         .split(/\n\s*\n/)
         .map((s) => s.trim())
         .find((s) => s && !s.startsWith('#') && !s.startsWith('>')) ?? p.text.trim();
-    return { label: `wiki 沉淀页（${p.file}）`, text: clip(para.replace(/\n+/g, ' '), 240) };
+    const label = low
+      ? `wiki 沉淀页·反面教材（低置信：来自带失败的 run，只作避坑教训，勿照抄）（${p.file}）`
+      : `wiki 沉淀页（${p.file}）`;
+    return { label, text: clip(para.replace(/\n+/g, ' '), 240) };
   });
 }

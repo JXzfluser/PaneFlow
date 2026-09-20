@@ -140,6 +140,113 @@ describe('v9-K3 publishableRun 门（宁缺毋滥）', () => {
     };
     expect(publishableRun(failedAssertion).reason).toContain('未过');
   });
+
+  it('v11-C2 正门 fail-closed：断言 0 条通过一律拒（没跑≠绿），≥1 条 ok 才放行', () => {
+    // 首驾 ba2751bf 钻空场景：completed 但 0/6 断言「没跑」——无断言行照拒
+    const neverRan = greenRun();
+    neverRan.nodes.verify!.artifact!.extra = {};
+    const v1 = publishableRun(neverRan);
+    expect(v1.ok).toBe(false);
+    expect(v1.reason).toContain('断言没跑≠绿');
+    expect(v1.reason).toContain('没有跑过任何验收断言');
+    // 只有 n/a（等价没跑）也拒
+    const allNa = greenRun();
+    allNa.nodes.verify!.artifact!.extra = {
+      assertionResults: [
+        { id: 'AC-1', status: 'n/a', evidence: '没法验' },
+        { id: 'AC-2', status: 'n/a', evidence: '跳过' },
+      ],
+    };
+    const v2 = publishableRun(allNa);
+    expect(v2.ok).toBe(false);
+    expect(v2.reason).toContain('0 条实打实通过');
+    expect(v2.reason).toContain('断言没跑≠绿');
+    // 1 ok + 1 n/a：有实打实通过的行，放行（宁缺毋滥门对部分绿仍由 fail 判据把住）
+    const oneOk = greenRun();
+    oneOk.nodes.verify!.artifact!.extra = {
+      assertionResults: [
+        { id: 'AC-1', status: 'ok', evidence: '截图无差' },
+        { id: 'AC-2', status: 'n/a', evidence: '环境缺 e2e' },
+      ],
+    };
+    expect(publishableRun(oneOk).ok).toBe(true);
+  });
+
+  it('v11-C2 completed-with-failures：正门拒并指路侧门', () => {
+    const v = publishableRun(greenRun({ state: 'completed-with-failures' }));
+    expect(v.ok).toBe(false);
+    expect(v.reason).toContain('completed-with-failures');
+    expect(v.reason).toContain('counterexample');
+  });
+
+  it('v11-C2 反面教材侧门两向：failed / completed-with-failures 可走；绿单不许走侧门', () => {
+    // 侧门收 failed（哪怕 0 条断言跑过——教训不要求绿）
+    const failed = greenRun({ state: 'failed' });
+    failed.nodes.verify!.artifact!.extra = {
+      assertionResults: [{ id: 'AC-2', status: 'fail', evidence: '用例红' }],
+    };
+    expect(publishableRun(failed, 'counterexample').ok).toBe(true);
+    // 正门对它关着（两向之一：failed 进不了正门）
+    expect(publishableRun(failed).ok).toBe(false);
+    // 侧门收 completed-with-failures
+    expect(publishableRun(greenRun({ state: 'completed-with-failures' }), 'counterexample').ok).toBe(true);
+    // 两向之二：能过正门的绿单不许走侧门（只准进侧门不准混进正门的对偶——反例标签不许贴正页）
+    const cwGreen = publishableRun(greenRun(), 'counterexample');
+    expect(cwGreen.ok).toBe(false);
+    expect(cwGreen.reason).toContain('正门');
+    // running 之类的中间态两边都进不去
+    expect(publishableRun(greenRun({ state: 'running' }), 'counterexample').reason).toContain('侧门');
+    expect(publishableRun(undefined, 'counterexample').reason).toContain('找不到');
+  });
+});
+
+describe('v11-C2 反面教材侧门页三特征（frontmatter low / 正文首行警示 / index ⚠）', () => {
+  function failedRun() {
+    const run = greenRun({ runId: 'run-fail99', state: 'failed' });
+    run.nodes.verify!.artifact!.extra = {
+      assertionResults: [
+        { id: 'AC-1', status: 'ok', evidence: '自测过了' },
+        { id: 'AC-2', status: 'fail', evidence: '终审红：processed=1 < 2' },
+      ],
+    };
+    return run;
+  }
+
+  it('特征一+二+三齐；断言表/记账面复用不变', () => {
+    const { file, markdown, indexEntry, logNote } = renderWikiPage(failedRun(), {
+      repo: 'me/app',
+      now: '2026-09-19T03:00:00Z',
+      kind: 'counterexample',
+    });
+    // 一：frontmatter confidence: low + counterexample 标签
+    expect(markdown).toContain('confidence: low');
+    expect(markdown).toContain('tags: [paneflow, run-record, demo, counterexample]');
+    // 二：正文页首一行固定警示
+    const body = markdown.replace(/^---[\s\S]*?---\n+/, '');
+    expect(body.split('\n')[0]).toMatch(/^> ⚠ 反面教材/);
+    // 三：index 条目 ⚠ 前缀，条目面复用（`](file)` 仍在，mergeWikiIndex 去重语义不变）
+    expect(indexEntry.startsWith('- ⚠ [')).toBe(true);
+    expect(indexEntry).toContain(`](${file})`);
+    expect(mergeWikiIndex('- ⚠ [旧](summaries/x.md) —— a', { file: 'summaries/y.md', line: indexEntry })).toContain('⚠');
+    // 同页重复沉淀：index 按 file 原位替换，不产生第二条 ⚠ 条目
+    const again = `- ⚠ [再沉淀](${file}) —— 1/2 条验收通过（重发）`;
+    const dedup = mergeWikiIndex(`${indexEntry}\n`, { file, line: again });
+    expect(dedup.split(`](${file})`).length - 1).toBe(1);
+    expect(dedup).toContain('重发');
+    expect(dedup).not.toContain('run `run-fail99`，');
+    // log 照记（同面）
+    expect(logNote).toContain('run `run-fail99`');
+    expect(logNote).toContain('1/2 条验收通过');
+    // 同风格：断言表把 fail 摆在页上
+    expect(markdown).toContain('❌ fail');
+  });
+
+  it('正门页（缺省 kind）三特征一概不带——旧行为零回归', () => {
+    const { markdown, indexEntry } = renderWikiPage(greenRun(), { repo: 'me/app' });
+    expect(markdown).toContain('confidence: high');
+    expect(markdown).not.toContain('⚠');
+    expect(indexEntry.startsWith('- ⚠')).toBe(false);
+  });
 });
 
 describe('v9-K1 checkRepoVisibility', () => {
@@ -197,6 +304,106 @@ describe('v9-K2 + Issue #7 wiki 读回（只认主仓 llm-wiki/ 子树，嵌套+
     const hits = pickWikiExcerpts(pages, 'checkout 部署 流程');
     expect(hits.length).toBeGreaterThanOrEqual(1);
     expect(hits.some((h) => h.label.includes('summaries/'))).toBe(true);
+  });
+});
+
+// -- v11-C2 路由侧门门：kind 解析 + 两向校验（真 push 链路仍留实机，门在可见性检查前） ----
+describe('v11-C2 POST /api/wiki/publish kind 门', () => {
+  async function inject(dir: string, run: RunRecord, payload: Record<string, unknown>) {
+    const { app } = await buildServer(dir, run);
+    try {
+      return await app.inject({ method: 'POST', url: '/api/wiki/publish', payload });
+    } finally {
+      await app.close();
+    }
+  }
+
+  it('0-pass 拒正门；failed 进不了正门/能过侧门校验；绿单不许走侧门；非法 kind 400', async () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'github.json'), JSON.stringify({ token: 'ghp_t', defaultRepo: 'me/app' }));
+    // 正门 fail-closed：completed 但断言一条没跑 → 400「断言没跑≠绿」
+    const neverRan = greenRun();
+    neverRan.nodes.verify!.artifact!.extra = {};
+    const r1 = await inject(dir, neverRan, { runId: 'run-abc123' });
+    expect(r1.statusCode).toBe(400);
+    expect(r1.json().error).toContain('断言没跑≠绿');
+    // failed 走正门 → 400（两向之一）
+    const failed = greenRun({ state: 'failed' });
+    const r2 = await inject(dir, failed, { runId: 'run-abc123' });
+    expect(r2.statusCode).toBe(400);
+    expect(r2.json().error).toContain('绿的单');
+    // failed 走侧门：过门校验，随后撞可见性查询（fetch stub private 后才会真 push——这里只 stub 401，
+    // 证明门已放行、请求推进到可见性步）——两向之二
+    vi.stubGlobal('fetch', (async () => ({ ok: false, status: 401, json: async () => ({}), text: async () => 'Bad credentials' })) as unknown as typeof fetch);
+    try {
+      const r3 = await inject(dir, failed, { runId: 'run-abc123', kind: 'counterexample' });
+      expect(r3.statusCode).toBe(502); // 门已过，死于查可见性（零真 git/网络推送）
+      expect(r3.json().error).toContain('查仓库可见性失败');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    // 绿单不许走侧门（只准进侧门不准进正门的对偶互斥校验）
+    const r4 = await inject(dir, greenRun(), { runId: 'run-abc123', kind: 'counterexample' });
+    expect(r4.statusCode).toBe(400);
+    expect(r4.json().error).toContain('正门');
+    // 非法 kind
+    const r5 = await inject(dir, greenRun(), { runId: 'run-abc123', kind: 'lesson' });
+    expect(r5.statusCode).toBe(400);
+    expect(r5.json().error).toContain('counterexample');
+  });
+});
+// -- v11-C2 读回降权：confidence: low 页排序靠后但不丢；旧页无 confidence 视为正页 ----
+describe('v11-C2 wiki 读回降权（反面教材页排序靠后、唯一反例不丢、旧页兼容）', () => {
+  const page = (file: string, title: string, text: string, confidence?: string) => ({ file, title, text, confidence });
+
+  it('同分正页优先；低分正页仍压过高命中反例（折半降权）；只有一页反例照样入选且 label 明示', () => {
+    const green = page('summaries/g.md', '登录页样式', '登录页 登录页 样式 修法讲登录页样式。');
+    const counter = page('summaries/c.md', '登录页样式', '登录页 登录页 样式 教训讲登录页样式。', 'low');
+    // 同分：正页在前
+    const same = pickWikiExcerpts([counter, green], '登录页 样式', 2);
+    expect(same.map((h) => h.label)).toEqual(['wiki 沉淀页（summaries/g.md）', expect.stringContaining('反面教材')]);
+    // 反例命中更多（多次出现）也被折半压到正页后
+    const noisyCounter = page('summaries/c2.md', '登录页样式', '登录页 登录页 登录页 登录页 登录页 登录页 登录页 登录页 样式。', 'low');
+    const weakGreen = page('summaries/g2.md', '登录页', '正文：登录页 登录页 登录页 登录页 样式。');
+    const mixed = pickWikiExcerpts([noisyCounter, weakGreen], '登录页 样式', 2);
+    expect(mixed[0]!.label).toContain('summaries/g2.md');
+    expect(mixed[1]!.label).toContain('反面教材');
+    expect(mixed[1]!.label).toContain('勿照抄');
+    // 只有一页反例：别丢——它可能就是唯一相关经验
+    const only = pickWikiExcerpts([counter], '登录页 样式');
+    expect(only).toHaveLength(1);
+    expect(only[0]!.label).toContain('summaries/c.md');
+    // 无命中的反例照旧宁缺毋滥
+    expect(pickWikiExcerpts([counter], '完全无关的zzq词')).toEqual([]);
+  });
+
+  it('readWikiPages 写/兼容读：新页 confidence 入字段；旧页（无 confidence/无 frontmatter 键）视为正页不降权', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wiki-low-'));
+    const repo = 'me/app';
+    const root = path.join(wikiCacheDir(dir, repo), 'llm-wiki');
+    fs.mkdirSync(path.join(root, 'summaries'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'summaries', '登录页样式-反例-ab12cd.md'),
+      '---\ntitle: "踩坑（run r-1）"\nconfidence: low\ntags: [paneflow, run-record, counterexample]\n---\n\n> ⚠ 反面教材：带失败收口。\n\n# 踩坑\n\n正文：登录页样式的失败教训。',
+    );
+    fs.writeFileSync(
+      path.join(root, 'summaries', '登录页样式-正例-ef3456.md'),
+      '---\ntitle: "绿单（run r-2）"\nconfidence: high\n---\n\n# 绿单\n\n正文：登录页样式的成功修法。',
+    );
+    // 旧页：Issue #6 时代 frontmatter 没有 confidence——兼容读，视为正页
+    fs.writeFileSync(
+      path.join(root, '旧扁平沉淀页.md'),
+      '---\ntitle: "旧页（run r-0）"\n---\n\n旧页正文也讲登录页样式。',
+    );
+    const pages = readWikiPages(dir, repo);
+    expect(pages.find((p) => p.file.includes('反例'))!.confidence).toBe('low');
+    expect(pages.find((p) => p.file.includes('正例'))!.confidence).toBe('high');
+    expect(pages.find((p) => p.file === '旧扁平沉淀页.md')!.confidence).toBeUndefined();
+    // 反例与旧页同分：旧页（正页面）排前，反例排后但不丢
+    const hits = pickWikiExcerpts(pages, '登录页 样式', 3);
+    expect(hits).toHaveLength(3);
+    expect(hits[2]!.label).toContain('反例');
+    expect(hits.slice(0, 2).every((h) => !h.label.includes('反面教材'))).toBe(true);
   });
 });
 

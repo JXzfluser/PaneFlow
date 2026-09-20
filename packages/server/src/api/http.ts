@@ -43,6 +43,7 @@ import {
   renderWikiPage,
   syncWikiCache,
   wikiCacheDir,
+  type WikiPublishKind,
 } from './wiki.js';
 
 interface CreateIssueBody {
@@ -903,15 +904,22 @@ export async function buildHttpServer(deps: HttpDeps) {
   });
 
   // -- v9-K1/K3 + Issue #7 wiki 沉淀：绿 run + 点赞（手动触发）→ push 到主仓 llm-wiki/ 目录 ----
+  // v11-C2：正门 fail-closed（断言 ≥1 条 ok 才算绿）；body 带 kind:'counterexample' 走
+  // 反面教材侧门——只收 failed / completed-with-failures 的单，页 frontmatter confidence:low、
+  // 正文首行 ⚠ 警示、index 条目 ⚠ 前缀；绿门可过的单不许走侧门（两门互斥）。
 
-  app.post<{ Body: { runId?: string; repo?: string; confirm?: boolean } }>(
+  app.post<{ Body: { runId?: string; repo?: string; confirm?: boolean; kind?: string } }>(
     '/api/wiki/publish',
     async (req, reply) => {
       const gh = readGithubSettings(deps.dataDir);
       const token = await ghTokenOrNull();
       if (!token) return reply.code(400).send({ error: `${NO_CRED}；沉淀到仓库 llm-wiki/ 目录需要对目标仓有写权限` });
+      const rawKind = String(req.body?.kind ?? 'green');
+      if (rawKind !== 'green' && rawKind !== 'counterexample')
+        return reply.code(400).send({ error: `kind 只支持 green / counterexample（收到：${rawKind}）` });
+      const kind: WikiPublishKind = rawKind;
       const run = deps.engine.getRun(String(req.body?.runId ?? ''));
-      const verdict = publishableRun(run);
+      const verdict = publishableRun(run, kind);
       if (!verdict.ok) return reply.code(400).send({ error: verdict.reason });
       const repo = String(req.body?.repo ?? gh.defaultRepo ?? '');
       if (!repo.includes('/')) return reply.code(400).send({ error: '缺少目标仓库（设置页配默认仓库，或请求带 repo）' });
@@ -930,9 +938,9 @@ export async function buildHttpServer(deps: HttpDeps) {
         });
       }
       try {
-        const page = renderWikiPage(run!, { repo });
+        const page = renderWikiPage(run!, { repo, kind });
         const r = await publishWikiPage({ dataDir: deps.dataDir, repo, token, page });
-        return { ok: true, file: page.file, url: r.url, visibility };
+        return { ok: true, file: page.file, url: r.url, visibility, kind };
       } catch (e) {
         return reply.code(502).send({ error: `wiki 推送失败：${(e as Error).message}` });
       }
