@@ -16,6 +16,7 @@ export type {
   RunCost,
   NodeCost,
   NodeRunRecord,
+  WikiReadbackTrace,
   TemplateVariable,
   CheckSpec,
 } from './dag.js';

@@ -398,6 +398,19 @@ export interface RunRecord {
   contract?: RunContract;
   /** H1 交付出口：wrapup/deliver 回写 extra.pr_url 后引擎捕获至此（运行卡绿灯判据） */
   prUrl?: string;
+  /** v11-C3a wiki 读回注入留痕（C3b 页↔run 回链的数据源；缺省=本次没注入/没读回） */
+  wikiReadback?: WikiReadbackTrace;
+}
+
+/**
+ * v11-C3a 注入留痕：本次 run 按哪个目标仓的本地 llm-wiki 缓存，给哪些节点注入了哪些页。
+ * pages.file 相对 `llm-wiki/` 落点根（与 publish 侧同源），title 供展示；
+ * 只记**实际进了 prompt** 的页（预算裁掉的尾巴不入账）。
+ */
+export interface WikiReadbackTrace {
+  /** 目标仓 owner/repo（run cwd 的 origin 优先，回落契约/默认仓） */
+  repo: string;
+  nodes: { nodeId: string; pages: { file: string; title: string }[] }[];
 }
 
 export interface RunEvent {

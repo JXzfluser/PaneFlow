@@ -15,6 +15,7 @@ import type {
   RunRecord,
   RunCost,
   NodeCost,
+  WikiReadbackTrace,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
@@ -27,7 +28,17 @@ import { buildSkillBlock } from './skills.js';
 import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
 import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
-import { buildGithubEnv } from '../api/github-cred.js';
+import { buildGithubEnv, readGithubSettings } from '../api/github-cred.js';
+import {
+  buildReadbackBlock,
+  isReadbackTarget,
+  loadReadbackPages,
+  makeWikiCacheRefresher,
+  rankReadbackPages,
+  readbackEnabled,
+  readbackQuery,
+  resolveRunRepo,
+} from './readback.js';
 
 export interface EngineOptions {
   workspaceLabelPrefix: string;
@@ -56,6 +67,10 @@ export interface EngineOptions {
   gwThrottleRetries?: number;
   /** v11-D1 等闸轮询间隔（ms），仅测试调小；生产默认 250 */
   gwPollMs?: number;
+  /** v11-C3a wiki 读回注入开关；缺省回落 env PF_WIKI_READBACK，两者皆缺=on（理由见 readback.ts） */
+  wikiReadback?: 'on' | 'off';
+  /** v11-C3a wiki 缓存后台刷新（默认 resolveGithubToken+syncWikiCache；测试注入以绝网络） */
+  wikiCacheRefresh?: (repo: string) => Promise<void>;
 }
 
 export interface ApprovalAction {
@@ -365,6 +380,10 @@ export class Engine {
         expNodeTarget = expNode.id;
       }
     }
+    // v11-C3a wiki 读回注入：plan/impl 类 agent 节点起笔前，把目标仓本地 llm-wiki/ 缓存
+    // 里词面相关的 top-k 摘录附进 prompt 尾部。只读现成缓存（零网络），缺仓/缺缓存静默跳过；
+    // 必须在 RunRecord 创建前做——graph 会被 structuredClone 进记录，留痕与实注入同源。
+    const wikiReadback = this.planWikiReadback(graph, cwd, opts?.contract?.repo);
     const nodes: Record<string, NodeRunRecord> = {};
     for (const n of graph.nodes) {
       nodes[n.id] = { nodeId: n.id, state: 'pending', attempts: 0 };
@@ -382,6 +401,7 @@ export class Engine {
       startedAt: new Date().toISOString(),
       ...(variables && Object.keys(variables).length ? { variables: { ...variables } } : {}),
       ...(opts?.contract ? { contract: opts.contract } : {}),
+      ...(wikiReadback ? { wikiReadback } : {}),
     };
     this.runs.set(runId, run);
     this.recordEvent(run, 'run', undefined, `运行启动：${graph.name}（${order.length} 个节点）`);
@@ -391,6 +411,17 @@ export class Engine {
         'run',
         expNodeTarget,
         `经验注入（I2 v0，仅变量层）：沿用同模板绿 run ${experience.runId} 的实填变量/断言 ${experience.contract?.assertions.length ?? 0} 条/成本画像，已附入「${expNodeTarget}」上下文；全局关闭=项目档案 experienceInjection=false`,
+      );
+    }
+    if (wikiReadback) {
+      const detail = wikiReadback.nodes
+        .map((n) => `${n.nodeId}←${n.pages.map((p) => p.file).join('、')}`)
+        .join('；');
+      this.recordEvent(
+        run,
+        'run',
+        undefined,
+        `沉淀读回（C3a）：目标仓 ${wikiReadback.repo} 的本地 llm-wiki 缓存已注入 ${wikiReadback.nodes.length} 个节点（${detail}）；开关=env PF_WIKI_READBACK`,
       );
     }
     if (unresolved.length) {
@@ -600,6 +631,56 @@ export class Engine {
       `· 成本画像：${costLine}`,
       `——以上是历史经验参考，不是本单需求；不要因为「上次这么干过」就照抄路径。`,
     ].join('\n');
+  }
+
+  /**
+   * v11-C3a：wiki 读回注入（照 I2 同款姿势——startRun 前对 graph 节点 prompt 动刀）。
+   * 与 I2 的差别：经验块进首个 agent 节点、全局一份；读回块进每个 plan/impl 类节点、
+   * 按各节点任务词面各挑各的 top-k。返回注入留痕（RunRecord.wikiReadback，C3b 数据源）。
+   */
+  private planWikiReadback(graph: DagGraph, cwd: string, contractRepo?: string): WikiReadbackTrace | undefined {
+    try {
+      if (!readbackEnabled(this.opts.wikiReadback)) return undefined;
+      const repo = resolveRunRepo({
+        cwd,
+        contractRepo,
+        defaultRepo: readGithubSettings(this.store.root).defaultRepo,
+      });
+      if (!repo) return undefined;
+      // 起跑异步刷一次缓存（唯一触网路径，失败静默）：本次吃现成的，下次吃新鲜的
+      void this.refreshWikiReadbackCache(repo);
+      const pages = loadReadbackPages(this.store.root, repo);
+      if (!pages.length) return undefined;
+      const traceNodes: WikiReadbackTrace['nodes'] = [];
+      for (const n of graph.nodes) {
+        if (!isReadbackTarget(n)) continue;
+        const ranked = rankReadbackPages(pages, readbackQuery(n));
+        if (!ranked.length) continue;
+        const { block, used } = buildReadbackBlock(ranked);
+        if (!block) continue;
+        n.config.prompt = `${n.config.prompt}\n\n${block}`;
+        traceNodes.push({ nodeId: n.id, pages: used.map((p) => ({ file: p.file, title: p.title })) });
+      }
+      return traceNodes.length ? { repo, nodes: traceNodes } : undefined;
+    } catch {
+      // 读回是纯加分项：任何意外都不许把 run 起跑挡下来
+      return undefined;
+    }
+  }
+
+  /** 同仓刷新去重（在途即不再起第二个 clone/fetch）；测试注入 wikiCacheRefresh 以避开真实网络 */
+  private readonly wikiRefreshing = new Set<string>();
+
+  private async refreshWikiReadbackCache(repo: string): Promise<void> {
+    if (this.wikiRefreshing.has(repo)) return;
+    this.wikiRefreshing.add(repo);
+    try {
+      await (this.opts.wikiCacheRefresh ?? makeWikiCacheRefresher(this.store.root))(repo);
+    } catch {
+      // 静默：刷不动就继续吃旧缓存
+    } finally {
+      this.wikiRefreshing.delete(repo);
+    }
   }
 
   stopRun(runId: string): boolean {
