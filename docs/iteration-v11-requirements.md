@@ -95,5 +95,11 @@ R1 范围膨胀→批次全为还债/补链无新表面；R2 关键路径长→C
 | D1 网关限流 | `6eb98fe` | mock 503 注入回归 15 例（排队→退避重放→错峰收口）；env 五旋钮 PF_GW_*；覆盖面如实声明（吞错的超时路径不认，闸恒生效兜底）|
 | D5 草稿落点 | `6eb98fe` | draft_dir 内置变量+血缘共享+prompt 新旧口径静态测试 8 例；实机：两内置模板重播带 draft_dir（副本已备份 .bak-v11d5）|
 | D4 孤儿漏网 | — | 未开工：需实机复现漏网形态（gate0），列入波次后续 |
+| C2 沉淀门 fail-closed+反例侧门 | `1879192` | 两向 8 例（能过绿门者拒贴反例标签 / failed 只走侧门）；反例页三特征+读回降权各有测试；摩擦账 #17 门疑点收口 |
+| C5 推前预览+卡片 | `e936ccc` | server 6 例（fetch 桩零调用证网络红线）+web 7 例；弹层废 409→confirm→重发三段舞改直渲 |
+| C3a 读回注入 | `5e698f4` | readback 13 例（开关两态/留痕与盘上一致/多节点分挑/刷新去重）；PF_WIKI_READBACK 默认 on；C4 A/B 留两态显式 |
+| C1 蒸馏+旧页改写 | `fe4c86b` | 16 例（破烂 JSON/超时=空操作集、index 按 file 去重不增条=C1 核心验收）；自动直推默认 off（PF_WIKI_DISTILL），手动蒸馏路待 C4 实证再放 |
+| C3b 引用回链 | `864bc39` | 实机：GET /api/wiki/state 每页 citedBy+顶层 citedRunCount 已回形；10+1 例（per-run set 去重/repo 隔离/盘上回落/改写并集）；pf-cited-by 定为非权威展示字段（schema 文档落注），权威计数在读时聚合 |
+| E1 replay+实验元数据+收数表 | `864bc39` | 实机：replay 400/404 门、experiments 空表直呈、CLI 三态（0 参退 1/404 透传/暂无文案）；单测 16 例（穿透锁+血缘+透明性事件/收数建档竞态用 'ax' 排他/create-vs-append/写炸静默）；真 replay 起单→收数全链未实机跑（会动真 agent 花网关配额），恰是 C4 的第一夜 |
 
-（多智能体批次一：2026-09-20，server 346 测试+tsc+web build 净；D5 实现者断线由收尾 agent 盘点补完，摩擦账 #19。第二批未开工项按批次序：C2→C5→C3a→C1→C3b→E1。）
+（多智能体批次一：2026-09-20，server 346 测试+tsc+web build 净；D5 实现者断线由收尾 agent 盘点补完，摩擦账 #19。第二批（C2→C5→C3a→C1→C3b→E1）2026-09-21 收口：C3b/E1 双实现 agent 二度断线后按协议转收尾 agent 直接补完（摩擦账 #20），server 413+cli 30+web 57 全绿、tsc、web build 净、实机冒烟如上两行。第三批 C4 开工条件已齐：读回默认 on + 蒸馏手动路 + replay 带 suite 收数。）
