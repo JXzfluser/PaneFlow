@@ -103,3 +103,10 @@ R1 范围膨胀→批次全为还债/补链无新表面；R2 关键路径长→C
 | E1 replay+实验元数据+收数表 | `864bc39` | 实机：replay 400/404 门、experiments 空表直呈、CLI 三态（0 参退 1/404 透传/暂无文案）；单测 16 例（穿透锁+血缘+透明性事件/收数建档竞态用 'ax' 排他/create-vs-append/写炸静默）；真 replay 起单→收数全链未实机跑（会动真 agent 花网关配额），恰是 C4 的第一夜 |
 
 （多智能体批次一：2026-09-20，server 346 测试+tsc+web build 净；D5 实现者断线由收尾 agent 盘点补完，摩擦账 #19。第二批（C2→C5→C3a→C1→C3b→E1）2026-09-21 收口：C3b/E1 双实现 agent 二度断线后按协议转收尾 agent 直接补完（摩擦账 #20），server 413+cli 30+web 57 全绿、tsc、web build 净、实机冒烟如上两行。第三批 C4 开工条件已齐：读回默认 on + 蒸馏手动路 + replay 带 suite 收数。）
+
+（C4 开夜前置清单，2026-09-21 按用户裁决「今晚只收口，待选题」列备。C4 状态=**待用户选题**——PaneFlow/llm-wiki 两仓 open issue 盘点无小修活，任务源需新立）：
+1. **选题**：同一真仓 3 条同类小修（单跑 20~40 分钟量级、可机检断言——文档坏链/空值兜底/日志文案级），立成 issue 走 issue 派发路（C3a 读回按 run cwd 归属仓查缓存，仓必须是真的）。
+2. **A/B 切换仪式**：`PF_WIKI_READBACK=off|on` 是进程级 env——每臂开跑前重启 server（先 `lsof -nP -iTCP:4310` 认 PID，确认 /api/queue 无活跃单再杀）；arm 标签由起单人打，收数不认嘴。
+3. **起单**：首臂 `paneflow dispatch "<任务>" --repo <r> --issue <n>` 跑绿后 `paneflow replay <runId> --times 1 --suite c4 --arm a/b` 复用同契约；同 issue 两臂勿重叠窗口（replay 穿透 R3.4 锁，双开自己撞自己）。
+4. **收数**：`paneflow experiments --suite c4` 直读表格（断言 pass/total、重试、墙钟自动落行）；两臂各 ≥3 单才有最低分母。
+5. **护栏**：PF_MAX_PANES=3 顶住免费档 fanout 503（摩擦账 #10）；审批门必须人批；结论写 gate0 风格文档，不达标就明说复利未成立。
