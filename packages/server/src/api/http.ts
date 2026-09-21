@@ -7,6 +7,7 @@ import type { DagGraph, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
+import { listExperimentRows } from '../orchestrate/experiment.js';
 import type { SpaceProfile, TeamMember } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { loadContractLibrary, matchContractTemplate, renderContractTemplateBlock } from '../orchestrate/contract-templates.js';
@@ -34,6 +35,7 @@ import {
 } from './github-cred.js';
 import { maskCandidate, readSwitcherFile } from './switcher-import.js';
 import {
+  aggregateWikiCitations,
   checkRepoVisibility,
   pickWikiExcerpts,
   publishWikiPage,
@@ -43,9 +45,10 @@ import {
   renderWikiPage,
   syncWikiCache,
   wikiCacheDir,
+  type WikiCitationIndex,
   type WikiPublishKind,
 } from './wiki.js';
-import { buildDistillPreview } from './wiki-distill.js';
+import { buildDistillPreview, readStoredRunRecords } from './wiki-distill.js';
 
 interface CreateIssueBody {
   title: string;
@@ -977,7 +980,9 @@ export async function buildHttpServer(deps: HttpDeps) {
         });
       }
       try {
-        const page = renderWikiPage(run!, { repo, kind });
+        // v11-C3b：推送顺带 pf-cited-by（读时聚合的展示血缘，无引用则省略键）
+        const cites = aggregateWikiCitations(deps.engine.listRuns(), repo);
+        const page = renderWikiPage(run!, { repo, kind, citations: cites.byFile });
         const r = await publishWikiPage({ dataDir: deps.dataDir, repo, token, page });
         return { ok: true, file: page.file, url: r.url, visibility, kind };
       } catch (e) {
@@ -1013,7 +1018,9 @@ export async function buildHttpServer(deps: HttpDeps) {
           ? { ok: false as const, reason: '缺少目标仓库（设置页配默认仓库，或请求带 repo）' }
           : gate;
       if (!verdict.ok) return { gate: verdict, kind, page: null, repo, ...(visibility ? { visibility } : {}) };
-      const page = renderWikiPage(run, { repo, kind });
+      // v11-C3b：预览与真实推送同渲染路（带 pf-cited-by），所见即所推
+      const cites = aggregateWikiCitations(deps.engine.listRuns(), repo);
+      const page = renderWikiPage(run, { repo, kind, citations: cites.byFile });
       return {
         gate: verdict,
         kind,
@@ -1040,13 +1047,20 @@ export async function buildHttpServer(deps: HttpDeps) {
     if (!repo.includes('/')) return reply.code(400).send({ error: '缺少目标仓库（设置页配默认仓库，或请求带 repo）' });
     const token = await ghTokenOrNull();
     if (!token) return reply.code(400).send({ error: `${NO_CRED}；蒸馏需读目标仓 llm-wiki/ 的最新 concept 页清单` });
-    const r = await buildDistillPreview({ dataDir: deps.dataDir, run, repo, token }, { sync: deps.wikiDistillSync });
+    // v11-C3b：手动预览路与自动路同口径带引用聚合（deps.citations 显式注入，纯本地零网络）
+    const cites = aggregateWikiCitations(deps.engine.listRuns(), repo);
+    const r = await buildDistillPreview(
+      { dataDir: deps.dataDir, run, repo, token },
+      { sync: deps.wikiDistillSync, citations: cites.byFile },
+    );
     if (r.error) return reply.code(502).send({ error: r.error });
     return { ok: true, repo, gate: { ok: true }, entries: r.entries, ops: r.ops };
   });
 
   // -- v10-X wiki 沉淀可见化：状态只读本地缓存（零网络）；sync 显式拉远端最新 ------
 
+  // v11-C3b：引用回链——页的 citedBy 在**读时**由 run 留痕（wikiReadback）聚合而来，
+  // 零新增写路径、零网络；archive/ 下的归档单不在 listRuns 口径里，与主列表同语义。
   const wikiState = (repo: string) => {
     let syncedAt = '';
     try {
@@ -1054,9 +1068,21 @@ export async function buildHttpServer(deps: HttpDeps) {
     } catch {
       syncedAt = '';
     }
-    const pages = readWikiPages(deps.dataDir, repo).map((p) => ({ file: p.file, title: p.title }));
+    const cites = aggregateWikiCitations(deps.engine.listRuns(), repo);
+    const pages = readWikiPages(deps.dataDir, repo).map((p) => ({
+      file: p.file,
+      title: p.title,
+      citedBy: cites.byFile[p.file] ?? [],
+    }));
     // v11-C0：带 branch（前端拼 blob 链接要用）；无缓存回退 'main'
-    return { repo, branch: readWikiCacheBranch(deps.dataDir, repo), pageCount: pages.length, pages, syncedAt };
+    return {
+      repo,
+      branch: readWikiCacheBranch(deps.dataDir, repo),
+      pageCount: pages.length,
+      pages,
+      citedRunCount: cites.citedRunCount,
+      syncedAt,
+    };
   };
 
   app.get<{ Querystring: { repo?: string } }>('/api/wiki/state', async (req, reply) => {
@@ -1398,7 +1424,7 @@ export async function buildHttpServer(deps: HttpDeps) {
     },
   );
 
-  app.get<{ Querystring: { archived?: string } }>('/api/runs', async (req) => {
+  app.get<{ Querystring: { archived?: string; suite?: string; arm?: string } }>('/api/runs', async (req) => {
     if (req.query.archived === '1') {
       // v7-A2：跨空间收集归档记录
       const runs = Store.listSpaces(deps.dataDir)
@@ -1406,7 +1432,11 @@ export async function buildHttpServer(deps: HttpDeps) {
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
       return { runs };
     }
-    return { runs: deps.engine.listRuns() };
+    // v11-E1b：实验过滤（?suite=&arm=，只窄化不改既有语义；无参数行为不变）
+    let runs = deps.engine.listRuns();
+    if (req.query.suite) runs = runs.filter((r) => r.experiment?.suite === req.query.suite);
+    if (req.query.arm) runs = runs.filter((r) => r.experiment?.arm === req.query.arm);
+    return { runs };
   });
 
   app.get<{ Params: { id: string } }>('/api/runs/:id', async (req, reply) => {
@@ -1435,6 +1465,47 @@ export async function buildHttpServer(deps: HttpDeps) {
     const run = deps.engine.getRun(req.params.id);
     if (!run) return reply.code(404).send({ error: 'not found' });
     return { runId: run.runId, events: run.events ?? [] };
+  });
+
+  // -- v11-E1a/b 同契约 replay + 实验元数据 --------------------------------------
+  // 复跑实验最小三片的第一片：取原 run 在册 graph/变量重新起单（可 N 份），
+  // 豁免只穿透 R3.4 同 issue 幂等锁且仅 replay 显式发起——普通 dispatch 撞锁语义一丝不变。
+  // 不建 UI、不做统计、不做调度（v11 明确不做清单）。
+
+  app.post<{ Params: { id: string }; Body: { times?: number | string; suite?: string; arm?: string; flag?: string } }>(
+    '/api/runs/:id/replay',
+    async (req, reply) => {
+      const raw = req.body?.times === undefined ? 1 : Number(req.body.times);
+      if (!Number.isInteger(raw) || raw < 1 || raw > 20) {
+        return reply.code(400).send({ error: 'times 需为 1~20 的整数（与批量派发同尺度）' });
+      }
+      const meta = { suite: req.body?.suite, arm: req.body?.arm, flag: req.body?.flag };
+      const runs: { runId: string; state: string }[] = [];
+      for (let i = 0; i < raw; i++) {
+        try {
+          const r = await deps.engine.replayRun(req.params.id, meta);
+          runs.push({ runId: r.runId, state: r.state });
+        } catch (e) {
+          const msg = (e as Error).message;
+          // 第一份就失败 → 4xx 指路；半路失败 → 已起的如实返回 + error 说明
+          if (!runs.length) {
+            const code = msg.includes('找不到') ? 404 : 400;
+            return reply.code(code).send({ error: msg });
+          }
+          return { runs, error: `第 ${runs.length + 1}/${raw} 份起单失败：${msg}` };
+        }
+      }
+      return { runs };
+    },
+  );
+
+  // v11-E1c 收数表只读表达面：直读 dataDir/experiments/（零网络零解析加工，够 CLI 用即止）
+  app.get<{ Querystring: { suite?: string; runId?: string } }>('/api/experiments', async (req) => {
+    const tables = await listExperimentRows(deps.dataDir, {
+      ...(req.query.suite ? { suite: req.query.suite } : {}),
+      ...(req.query.runId ? { runId: req.query.runId } : {}),
+    });
+    return { tables };
   });
 
   // R5.1 归档（记录保留、移出主列表）——落盘必须走 run 所属空间的 store，否则非默认空间的记录会被复制而非移动

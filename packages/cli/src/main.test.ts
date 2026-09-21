@@ -135,6 +135,55 @@ describe('runs / status / approve', () => {
   });
 });
 
+describe('replay / experiments（v11-E1）', () => {
+  it('replay：--times/--suite/--arm/--flag 原样进 body，人读列每份复跑单', async () => {
+    const payload = { runs: [{ runId: 'a1', state: 'running' }, { runId: 'a2', state: 'running' }] };
+    const { fetchImpl, calls } = stubFetch([{ body: payload }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['replay', 'src-9', '--times', '2', '--suite', 'c4', '--arm', 'a', '--url', 'http://x:1'], io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://x:1/api/runs/src-9/replay');
+    expect(calls[0]!.init.method).toBe('POST');
+    expect(JSON.parse(calls[0]!.init.body!)).toEqual({ times: 2, suite: 'c4', arm: 'a' });
+    const out = lines.join('\n');
+    expect(out).toContain('✔ 复跑已起 a1（源自 src-9 · running）');
+    expect(out).toContain('paneflow watch a1');
+    expect(out).toContain('paneflow experiments --suite c4');
+  });
+
+  it('replay：--times 越界/非数在 CLI 侧就拒（不发请求）；缺省只发 times:1；半路 error 退 1', async () => {
+    const { io, errLines } = makeIo();
+    expect(await main(['replay', 'src-9', '--times', '21'], io)).toBe(1);
+    expect(await main(['replay', 'src-9', '--times', 'abc'], io)).toBe(1);
+    expect(errLines.join('\n')).toContain('1~20');
+    const { fetchImpl, calls } = stubFetch([
+      { body: { runs: [{ runId: 'a1', state: 'running' }], error: '第 2/3 份起单失败：锁' } },
+    ]);
+    const partial = makeIo({ fetch: fetchImpl });
+    expect(await main(['replay', 'src-9', '--times', '3'], partial.io)).toBe(1);
+    expect(JSON.parse(calls[0]!.init.body!)).toEqual({ times: 3 });
+    expect(partial.errLines.join('\n')).toContain('第 2/3 份起单失败');
+  });
+
+  it('experiments：人读按表列文件+行；空表给指路文案；--suite 进 query；--json 原样', async () => {
+    const rows = ['| runId | arm | flag | state | 断言 pass/total | 重试 | 墙钟秒 | replayOf |', '| a1 | on | - | completed | 2/2 | 0 | 90 | - |'];
+    const payload = { tables: [{ suite: 'c4', date: '2026-09-21', file: 'experiments/c4/2026-09-21.md', rows }] };
+    const { fetchImpl, calls } = stubFetch([{ body: payload }, { body: { tables: [] } }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['experiments', '--suite', 'c4', '--url', 'http://x:1'], io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://x:1/api/experiments?suite=c4');
+    const out = lines.join('\n');
+    expect(out).toContain('experiments/c4/2026-09-21.md（2 行）');
+    expect(out).toContain('| a1 | on | - | completed |');
+    const empty = makeIo({ fetch: fetchImpl });
+    expect(await main(['experiments'], empty.io)).toBe(0);
+    expect(calls[1]!.url).toBe('http://127.0.0.1:4310/api/experiments');
+    expect(empty.lines.join('\n')).toContain('暂无实验收数');
+    const json = makeIo({ fetch: stubFetch([{ body: payload }]).fetchImpl });
+    expect(await main(['experiments', '--json'], json.io)).toBe(0);
+    expect(JSON.parse(json.lines.join('\n'))).toEqual(payload);
+  });
+});
+
 describe('入口守护', () => {
   it('未知子命令与 help', async () => {
     const { io, errLines } = makeIo();

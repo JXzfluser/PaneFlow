@@ -16,6 +16,7 @@ import type {
   RunCost,
   NodeCost,
   WikiReadbackTrace,
+  RunExperimentMeta,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
@@ -27,6 +28,7 @@ import { effectiveRules, matchRules } from './rules.js';
 import { buildSkillBlock } from './skills.js';
 import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
+import { appendExperimentRow } from './experiment.js';
 import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
 import { buildGithubEnv, readGithubSettings } from '../api/github-cred.js';
 import { autoDistillEnabled, autoDistillRun } from '../api/wiki-distill.js';
@@ -310,12 +312,20 @@ export class Engine {
     issueId?: string,
     resumeOf?: string,
     /** M2：机检契约随单落册（input 模式）；generated 模式由引擎在产物提取时捕获 */
-    opts?: { contract?: RunContract; parentRunId?: string },
+    opts?: {
+      contract?: RunContract;
+      parentRunId?: string;
+      /** v11-E1a：replay 显式发起的豁免声明——只穿透 R3.4 同 issue 幂等锁，锁本体对普通下发一丝不变 */
+      replay?: { of: string };
+      /** v11-E1b：实验元数据（只作标注与过滤，不参与任何编排判定） */
+      experiment?: RunExperimentMeta;
+    },
   ): Promise<RunRecord> {
     // R3.4 同 issue 幂等锁：同空间同 issue 已有运行中/排队中的流水线时拒绝重复下发（G3 起含 queued，批量派发不重复入队）
     // 首驾-2：排除本 run 的祖先链——派发父 run 带 issueId，其 pipeline 子 run 透传同 issue 是血缘不是重复下发，
     // 旧实现父撞子自己 = 100% 自我死锁（route 节点必炸「Issue 6 已有运行中/排队中的流水线（run 39dd3f22）」）。
-    if (issueId) {
+    // v11-E1a：唯一豁免口=opts.replay（replayRun 显式发起），豁免的是同 issue 重复单本身，其余校验一条不少。
+    if (issueId && !opts?.replay) {
       const lineage = new Set<string>();
       for (let p = opts?.parentRunId; p && !lineage.has(p); p = this.runs.get(p)?.parentRunId) lineage.add(p);
       const dup = [...this.runs.values()].find(
@@ -407,6 +417,9 @@ export class Engine {
       ...(variables && Object.keys(variables).length ? { variables: { ...variables } } : {}),
       ...(opts?.contract ? { contract: opts.contract } : {}),
       ...(wikiReadback ? { wikiReadback } : {}),
+      // v11-E1a/b：replay 血缘与实验标注（缺省=普通单，两键省略）
+      ...(opts?.replay ? { replayOf: opts.replay.of } : {}),
+      ...(opts?.experiment ? { experiment: opts.experiment } : {}),
     };
     this.runs.set(runId, run);
     this.recordEvent(run, 'run', undefined, `运行启动：${graph.name}（${order.length} 个节点）`);
@@ -427,6 +440,15 @@ export class Engine {
         'run',
         undefined,
         `沉淀读回（C3a）：目标仓 ${wikiReadback.repo} 的本地 llm-wiki 缓存已注入 ${wikiReadback.nodes.length} 个节点（${detail}）；开关=env PF_WIKI_READBACK`,
+      );
+    }
+    // v11-E1：透明性红线——豁免/血缘/实验都必须上时间线，事后从事件能 recon 出这单怎么来的
+    if (opts?.replay) {
+      this.recordEvent(
+        run,
+        'run',
+        undefined,
+        `复跑 replay（E1a）：源自 run ${opts.replay.of}，同契约重发（穿透 R3.4 同 issue 锁，仅 replay 显式发起）${opts.experiment?.suite ? ` · 实验 ${opts.experiment.suite}${opts.experiment.arm ? `/臂 ${opts.experiment.arm}` : ''}` : ''}`,
       );
     }
     if (unresolved.length) {
@@ -688,6 +710,34 @@ export class Engine {
     }
   }
 
+  /**
+   * v11-E1a 同契约 replay：取原 run 在册的 graph 快照与实填变量重新 startRun——
+   * 「同契约」是照本宣科（复跑的就是当时落册的那一单）。豁免只开在 R3.4 同 issue
+   * 幂等锁上（opts.replay 声明），其余门（脏检查/DAG 校验/cwd/变量必填）一条不少。
+   * 已知限制：I2/C3a 注入照跑（当时注入进的是在册 graph 的字面量，新单还会各得一份
+   * 新注入）——实验若在意，同 suite 各臂承受同等注入，A/B 差值仍读得出。
+   */
+  async replayRun(
+    runId: string,
+    meta?: RunExperimentMeta,
+  ): Promise<RunRecord> {
+    const source = this.runs.get(runId) ?? undefined;
+    if (!source) throw new Error(`找不到要 replay 的原 run：${runId}`);
+    return this.startRun(
+      structuredClone(source.graph),
+      source.cwd,
+      source.spaceId,
+      source.variables ? structuredClone(source.variables) : undefined,
+      source.issueId,
+      undefined,
+      {
+        ...(source.contract ? { contract: structuredClone(source.contract) } : {}),
+        replay: { of: source.runId },
+        ...(meta && (meta.suite || meta.arm || meta.flag) ? { experiment: meta } : {}),
+      },
+    );
+  }
+
   stopRun(runId: string): boolean {
     const run = this.runs.get(runId);
     if (!run) return false;
@@ -841,6 +891,9 @@ export class Engine {
       // 纯 fire-and-forget：void + maybeAutoDistill 内部全捕获，永不 reject，
       // 收口路径不 await 任何 LLM/git/网络，蒸馏炸与否都流不回终态广播。
       if (run.state === 'completed') void this.maybeAutoDistill(run);
+      // v11-E1c：实验收数（同样只加不改）——只认带 suite 的实验单，旁账落盘失败静默，
+      // 不 await 进收口关键路径之外的任何网络/git（纯本地 append）。
+      if (run.experiment?.suite) void appendExperimentRow(this.store.root, run);
     }
   }
 

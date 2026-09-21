@@ -126,16 +126,60 @@ export function publishableRun(
 }
 
 /**
+ * v11-C3b 页↔run 回链：把 C3a 的 `run.wikiReadback` 留痕聚合为 file→引用 runId 索引。
+ * 纯函数、零网络、零新增写路径——引用计数只在读时算出来，写侧（pf-cited-by）
+ * 只是搭既有推送车的展示血缘（stale-safe，权威计数永远以本聚合为准）。
+ * 语义（与 C3b 裁决一致）：
+ * - per-run set：同一 run 内多节点引用同一页，该页只记这个 run 1 次；
+ * - trace.repo 与目标仓不等一律跳过——跨 repo 绝不串页（file 同名也不串）；
+ * - 无留痕 / 留痕里一页都没进 = 该 run 不入 citedRunCount。
+ */
+export interface WikiCitationIndex {
+  /** 页 file（相对 `llm-wiki/` 根）→ 引用它的 runId 数组（字典序，渲染/断言稳定） */
+  byFile: Record<string, string[]>;
+  /** 该 repo 下有任意引用（wiki 读回真注入了至少 1 页）的 run 数 */
+  citedRunCount: number;
+}
+
+export function aggregateWikiCitations(runs: readonly RunRecord[], repo: string): WikiCitationIndex {
+  const byFile = new Map<string, Set<string>>();
+  const citedRuns = new Set<string>();
+  for (const run of runs ?? []) {
+    const trace = run?.wikiReadback;
+    if (!trace || trace.repo !== repo) continue;
+    const files = new Set<string>();
+    for (const node of trace.nodes ?? []) {
+      for (const p of node.pages ?? []) {
+        if (p?.file) files.add(p.file);
+      }
+    }
+    if (!files.size) continue;
+    citedRuns.add(run.runId);
+    for (const f of files) {
+      const s = byFile.get(f) ?? new Set<string>();
+      s.add(run.runId);
+      byFile.set(f, s);
+    }
+  }
+  const index: WikiCitationIndex = { byFile: {}, citedRunCount: citedRuns.size };
+  for (const [f, s] of byFile) index.byFile[f] = [...s].sort();
+  return index;
+}
+
+/**
  * 纯函数：run → llm-wiki 页。七字段 frontmatter（title/type/tags/created/updated/
  * sources/confidence，缺省有确定兜底）+ pf-* 溯源扩展键 + 断言表 + 节点结论 + 经验账本 + 双链；
  * 附 index 条目与 log 记录两条记账字符串。
  * v11-C2：`kind:'counterexample'`（反面教材侧门页）——同风格三特征：frontmatter
  * `confidence: low`、正文页首一行固定 `> ⚠ 反面教材…` 警示、index 条目带 ⚠ 前缀；
  * 旧调用不传 kind 行为不变（正门页）。
+ * v11-C3b：`citations`（aggregateWikiCitations 的 byFile 面）传入时，本页若被历史
+ * run 引用则 frontmatter 顺带 `pf-cited-by: runA, runB`——非权威展示血缘，无引用/未传
+ * 一律省略该键（首次推没有就空）。
  */
 export function renderWikiPage(
   run: RunRecord,
-  opts: { repo: string; now?: string; type?: WikiType; kind?: WikiPublishKind },
+  opts: { repo: string; now?: string; type?: WikiType; kind?: WikiPublishKind; citations?: Record<string, string[]> },
 ): WikiPageDraft {
   const now = opts.now ?? new Date().toISOString();
   const type: WikiType = opts.type ?? 'summary';
@@ -162,6 +206,9 @@ export function renderWikiPage(
   if (run.spaceId) lines.push(`pf-space: ${run.spaceId}`);
   if (run.contract) lines.push(`pf-contract-source: ${run.contract.source}`);
   lines.push(`pf-published: ${now}`);
+  // v11-C3b：推送时顺带引用血缘（逗号分隔 runId，来自读时聚合；无引用省略键，绝不直读 dataDir）
+  const citedBy = opts.citations?.[file];
+  if (citedBy?.length) lines.push(`pf-cited-by: ${citedBy.join(', ')}`);
   lines.push('---');
   lines.push('');
   if (counter) {

@@ -60,6 +60,12 @@ index 条目带 `⚠ ` 前缀（条目面复用、按 file 去重语义不变）
 `pf-run` / `pf-repo` / `pf-dag` / `pf-space` / `pf-contract-source` / `pf-published`
 为 PaneFlow 溯源扩展键，跟在七字段之后。
 
+**`pf-cited-by`（v11-C3b，非权威展示字段）**：逗号分隔 runId 列表，表示这些 run 起跑时
+wiki 读回把这页注入了 prompt。权威计数**永远是本地 run 留痕（`RunRecord.wikiReadback`）
+读时聚合**（`GET /api/wiki/state` 的 `citedBy`/`citedRunCount`）；页上这个键只是推送时
+顺带落下的血缘快照，**可能滞后**（引用发生在页上次推送之后就不会反映到键里），消费方
+（人或其他工具）不得拿它当真相源。无引用时键省略。
+
 **兼容读（v11-C2）**：读回解析 `confidence`；旧页（Issue #6 时代无此键）视为正页，
 不降权、不报错。
 

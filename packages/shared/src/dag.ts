@@ -400,6 +400,20 @@ export interface RunRecord {
   prUrl?: string;
   /** v11-C3a wiki 读回注入留痕（C3b 页↔run 回链的数据源；缺省=本次没注入/没读回） */
   wikiReadback?: WikiReadbackTrace;
+  /** v11-E1a replay 血缘：本单由哪个原 run replay 而来（缺省=普通单） */
+  replayOf?: string;
+  /** v11-E1b 复跑实验元数据（缺省=非实验单，不进收数表） */
+  experiment?: RunExperimentMeta;
+}
+
+/**
+ * v11-E1b 实验元数据：这单属于哪个实验（suite）、哪条臂（arm）、
+ * 拨着什么开关（flag）。只作标注与过滤，不参与任何编排判定。
+ */
+export interface RunExperimentMeta {
+  suite?: string;
+  arm?: string;
+  flag?: string;
 }
 
 /**

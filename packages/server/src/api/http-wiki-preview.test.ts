@@ -54,7 +54,7 @@ function greenRun(over: Partial<RunRecord> = {}): RunRecord {
 
 function buildServer(dataDir: string, run: RunRecord | undefined) {
   return buildHttpServer({
-    engine: { onChange: () => {}, getRun: (id: string) => (id && id === run?.runId ? run : undefined) } as unknown as Engine,
+    engine: { onChange: () => {}, getRun: (id: string) => (id && id === run?.runId ? run : undefined), listRuns: () => [] } as unknown as Engine,
     store: {} as unknown as Store,
     ops: {} as unknown as HerdrOps,
     herdrSocketPath: path.join(dataDir, 'herdr.sock'),

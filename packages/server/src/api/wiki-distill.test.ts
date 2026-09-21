@@ -13,6 +13,7 @@ import {
   matchConceptPage,
   parseDistillReply,
   planDistill,
+  readStoredRunRecords,
   type ConceptPage,
 } from './wiki-distill.js';
 import { mergeWikiIndex, publishWikiPages, readWikiPages, wikiCacheDir } from './wiki.js';
@@ -238,6 +239,91 @@ describe('v11-C1 planDistill 纯函数核（命中→改写；未命中→新建
     expect(ops).toHaveLength(1);
     expect(ops[0]!.action).toBe('create');
     expect(ops[0]!.added).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v11-C3b：pf-cited-by 回链血缘（新建直写 / 改写并集 / 缺省省略；自动路落盘回落）
+// ---------------------------------------------------------------------------
+
+describe('v11-C3b planDistill citations 血缘', () => {
+  const run = greenRun();
+  const topic = '重试退避策略';
+  const file = 'concepts/重试退避策略.md';
+
+  it('新建路：citations 命中本页 file → frontmatter 直写 pf-cited-by；未命中/未传省略键', () => {
+    const base = { run, repo: 'me/app', entries: [{ topic, statement: '退避要指数递增加抖动，实测 429 失败率 12%→0' }], existing: [] as ConceptPage[], now: '2026-09-19T02:00:00.000Z' };
+    const cited = planDistill({ ...base, citations: { [file]: ['r-1', 'r-2'], 'concepts/别的.md': ['r-x'] } })[0]!;
+    expect(cited.action).toBe('create');
+    expect(cited.markdown).toContain('pf-cited-by: r-1, r-2');
+    expect(cited.markdown).not.toContain('r-x');
+    expect(planDistill(base)[0]!.markdown).not.toContain('pf-cited-by');
+    expect(planDistill({ ...base, citations: {} })[0]!.markdown).not.toContain('pf-cited-by');
+  });
+
+  it('改写路：页旧值（含方括号宽容形态）∪ 聚合值，保序去重（同 pf-runs 并集姿势）', () => {
+    const hitPage: ConceptPage = {
+      file,
+      slug: '重试退避策略',
+      title: '重试退避策略',
+      created: '2026-09-01T00:00:00.000Z',
+      updated: '2026-09-01T00:00:00.000Z',
+      frontmatter: {
+        title: '"重试退避策略"', created: '2026-09-01T00:00:00.000Z', updated: '2026-09-01T00:00:00.000Z',
+        tags: 'paneflow, concept', 'pf-cited-by': '[r-old, r-zz]',
+      },
+      body: '# 重试退避策略\n\n## 经验条目\n\n- 旧条目（来源: run `r-old` · 2026-09-01）\n',
+    };
+    const op = planDistill({
+      run,
+      repo: 'me/app',
+      entries: [{ topic, statement: '窗口上限 60s，超限快速失败' }],
+      existing: [hitPage],
+      now: '2026-09-21T00:00:00.000Z',
+      citations: { [file]: ['r-zz', 'r-new'] },
+    })[0]!;
+    expect(op.action).toBe('update');
+    expect(op.markdown).toContain('pf-cited-by: r-old, r-zz, r-new');
+  });
+});
+
+describe('v11-C3b readStoredRunRecords + buildDistillPreview 自动回落（零 deps.citations 时扫盘聚合）', () => {
+  it('落盘扫描：坏档静默跳、archive/ 不入；预览缺 citations 时 pf-cited-by 从盘上留痕聚出', async () => {
+    const dir = tmpDir();
+    seedGateway(dir);
+    const runsDir = path.join(dir, 'spaces', 'demo', 'runs');
+    fs.mkdirSync(path.join(runsDir, 'archive'), { recursive: true });
+    fs.writeFileSync(
+      path.join(runsDir, 'r-cited.json'),
+      JSON.stringify({ runId: 'r-cited', wikiReadback: { repo: 'me/app', nodes: [{ nodeId: 'impl', pages: [{ file: 'concepts/重试退避策略.md', title: 'x' }] }] } }),
+    );
+    fs.writeFileSync(path.join(runsDir, 'r-bad.json'), '{ broken');
+    fs.writeFileSync(path.join(runsDir, 'archive', 'r-arch.json'), JSON.stringify({ runId: 'r-arch' }));
+    expect(readStoredRunRecords(dir).map((r) => r.runId)).toEqual(['r-cited']);
+    expect(readStoredRunRecords(path.join(dir, 'nope'))).toEqual([]);
+
+    const preview = await buildDistillPreview(
+      { dataDir: dir, run: greenRun({ runId: 'run-abc123' }), repo: 'me/app', token: 'ghp_t' },
+      {
+        sync: noSync,
+        now: '2026-09-21T02:00:00.000Z',
+        fetchImpl: chatFetch('[{"topic":"重试退避策略","statement":"退避窗口上限 60s，超限快速失败救回 3 单"}]'),
+      },
+    );
+    expect(preview.error).toBeUndefined();
+    expect(preview.ops).toHaveLength(1);
+    expect(preview.ops[0]!.markdown).toContain('pf-cited-by: r-cited');
+    // 显式注入 citations 时不落扫盘回落（空对象=真没引用，键省略）
+    const injected = await buildDistillPreview(
+      { dataDir: dir, run: greenRun({ runId: 'run-abc123' }), repo: 'me/app', token: 'ghp_t' },
+      {
+        sync: noSync,
+        now: '2026-09-21T02:00:00.000Z',
+        citations: {},
+        fetchImpl: chatFetch('[{"topic":"重试退避策略","statement":"退避窗口上限 60s，超限快速失败救回 3 单"}]'),
+      },
+    );
+    expect(injected.ops[0]!.markdown).not.toContain('pf-cited-by');
   });
 });
 
@@ -497,7 +583,7 @@ describe('v11-C1 自动路（开关默认 off + autoDistillRun fail-closed 永�
 describe('v11-C1 POST /api/wiki/distill 手动端点（预览两路）', () => {
   async function inject(dir: string, run: RunRecord | undefined, payload: Record<string, unknown>, sync?: typeof noSync) {
     const { app } = await buildHttpServer({
-      engine: { onChange: () => {}, getRun: () => run } as unknown as Engine,
+      engine: { onChange: () => {}, getRun: () => run, listRuns: () => [] } as unknown as Engine,
       store: {} as unknown as Store,
       ops: {} as unknown as HerdrOps,
       herdrSocketPath: path.join(dir, 'herdr.sock'),

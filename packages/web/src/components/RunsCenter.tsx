@@ -423,6 +423,18 @@ export function RunsCenter() {
                   🔗 PR
                 </a>
               )}
+              {/* v11-C3b 回链的 run→页面：C3a 读回真注入了才显（留痕只计进了 prompt 的页） */}
+              {r.wikiReadback && r.wikiReadback.nodes.length > 0 && (
+                <span
+                  className="run-cost-chip"
+                  title={[
+                    `本单起跑时读回了 ${r.wikiReadback.repo} 的沉淀页（复利读端留痕）：`,
+                    ...[...new Set(r.wikiReadback.nodes.flatMap((n) => n.pages.map((p) => `${p.title}（${p.file}）`)))],
+                  ].join('\n')}
+                >
+                  📖 读了 {[...new Set(r.wikiReadback.nodes.flatMap((n) => n.pages.map((p) => p.file)))].length} 页沉淀
+                </span>
+              )}
               <div className="run-card-ops">
                 <button
                   className={open ? 'active' : ''}

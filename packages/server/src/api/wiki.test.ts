@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { RunRecord } from '@paneflow/shared';
 import {
+  aggregateWikiCitations,
   appendWikiLog,
   checkRepoVisibility,
   latestAssertionResults,
@@ -97,6 +98,50 @@ describe('v9-K1 + 首驾-llmwiki renderWikiPage（七字段 frontmatter + 分类
       assertionResults: [{ id: 'AC-1', status: 'fail', evidence: '初测未过' }],
     };
     expect(latestAssertionResults(run).find((x) => x.id === 'AC-1')!.status).toBe('ok');
+  });
+
+  it('v11-C3b：citations 命中本页 file → frontmatter 带 pf-cited-by；未命中/未传一律省略键', () => {
+    const cited = renderWikiPage(greenRun(), {
+      repo: 'me/app',
+      citations: { 'summaries/修登录页样式-abc123.md': ['r-1', 'r-2'], '别的页.md': ['r-x'] },
+    });
+    expect(cited.markdown).toContain('pf-cited-by: r-1, r-2');
+    expect(cited.markdown).not.toContain('r-x');
+    const bare = renderWikiPage(greenRun(), { repo: 'me/app', citations: { '其他.md': ['r-9'] } });
+    expect(bare.markdown).not.toContain('pf-cited-by');
+    expect(renderWikiPage(greenRun(), { repo: 'me/app' }).markdown).not.toContain('pf-cited-by');
+  });
+});
+
+// -- v11-C3b 引用回链聚合纯函数（读时算、零写路径；路由面断言见 http-wiki-state.test.ts） ----
+describe('v11-C3b aggregateWikiCitations（per-run set 去重 / repo 隔离 / 空留痕弃）', () => {
+  it('同 run 多节点引同一页只记 1 次；无节点留痕不入 citedRunCount', () => {
+    const runs = [
+      {
+        runId: 'r1',
+        wikiReadback: {
+          repo: 'me/app',
+          nodes: [
+            { nodeId: 'plan', pages: [{ file: 'x.md', title: 'X' }] },
+            { nodeId: 'impl', pages: [{ file: 'x.md', title: 'X' }] },
+          ],
+        },
+      },
+      { runId: 'r2', wikiReadback: { repo: 'me/app', nodes: [] } },
+    ] as unknown as RunRecord[];
+    const idx = aggregateWikiCitations(runs, 'me/app');
+    expect(idx.byFile).toEqual({ 'x.md': ['r1'] });
+    expect(idx.citedRunCount).toBe(1);
+  });
+
+  it('repo 隔离：file 同名也不串仓；缺留痕的 run 忽略；runId 输出字典序稳定', () => {
+    const runs = [
+      { runId: 'b', wikiReadback: { repo: 'me/app', nodes: [{ nodeId: 'n', pages: [{ file: 'x.md', title: '' }] }] } },
+      { runId: 'a', wikiReadback: { repo: 'other/repo', nodes: [{ nodeId: 'n', pages: [{ file: 'x.md', title: '' }] }] } },
+      { runId: 'c' },
+    ] as unknown as RunRecord[];
+    expect(aggregateWikiCitations(runs, 'me/app')).toEqual({ byFile: { 'x.md': ['b'] }, citedRunCount: 1 });
+    expect(aggregateWikiCitations([], 'me/app')).toEqual({ byFile: {}, citedRunCount: 0 });
   });
 });
 
@@ -420,7 +465,7 @@ function tmpDir(): string {
 
 function buildServer(dataDir: string, run: RunRecord | undefined) {
   return buildHttpServer({
-    engine: { onChange: () => {}, getRun: () => run } as unknown as Engine,
+    engine: { onChange: () => {}, getRun: () => run, listRuns: () => [] } as unknown as Engine,
     store: {} as unknown as Store,
     ops: {} as unknown as HerdrOps,
     herdrSocketPath: path.join(dataDir, 'herdr.sock'),

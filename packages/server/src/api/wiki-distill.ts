@@ -4,6 +4,7 @@ import type { RunRecord } from '@paneflow/shared';
 import { gatewayOpenaiBase, readGateway } from './gateway.js';
 import { ghCliToken, readGithubSettings, resolveGithubToken } from './github-cred.js';
 import {
+  aggregateWikiCitations,
   latestAssertionResults,
   publishableRun,
   publishWikiPages,
@@ -134,6 +135,49 @@ export function listConceptPages(dataDir: string, repo: string): ConceptPage[] {
 }
 
 // ---------------------------------------------------------------------------
+// v11-C3b：dataDir 落盘 run 记录扫描（pf-cited-by 聚合的自动路数据源）
+// ---------------------------------------------------------------------------
+
+/**
+ * 自动蒸馏路 engine.ts 只传 (dataDir, run) 进来（本任务不许碰 engine）——pf-cited-by
+ * 的留痕聚合在缺 deps.runs 时回落读落盘 run 记录 `<root>/spaces/<space>/runs/*.json`。
+ * 只读扫描（写侧仍零新增路径）：`runs/archive/` 下的归档单不回链（与 /api/runs 主列表
+ * 同口径）；坏档/半截 JSON 静默跳过，绝不抛——血缘是展示字段，不配弄红任何收口路径。
+ */
+export function readStoredRunRecords(dataDir: string): RunRecord[] {
+  const out: RunRecord[] = [];
+  const seen = new Set<string>();
+  let spaces: string[] = [];
+  try {
+    spaces = fs.readdirSync(path.join(dataDir, 'spaces')).sort();
+  } catch {
+    return [];
+  }
+  for (const space of spaces) {
+    const runsDir = path.join(dataDir, 'spaces', space, 'runs');
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(runsDir).sort();
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue; // archive/ 目录不是 .json——天然被排除在外
+      try {
+        const rec = JSON.parse(fs.readFileSync(path.join(runsDir, name), 'utf8')) as RunRecord;
+        if (rec && typeof rec.runId === 'string' && !seen.has(rec.runId)) {
+          seen.add(rec.runId);
+          out.push(rec);
+        }
+      } catch {
+        // 坏档 = 没这条记录
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // 纯函数蒸馏核：entries → 页操作集
 // ---------------------------------------------------------------------------
 
@@ -147,6 +191,17 @@ function q(s: string): string {
 function fmList(v: string | undefined): string[] {
   if (!v) return [];
   const inner = /^\[(.*)\]$/.exec(v)?.[1] ?? '';
+  return inner
+    .split(',')
+    .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean);
+}
+
+/** v11-C3b：pf-cited-by 的宽容读——本页写侧落的是裸逗号分隔（`runA, runB`），
+ * 也接受 `[runA, runB]` 形态（手改/别的工具好心加了方括号照样吃） */
+function csvList(v: string | undefined): string[] {
+  if (!v) return [];
+  const inner = /^\[(.*)\]$/.exec(v)?.[1] ?? v;
   return inner
     .split(',')
     .map((s) => s.trim().replace(/^["']|["']$/g, ''))
@@ -172,6 +227,8 @@ function renderEntriesFile(o: {
   updated: string;
   sources: string[];
   runs: string[];
+  /** v11-C3b：引用本页的 run（wiki 读回留痕聚合）；空/缺省省略 pf-cited-by 键 */
+  citedBy?: string[];
   repo: string;
   statements: { text: string; runId: string; date: string }[];
   preamble: string;
@@ -187,6 +244,8 @@ function renderEntriesFile(o: {
   lines.push('confidence: high');
   lines.push(`pf-repo: ${q(o.repo)}`);
   lines.push(`pf-runs: [${o.runs.join(', ')}]`);
+  // v11-C3b：推送顺带的展示血缘（非权威、可能滞后）——权威计数以本地 run 留痕聚合为准
+  if (o.citedBy?.length) lines.push(`pf-cited-by: ${o.citedBy.join(', ')}`);
   lines.push('---');
   lines.push('');
   lines.push(`# ${o.title}`);
@@ -210,6 +269,9 @@ const CREATE_PREAMBLE =
  * - 未命中 → 新建 `concepts/<slug>.md`；
  * - 每操作一条 log 记账；index 条目按 file 生成——改写与原页同 file，
  *   mergeWikiIndex 原位替换 → **index 不增条**（C1 核心验收）。
+ * v11-C3b：`citations`（aggregateWikiCitations 的 byFile 面，file→引用 runId）传入时
+ * frontmatter 带 `pf-cited-by`——新建路直写、改写路与页上已有值并集前进（同
+ * sources/pf-runs 的并集姿势）；无引用/未传则省略键。
  */
 export function planDistill(o: {
   run: RunRecord;
@@ -217,6 +279,8 @@ export function planDistill(o: {
   entries: DistillEntry[];
   existing: ConceptPage[];
   now?: string;
+  /** v11-C3b：页 file（相对 llm-wiki/ 根）→ 历史 wiki 读回引用过它的 runId 列表 */
+  citations?: Record<string, string[]>;
 }): DistillPageOp[] {
   const now = o.now ?? new Date().toISOString();
   const today = now.slice(0, 10);
@@ -235,6 +299,7 @@ export function planDistill(o: {
   const ops: DistillPageOp[] = [];
   for (const [file, g] of groups) {
     const runId = o.run.runId;
+    const citedBy = o.citations?.[file] ?? [];
     if (!g.hit) {
       const rendered = g.items.map((e) => ({ text: e.statement.trim(), runId: e.evidenceRun?.trim() || runId, date: today }));
       const markdown = renderEntriesFile({
@@ -244,6 +309,7 @@ export function planDistill(o: {
         updated: now,
         sources: [`paneflow:run/${runId}`, `repo:${o.repo}`],
         runs: [runId],
+        citedBy,
         repo: o.repo,
         statements: rendered,
         preamble: CREATE_PREAMBLE,
@@ -295,6 +361,8 @@ export function planDistill(o: {
     const created = g.hit.created || g.hit.updated || now;
     const sources = [...new Set([...fmList(g.hit.frontmatter.sources), `paneflow:run/${runId}`, `repo:${o.repo}`])];
     const runs = [...new Set([...fmList(g.hit.frontmatter['pf-runs']), runId])];
+    // v11-C3b：pf-cited-by 改写路前进=页旧值 ∪ 读时聚合值（同 sources/pf-runs 的并集姿势）
+    const citedMerged = [...new Set([...csvList(g.hit.frontmatter['pf-cited-by']), ...citedBy])];
     const statements = mergedBody
       .split('\n')
       .filter((l) => l.startsWith('- '))
@@ -314,6 +382,7 @@ export function planDistill(o: {
       updated: now,
       sources,
       runs,
+      citedBy: citedMerged,
       repo: o.repo,
       statements,
       preamble,
@@ -464,6 +533,12 @@ export interface DistillDeps {
   now?: string;
   /** 注入点：readRemote 供测试绕开真实 git（resolveRunRepo 探针） */
   readRemote?: (dir: string) => string | null;
+  /**
+   * v11-C3b：页 file→引用 runId 聚合（byFile 面）。手动路由 http.ts 注入
+   * （engine.listRuns 内存口径）；缺省时自动路回落 readStoredRunRecords 落盘扫描——
+   * engine.ts 不许动，自动路拿不到 deps.runs，只能从盘上取留痕。
+   */
+  citations?: Record<string, string[]>;
 }
 
 /** 同步缓存（保 concept 清单新鲜）→ 读既有页 → LLM 提取 → 纯函数规划。同步失败回 error 不抛。 */
@@ -487,7 +562,12 @@ export async function buildDistillPreview(o: {
     existingTitles: existing.map((p) => p.title),
     readbackFiles,
   });
-  const ops = planDistill({ run, repo, entries, existing, now: deps.now });
+  // v11-C3b：引用聚合——调用方注入了就用（内存 run 口径），没注入回落落盘留痕扫描
+  // （自动路只拿到 dataDir+run，engine 不许动）；本 run 的留痕也在聚合源里，
+  // planDistill 再对新页并上本源 runId，两侧都不丢。
+  const citations =
+    deps.citations ?? aggregateWikiCitations(readStoredRunRecords(dataDir), repo).byFile;
+  const ops = planDistill({ run, repo, entries, existing, now: deps.now, citations });
   return { entries, ops };
 }
 

@@ -31,6 +31,11 @@ echo $?
 
 # 5) 审批：人看完再批；CLI 绝不代替人过门
 paneflow approve <runId> <nodeId>
+
+# 6) 复跑实验（v11-E1）：同契约重发 N 份（唯一豁免=同 issue 幂等锁，仅 replay 显式发起）；
+#    --suite/--arm/--flag 打实验标，带 suite 的单到终态自动落收数表
+paneflow replay <runId> --times 2 --suite c4 --arm a
+paneflow experiments --suite c4              # 只读 server 端收数表
 ```
 
 watch 退出码表（dispatch/runs/status/approve 恒为 0 成功 / 1 报错）：
@@ -72,6 +77,12 @@ curl -s -X POST $BASE/api/runs/<runId>/promote     # 插队到队首；不在排
 
 # 批量派发（一个模板 × 一列 issue 编号，≤20；并发超限自动排队）
 curl -s $BASE/api/dispatch/batch -d '{"template":"my-template","issues":"1\n2\n3"}'
+
+# 复跑实验（v11-E1）：体 {times?, suite?, arm?, flag?}；返回 {runs:[{runId,state}]}
+# 唯一豁免=R3.4 同 issue 幂等锁，且仅 replay 显式发起；普通 dispatch 撞锁语义不变
+curl -s -X POST $BASE/api/runs/<runId>/replay -d '{"times":2,"suite":"c4","arm":"a"}'
+curl -s "$BASE/api/experiments?suite=c4"      # 只读收数表 → {tables:[{suite,date,file,rows[]}]}
+curl -s "$BASE/api/runs?suite=c4&arm=a"       # 实验元数据过滤列单
 ```
 
 模型 / agent 选择的**单一事实源三件套**（写死本地清单=违规，以这三处返回为准）：

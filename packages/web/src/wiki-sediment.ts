@@ -6,6 +6,8 @@
 export interface WikiPageRow {
   file: string;
   title: string;
+  /** v11-C3b：引用过这页的 runId（服务端读时聚合，缺省=无引用）；分组只透传不加工 */
+  citedBy?: string[];
 }
 
 export interface WikiPageGroup {

@@ -2454,3 +2454,72 @@ describe('v11-C1 engine 收口后自动蒸馏挂点（注入 wikiDistillRun 以�
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+// -- v11-E1 replay：同契约复跑 + R3.4 豁免口 + 实验元数据 + 收数表挂点 ----------------
+describe('v11-E1 engine：replayRun 穿透同 issue 锁 / 实验元数据 / 收数表落盘', () => {
+  it('普通下发撞 R3.4 锁照旧被拒；replayRun 显式穿透并留 replayOf+experiment+变量血缘+时间线事件', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-e1-replay-'));
+    const g = serialGraph();
+    ops.onPrompt = () => {
+      /* 永不 settle：让原单保持在跑，锁才真实生效 */
+    };
+    const r1 = await engine.startRun(g, cwd, 'default', { task: '甲' }, '170');
+    await expect(engine.startRun(g, cwd, 'default', {}, '170')).rejects.toThrow(/170/);
+    const r2 = await engine.replayRun(r1.runId, { suite: 'c4', arm: 'a', flag: 'readback=on' });
+    expect(r2.runId).not.toBe(r1.runId);
+    expect(r2.replayOf).toBe(r1.runId);
+    expect(r2.experiment).toEqual({ suite: 'c4', arm: 'a', flag: 'readback=on' });
+    expect(r2.issueId).toBe('170');
+    expect(r2.dagName).toBe('serial-test');
+    expect(r2.variables).toMatchObject({ task: '甲' });
+    expect(
+      (r2.events ?? []).some(
+        (e) =>
+          e.type === 'run' &&
+          e.text.includes('复跑 replay（E1a）') &&
+          e.text.includes(r1.runId) &&
+          e.text.includes('c4') &&
+          e.text.includes('臂 a'),
+      ),
+    ).toBe(true);
+    // 豁免只对锁：replay 出来的单再被普通下发撞同 issue，依然拒
+    await expect(engine.startRun(g, cwd, 'default', {}, '170')).rejects.toThrow(/170/);
+    engine.stopRun(r1.runId);
+    engine.stopRun(r2.runId);
+    await waitFor(
+      () => engine.getRun(r1.runId)!.state !== 'running' && engine.getRun(r2.runId)!.state !== 'running',
+    );
+  });
+
+  it('replay 不存在的 run：报「找不到」指路；不带实验元数据的 replay 只标血缘不入实验册', async () => {
+    await expect(engine.replayRun('nope1234')).rejects.toThrow(/找不到要 replay 的原 run：nope1234/);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-e1-plain-'));
+    const r1 = await runToCompletion(serialGraph(), cwd);
+    const r2 = await engine.replayRun(r1.runId);
+    expect(r2.replayOf).toBe(r1.runId);
+    expect(r2.experiment).toBeUndefined();
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+    expect(fs.existsSync(path.join(dataDir, 'experiments'))).toBe(false); // 非实验单零落盘
+  });
+
+  it('带 suite 的 run 收口后 fire-and-forget 落收数表一行（含臂与终态）；非实验单不落', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-e1-row-'));
+    const run = await engine.startRun(serialGraph(), cwd, 'default', undefined, undefined, undefined, {
+      experiment: { suite: 'c4', arm: 'b' },
+    });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(run.state).toBe('completed');
+    const file = path.join(dataDir, 'experiments', 'c4', `${engine.getRun(run.runId)!.finishedAt!.slice(0, 10)}.md`);
+    await waitFor(() => fs.existsSync(file));
+    const text = fs.readFileSync(file, 'utf8');
+    expect(text).toContain('# 实验收数');
+    expect(text).toContain(`| ${run.runId} | b | - | completed |`);
+    // 同引擎再跑一单普通活：experiments 目录里不添乱
+    const plain = await runToCompletion(serialGraph(), cwd);
+    await new Promise((s) => setTimeout(s, 50));
+    expect(plain.experiment).toBeUndefined();
+    const rows = fs.readdirSync(path.join(dataDir, 'experiments', 'c4'));
+    expect(rows).toHaveLength(1);
+    expect(fs.readFileSync(path.join(dataDir, 'experiments', 'c4', rows[0]!), 'utf8')).toContain(run.runId);
+  });
+});

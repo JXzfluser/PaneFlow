@@ -346,7 +346,9 @@ interface WikiStateView {
   /** v11-C0：缓存克隆所在分支（无缓存时服务端回退 'main'），拼线上链接用 */
   branch: string;
   pageCount: number;
-  pages: { file: string; title: string }[];
+  pages: { file: string; title: string; citedBy: string[] }[];
+  /** v11-C3b：该仓沉淀页被 N 个 run 的 wiki 读回真引用过（读时聚合，非写侧字段） */
+  citedRunCount: number;
   syncedAt: string;
 }
 
@@ -414,7 +416,9 @@ function WikiSedimentCard() {
       {st && st.pageCount > 0 && (
         <>
           <p className="settings-hint">
-            {st.pageCount} 页在库{st.syncedAt ? ` · 缓存同步于 ${new Date(st.syncedAt).toLocaleString()}` : ' · 本地缓存还没同步过'}
+            {st.pageCount} 页在库
+            {st.citedRunCount > 0 && ` · 已被 ${st.citedRunCount} 单读回引用`}
+            {st.syncedAt ? ` · 缓存同步于 ${new Date(st.syncedAt).toLocaleString()}` : ' · 本地缓存还没同步过'}
           </p>
           {/* v11-C5：按 file 顶级目录分组（summaries/…、concepts/…，旧扁平页归「其他」垫底），
               每组展示前 5 条；多组时非首组折叠在 <details> 里 */}
@@ -423,6 +427,9 @@ function WikiSedimentCard() {
               <details key={g.dir || '__flat'} className="wiki-page-group" open={i === 0 || groups.length <= 2}>
                 <summary>
                   {g.label} · {g.pages.length} 页
+                  {/* v11-C3b：组内被引总次数（同一 run 引多页各计——页视角计数） */}
+                  {g.pages.reduce((n, p) => n + (p.citedBy?.length ?? 0), 0) > 0 &&
+                    ` · 被引 ${g.pages.reduce((n, p) => n + (p.citedBy?.length ?? 0), 0)} 次`}
                 </summary>
                 <ul className="wiki-page-list">
                   {g.pages.slice(0, WIKI_GROUP_CAP).map((p) => (
@@ -430,6 +437,11 @@ function WikiSedimentCard() {
                       <a href={`https://github.com/${st.repo}/blob/${st.branch}/llm-wiki/${p.file}`} target="_blank" rel="noreferrer">
                         {p.title}
                       </a>
+                      {(p.citedBy?.length ?? 0) > 0 && (
+                        <span className="settings-hint" title={`wiki 读回真引用过这页的 run：\n${p.citedBy!.join('\n')}`}>
+                          {' '}· 被引 {p.citedBy!.length}
+                        </span>
+                      )}
                     </li>
                   ))}
                 </ul>

@@ -39,6 +39,15 @@ describe('v11-C5 groupWikiPages：页列表按 file 顶级目录分组', () => {
     ]);
     expect(WIKI_GROUP_CAP).toBe(5);
   });
+
+  it('v11-C3b：citedBy 引用列表随页透传，分组不加工不丢', () => {
+    const groups = groupWikiPages([
+      { file: 'summaries/a.md', title: 'A', citedBy: ['r-1', 'r-2'] },
+      { file: 'summaries/b.md', title: 'B' },
+    ]);
+    expect(groups[0]!.pages[0]!.citedBy).toEqual(['r-1', 'r-2']);
+    expect(groups[0]!.pages[1]!.citedBy).toBeUndefined();
+  });
 });
 
 describe('v11-C5 needsPublicConfirm：public 勾选门', () => {
