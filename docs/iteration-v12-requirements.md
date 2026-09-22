@@ -148,3 +148,16 @@ v0.1→v0.2：Explore 全仓对账（file:line 见评审记录）砍掉三处高
 3. **S2 默认值**：`PF_RUN_MAX_TOKENS` 你有心理价位吗（免费档网关，建议先设宽只防重试风暴）；
    还是等 C4 单跑读数出来后定默认？
 4. T1/V3/S3 维持门控位无异议的话，第二批就是 S1a/S1b/S2/V2 四小片。
+
+## 实施状态（2026-09-22 用户令「规划并实施全部」，四波串行收口）
+
+| 片 | commit | 落点与实机 |
+|---|---|---|
+| V1 harness 披露 | `66212a7`（前置规划文档 `c32910f`） | graphSha=实发终态（核实注入均早于 clone，无时序自首）、agentKind 首节点口径、网关读不到即缺键；replay 漂移只事件不拦；收数表 harness 列、CLI status harness 行 |
+| S1a+S1b+S3 三口片 | `3b08def` | sideEffects 落册+盲端点 runId 归因接线（agent 带不带 runId 归模板片，漏账边界如实注释）；带副作用 replay 默认拒+穿透落事件；--from-failed 接既有 resume 通道零新造 |
+| S2 token 预算 | `2b75c06` | costLive 落册即入账、节点启动前比对、null 只警示（R3）、resume 带账不欠、maxMinutes 不做（timeoutMs 先例指路）。第一派断线补派一次即完工 |
+| V2 人介入入账 | `d92be10` | 审计点名一处拦侧无事件门，实查三处全补（对话框/澄清轮/启动确认升级路）；放门即结算不收口重算（R4）；取消永不入账测试锁；重启窗少记如实注释。含 S2 提交缺漏补偿（index.ts 漏导出 RunTokenLedger——工作树 tsc 掩盖了单 commit 不自洽，收口人 staging 之失入摩擦账 #21） |
+
+**全量验证**：server 484（38 文件）+cli 34 全绿、tsc 净、web build 净（本轮未动 web，旁验 shared 涟漪）。
+**实机冒烟（重启换码后，零起单口径）**：旧单读端新四键整缺不炸、status 无新行正常、replay 路由 400/404 门、experiments 空表直呈。**未实机验**：新单起单固化 harness/累账/熔断/结算全链（会动真 agent 花网关配额，与真 replay→收数同为 **C4 第一夜的活**）；副作用归因的模板侧（agent 携 runId）明确另片。
+**门控位现状**：C4 待选题（V1 已赶在前面）；T1 等 C4 人肉跑通；V3 等 C4 假绿证据；D4 等实机复现。master 领先 origin/main 6 提交（含本表），**未推**（等明示）。
