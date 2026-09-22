@@ -324,7 +324,7 @@ const issueTriage: DagGraph = {
       agent(
         'triage',
         '创建 Issue 并建议模板',
-        '基于探索结论 {{explore.artifact.summary}}：\n草稿落点约定（cwd 只读）：issue-draft.json 等一切草稿/临时文件只准写引擎注入的 run 草稿目录 {{draft_dir}}（已创建），严禁落进工作目录（git 仓库）——那会弄脏用户工作区并挡死同仓后续 run。\n1. 把需求整理为规范 Issue（背景/目标/验收标准/风险），将草稿写入 {{draft_dir}}/issue-draft.json，然后用 shell 调用本地编排服务创建（确定性，无需 gh 登录）：`curl -s -X POST http://127.0.0.1:4310/api/github/create-issue -H "Content-Type: application/json" -d @{{draft_dir}}/issue-draft.json`；记录返回 JSON 里的 number 与 url，并把 number 回填进 {{draft_dir}}/issue-draft.json（下游 align 兜底读它）；\n2. 在结果文件的 extra.suggestedTemplate 写入建议的交付模板名（只能从以下精确 ID 中选：builtin-bug-fix-pipeline / builtin-parallel-module-dev / builtin-standard-dev-flow / builtin-role-team-review；都不合适才写 builtin-generic-issue-delivery）；\n3. 把 issue 编号写入 extra.issue_id。探索详情：{{explore.artifact.output}}',
+        '基于探索结论 {{explore.artifact.summary}}：\n草稿落点约定（cwd 只读）：issue-draft.json 等一切草稿/临时文件只准写引擎注入的 run 草稿目录 {{draft_dir}}（已创建），严禁落进工作目录（git 仓库）——那会弄脏用户工作区并挡死同仓后续 run。\n1. 把需求整理为规范 Issue（背景/目标/验收标准/风险），将草稿写入 {{draft_dir}}/issue-draft.json（JSON 须含 "runId": "{{run_id}}" 字段——仅供本地编排服务归因副作用账，不会被提交到 GitHub），然后用 shell 调用本地编排服务创建（确定性，无需 gh 登录）：`curl -s -X POST http://127.0.0.1:4310/api/github/create-issue -H "Content-Type: application/json" -d @{{draft_dir}}/issue-draft.json`；记录返回 JSON 里的 number 与 url，并把 number 回填进 {{draft_dir}}/issue-draft.json（下游 align 兜底读它）；\n2. 在结果文件的 extra.suggestedTemplate 写入建议的交付模板名（只能从以下精确 ID 中选：builtin-bug-fix-pipeline / builtin-parallel-module-dev / builtin-standard-dev-flow / builtin-role-team-review；都不合适才写 builtin-generic-issue-delivery）；\n3. 把 issue 编号写入 extra.issue_id。探索详情：{{explore.artifact.output}}',
         { retryCount: 2, onFail: 'abort' },
       ),
       {
@@ -354,6 +354,7 @@ const issueTriage: DagGraph = {
   variables: [
     { key: 'brief', label: '需求描述（一句话）', required: false },
     { key: 'draft_dir', label: '本 run 草稿目录（引擎内置注入绝对路径，草稿禁落 cwd）', required: false },
+    { key: 'run_id', label: '运行编号（引擎内置注入，随草稿提交供副作用归因）', required: false },
   ],
 };
 
@@ -371,7 +372,7 @@ const genericDeliveryNodes: DagGraph['nodes'] = [
       'AC-2：<可验证断言>（验证方法：<方法>）\n' +
       '...（N 通常 3-10 条，须覆盖需求全部关键点、可被下游实现/核对客观判定）\n' +
       '3. 构造远程 Issue 完整正文（背景/目标/验收标准/风险，验收标准用上面的 AC-N 断言面），用 shell 调本地编排服务的 update-issue 端点就地更新远程 Issue 正文（确定性、无需 gh 登录，省略 repo 时用已配置默认仓库）：\n' +
-      'curl -s -X PATCH http://127.0.0.1:4310/api/github/update-issue -H "Content-Type: application/json" -d \'{"number":<issue 编号>,"body":"<完整正文>"}\'\n' +
+      'curl -s -X PATCH http://127.0.0.1:4310/api/github/update-issue -H "Content-Type: application/json" -d \'{"number":<issue 编号>,"body":"<完整正文>","runId":"{{run_id}}"}\'（runId 仅供本地编排服务归因副作用账，不会提交到 GitHub）\n' +
       'issue 编号取 {{issue_id}}，为空则回退读 {{draft_dir}}/issue-draft.json 中的 number 字段；两者都拿不到就跳过远程更新（不改动远程 Issue）。远程更新失败不阻断交付，把原因记入结果文件 errors。\n' +
       '4. 结果文件写：summary=断言清单（Markdown 编号列表，每行 AC-N：<断言>（验证方法：<方法>），下游 plan/impl/verify 都照抄此清单）、extra.acceptance=[{id:"AC-1",assertion:"...",verify_method:"..."},...]（与 Markdown 面一一对应）、aligned=true。仍不确定的点可写入 extra.questions 并置 aligned=false 进入澄清轮。',
     { clarify: { maxRounds: 3 }, onFail: 'abort' },

@@ -61,6 +61,19 @@ describe('builtin templates', () => {
     }
   });
 
+  it('v12 模板片：GitHub 写端点调用携 runId 供副作用归因（受理建单 + 对齐回写）', () => {
+    const triage = BUILTIN_TEMPLATES.find((t) => t.name === 'builtin-issue-triage')!
+      .nodes.find((n) => n.id === 'triage')!;
+    expect(triage.config.prompt).toContain('"runId": "{{run_id}}"');
+    expect(triage.config.prompt).toMatch(/issue-draft\.json（JSON 须含 "runId": "\{\{run_id\}\}"/);
+
+    const align = BUILTIN_TEMPLATES.find((t) => t.name === 'builtin-generic-issue-delivery')!
+      .nodes.find((n) => n.id === 'align')!;
+    expect(align.config.prompt).toContain(
+      `-d '{"number":<issue 编号>,"body":"<完整正文>","runId":"{{run_id}}"}'`,
+    );
+  });
+
   it('seeds idempotently and never overwrites user edits', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-seed-'));
     const store = new Store(dir);
