@@ -166,6 +166,24 @@ describe('runs / status / approve', () => {
     expect(legacy.lines.join('\n')).not.toContain('副作用');
   });
 
+  it('v12-V2 status 人等分行：server 落册账照单渲染——全量一行、怪账补零、无 attention 整缺不显示', async () => {
+    const base = { runId: 'r-at', state: 'completed', dagName: 'g', nodes: {} };
+    const { fetchImpl } = stubFetch([
+      { body: { ...base, attention: { waitMs: 252_000, gates: { approve: 2, reject: 0, input: 1 } } } },
+      { body: { ...base, attention: { waitMs: 60_000 } } }, // 怪 server：gates 缺键按 0 补，不崩
+      { body: base },
+    ]);
+    const full = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-at'], full.io)).toBe(0);
+    expect(full.lines.join('\n')).toContain('人等分: 等待 4.2 分 · 批 2/驳 0/补料 1');
+    const partial = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-at'], partial.io)).toBe(0);
+    expect(partial.lines.join('\n')).toContain('人等分: 等待 1.0 分 · 批 0/驳 0/补料 0');
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-at'], legacy.io)).toBe(0);
+    expect(legacy.lines.join('\n')).not.toContain('人等分');
+  });
+
   it('approve POST 审批端点、体是 {action:"approve"}；409 时把 server 指路原样带出', async () => {
     const { fetchImpl, calls } = stubFetch([{ body: { delivered: true } }]);
     const { io } = makeIo({ fetch: fetchImpl });

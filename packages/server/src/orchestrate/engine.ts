@@ -38,6 +38,7 @@ import {
   resolveTokenCap,
 } from './token-budget.js';
 import { appendExperimentRow } from './experiment.js';
+import { bookGateRelease } from './attention.js';
 import { contentSha, harnessDriftDiffs } from './harness.js';
 import { hasSideEffects, sideEffectsSummary } from './side-effects.js';
 import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
@@ -848,6 +849,9 @@ export class Engine {
         waiter({ action: 'reject' });
       }
     }
+    // v12-V2：取消经 waiter 直接放行，不走 approve() 的结算口——撤销不是人的门决策，
+    // 绝不入账（红线）；进门时刻就地清空，防残留时刻被后续轮次误结。
+    for (const rec of Object.values(run.nodes)) rec.blockedAt = undefined;
     // actively interrupt in-flight agents (esc dismisses dialogs, ctrl+c
     // interrupts the turn) so server-held prompt waits settle promptly
     for (const rec of Object.values(run.nodes)) {
@@ -881,6 +885,12 @@ export class Engine {
             ? '人工补充指令'
             : '人工放行：继续执行',
       );
+      // v12-V2 人介入结算（放门即入账）：进门→放门的差累进 waitMs、对应决策计数 +1。
+      // 进门时刻不可考（旧 run 存量路/重启后残留）→ 只计次不加时长，绝不造数；
+      // 不做收口时从 events 重算（评审 R4）。多轮进出门（input 谈完再拦）逐次累加合法。
+      const rec = run.nodes[nodeId];
+      run.attention = bookGateRelease(run.attention, action.action, rec?.blockedAt, Date.now());
+      if (rec) rec.blockedAt = undefined;
       this.persistAndNotify(run);
     }
     waiter(action);
@@ -1540,6 +1550,10 @@ export class Engine {
       while (status === 'blocked' && !this.cancels.has(run.runId)) {
         rec.state = 'blocked';
         rec.agentStatus = 'blocked';
+        // v12-V2 进门留痕补口：此前唯一拦侧不发消息的审批门——照其他三门文案风格补一条，
+        // 并记进门时刻（waitMs 结算依据；此前这类门等待时长只能干瞪眼不可推导）。
+        this.recordEvent(run, 'approval', nodeId, '运行中对话框拦截：Agent 弹框等待人工处置（放行/拒绝/补料）');
+        rec.blockedAt = new Date().toISOString();
         this.persistAndNotify(run);
         const action = await new Promise<ApprovalAction>((resolve) => {
           this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
@@ -1593,6 +1607,9 @@ export class Engine {
             : questions.length
               ? questions.map((q, i) => `${i + 1}. ${q}`).join('\n')
               : 'Agent 有疑问，请补充信息（aligned 未通过）';
+          // v12-V2：澄清轮门同为拦侧无事件的门——与四门同款补齐进门留痕 + 进门时刻
+          this.recordEvent(run, 'approval', nodeId, '澄清轮拦截：aligned 未通过，等待人工补充或强制放行');
+          rec.blockedAt = new Date().toISOString();
           this.persistAndNotify(run);
           const action = await new Promise<ApprovalAction>((resolve) => {
             this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
@@ -1700,6 +1717,7 @@ export class Engine {
         rec.state = 'blocked';
         rec.blockedPrompt = c.prompt;
         this.recordEvent(run, 'approval', nodeId, `人工检查：${c.prompt}`);
+        rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻（放门在 approve() 结算）
         this.persistAndNotify(run);
         const action = await new Promise<ApprovalAction>((resolve) => {
           this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
@@ -1816,6 +1834,7 @@ export class Engine {
           )
           .join('\n');
       this.recordEvent(run, 'approval', nodeId, `验收机器门拦截：${failed.map((f) => f.id).join('、')}`);
+      rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻
       this.persistAndNotify(run);
       const action = await new Promise<ApprovalAction>((resolve) => {
         this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
@@ -1877,6 +1896,7 @@ export class Engine {
         nodeId,
         `契约门拦截：断言 ${doc.assertions.length} 条 / 提问 ${doc.questions.length} 条`,
       );
+      rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻
       this.persistAndNotify(run);
       const action = await new Promise<ApprovalAction>((resolve) => {
         this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
@@ -1987,6 +2007,7 @@ export class Engine {
         `放行=确认按「${cur}」交付继续；拒绝=节点失败；补充输入=让 Agent 切分支后复核`,
       ].join('\n');
       this.recordEvent(run, 'approval', nodeId, `分支守卫拦截：${cur} ≠ ${expect}`);
+      rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻
       this.persistAndNotify(run);
       const action = await new Promise<ApprovalAction>((resolve) => {
         this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
@@ -2175,6 +2196,10 @@ export class Engine {
         }
         rec.state = 'blocked';
         rec.blockedPrompt = '自动应答未解决启动确认——请在终端预览查看并用按键处理，或点放行发送回车';
+        // v12-V2 进门留痕补口：自动应答未决转人工这一步此前也无拦侧事件——补齐 + 记进门时刻
+        //（自动应答那段不算人等，只在真正等人按键的 waiter 前记）
+        this.recordEvent(run, 'approval', rec.nodeId, '启动确认拦截：自动应答未决，等待人工按键或放行');
+        rec.blockedAt = new Date().toISOString();
         this.persistAndNotify(run);
         const action = await new Promise<ApprovalAction>((resolve) => {
           this.blockedWaiters.set(`${run.runId}:${rec.nodeId}`, resolve);

@@ -2900,3 +2900,238 @@ describe('v12-S2 token 预算熔断（costLive 实时账 + 节点启动前比对
     expect(revived.costLive).toEqual(run.costLive);
   });
 });
+
+describe('v12-V2 人介入入账（验证税：放门即结算 waitMs+决策计数，落册不靠 events 推导）', () => {
+  const nap = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const writeImpl = (cwd: string, obj: unknown) => {
+    fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.herdr/artifacts/impl.json'), JSON.stringify(obj));
+  };
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+  function makeRepo(branch: string): string {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-repo-'));
+    git(cwd, 'init', '-b', 'main');
+    git(cwd, 'config', 'user.email', 'pf@test.local');
+    git(cwd, 'config', 'user.name', 'pf-test');
+    fs.writeFileSync(path.join(cwd, '.gitignore'), '.herdr/\n');
+    fs.writeFileSync(path.join(cwd, 'README.md'), '# t\n');
+    git(cwd, 'add', '-A');
+    git(cwd, 'commit', '-m', 'init');
+    git(cwd, 'checkout', '-b', branch);
+    return cwd;
+  }
+  /** 停在人门上稍等一拍——保证拦/放两侧时刻差至少几毫秒，waitMs>0 断言不飘 */
+  async function onGate(runId: string, nodeId = 'impl') {
+    await waitFor(() => engine.isBlocked(runId, nodeId));
+    await nap(15);
+  }
+
+  // —— 门一：人工检查门（拦侧本就有事件，这里锁放侧三态结算）——
+  const manualGraph = () => {
+    const g = serialGraph();
+    g.nodes[1]!.config.checks = [{ type: 'manual', prompt: '冒烟通过？' }];
+    return g;
+  };
+  for (const action of ['approve', 'reject', 'input'] as const) {
+    it(`人工检查门 ${action} → 计数进 gates.${action}、waitMs 累进、blockedAt 放门即清`, async () => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+      const run = await engine.startRun(manualGraph(), cwd);
+      await onGate(run.runId);
+      expect(engine.getRun(run.runId)!.nodes['impl']!.blockedAt).toBeTruthy();
+      await engine.approve(run.runId, 'impl', action === 'input' ? { action, text: '补一条验收口径' } : { action });
+      await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+      const final = engine.getRun(run.runId)!;
+      expect(final.state).toBe(action === 'reject' ? 'failed' : 'completed');
+      expect(final.attention!.gates).toEqual({
+        approve: action === 'approve' ? 1 : 0,
+        reject: action === 'reject' ? 1 : 0,
+        input: action === 'input' ? 1 : 0,
+      });
+      expect(final.attention!.waitMs).toBeGreaterThan(0);
+      expect(final.nodes['impl']!.blockedAt).toBeUndefined();
+    });
+  }
+
+  // —— 门二：验收机器门 ——
+  for (const action of ['approve', 'reject', 'input'] as const) {
+    it(`验收机器门 ${action} → 三态各自入账`, async () => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+      const g = serialGraph();
+      let turn = 0;
+      ops.onPrompt = () => {
+        turn += 1;
+        writeImpl(cwd, {
+          summary: 'x',
+          extra: {
+            assertionResults: turn === 1
+              ? [{ id: 'AC-1', status: 'fail', evidence: '缺测试' }]
+              : [{ id: 'AC-1', status: 'ok', evidence: '已补测试' }],
+          },
+        });
+      };
+      const run = await engine.startRun(g, cwd);
+      await onGate(run.runId);
+      await engine.approve(run.runId, 'impl', action === 'input' ? { action, text: '补齐 AC-1 测试' } : { action });
+      await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+      const final = engine.getRun(run.runId)!;
+      expect(final.state).toBe(action === 'reject' ? 'failed' : 'completed');
+      expect(final.attention!.gates[action]).toBe(1);
+      expect(final.attention!.waitMs).toBeGreaterThan(0);
+    });
+  }
+
+  // —— 门三：契约门（含多轮进出：input 谈完再拦，逐次累加）——
+  const contractArt = (q: string) => ({
+    summary: '规划完毕',
+    extra: { contract: { assertions: [{ id: 'AC-1', assertion: '导出可用', verify_method: '人工核对' }], questions: [q] } },
+  });
+  const contractGateGraph = () => {
+    const g = serialGraph();
+    g.nodes[1]!.config.checks = [{ type: 'contract' }];
+    return g;
+  };
+  it('契约门 approve / reject 各自入账', async () => {
+    for (const action of ['approve', 'reject'] as const) {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+      ops.onPrompt = () => writeImpl(cwd, contractArt('部署环境是哪个？'));
+      const run = await engine.startRun(contractGateGraph(), cwd);
+      await onGate(run.runId);
+      await engine.approve(run.runId, 'impl', { action });
+      await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+      const final = engine.getRun(run.runId)!;
+      expect(final.state).toBe(action === 'approve' ? 'completed' : 'failed');
+      expect(final.attention!.gates[action]).toBe(1);
+      expect(final.attention!.waitMs).toBeGreaterThan(0);
+    }
+  });
+  it('契约门 input 谈判→再拦→approve：同一节点多轮进出门逐次累加（input=1 且 approve=1）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    let turn = 0;
+    ops.onPrompt = () => {
+      turn += 1;
+      writeImpl(cwd, contractArt(turn === 1 ? '部署环境是哪个？' : '（已按补充口径收敛）'));
+    };
+    const run = await engine.startRun(contractGateGraph(), cwd);
+    await onGate(run.runId);
+    await engine.approve(run.runId, 'impl', { action: 'input', text: '预算按 3 秒内出结果执行' });
+    await onGate(run.runId); // 谈完回到门上：第二次进门已重写 blockedAt
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    expect(final.attention!.gates).toEqual({ approve: 1, reject: 0, input: 1 });
+    expect(final.attention!.waitMs).toBeGreaterThan(0);
+    expect((final.events ?? []).filter((e) => e.text.includes('契约门拦截'))).toHaveLength(2);
+  });
+
+  // —— 门四：分支守卫 ——
+  const guardGraph = () => {
+    const g = serialGraph();
+    g.nodes[1]!.config.checks = [{ type: 'delivery-branch', expectBranch: 'pf/x' }];
+    return g;
+  };
+  for (const action of ['approve', 'reject', 'input'] as const) {
+    it(`分支守卫 ${action} → 三态各自入账`, async () => {
+      const cwd = makeRepo('topic');
+      const run = await engine.startRun(guardGraph(), cwd);
+      await onGate(run.runId);
+      if (action === 'input') git(cwd, 'checkout', '-b', 'pf/x'); // agent 按补充指令切了分支
+      await engine.approve(run.runId, 'impl', action === 'input' ? { action, text: '切到 pf/x 再继续' } : { action });
+      await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+      const final = engine.getRun(run.runId)!;
+      expect(final.state).toBe(action === 'reject' ? 'failed' : 'completed');
+      expect(final.attention!.gates[action]).toBe(1);
+      expect(final.attention!.waitMs).toBeGreaterThan(0);
+    });
+  }
+
+  // —— 补口：运行中对话框门（此前唯一拦侧无事件无时刻的门）——
+  it('对话框门进入即留 approval 事件 + blockedAt；approve 放门后结算并清时刻', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'blocked'), 10);
+    };
+    const run = await engine.startRun(serialGraph(), cwd);
+    await onGate(run.runId);
+    const waiting = engine.getRun(run.runId)!;
+    expect((waiting.events ?? []).some((e) => e.type === 'approval' && e.text.includes('运行中对话框拦截'))).toBe(true);
+    expect(waiting.nodes['impl']!.blockedAt).toBeTruthy();
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    expect(final.attention!.gates.approve).toBe(1);
+    expect(final.attention!.waitMs).toBeGreaterThan(0);
+    expect(final.nodes['impl']!.blockedAt).toBeUndefined();
+  });
+
+  it('对话框门 input 补发一轮→再次弹框→再 approve：两轮各计一次、逐次累加', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    // 每轮 prompt 都弹框（waitForSettle 双采样采信 blocked，约 3s/轮，10s 预算内）
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'blocked'), 10);
+    };
+    const run = await engine.startRun(serialGraph(), cwd);
+    await onGate(run.runId);
+    await engine.approve(run.runId, 'impl', { action: 'input', text: '补发一轮指令' });
+    await onGate(run.runId); // 同一节点第二次进门：blockedAt 已重写
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    const attn = final.attention!;
+    expect(attn.gates).toEqual({ approve: 1, reject: 0, input: 1 });
+    expect(attn.waitMs).toBeGreaterThan(0);
+    expect((final.events ?? []).filter((e) => e.text.includes('运行中对话框拦截'))).toHaveLength(2);
+  });
+
+  // —— 存量路与红线 ——
+  it('旧 run 存量路：进门时刻不可考（blockedAt 缺失）→ 只计次不加时长，绝不造数', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await engine.startRun(manualGraph(), cwd);
+    await onGate(run.runId);
+    engine.getRun(run.runId)!.nodes['impl']!.blockedAt = undefined; // 模拟升级前已在门上的存量 run
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.attention).toEqual({ waitMs: 0, gates: { approve: 1, reject: 0, input: 0 } });
+  });
+
+  it('取消不算放门决策：stopRun 走 waiter 直插，attention 分毫不动、blockedAt 清空', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'blocked'), 10);
+    };
+    const run = await engine.startRun(serialGraph(), cwd);
+    await onGate(run.runId);
+    engine.stopRun(run.runId);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('cancelled');
+    expect(final.attention).toBeUndefined();
+    expect(final.nodes['impl']!.blockedAt).toBeUndefined();
+  });
+
+  it('无人批门的普通 run：attention 整缺，读端零破坏', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.state).toBe('completed');
+    expect(run.attention).toBeUndefined();
+  });
+
+  it('persist 往返：新 Engine 读盘后人介入账一字不差（waitMs/计数是落册账不是内存数）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const run = await engine.startRun(manualGraph(), cwd);
+    await onGate(run.runId);
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.attention!.gates.approve).toBe(1);
+    const revived = new Engine(ops, store, OPTS).getRun(run.runId)!;
+    expect(revived.attention).toEqual(final.attention);
+  });
+});

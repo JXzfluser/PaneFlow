@@ -43,6 +43,8 @@ export interface RunView {
   harness?: { graphSha?: string; agentKind?: string; model?: string; gwProfile?: string };
   /** v12-S1a 副作用落册账（server 判据算好，CLI 只渲染；缺项跳过、整缺不显示） */
   sideEffects?: { issuesCreated?: number[]; issuePatched?: number[]; prUrl?: string; pushedAt?: string };
+  /** v12-V2 人介入账（验证税）：放门结算好的等待时长 + 决策计数；无=本单没批过门，整缺不显示 */
+  attention?: { waitMs?: number; gates?: { approve?: number; reject?: number; input?: number } };
 }
 
 export interface NodeRunView {

@@ -23,6 +23,8 @@ paneflow runs --json            # 原始 API 负载，stdout 干净可直接 | j
 
 # 3) 看细节：run 头 + harness 行（v12-V1 起单实发配置：graph#指纹 · kind= · model= · 档位=，缺项跳过）
 #    + 副作用行（v12-S1a 落册账：建单#12 · 回写#7 · PR <url> · 已推送 <时刻>，缺项跳过、无账不显示）
+#    + 人等分行（v12-V2 人介入账：人等分: 等待 4.2 分 · 批 2/驳 0/补料 1——审批门
+#      拦→放的累计等待时长与决策计数，放门即结算落册；没批过门/旧 run 整缺不显示）
 #    + 每个节点状态 + 审批门提示
 paneflow status <runId>
 paneflow status <runId> --json
@@ -42,7 +44,8 @@ paneflow replay <runId> --times 2 --suite c4 --arm a
 #    注意 --from-failed 不自动开闸：副作用也可能挂在被重放的失败节点上，穿透仍需显式 --allow-side-effects
 paneflow replay <runId> --allow-side-effects      # 显式穿透副作用门禁（新单落「带副作用复跑」事件）
 paneflow replay <runId> --from-failed --suite c4 --arm b
-paneflow experiments --suite c4              # 只读 server 端收数表（每行含 harness 摘要列 graphSha·agentKind，缺则 -）
+paneflow experiments --suite c4              # 只读 server 端收数表（每行含 harness 摘要列 graphSha·agentKind，缺则 -；
+#                                             另含 v12-V2「人等分」列=人批门累计等待分钟，无账画 -）
 ```
 
 watch 退出码表（dispatch/runs/status/approve 恒为 0 成功 / 1 报错）：
@@ -75,7 +78,9 @@ curl -s $BASE/api/dispatch -d '{"task":"...","issueId":"123"}'
 #   v12-V1 起单记录多 harness:{graphSha,agentKind,model?,gwProfile?}——起单时固化的实发配置，
 #   旧 run 无此字段；replay 时 model/钉档与原单不一致会在新单 events 落「harness 漂移」事件，只提示不拦；
 #   v12-S1a 起带副作用的单多 sideEffects:{issuesCreated?,issuePatched?,prUrl?,pushedAt?}——
-#   引擎可见的外部写账（建单/覆写仅调用方带 runId 才归因；pushedAt 为自报口径，模板未报=不可见））
+#   引擎可见的外部写账（建单/覆写仅调用方带 runId 才归因；pushedAt 为自报口径，模板未报=不可见）；
+#   v12-V2 起批过门的单多 attention:{waitMs,gates:{approve,reject,input}}——人介入「验证税」落册账，
+#   放门即结算（不靠环形 events 推导；进门时刻不可考的存量轮次只计次不加时长，宁缺毋假））
 curl -s $BASE/api/runs
 curl -s $BASE/api/runs/<runId>
 curl -s $BASE/api/runs/<runId>/events

@@ -168,4 +168,51 @@ describe('v12-S1a 盲端点副作用归因（create-issue / update-issue 带 run
       await app.close();
     }
   });
+
+  it('v12-V2 GET /api/runs/:id 透传 attention 人介入账（展开即带出）；旧 run 无账读端零破坏', async () => {
+    const dir = tmp();
+    const { ready } = buildServer({
+      dataDir: dir,
+      run: {
+        runId: 'r-9',
+        dagName: 'g',
+        state: 'completed',
+        cwd: '/tmp/x',
+        startedAt: '2026-09-22T00:00:00.000Z',
+        graph: { version: 1, name: 'g', nodes: [], edges: [], metadata: { createdAt: '', updatedAt: '' } },
+        attention: { waitMs: 252_000, gates: { approve: 2, reject: 0, input: 1 } },
+      },
+    });
+    const { app } = await ready;
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/runs/r-9' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().attention).toEqual({ waitMs: 252_000, gates: { approve: 2, reject: 0, input: 1 } });
+      // 既有只读聚合字段照旧在位（V2 只加不改）
+      expect(res.json().awaitingApproval).toEqual({ nodeIds: [], waiting: false });
+    } finally {
+      await app.close();
+    }
+    // 无 attention 的旧 run：键整缺不造假，其余字段零破坏
+    const { ready: legacyReady } = buildServer({
+      dataDir: tmp(),
+      run: {
+        runId: 'r-old',
+        dagName: 'g',
+        state: 'completed',
+        cwd: '/tmp/x',
+        startedAt: '2026-09-01T00:00:00.000Z',
+        graph: { version: 1, name: 'g', nodes: [], edges: [], metadata: { createdAt: '', updatedAt: '' } },
+      },
+    });
+    const { app: legacyApp } = await legacyReady;
+    try {
+      const legacy = await legacyApp.inject({ method: 'GET', url: '/api/runs/r-old' });
+      expect(legacy.statusCode).toBe(200);
+      expect('attention' in legacy.json()).toBe(false);
+      expect(legacy.json().state).toBe('completed');
+    } finally {
+      await legacyApp.close();
+    }
+  });
 });

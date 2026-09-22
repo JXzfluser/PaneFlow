@@ -214,6 +214,15 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
     ].filter(Boolean);
     if (bits.length) io.out(`  ${paint(io, '33', `副作用: ${bits.join(' · ')}`)}`);
   }
+  // v12-V2 人等分行：验证税入账同样零判据——waitMs/计数都是放门时 server 结算落册的账
+  const attn = run.attention;
+  if (attn) {
+    const waitMin = ((Number.isFinite(attn.waitMs) ? attn.waitMs! : 0) / 60_000).toFixed(1);
+    const g = attn.gates;
+    io.out(
+      `  人等分: 等待 ${waitMin} 分 · 批 ${g?.approve ?? 0}/驳 ${g?.reject ?? 0}/补料 ${g?.input ?? 0}`,
+    );
+  }
   const gate = run.awaitingApproval;
   if (gate?.waiting) io.out(`  ${paint(io, '33', `⏸ 等待审批：${gate.nodeIds.join('、')}`)}`);
   for (const n of Object.values(run.nodes ?? {})) {

@@ -349,6 +349,12 @@ export interface NodeRunRecord {
   attempts: number;
   startedAt?: string;
   finishedAt?: string;
+  /**
+   * v12-V2 进门时刻（ISO）：审批门挂起等待人工前写、放门结算后清——waitMs 的唯一时长依据。
+   * 落册持久化（F2 重启转 paused 时随 rec 保留），但重启后审批 waiter 不存在、
+   * 放门走不到结算口（⤴ 续跑重到此节点会重写本时刻）——跨重启那截等待宁缺毋假。
+   */
+  blockedAt?: string;
   artifact?: Artifact;
   error?: string;
 }
@@ -424,6 +430,23 @@ export interface RunRecord {
    * 证据源边界见 RunSideEffects 各键注释——宁缺毋假，不做读时推导。
    */
   sideEffects?: RunSideEffects;
+  /**
+   * v12-V2 人介入账（验证税）：人在审批门上花掉的等待时长与决策次数，
+   * 放门处即结算、结构化落册（评审 R4：算账不靠 500 条环形事件推导）。
+   * 缺省=本单没经过任何放门动作（旧记录同款向后兼容）。
+   */
+  attention?: RunAttention;
+}
+
+/**
+ * v12-V2 人介入账本：同一节点多轮进出门（input 谈完再拦）逐次累加，合法。
+ * waitMs 只累「进门时刻可考」的轮次——存量路/重启丢时刻的轮次只计次不加时长，绝不造数。
+ */
+export interface RunAttention {
+  /** Σ 各轮放门等待时长（毫秒，拦侧→放侧）；只在两端时刻皆可考时累加 */
+  waitMs: number;
+  /** 按决策类型的放门次数 */
+  gates: { approve: number; reject: number; input: number };
 }
 
 /**

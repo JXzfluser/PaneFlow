@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { RunRecord } from '@paneflow/shared';
 import { latestAssertionResults } from '../api/wiki.js';
+import { attentionMinutes } from './attention.js';
 
 /**
  * v11-E1c 收数表：带 experiment.suite 的 run 到终态后，往
@@ -23,6 +24,9 @@ export function experimentRow(run: RunRecord): string {
   const harness = run.harness
     ? [run.harness.graphSha, run.harness.agentKind].filter(Boolean).join('·') || '-'
     : '-';
+  // v12-V2 人等分列：验证税入账——放门结算好的 attention.waitMs 折分钟（一位小数）；
+  // 无 attention（旧 run/没人批过门）画 '-'，读这张表即知人的等待占了多少
+  const waited = attentionMinutes(run.attention);
   const cell = (s: string) => s.replace(/\|/g, '\\|').trim();
   return `| ${[
     cell(run.runId),
@@ -34,12 +38,13 @@ export function experimentRow(run: RunRecord): string {
     String(wall),
     cell(run.replayOf ?? '-'),
     cell(harness),
+    cell(waited),
   ].join(' | ')} |`;
 }
 
 /** 表头只在全新建文件时写一次（suite 名来自调用方清洗后的值） */
 export function experimentTableHeader(suite: string): string {
-  return ['# 实验收数 ·', suite, '', '| runId | arm | flag | state | 断言 pass/total | 重试 | 墙钟秒 | replayOf | harness |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- |'].join('\n');
+  return ['# 实验收数 ·', suite, '', '| runId | arm | flag | state | 断言 pass/total | 重试 | 墙钟秒 | replayOf | harness | 人等分 |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |'].join('\n');
 }
 
 /** 纯本地落盘（零网络零 git）；永不 reject */
