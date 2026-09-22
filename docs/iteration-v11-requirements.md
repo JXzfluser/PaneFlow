@@ -104,9 +104,13 @@ R1 范围膨胀→批次全为还债/补链无新表面；R2 关键路径长→C
 
 （多智能体批次一：2026-09-20，server 346 测试+tsc+web build 净；D5 实现者断线由收尾 agent 盘点补完，摩擦账 #19。第二批（C2→C5→C3a→C1→C3b→E1）2026-09-21 收口：C3b/E1 双实现 agent 二度断线后按协议转收尾 agent 直接补完（摩擦账 #20），server 413+cli 30+web 57 全绿、tsc、web build 净、实机冒烟如上两行。第三批 C4 开工条件已齐：读回默认 on + 蒸馏手动路 + replay 带 suite 收数。）
 
-（C4 开夜前置清单，2026-09-21 按用户裁决「今晚只收口，待选题」列备。C4 状态=**待用户选题**——PaneFlow/llm-wiki 两仓 open issue 盘点无小修活，任务源需新立）：
-1. **选题**：同一真仓 3 条同类小修（单跑 20~40 分钟量级、可机检断言——文档坏链/空值兜底/日志文案级），立成 issue 走 issue 派发路（C3a 读回按 run cwd 归属仓查缓存，仓必须是真的）。
-2. **A/B 切换仪式**：`PF_WIKI_READBACK=off|on` 是进程级 env——每臂开跑前重启 server（先 `lsof -nP -iTCP:4310` 认 PID，确认 /api/queue 无活跃单再杀）；arm 标签由起单人打，收数不认嘴。
-3. **起单**：首臂 `paneflow dispatch "<任务>" --repo <r> --issue <n>` 跑绿后 `paneflow replay <runId> --times 1 --suite c4 --arm a/b` 复用同契约；同 issue 两臂勿重叠窗口（replay 穿透 R3.4 锁，双开自己撞自己）。
-4. **收数**：`paneflow experiments --suite c4` 直读表格（断言 pass/total、重试、墙钟自动落行）；两臂各 ≥3 单才有最低分母。
-5. **护栏**：PF_MAX_PANES=3 顶住免费档 fanout 503（摩擦账 #10）；审批门必须人批；结论写 gate0 风格文档，不达标就明说复利未成立。
+（C4 开夜前置清单，2026-09-21 按用户裁决「今晚只收口，待选题」列备；2026-09-22 实测刷新。C4 状态=**选题已定，待开跑（需用户令，烧网关配额）**——两仓 open issue 盘点无小修活后，用户确认题类并令建单，JXzfluser/PaneFlow 已立三条同类小修 issue）：
+1. **选题（已定）**：#8（4 个 `PF_GW_*` 网关旋钮逐个具名文档）、#9（`PF_HERDR_SESSION` 补文档）、#10（`PF_WIKI_DISTILL`/`PF_WIKI_READBACK`/`PF_RUN_MAX_TOKENS` 三开关进 README）——题面各带机器可检 grep 验收、全部只改文档不碰 `src/`。原选题条件留档：同一真仓 3 条同类小修（单跑 20~40 分钟量级、可机检断言——文档坏链/空值兜底/日志文案级），立成 issue 走 issue 派发路（C3a 读回按 run cwd 归属仓查缓存，仓必须是真的）。
+2. **硬约束（读回语料按 repo 归因）**：wiki 读回缓存挂在 JXzfluser/PaneFlow 名下，现仅 2 页旧摘要（citedRunCount=0），题目必须开在本仓 A/B 才有可读页。
+3. **distill 厚语料捷径判死（2026-09-22 实测）**：对现存 8 条 completed run 逐一实跑 `POST /api/wiki/distill`，全被 v11-C2 fail-closed 门拒（2 条「终端兜底未验证」、6 条「0 条断言实跑」），零 LLM 配额消耗——门风正确生效：这些旧单跑在断言执行链接线之前。
+4. **三夜语料时序**（由 3 推出）：第一夜=零/薄语料基线（A/B 都基本无页可读，差值≈0 也是合法 gate0 读数），派 #8/#9/#10 走 issue 受理链（断言实跑、绿单才过沉淀门），当晚绿单由人工点赞走 C5 预览沉淀出 summary 页、可选开 `PF_WIKI_DISTILL` 蒸 concept 页；第二/三夜起读回才有真料，A/B（`PF_WIKI_READBACK` off/on，每臂换 env 重启 server 走 lsof 认 PID 仪式，`replay --suite c4 --arm a/b` 防撞同 issue 锁）从第二夜开始有意义，各臂 ≥3 run 补分母。
+5. **诚实预期**：薄语料下 A/B 可能差不出显著性——「薄语料下读回无增益」本身是合法读数，直接影响 `PF_WIKI_DISTILL` 自动路要不要开闸的裁决。
+6. **A/B 切换仪式**：`PF_WIKI_READBACK=off|on` 是进程级 env——每臂开跑前重启 server（先 `lsof -nP -iTCP:4310` 认 PID，确认 /api/queue 无活跃单再杀）；arm 标签由起单人打，收数不认嘴。
+7. **起单**：首臂 `paneflow dispatch "<任务>" --repo <r> --issue <n>` 跑绿后 `paneflow replay <runId> --times 1 --suite c4 --arm a/b` 复用同契约；同 issue 两臂勿重叠窗口（replay 穿透 R3.4 锁，双开自己撞自己）。
+8. **收数**：`paneflow experiments --suite c4` 直读表格（断言 pass/total、重试、墙钟自动落行）；两臂各 ≥3 单才有最低分母。
+9. **护栏**：PF_MAX_PANES=3 顶住免费档 fanout 503（摩擦账 #10）；审批门必须人批；结论写 gate0 风格文档，不达标就明说复利未成立。
