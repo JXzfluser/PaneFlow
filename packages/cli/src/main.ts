@@ -54,7 +54,8 @@ const USAGE = [
   '  paneflow status <runId> [--json]',
   '  paneflow watch <runId> [--timeout 30m] [--interval 3000]   退出码：0 全绿 / 1 有红 / 2 超时 / 3 停在审批门',
   '  paneflow approve <runId> <nodeId>                          批准（CLI 绝不替你批）',
-  '  paneflow replay <runId> [--times N] [--suite S] [--arm A] [--flag F]   同契约复跑（穿透同 issue 锁，仅 replay 显式发起）',
+  '  paneflow replay <runId> [--times N] [--suite S] [--arm A] [--flag F] [--allow-side-effects] [--from-failed]   同契约复跑（穿透同 issue 锁，仅 replay 显式发起）',
+  '                                                              源单带副作用默认拒绝；--allow-side-effects 显式穿透，--from-failed 只重跑失败/未执行节点',
   '  paneflow experiments [--suite S] [--json]                  实验收数表（只读 server 落盘）',
   '',
   '地址解析：--url > $PANEFLOW_URL > ~/.paneflow/cli.json 的 url > http://127.0.0.1:4310',
@@ -202,6 +203,17 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
     ].filter(Boolean);
     io.out(`  harness: ${bits.join(' · ')}`);
   }
+  // v12-S1a 副作用行：同样零判据——账是 server 算好落册的，这里只照单渲染
+  const se = run.sideEffects;
+  if (se) {
+    const bits = [
+      se.issuesCreated?.length ? `建单${se.issuesCreated.map((n) => `#${n}`).join('、')}` : '',
+      se.issuePatched?.length ? `回写${se.issuePatched.map((n) => `#${n}`).join('、')}` : '',
+      se.prUrl ? `PR ${se.prUrl}` : '',
+      se.pushedAt ? `已推送 ${se.pushedAt}` : '',
+    ].filter(Boolean);
+    if (bits.length) io.out(`  ${paint(io, '33', `副作用: ${bits.join(' · ')}`)}`);
+  }
   const gate = run.awaitingApproval;
   if (gate?.waiting) io.out(`  ${paint(io, '33', `⏸ 等待审批：${gate.nodeIds.join('、')}`)}`);
   for (const n of Object.values(run.nodes ?? {})) {
@@ -236,11 +248,14 @@ async function cmdReplay(io: CliIo, baseUrl: string, args: Args): Promise<number
   if (!Number.isInteger(times) || times < 1 || times > 20) {
     throw new Error(`--times 需为 1~20 的整数，收到：${args.flags.times}`);
   }
-  const body: { times: number; suite?: string; arm?: string; flag?: string } = { times };
+  const body: { times: number; suite?: string; arm?: string; flag?: string; allowSideEffects?: boolean; fromFailed?: boolean } = { times };
   for (const k of ['suite', 'arm', 'flag'] as const) {
     const v = args.flags[k]?.trim();
     if (v) body[k] = v;
   }
+  // v12-S1b/S3 两旗标：纯透传布尔键（判据全在 server——副作用门禁、resume 合流都在这）
+  if (args.bools.has('allow-side-effects')) body.allowSideEffects = true;
+  if (args.bools.has('from-failed')) body.fromFailed = true;
   const { body: res } = await request<{ runs: { runId: string; state: string }[]; error?: string }>(
     io,
     baseUrl,

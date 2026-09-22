@@ -19,6 +19,7 @@ export type {
   WikiReadbackTrace,
   RunExperimentMeta,
   RunHarness,
+  RunSideEffects,
   TemplateVariable,
   CheckSpec,
 } from './dag.js';

@@ -41,6 +41,8 @@ export interface RunView {
   awaitingApproval?: { waiting: boolean; nodeIds: string[] };
   /** v12-V1 起单时固化的实发 harness（旧 run/旧 server 没有=不渲染，判定零在 CLI） */
   harness?: { graphSha?: string; agentKind?: string; model?: string; gwProfile?: string };
+  /** v12-S1a 副作用落册账（server 判据算好，CLI 只渲染；缺项跳过、整缺不显示） */
+  sideEffects?: { issuesCreated?: number[]; issuePatched?: number[]; prUrl?: string; pushedAt?: string };
 }
 
 export interface NodeRunView {

@@ -130,6 +130,42 @@ describe('runs / status / approve', () => {
     expect(legacy.lines.join('\n')).not.toContain('harness');
   });
 
+  it('v12-S1a status 副作用行：只渲染 server 落册账——全量一行、缺项跳过、无账/空账整缺不显示', async () => {
+    const base = { runId: 'r-se', state: 'completed', dagName: 'g', nodes: {} };
+    const { fetchImpl } = stubFetch([
+      {
+        body: {
+          ...base,
+          sideEffects: {
+            issuesCreated: [12, 31],
+            issuePatched: [7],
+            prUrl: 'https://github.com/o/r/pull/3',
+            pushedAt: '2026-09-22T02:03:04.000Z',
+          },
+        },
+      },
+      { body: { ...base, sideEffects: { prUrl: 'https://github.com/o/r/pull/3' } } },
+      { body: { ...base, sideEffects: {} } },
+      { body: base },
+    ]);
+    const full = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-se'], full.io)).toBe(0);
+    expect(full.lines.join('\n')).toContain(
+      '副作用: 建单#12、#31 · 回写#7 · PR https://github.com/o/r/pull/3 · 已推送 2026-09-22T02:03:04.000Z',
+    );
+    const partial = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-se'], partial.io)).toBe(0);
+    const pOut = partial.lines.join('\n');
+    expect(pOut).toContain('副作用: PR https://github.com/o/r/pull/3');
+    expect(pOut).not.toContain('建单');
+    const empty = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-se'], empty.io)).toBe(0);
+    expect(empty.lines.join('\n')).not.toContain('副作用');
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-se'], legacy.io)).toBe(0);
+    expect(legacy.lines.join('\n')).not.toContain('副作用');
+  });
+
   it('approve POST 审批端点、体是 {action:"approve"}；409 时把 server 指路原样带出', async () => {
     const { fetchImpl, calls } = stubFetch([{ body: { delivered: true } }]);
     const { io } = makeIo({ fetch: fetchImpl });
@@ -180,6 +216,23 @@ describe('replay / experiments（v11-E1）', () => {
     expect(await main(['replay', 'src-9', '--times', '3'], partial.io)).toBe(1);
     expect(JSON.parse(calls[0]!.init.body!)).toEqual({ times: 3 });
     expect(partial.errLines.join('\n')).toContain('第 2/3 份起单失败');
+  });
+
+  it('v12-S1b/S3 --allow-side-effects / --from-failed 布尔旗标进 body（按下才加键，旧命令体零新增）', async () => {
+    const payload = { runs: [{ runId: 'a1', state: 'running' }] };
+    const { fetchImpl, calls } = stubFetch([{ body: payload }, { body: payload }]);
+    const { io } = makeIo({ fetch: fetchImpl });
+    expect(await main(['replay', 'src-9', '--from-failed', '--allow-side-effects', '--suite', 'c4'], io)).toBe(0);
+    expect(JSON.parse(calls[0]!.init.body!)).toEqual({ times: 1, suite: 'c4', allowSideEffects: true, fromFailed: true });
+    // server 拒绝态（400）：薄壳不判断，把两行指路文案原样带出、退 1
+    const denied = stubFetch([{ status: 400, body: { error: '源 run x 有副作用（建单#12）——直接重放会二次副作用\n显式穿透加 --allow-side-effects；只重跑失败/未执行节点加 --from-failed' } }]);
+    const bad = makeIo({ fetch: denied.fetchImpl });
+    expect(await main(['replay', 'src-9', '--times', '2'], bad.io)).toBe(1);
+    expect(bad.errLines.join('\n')).toContain('--allow-side-effects');
+    // 不带旗标：body 零新增键（对照既有测试的 {times} 精确断言已覆盖）
+    const { io: io2 } = makeIo({ fetch: fetchImpl });
+    expect(await main(['replay', 'src-9'], io2)).toBe(0);
+    expect(JSON.parse(calls[1]!.init.body!)).toEqual({ times: 1 });
   });
 
   it('experiments：人读按表列文件+行；空表给指路文案；--suite 进 query；--json 原样', async () => {

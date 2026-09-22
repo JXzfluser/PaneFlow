@@ -14,7 +14,12 @@ function tmp(): string {
 
 async function buildServer(opts: {
   dataDir: string;
-  replayRun?: (id: string, meta?: unknown) => Promise<Partial<RunRecord>>;
+  replayRun?: (
+    id: string,
+    meta?: unknown,
+    /** v12-S1b/S3：路由把两旗标收进第三参原样透传（判据全在 engine） */
+    opts?: { allowSideEffects?: boolean; fromFailed?: boolean },
+  ) => Promise<Partial<RunRecord>>;
   listRuns?: () => unknown[];
 }) {
   const replayRun = opts.replayRun ?? (async () => ({ runId: 'new-1', state: 'running' as const }));
@@ -118,6 +123,46 @@ describe('v11-E1a POST /api/runs/:id/replay（同契约复跑端点）', () => {
         runs: [{ runId: 'ok-1', state: 'running' }],
         error: '第 2/3 份起单失败：Issue 7 已有运行中/排队中的流水线',
       });
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// -- v12-S1b/S3 replay 端点追加两体键：allowSideEffects / fromFailed（薄透传，判据在 engine） --
+describe('v12-S1b/S3 POST /api/runs/:id/replay 两新体键透传与错误映射', () => {
+  it('allowSideEffects/fromFailed 原样进 engine.replayRun 第三参；缺省双 false（旧调用零破坏）', async () => {
+    const { app, replayRun } = await buildServer({ dataDir: tmp() });
+    try {
+      await post(app, 'r-1', { allowSideEffects: true });
+      expect(replayRun.mock.calls[0]![2]).toEqual({ allowSideEffects: true, fromFailed: false });
+      await post(app, 'r-1', { fromFailed: true, suite: 'c4' });
+      expect(replayRun.mock.calls[1]![2]).toEqual({ allowSideEffects: false, fromFailed: true });
+      await post(app, 'r-1', {});
+      expect(replayRun.mock.calls[2]![2]).toEqual({ allowSideEffects: false, fromFailed: false });
+      // meta 仍在第二参（既有语义不动）
+      expect(replayRun.mock.calls[1]![1]).toEqual({ suite: 'c4' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('S1b 副作用拒绝 → 400 两行指路文案（含两旗标）；不含「找不到」不误伤 404', async () => {
+    const { app } = await buildServer({
+      dataDir: tmp(),
+      replayRun: async (id) => {
+        throw new Error(
+          `源 run ${id} 有副作用（建单#12 · PR https://github.com/o/r/pull/3）——直接重放会二次副作用\n显式穿透加 --allow-side-effects；只重跑失败/未执行节点加 --from-failed`,
+        );
+      },
+    });
+    try {
+      const res = await post(app, 'r-1', {});
+      expect(res.statusCode).toBe(400);
+      const err = res.json().error as string;
+      expect(err).toContain('有副作用');
+      expect(err).toContain('--allow-side-effects');
+      expect(err).toContain('--from-failed');
     } finally {
       await app.close();
     }

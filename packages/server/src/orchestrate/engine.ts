@@ -18,8 +18,9 @@ import type {
   WikiReadbackTrace,
   RunExperimentMeta,
   RunHarness,
+  RunSideEffects,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
@@ -31,6 +32,7 @@ import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
 import { appendExperimentRow } from './experiment.js';
 import { contentSha, harnessDriftDiffs } from './harness.js';
+import { hasSideEffects, sideEffectsSummary } from './side-effects.js';
 import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
 import { buildGithubEnv, readGithubSettings } from '../api/github-cred.js';
 import { autoDistillEnabled, autoDistillRun } from '../api/wiki-distill.js';
@@ -729,26 +731,58 @@ export class Engine {
    * 幂等锁上（opts.replay 声明），其余门（脏检查/DAG 校验/cwd/变量必填）一条不少。
    * 已知限制：I2/C3a 注入照跑（当时注入进的是在册 graph 的字面量，新单还会各得一份
    * 新注入）——实验若在意，同 suite 各臂承受同等注入，A/B 差值仍读得出。
+   * v12-S1b：源 run 带在册副作用（含 prUrl）且未显式放行（allowSideEffects）→ 起单前
+   * 拒绝。评审 R5 口径：这道门只卡 replay 显式路，且 withSideEffects 穿透不开其余任何
+   * 门（脏检查/锁豁免边界等语义一丝不动）。
+   * v12-S3：fromFailed=true 时接上既有 resume 通道（startRun 第 7 参 resumeOf）——
+   * done 节点继承不重跑（天然不二次 push），只重放失败/未执行节点。resume 校验段
+   * （见 startRun R6.5 处）对源 run 无终态要求，只要求存在且同模板；注意与整单 replay
+   * 的一处语义差：带 resumeOf 的起单按既有行为跳过 I2 经验注入。
    */
   async replayRun(
     runId: string,
     meta?: RunExperimentMeta,
+    opts?: { allowSideEffects?: boolean; fromFailed?: boolean },
   ): Promise<RunRecord> {
     const source = this.runs.get(runId) ?? undefined;
     if (!source) throw new Error(`找不到要 replay 的原 run：${runId}`);
+    // v12-S1b 副作用感知门禁：判据只看落册账（不靠事件推导）；旧 run 无 sideEffects
+    // 但已有 prUrl 在册的，把 prUrl 并进判据视图（读结构化字段，非推导）。
+    const se: RunSideEffects = { ...source.sideEffects, ...(source.prUrl ? { prUrl: source.prUrl } : {}) };
+    const seNotes = sideEffectsSummary(se);
+    if (hasSideEffects(se) && !opts?.allowSideEffects) {
+      throw new Error(
+        `源 run ${source.runId} 有副作用（${seNotes.join(' · ')}）——直接重放会二次副作用\n` +
+          `显式穿透加 --allow-side-effects；只重跑失败/未执行节点加 --from-failed`,
+      );
+    }
     const run = await this.startRun(
       structuredClone(source.graph),
       source.cwd,
       source.spaceId,
       source.variables ? structuredClone(source.variables) : undefined,
       source.issueId,
-      undefined,
+      // v12-S3：--from-failed 走 resume 通道（done 继承+调度跳过），其余 replay 语义不变
+      opts?.fromFailed ? source.runId : undefined,
       {
         ...(source.contract ? { contract: structuredClone(source.contract) } : {}),
         replay: { of: source.runId },
         ...(meta && (meta.suite || meta.arm || meta.flag) ? { experiment: meta } : {}),
       },
     );
+    // v12-S1b 透明性红线：穿透必须上时间线，事后能从新单事件 recon 出带了哪些旧副作用
+    if (seNotes.length) {
+      this.recordEvent(
+        run,
+        'run',
+        undefined,
+        `带副作用复跑（S1b 穿透）：原 run ${source.runId} 副作用清单 ${seNotes.join(' · ')}；` +
+          (opts?.fromFailed
+            ? '本单走 --from-failed（done 节点不重跑），失败/未执行节点重放仍可能触及其外部写'
+            : '本单全量重放，外部写会二次发生'),
+      );
+      this.persistAndNotify(run);
+    }
     // v12-V1 replay 漂移比对（评审 R5：只落透明性事件不拦）：model/钉档两个闸口，
     // 新单起单现读值与原 run.harness 不一致即实验两臂档位已变的机器证据；
     // graphSha 不比对（replay 复用原在册 graph，恒等）；原记录无 harness=旧单，不发。
@@ -1690,8 +1724,35 @@ export class Engine {
     const url = raw.trim();
     if (!/^https?:\/\/\S+$/.test(url)) return;
     run.prUrl = url;
+    // v12-S1a：同一处写两字段——sideEffects.prUrl 是 prUrl 的镜像（不做读时推导），
+    // 保证 S1b 门禁只看 sideEffects 一处判据。
+    (run.sideEffects ??= {}).prUrl = url;
     this.recordEvent(run, 'run', rec.nodeId, `交付出口：PR 已开出 ${url}`);
     this.persistAndNotify(run);
+  }
+
+  /**
+   * v12-S1a 副作用归因接线：盲 GitHub 写端点（create-issue/update-issue）带 runId 调用时，
+   * 把这次对外部世界的写落进 run 的结构化账（评审 R4：凡要算账的必须落册，不靠事件推导）。
+   * 只认活跃 run（未收口）；定位不到/已收口一律 false——端点行为与今天完全一致。
+   * 如实边界：agent 是否携带 runId 取决于模板提示词（本片不动模板），无 runId=漏账可见不可判。
+   */
+  recordIssueSideEffect(runId: string, kind: 'created' | 'patched', issueNumber: number): boolean {
+    const run = this.runs.get(runId);
+    if (!run || runHasEnded(run.state)) return false;
+    const se = (run.sideEffects ??= {});
+    if (kind === 'created') (se.issuesCreated ??= []).push(issueNumber);
+    else (se.issuePatched ??= []).push(issueNumber);
+    // 笔序号入文案：recordEvent 对相邻同文事件去重，同号覆写两次也要各留一条
+    const nth = (se.issuesCreated?.length ?? 0) + (se.issuePatched?.length ?? 0);
+    this.recordEvent(
+      run,
+      'run',
+      undefined,
+      `副作用（S1a）：${kind === 'created' ? `建单 #${issueNumber}（create-issue）` : `覆写 Issue #${issueNumber} 正文（update-issue）`}，已落 run 副作用账（第 ${nth} 笔）`,
+    );
+    this.persistAndNotify(run);
+    return true;
   }
 
   /**

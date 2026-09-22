@@ -2618,3 +2618,191 @@ describe('v12-V1 engine replay 漂移比对（只落透明性事件，不拦起�
     await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
   });
 });
+
+// -- v12-S1a 副作用可见化：结构化落册（append 账 + prUrl 镜像），宁缺毋假 ----------------
+describe('v12-S1a engine 副作用落册（端点归因 append / 只认活跃 run / prUrl 镜像两处同写）', () => {
+  it('活跃 run 归因：建单/覆写各 append 进 issuesCreated/issuePatched 并各落一条「副作用」事件（落盘可读）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s1a-'));
+    ops.onPrompt = () => {
+      /* 永不 settle：run 保持 running，归因才生效 */
+    };
+    const run = await engine.startRun(serialGraph(), cwd);
+    expect(engine.recordIssueSideEffect(run.runId, 'created', 12)).toBe(true);
+    expect(engine.recordIssueSideEffect(run.runId, 'patched', 7)).toBe(true);
+    expect(engine.recordIssueSideEffect(run.runId, 'patched', 7)).toBe(true); // 同号覆写两次=两笔账
+    const r = engine.getRun(run.runId)!;
+    expect(r.sideEffects).toEqual({ issuesCreated: [12], issuePatched: [7, 7] });
+    const seEvents = (r.events ?? []).filter((e) => e.text.includes('副作用（S1a）'));
+    expect(seEvents).toHaveLength(3);
+    expect(seEvents[0]!.text).toContain('建单 #12');
+    expect(seEvents[1]!.text).toContain('覆写 Issue #7');
+    // 结构化落册（评审 R4）：账在磁盘记录上，不靠事件流推导
+    expect(store.getRun(run.runId)!.sideEffects).toEqual({ issuesCreated: [12], issuePatched: [7, 7] });
+    engine.stopRun(run.runId);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+  });
+
+  it('不猜不硬绑：未知 run / 已收口 run 一律 false，零改动（pushedAt 无自报键=留空）', async () => {
+    expect(engine.recordIssueSideEffect('ghost1234', 'created', 1)).toBe(false);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s1a-dead-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(engine.recordIssueSideEffect(run.runId, 'created', 2)).toBe(false); // completed 不再归因
+    const after = engine.getRun(run.runId)!;
+    expect(after.sideEffects).toBeUndefined();
+    expect(after.sideEffects?.pushedAt).toBeUndefined(); // deliver extra 无 push 类自报键：宁缺毋假
+  });
+
+  it('capturePrUrl 一处写两字段：run.prUrl 与 sideEffects.prUrl 同源镜像', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s1a-pr-'));
+    ops.onPrompt = () => {
+      fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+      fs.writeFileSync(
+        path.join(cwd, '.herdr/artifacts/impl.json'),
+        JSON.stringify({ summary: 'x', extra: { pr_url: 'https://github.com/acme/app/pull/9' } }),
+      );
+    };
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.prUrl).toBe('https://github.com/acme/app/pull/9');
+    expect(run.sideEffects?.prUrl).toBe('https://github.com/acme/app/pull/9');
+  });
+});
+
+// -- v12-S1b 副作用感知 replay：默认拒 / 显式穿透 / 只关这一道门 --------------------------
+describe('v12-S1b replay 副作用门禁（sideEffects 非空默认拒两行指路；穿透起单落透明性事件；其余门不豁免）', () => {
+  const seedSE = (runId: string) => {
+    const r = engine.getRun(runId)!;
+    r.sideEffects = { issuesCreated: [12], issuePatched: [7] };
+    r.prUrl = 'https://github.com/o/r/pull/3';
+  };
+
+  it('源 run 带副作用 → 起单前即拒（run 数不涨），文案两行：清单 + 两旗标指路', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s1b-deny-'));
+    const r1 = await runToCompletion(serialGraph(), cwd);
+    seedSE(r1.runId);
+    const before = engine.listRuns().length;
+    const err = await engine.replayRun(r1.runId).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    const lines = (err as Error).message.split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain(`源 run ${r1.runId} 有副作用（建单#12 · 回写#7 · PR https://github.com/o/r/pull/3`);
+    expect(lines[0]).toContain('直接重放会二次副作用');
+    expect(lines[1]).toContain('--allow-side-effects');
+    expect(lines[1]).toContain('--from-failed');
+    expect(engine.listRuns().length).toBe(before); // 拒绝发生在 startRun 之前
+  });
+
+  it('allowSideEffects 穿透：照常起单 + 新单落「带副作用复跑（S1b 穿透）」事件（含原单清单摘要）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s1b-pass-'));
+    const r1 = await runToCompletion(serialGraph(), cwd);
+    seedSE(r1.runId);
+    const r2 = await engine.replayRun(r1.runId, undefined, { allowSideEffects: true });
+    expect(r2.replayOf).toBe(r1.runId);
+    const ev = (r2.events ?? []).filter((e) => e.text.includes('带副作用复跑（S1b 穿透）'));
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.text).toContain('建单#12 · 回写#7 · PR https://github.com/o/r/pull/3');
+    expect(ev[0]!.text).toContain('全量重放，外部写会二次发生');
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+  });
+
+  it('无副作用单零打扰（不发拒绝也不发穿透事件）；旧 run 只有 prUrl（无 sideEffects 落册）也进门禁判据', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s1b-clean-'));
+    const r1 = await runToCompletion(serialGraph(), cwd);
+    const r2 = await engine.replayRun(r1.runId); // v11 既有语义：照常起
+    expect(r2.replayOf).toBe(r1.runId);
+    expect((r2.events ?? []).some((e) => e.text.includes('S1b'))).toBe(false);
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+    // 预镜像时代的旧单：prUrl 结构化在册即算副作用
+    const legacy = engine.getRun(r2.runId)!;
+    legacy.prUrl = 'https://github.com/o/r/pull/9';
+    delete legacy.sideEffects;
+    await expect(engine.replayRun(legacy.runId)).rejects.toThrow(/有副作用（PR /);
+  });
+
+  it('穿透只关这一道判断：allowSideEffects 下脏检查等其余门照旧拦（错误文案是门自己的）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s1b-dirty-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+    git('init', '-b', 'main');
+    git('config', 'user.email', 'pf@test.local');
+    git('config', 'user.name', 'pf-test');
+    fs.writeFileSync(path.join(cwd, '.gitignore'), '.herdr/\n');
+    fs.writeFileSync(path.join(cwd, 'README.md'), '# t\n');
+    git('add', '-A');
+    git('commit', '-m', 'init');
+    const r1 = await runToCompletion(serialGraph(), cwd);
+    expect(r1.state).toBe('completed');
+    seedSE(r1.runId);
+    fs.writeFileSync(path.join(cwd, 'dirty.txt'), '未提交改动\n'); // 起单前先脏
+    const err = await engine
+      .replayRun(r1.runId, undefined, { allowSideEffects: true })
+      .catch((e: Error) => e);
+    expect((err as Error).message).toContain('未提交改动');
+    expect((err as Error).message).not.toContain('副作用'); // 不是门禁的文案——门照常生效
+    expect(engine.listRuns().length).toBe(1);
+  });
+});
+
+// -- v12-S3 replay×resume 合流：--from-failed 接既有 resume 通道 --------------------------
+describe('v12-S3 replay×resume 合流（fromFailed 走 done 继承通道，只重放失败/未执行节点）', () => {
+  /** 复刻 v7-A5 断点续跑场景：design 绿、impl 第一轮判死 */
+  async function failingRun(cwd: string) {
+    let phase = 1;
+    ops.onPrompt = (target, text) => {
+      if (phase === 1 && text.includes('实现')) {
+        ops.setStatus(target, 'working');
+        setTimeout(() => ops.setStatus(target, 'unknown'), 10);
+      }
+    };
+    const run = await runToCompletion(twoNodeGraph(), cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['design']!.state).toBe('done');
+    phase = 2;
+    return run;
+  }
+
+  it('fromFailed：done 节点起单即继承不重跑（无二次外部写），失败节点重放收全绿，replay 血缘事件照在', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s3-'));
+    const r1 = await failingRun(cwd);
+    const promptsBefore = ops.prompts.length;
+    const r2 = await engine.replayRun(r1.runId, undefined, { fromFailed: true });
+    expect(r2.replayOf).toBe(r1.runId);
+    expect(r2.nodes['design']!.state).toBe('done'); // 继承在 startRun 返回前即完成
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+    const fin = engine.getRun(r2.runId)!;
+    expect(fin.state).toBe('completed');
+    const newPrompts = ops.prompts.slice(promptsBefore);
+    expect(newPrompts.some((p) => p.text.includes('设计'))).toBe(false); // design 不再被 prompt
+    expect(newPrompts.some((p) => p.text.includes('实现'))).toBe(true); // impl 是唯一重放对象
+    expect((fin.events ?? []).some((e) => e.text.includes(`继承 ${r1.runId}`))).toBe(true);
+    expect((fin.events ?? []).some((e) => e.text.includes('复跑 replay（E1a）'))).toBe(true);
+  });
+
+  it('拒绝文案里的 --from-failed 指路真实可达：带副作用源单仍需显式穿透，穿透后 done 节点不重跑', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s3-se-'));
+    const r1 = await failingRun(cwd);
+    r1.sideEffects = { prUrl: 'https://github.com/o/r/pull/3' }; // 例如失败前已开过 PR
+    // 只带 fromFailed 不开闸：照拒（副作用可能挂在被重放的失败节点上，穿透必须显式）
+    await expect(engine.replayRun(r1.runId, undefined, { fromFailed: true })).rejects.toThrow(/有副作用/);
+    const promptsBefore = ops.prompts.length;
+    const r2 = await engine.replayRun(r1.runId, undefined, { fromFailed: true, allowSideEffects: true });
+    const ev = (r2.events ?? []).filter((e) => e.text.includes('带副作用复跑（S1b 穿透）'));
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.text).toContain('--from-failed（done 节点不重跑）');
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+    const fin = engine.getRun(r2.runId)!;
+    expect(fin.state).toBe('completed');
+    expect((fin.events ?? []).some((e) => e.text.includes(`继承 ${r1.runId}`))).toBe(true);
+    const newPrompts = ops.prompts.slice(promptsBefore);
+    expect(newPrompts.some((p) => p.text.includes('设计'))).toBe(false); // 穿透也没二次重跑 done 节点
+  });
+
+  it('与 V1 共存：from-failed 路新单 harness 照常固化，档位变了照落漂移事件', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s3-drift-'));
+    const r1 = await failingRun(cwd);
+    upsertGatewayProfile(dataDir, { name: '档A', baseUrl: 'https://gw-a.example.com', apiKey: 'k', freeModel: 'free-m' });
+    const r2 = await engine.replayRun(r1.runId, { suite: 'c4', arm: 'b' }, { fromFailed: true });
+    expect(r2.harness?.model).toBe('free-m');
+    expect((r2.events ?? []).some((e) => e.text.includes('harness 漂移'))).toBe(true);
+    expect(r2.experiment).toEqual({ suite: 'c4', arm: 'b' });
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+  });
+});

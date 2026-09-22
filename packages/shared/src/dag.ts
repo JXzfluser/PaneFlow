@@ -409,6 +409,32 @@ export interface RunRecord {
    * JSON 向后兼容不炸）。C4 A/B 的「两臂只差 readback」与 replay 漂移比对以此为机器证据源。
    */
   harness?: RunHarness;
+  /**
+   * v12-S1a 副作用可见化：本单对外部世界写操作的统一落册（缺省=无在册副作用/旧记录，
+   * JSON 向后兼容只增不改）。S1b 的 replay 门禁唯一输入：非空=直接重放会二次副作用。
+   * 证据源边界见 RunSideEffects 各键注释——宁缺毋假，不做读时推导。
+   */
+  sideEffects?: RunSideEffects;
+}
+
+/**
+ * v12-S1a 副作用账目（S1a）：只记引擎可见的证据，全部 append-only。
+ * 盲 HTTP 端点（create-issue/update-issue）只有调用方带 runId 才归因——
+ * agent 是否知道 runId 取决于模板提示词（本片不动），端点侧先接好线。
+ */
+export interface RunSideEffects {
+  /** 经 POST /api/github/create-issue 建成的 issue 号（每次成功 append 一枚） */
+  issuesCreated?: number[];
+  /** 经 PATCH /api/github/update-issue 覆写正文的 issue 号（同号可重复=覆写多次） */
+  issuePatched?: number[];
+  /** run.prUrl 的镜像：capturePrUrl 落册处一处写两字段（别做读时推导） */
+  prUrl?: string;
+  /**
+   * git push 已发生（ISO 时刻）——纯自报口径：现查 deliver 节点 extra 只有
+   * pr_url/push_error/blocked_reason，没有 commit sha/pushed 类可信键，
+   * 模板未报=不可见，宁缺毋假（本片留键位不填）。
+   */
+  pushedAt?: string;
 }
 
 /**

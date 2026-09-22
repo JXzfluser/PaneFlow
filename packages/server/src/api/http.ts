@@ -56,6 +56,8 @@ interface CreateIssueBody {
   repo?: string;
   /** 需求简述（无 title 时由 Agent 调用前的草稿生成） */
   labels?: string[];
+  /** v12-S1a 副作用归因（可选，向后兼容）：带上且能定位活跃 run 时，建单成功落该 run 的副作用账 */
+  runId?: string;
 }
 
 interface UpdateIssueBody {
@@ -64,6 +66,8 @@ interface UpdateIssueBody {
   repo?: string;
   /** 就地更新的完整正文（覆盖原正文） */
   body: string;
+  /** v12-S1a 副作用归因（可选，向后兼容）：同上，覆写成功落 run.sideEffects.issuePatched */
+  runId?: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
 import { buildDispatchGraph, candidateRepos, extractAcceptance, INTAKE_TEMPLATE_PATH, intakeTemplateMarkdown, parseIssueRef, type IssueView } from './dispatch.js';
@@ -552,6 +556,11 @@ export async function buildHttpServer(deps: HttpDeps) {
         });
         const data = (await res.json()) as { number?: number; html_url?: string; message?: string };
         if (!res.ok) return reply.code(res.status).send({ error: data.message ?? `HTTP ${res.status}` });
+        // v12-S1a 副作用归因接线：调用方带 runId 且能定位活跃 run 才落账；
+        // 无 runId/定位不到 = 行为与今天完全一致（护栏口径向 M4 Contents 回写看齐）
+        if (req.body.runId && typeof data.number === 'number') {
+          deps.engine.recordIssueSideEffect(String(req.body.runId), 'created', data.number);
+        }
         return { number: data.number, url: data.html_url, repo };
       } catch (err) {
         return reply.code(502).send({ error: (err as Error).message });
@@ -581,6 +590,10 @@ export async function buildHttpServer(deps: HttpDeps) {
       });
       const data = (await res.json()) as { number?: number; html_url?: string; message?: string };
       if (!res.ok) return reply.code(res.status).send({ error: data.message ?? `HTTP ${res.status}` });
+      // v12-S1a 副作用归因接线（与 create-issue 同口径）：覆写成功且有活跃 runId 才落账
+      if (req.body.runId && typeof data.number === 'number') {
+        deps.engine.recordIssueSideEffect(String(req.body.runId), 'patched', data.number);
+      }
       return { number: data.number, url: data.html_url, repo };
     } catch (err) {
       return reply.code(502).send({ error: (err as Error).message });
@@ -1471,33 +1484,47 @@ export async function buildHttpServer(deps: HttpDeps) {
   // 复跑实验最小三片的第一片：取原 run 在册 graph/变量重新起单（可 N 份），
   // 豁免只穿透 R3.4 同 issue 幂等锁且仅 replay 显式发起——普通 dispatch 撞锁语义一丝不变。
   // 不建 UI、不做统计、不做调度（v11 明确不做清单）。
+  // v12-S1b/S3 追加两个体键：allowSideEffects（副作用门禁显式穿透）、fromFailed
+  // （replay×resume 合流，只重跑失败/未执行节点）；缺省均 false，旧调用零破坏。
 
-  app.post<{ Params: { id: string }; Body: { times?: number | string; suite?: string; arm?: string; flag?: string } }>(
-    '/api/runs/:id/replay',
-    async (req, reply) => {
-      const raw = req.body?.times === undefined ? 1 : Number(req.body.times);
-      if (!Number.isInteger(raw) || raw < 1 || raw > 20) {
-        return reply.code(400).send({ error: 'times 需为 1~20 的整数（与批量派发同尺度）' });
-      }
-      const meta = { suite: req.body?.suite, arm: req.body?.arm, flag: req.body?.flag };
-      const runs: { runId: string; state: string }[] = [];
-      for (let i = 0; i < raw; i++) {
-        try {
-          const r = await deps.engine.replayRun(req.params.id, meta);
-          runs.push({ runId: r.runId, state: r.state });
-        } catch (e) {
-          const msg = (e as Error).message;
-          // 第一份就失败 → 4xx 指路；半路失败 → 已起的如实返回 + error 说明
-          if (!runs.length) {
-            const code = msg.includes('找不到') ? 404 : 400;
-            return reply.code(code).send({ error: msg });
-          }
-          return { runs, error: `第 ${runs.length + 1}/${raw} 份起单失败：${msg}` };
+  app.post<{
+    Params: { id: string };
+    Body: {
+      times?: number | string;
+      suite?: string;
+      arm?: string;
+      flag?: string;
+      allowSideEffects?: boolean;
+      fromFailed?: boolean;
+    };
+  }>('/api/runs/:id/replay', async (req, reply) => {
+    const raw = req.body?.times === undefined ? 1 : Number(req.body.times);
+    if (!Number.isInteger(raw) || raw < 1 || raw > 20) {
+      return reply.code(400).send({ error: 'times 需为 1~20 的整数（与批量派发同尺度）' });
+    }
+    const meta = { suite: req.body?.suite, arm: req.body?.arm, flag: req.body?.flag };
+    const opts = {
+      allowSideEffects: Boolean(req.body?.allowSideEffects),
+      fromFailed: Boolean(req.body?.fromFailed),
+    };
+    const runs: { runId: string; state: string }[] = [];
+    for (let i = 0; i < raw; i++) {
+      try {
+        const r = await deps.engine.replayRun(req.params.id, meta, opts);
+        runs.push({ runId: r.runId, state: r.state });
+      } catch (e) {
+        const msg = (e as Error).message;
+        // 第一份就失败 → 4xx 指路；半路失败 → 已起的如实返回 + error 说明
+        // （S1b 副作用拒绝文案不含「找不到」，天然走 400，不误伤 404 先例）
+        if (!runs.length) {
+          const code = msg.includes('找不到') ? 404 : 400;
+          return reply.code(code).send({ error: msg });
         }
+        return { runs, error: `第 ${runs.length + 1}/${raw} 份起单失败：${msg}` };
       }
-      return { runs };
-    },
-  );
+    }
+    return { runs };
+  });
 
   // v11-E1c 收数表只读表达面：直读 dataDir/experiments/（零网络零解析加工，够 CLI 用即止）
   app.get<{ Querystring: { suite?: string; runId?: string } }>('/api/experiments', async (req) => {
