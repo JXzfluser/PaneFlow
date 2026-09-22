@@ -7,6 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { Engine } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
 import { BUILTIN_TEMPLATES } from './builtin-templates.js';
+import { contentSha } from './harness.js';
+import { upsertGatewayProfile } from '../api/gateway.js';
 import { Store } from './store.js';
 
 import { FakeHerdrOps } from './fake-ops.js';
@@ -2521,5 +2523,98 @@ describe('v11-E1 engine：replayRun 穿透同 issue 锁 / 实验元数据 / 收�
     const rows = fs.readdirSync(path.join(dataDir, 'experiments', 'c4'));
     expect(rows).toHaveLength(1);
     expect(fs.readFileSync(path.join(dataDir, 'experiments', 'c4', rows[0]!), 'utf8')).toContain(run.runId);
+  });
+});
+
+// -- v12-V1 harness 披露：起单实发配置固化 + replay 漂移比对（只发事件不拦，R5） --------
+describe('v12-V1 engine harness 固化（起单一次性写回）', () => {
+  it('run 头带 harness：实发 graph 指纹可复算、kind=AE 链首 agent 节点结果；无网关时 model/gwProfile 键省略（绝不估算）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v1-h-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.harness).toBeDefined();
+    // serial-test 执行序首个 agent 节点（impl）钉了 agentKind=fake → 链在节点级即出结果
+    expect(run.harness!.agentKind).toBe('fake');
+    expect(run.harness!.graphSha).toMatch(/^[0-9a-f]{8}$/);
+    // 在册 graph 就是实发终态：对 run.graph 复算 sha 与落册一致（两次序列化同值）
+    expect(run.harness!.graphSha).toBe(contentSha(run.graph));
+    expect(contentSha(structuredClone(run.graph))).toBe(run.harness!.graphSha);
+    // 网关没配：两闸口留缺省，不编值
+    expect(run.harness!.model).toBeUndefined();
+    expect(run.harness!.gwProfile).toBeUndefined();
+  });
+
+  it('graphSha 算的是注入完成后的终态：I2 经验注入改了 prompt → 两单指纹不同且各与在册 graph 一致', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v1-inj-'));
+    const first = await engine.startRun(twoNodeGraph(), cwd, undefined, { 目标: '甲' });
+    await waitFor(() => engine.getRun(first.runId)!.state === 'completed');
+    const second = await engine.startRun(twoNodeGraph(), cwd);
+    await waitFor(() => engine.getRun(second.runId)!.state === 'completed');
+    const s2 = engine.getRun(second.runId)!;
+    expect(s2.graph.nodes.find((n) => n.id === 'design')!.config.prompt).toContain('【上次经验');
+    // 实发快照（含注入块）进指纹：注入单与未注入单 sha 必不同
+    expect(s2.harness!.graphSha).not.toBe(engine.getRun(first.runId)!.harness!.graphSha);
+    expect(s2.harness!.graphSha).toBe(contentSha(s2.graph));
+  });
+
+  it('旧记录兼容：v11 时代无 harness 字段的落册记录存取不炸，读回该键为 undefined', () => {
+    const legacy = {
+      runId: 'old12345',
+      dagName: 'g',
+      graph: serialGraph(),
+      state: 'completed',
+      cwd: '/tmp/x',
+      nodes: {},
+      startedAt: '2026-09-01T00:00:00.000Z',
+      finishedAt: '2026-09-01T00:01:00.000Z',
+    } as unknown as RunRecord;
+    store.saveRun(legacy);
+    const back = store.getRun('old12345');
+    expect(back).not.toBeNull();
+    expect(back!.harness).toBeUndefined();
+  });
+});
+
+describe('v12-V1 engine replay 漂移比对（只落透明性事件，不拦起跑）', () => {
+  const driftEvents = (r: RunRecord) => (r.events ?? []).filter((e) => e.text.includes('harness 漂移'));
+
+  it('起单后档位/模型变了再 replay → 新单事件含「harness 漂移」与差异项；档位一致复跑不再发', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v1-drift-'));
+    const r1 = await runToCompletion(serialGraph(), cwd); // 无网关期起单：model/gwProfile 均缺省
+    upsertGatewayProfile(dataDir, { name: '档A', baseUrl: 'https://gw-a.example.com', apiKey: 'k', freeModel: 'free-m' });
+    const r2 = await engine.replayRun(r1.runId);
+    expect(r2.harness?.model).toBe('free-m'); // 新单起单现读到生效档模型
+    const d2 = driftEvents(r2);
+    expect(d2).toHaveLength(1);
+    expect(d2[0]!.text).toContain('harness 漂移');
+    expect(d2[0]!.text).toContain('model 未设→free-m');
+    // R5：只发事件不拦——单照常起（replay 血缘事件都齐）
+    expect(r2.replayOf).toBe(r1.runId);
+    expect((r2.events ?? []).some((e) => e.text.includes('复跑 replay（E1a）'))).toBe(true);
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+    // 同档再复跑：harness 相等 → 零漂移事件
+    const r3 = await engine.replayRun(r2.runId);
+    expect(driftEvents(r3)).toHaveLength(0);
+    await waitFor(() => engine.getRun(r3.runId)!.state !== 'running');
+    // 换空间钉档（另一档另一模型）：钉档与 model 双漂移都进事件文案
+    const p2 = upsertGatewayProfile(dataDir, { id: 'gwb', name: '档B', baseUrl: 'https://gw-b.example.com', apiKey: 'k2', freeModel: 'other-m' });
+    store.writeProfile({ ...store.readProfile(), gatewayProfile: p2.id });
+    const r4 = await engine.replayRun(r3.runId);
+    expect(r4.harness).toMatchObject({ gwProfile: 'gwb', model: 'other-m' });
+    const d4 = driftEvents(r4);
+    expect(d4).toHaveLength(1);
+    expect(d4[0]!.text).toContain('钉档 未钉→gwb');
+    expect(d4[0]!.text).toContain('model free-m→other-m');
+    await waitFor(() => engine.getRun(r4.runId)!.state !== 'running');
+  });
+
+  it('原单无 harness（v11 旧单）→ replay 无从比对，静默照常起', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v1-legacy-'));
+    const r1 = await runToCompletion(serialGraph(), cwd);
+    delete engine.getRun(r1.runId)!.harness; // 模拟旧落册记录
+    upsertGatewayProfile(dataDir, { name: '档A', baseUrl: 'https://gw-a.example.com', apiKey: 'k', freeModel: 'free-m' });
+    const r2 = await engine.replayRun(r1.runId);
+    expect(r2.replayOf).toBe(r1.runId);
+    expect(driftEvents(r2)).toHaveLength(0);
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
   });
 });

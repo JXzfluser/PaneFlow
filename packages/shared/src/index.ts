@@ -18,6 +18,7 @@ export type {
   NodeRunRecord,
   WikiReadbackTrace,
   RunExperimentMeta,
+  RunHarness,
   TemplateVariable,
   CheckSpec,
 } from './dag.js';

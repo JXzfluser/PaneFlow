@@ -191,6 +191,17 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
     return EXIT_OK;
   }
   io.out(`run ${paint(io, '1', run.runId)} · ${run.dagName ?? '-'} · ${stateMark(io, run.state)}${run.issueId ? ` · Issue #${run.issueId}` : ''}`);
+  // v12-V1 harness 披露行：只渲染 server 返回字段（R4），缺项跳过、整缺不显示
+  const h = run.harness;
+  if (h && (h.graphSha || h.agentKind)) {
+    const bits = [
+      h.graphSha ? `graph#${h.graphSha}` : '',
+      h.agentKind ? `kind=${h.agentKind}` : '',
+      h.model ? `model=${h.model}` : '',
+      h.gwProfile ? `档位=${h.gwProfile}` : '',
+    ].filter(Boolean);
+    io.out(`  harness: ${bits.join(' · ')}`);
+  }
   const gate = run.awaitingApproval;
   if (gate?.waiting) io.out(`  ${paint(io, '33', `⏸ 等待审批：${gate.nodeIds.join('、')}`)}`);
   for (const n of Object.values(run.nodes ?? {})) {

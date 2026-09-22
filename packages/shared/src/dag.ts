@@ -404,6 +404,30 @@ export interface RunRecord {
   replayOf?: string;
   /** v11-E1b 复跑实验元数据（缺省=非实验单，不进收数表） */
   experiment?: RunExperimentMeta;
+  /**
+   * v12-V1 harness 披露：本单实发配置在起单时一次性固化（缺省=v11 及更早的旧记录，
+   * JSON 向后兼容不炸）。C4 A/B 的「两臂只差 readback」与 replay 漂移比对以此为机器证据源。
+   */
+  harness?: RunHarness;
+}
+
+/**
+ * v12-V1 起单时固化的实发 harness（写一次即成历史）。
+ * 拿不到的键直接省略——绝不估算（与 cost.tokens 的 null 原则同款）；
+ * 只做披露与比对，不参与任何编排判据（评审 R5）。
+ */
+export interface RunHarness {
+  /**
+   * 实发 graph（变量替换与 I2/C3a 注入全部完成后的 structuredClone 终态快照）
+   * 的规范化 JSON sha256 前 8 位——与 v8-M6 契约模板 templateSha 同指纹口径。
+   */
+  graphSha: string;
+  /** AE 解析链（覆盖>节点>角色>空间>自动推荐）起单时对执行序首个 agent 节点的一次性入口结果 */
+  agentKind: string;
+  /** 起单时生效网关档的 freeModel（网关未激活/无模型/读不到=省略） */
+  model?: string;
+  /** 起单时空间档案钉的网关档 id（未钉/读不到=省略，语义=跟全局 current 档） */
+  gwProfile?: string;
 }
 
 /**

@@ -38,7 +38,7 @@ async function tmp(): Promise<string> {
 }
 
 describe('v11-E1c experimentRow（收数行：只如实记账）', () => {
-  it('全列齐：runId/arm/flag/state/断言 pass÷total/重试/墙钟秒/replayOf', () => {
+  it('全列齐：runId/arm/flag/state/断言 pass÷total/重试/墙钟秒/replayOf/harness（无 harness 字段画 -）', () => {
     const run = mkRun({
       experiment: { suite: 'c4', arm: 'a', flag: 'readback=on' },
       replayOf: 'src-99',
@@ -57,12 +57,19 @@ describe('v11-E1c experimentRow（收数行：只如实记账）', () => {
         } as unknown as RunRecord['nodes']['impl'],
       },
     });
-    expect(experimentRow(run)).toBe('| abc12345 | a | readback=on | completed | 2/3 | 2 | 150 | src-99 |');
+    expect(experimentRow(run)).toBe('| abc12345 | a | readback=on | completed | 2/3 | 2 | 150 | src-99 | - |');
+  });
+
+  it('v12-V1 harness 摘要列：graphSha·agentKind；缺半边照实只留有的', () => {
+    const withH = mkRun({ experiment: { suite: 'c4' }, harness: { graphSha: 'a1b2c3d4', agentKind: 'pi' } });
+    expect(experimentRow(withH)).toBe('| abc12345 | - | - | completed | 0/0 | 0 | 150 | - | a1b2c3d4·pi |');
+    const partial = mkRun({ experiment: { suite: 'c4' }, harness: { graphSha: '', agentKind: 'pi' } });
+    expect(experimentRow(partial)).toContain('| - | pi |'); // graphSha 空串（怪单）不产出孤零零的「·pi」
   });
 
   it('缺项画 -；无 finishedAt 墙钟记 0；管道符转义不撑破表格', () => {
     const run = mkRun({ experiment: { suite: 'c4' }, finishedAt: undefined, nodes: {} });
-    expect(experimentRow(run)).toBe('| abc12345 | - | - | completed | 0/0 | 0 | 0 | - |');
+    expect(experimentRow(run)).toBe('| abc12345 | - | - | completed | 0/0 | 0 | 0 | - | - |');
     const nasty = mkRun({ experiment: { arm: 'a|b' }, replayOf: 'x|y' });
     expect(experimentRow(nasty)).toContain('a\\|b');
     expect(experimentRow(nasty)).toContain('x\\|y');
@@ -128,7 +135,8 @@ describe('v11-E1c listExperimentRows（只读列表达面）', () => {
     expect(only).toHaveLength(1);
     expect(only[0]!.rows.some((r) => r.includes('| zz999999 |'))).toBe(false);
     const byRun = await listExperimentRows(root, { runId: 'abc' });
-    expect(byRun.flatMap((t) => t.rows)).toEqual(['| abc12345 | a | - | completed | 0/0 | 0 | 150 | - |']);
+    expect(byRun.flatMap((t) => t.rows)).toEqual(['| abc12345 | a | - | completed | 0/0 | 0 | 150 | - | - |']);
+    // 行过滤只认行首 runId 前缀——v12 加列（列数变化）不伤读端
     expect(await listExperimentRows(root, { runId: 'abc', suite: 'other' })).toEqual([]);
   });
 });

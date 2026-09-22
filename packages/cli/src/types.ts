@@ -39,6 +39,8 @@ export interface RunView {
   };
   /** v11-A1 只读聚合字段：审批门显式信号（老 server 没有时按节点 state 兜底推导） */
   awaitingApproval?: { waiting: boolean; nodeIds: string[] };
+  /** v12-V1 起单时固化的实发 harness（旧 run/旧 server 没有=不渲染，判定零在 CLI） */
+  harness?: { graphSha?: string; agentKind?: string; model?: string; gwProfile?: string };
 }
 
 export interface NodeRunView {

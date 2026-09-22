@@ -112,6 +112,24 @@ describe('runs / status / approve', () => {
     expect(JSON.parse(json.lines.join('\n'))).toEqual(runPayload);
   });
 
+  it('v12-V1 status harness 行：只渲染 server 返回字段——全量一行、缺项跳过、旧 run 无 harness 不显示', async () => {
+    const base = { runId: 'r-h', state: 'completed', dagName: 'g', nodes: {} };
+    const { fetchImpl } = stubFetch([
+      { body: { ...base, harness: { graphSha: 'a1b2c3d4', agentKind: 'pi', model: 'free-m', gwProfile: 'gwb' } } },
+      { body: { ...base, harness: { graphSha: 'a1b2c3d4', agentKind: 'pi' } } },
+      { body: base },
+    ]);
+    const full = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-h'], full.io)).toBe(0);
+    expect(full.lines.join('\n')).toContain('harness: graph#a1b2c3d4 · kind=pi · model=free-m · 档位=gwb');
+    const partial = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-h'], partial.io)).toBe(0);
+    expect(partial.lines.join('\n')).toContain('harness: graph#a1b2c3d4 · kind=pi');
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-h'], legacy.io)).toBe(0);
+    expect(legacy.lines.join('\n')).not.toContain('harness');
+  });
+
   it('approve POST 审批端点、体是 {action:"approve"}；409 时把 server 指路原样带出', async () => {
     const { fetchImpl, calls } = stubFetch([{ body: { delivered: true } }]);
     const { io } = makeIo({ fetch: fetchImpl });

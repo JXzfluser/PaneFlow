@@ -18,6 +18,11 @@ export function experimentRow(run: RunRecord): string {
   const wall = run.finishedAt
     ? Math.max(0, Math.round((Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000))
     : 0;
+  // v12-V1 harness 摘要列：起单实发指纹·agentKind（旧 run 无 harness 字段画 '-'）——
+  // A/B 两臂「只差 readback」要能在这张表上机器读出，不靠起单人自律
+  const harness = run.harness
+    ? [run.harness.graphSha, run.harness.agentKind].filter(Boolean).join('·') || '-'
+    : '-';
   const cell = (s: string) => s.replace(/\|/g, '\\|').trim();
   return `| ${[
     cell(run.runId),
@@ -28,12 +33,13 @@ export function experimentRow(run: RunRecord): string {
     String(retries),
     String(wall),
     cell(run.replayOf ?? '-'),
+    cell(harness),
   ].join(' | ')} |`;
 }
 
 /** 表头只在全新建文件时写一次（suite 名来自调用方清洗后的值） */
 export function experimentTableHeader(suite: string): string {
-  return ['# 实验收数 ·', suite, '', '| runId | arm | flag | state | 断言 pass/total | 重试 | 墙钟秒 | replayOf |', '| --- | --- | --- | --- | --- | --- | --- | --- |'].join('\n');
+  return ['# 实验收数 ·', suite, '', '| runId | arm | flag | state | 断言 pass/total | 重试 | 墙钟秒 | replayOf | harness |', '| --- | --- | --- | --- | --- | --- | --- | --- | --- |'].join('\n');
 }
 
 /** 纯本地落盘（零网络零 git）；永不 reject */

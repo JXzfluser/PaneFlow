@@ -17,6 +17,7 @@ import type {
   NodeCost,
   WikiReadbackTrace,
   RunExperimentMeta,
+  RunHarness,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
@@ -29,6 +30,7 @@ import { buildSkillBlock } from './skills.js';
 import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
 import { appendExperimentRow } from './experiment.js';
+import { contentSha, harnessDriftDiffs } from './harness.js';
 import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
 import { buildGithubEnv, readGithubSettings } from '../api/github-cred.js';
 import { autoDistillEnabled, autoDistillRun } from '../api/wiki-distill.js';
@@ -421,6 +423,17 @@ export class Engine {
       ...(opts?.replay ? { replayOf: opts.replay.of } : {}),
       ...(opts?.experiment ? { experiment: opts.experiment } : {}),
     };
+    // v12-V1 harness 披露：起单时把「本单实发配置」一次性固化进 run 头（写一次即成历史）。
+    // graphSha 算的是上面已 structuredClone 的 run.graph——变量替换、I2 经验注入、C3a
+    // 读回注入全部在 clone 之前同步完成（读回只在 clone 后有异步刷缓存旁路，不再改 graph），
+    // 所以指纹就是实发终态；agentKind 是 AE 解析链对执行序首个 agent 节点的一次性入口
+    // 结果（以往每试现算不写回）；gwProfile/model 起单现读，拿不到键即缺省——绝不估算
+    // （与 cost.tokens 的 null 原则同款）。
+    try {
+      run.harness = await this.buildRunHarness(run, order);
+    } catch {
+      // 防御（读回同款姿势）：披露旁账不许把起跑挡下来，最坏这单缺 harness 字段
+    }
     this.runs.set(runId, run);
     this.recordEvent(run, 'run', undefined, `运行启动：${graph.name}（${order.length} 个节点）`);
     if (experience && expNodeTarget) {
@@ -723,7 +736,7 @@ export class Engine {
   ): Promise<RunRecord> {
     const source = this.runs.get(runId) ?? undefined;
     if (!source) throw new Error(`找不到要 replay 的原 run：${runId}`);
-    return this.startRun(
+    const run = await this.startRun(
       structuredClone(source.graph),
       source.cwd,
       source.spaceId,
@@ -736,6 +749,20 @@ export class Engine {
         ...(meta && (meta.suite || meta.arm || meta.flag) ? { experiment: meta } : {}),
       },
     );
+    // v12-V1 replay 漂移比对（评审 R5：只落透明性事件不拦）：model/钉档两个闸口，
+    // 新单起单现读值与原 run.harness 不一致即实验两臂档位已变的机器证据；
+    // graphSha 不比对（replay 复用原在册 graph，恒等）；原记录无 harness=旧单，不发。
+    const diffs = harnessDriftDiffs(source.harness, run.harness);
+    if (diffs.length) {
+      this.recordEvent(
+        run,
+        'run',
+        undefined,
+        `harness 漂移（V1）：复跑时档位/模型与原 run ${source.runId} 已变——${diffs.join(' · ')}；只记事件不拦停，实验要等臂请先对齐网关再复跑`,
+      );
+      this.persistAndNotify(run);
+    }
+    return run;
   }
 
   stopRun(runId: string): boolean {
@@ -2093,6 +2120,39 @@ export class Engine {
     if (spaceDefault) return spaceDefault;
     const recommend = this.opts.recommendAgentKind ?? probeRecommendAgentKind;
     return (await recommend()) ?? 'opencode';
+  }
+
+  /**
+   * v12-V1：起单时一次性算好本单实发 harness（graphSha + agentKind + 网关档/模型）。
+   * agentKind 走 resolveAgentKind 同款链，作用域取执行序首个 agent 节点的 config——
+   * 落册一次不每节点重写，节点间 kind 差异（若有）仍以各节点实发为准。
+   */
+  private async buildRunHarness(run: RunRecord, order: string[]): Promise<RunHarness> {
+    const firstAgentCfg =
+      order
+        .map((id) => run.graph.nodes.find((n) => n.id === id))
+        .find((n) => n?.type === 'agent')?.config ?? {};
+    const agentKind = await this.resolveAgentKind(run, firstAgentCfg);
+    const { gwProfile, model } = this.gatewayHarnessFor(run);
+    return {
+      graphSha: contentSha(run.graph),
+      agentKind,
+      ...(model ? { model } : {}),
+      ...(gwProfile ? { gwProfile } : {}),
+    };
+  }
+
+  /** v12-V1：现读网关两个闸口（空间钉档 id + 生效档 freeModel）；读不到一律留缺省，不估算 */
+  private gatewayHarnessFor(run: RunRecord): { gwProfile?: string; model?: string } {
+    const gwProfile = this.gatewayPinFor(run);
+    try {
+      const model = gatewayActive(this.store.root, gwProfile)
+        ? readGateway(this.store.root, gwProfile).freeModel?.trim()
+        : undefined;
+      return { ...(gwProfile ? { gwProfile } : {}), ...(model ? { model } : {}) };
+    } catch {
+      return gwProfile ? { gwProfile } : {};
+    }
   }
 
   private roleById(run: RunRecord, roleId: string | undefined): Role | undefined {
