@@ -30,6 +30,13 @@ import { effectiveRules, matchRules } from './rules.js';
 import { buildSkillBlock } from './skills.js';
 import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
+import {
+  bookUsage,
+  budgetBreach,
+  budgetBreachMessage,
+  parseUsage,
+  resolveTokenCap,
+} from './token-budget.js';
 import { appendExperimentRow } from './experiment.js';
 import { contentSha, harnessDriftDiffs } from './harness.js';
 import { hasSideEffects, sideEffectsSummary } from './side-effects.js';
@@ -82,6 +89,11 @@ export interface EngineOptions {
   wikiDistill?: 'on' | 'off';
   /** v11-C1 自动蒸馏执行体（默认 wiki-distill.autoDistillRun：直连网关提取 + 一次 commit 多文件 push；测试注入以绝网络/git） */
   wikiDistillRun?: (run: RunRecord) => Promise<unknown>;
+  /**
+   * v12-S2 run 级 token 预算上限（env PF_RUN_MAX_TOKENS 的显式覆写口，测试注入以保确定性）。
+   * 缺省回落 envInt('PF_RUN_MAX_TOKENS', 0)；0/未设/破烂=关闭。契约 budget.maxTokens 优先于此。
+   */
+  runMaxTokens?: number;
 }
 
 export interface ApprovalAction {
@@ -124,6 +136,8 @@ export class Engine {
   private readonly gwGate: GwConcurrencyGate;
   private readonly gwBackoffBaseMs: number;
   private readonly gwThrottleRetries: number;
+  /** v12-S2：env PF_RUN_MAX_TOKENS 解析后的兜底上限（0=关闭）；契约上限在比对现场再解析 */
+  private readonly runMaxTokensEnv: number;
 
   constructor(
     private readonly ops: HerdrOps,
@@ -137,6 +151,8 @@ export class Engine {
     });
     this.gwBackoffBaseMs = Math.max(0, opts.gwBackoffBaseMs ?? envInt('PF_GW_BACKOFF_BASE_MS', 3_000));
     this.gwThrottleRetries = Math.max(0, opts.gwThrottleRetries ?? envInt('PF_GW_THROTTLE_RETRIES', 2));
+    // v12-S2：env 兜底的 token 预算上限，构造时读一次（env 不热改）；契约 budget.maxTokens 优先
+    this.runMaxTokensEnv = Math.max(0, opts.runMaxTokens ?? envInt('PF_RUN_MAX_TOKENS', 0));
     // surface past runs (from disk, across all spaces) in listings after boot.
     // Runs persisted as 'running' belong to a dead process — their workspaces
     // were reclaimed by the orphan sweep; mark them interrupted.
@@ -491,7 +507,12 @@ export class Engine {
           state: 'done' as const,
           finishedAt: srcRec.finishedAt,
         });
-        if (srcRec.artifact) blackboardPreload.set(nodeId, srcRec.artifact);
+        if (srcRec.artifact) {
+          blackboardPreload.set(nodeId, srcRec.artifact);
+          // v12-S2：done 节点继承时把其自报 usage 也带进实时账——续跑单的预算比对
+          // 不欠账（与收口 computeRunCost 扫产物同口径）
+          this.bookArtifactUsage(run, nodeId, srcRec.artifact);
+        }
         inherited += 1;
       }
       if (inherited) {
@@ -1265,6 +1286,15 @@ export class Engine {
     let lastError = '未知错误';
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (this.cancels.has(run.runId)) return 'abort';
+      // v12-S2 熔断执行点：每次尝试启动前查实时 token 账——超限即走既有失败收口
+      // （返回 abort → 调度器 mark failed + 停派后续），pane 不起、网关额度不占。
+      const breach = this.tokenBudgetBreach(run, nodeId);
+      if (breach) {
+        rec.error = breach;
+        rec.finishedAt = rec.finishedAt ?? new Date().toISOString();
+        this.persistAndNotify(run);
+        return 'abort';
+      }
       rec.attempts = attempt;
       rec.state = attempt > 1 ? 'retrying' : 'queued';
       rec.error = undefined;
@@ -2425,17 +2455,72 @@ export class Engine {
     const node = run.graph.nodes.find((n) => n.id === nodeId)!;
     const nodeCwd = node.config.cwd ? path.resolve(run.cwd, node.config.cwd) : run.cwd;
     const file = path.join(nodeCwd, artifactFile);
+    let artifact: Artifact;
     try {
       const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Omit<Artifact, 'source' | 'finishedAt'>;
-      return { ...parsed, outputTail, source: 'file', finishedAt: now };
+      artifact = { ...parsed, outputTail, source: 'file', finishedAt: now };
     } catch {
-      return {
+      artifact = {
         summary: outputTail ? outputTail.split('\n').slice(-5).join('\n') : undefined,
         outputTail,
         source: outputTail ? 'output-fallback' : 'empty',
         finishedAt: now,
       };
     }
+    // v12-S2 实时累计：产物落册即把合法 usage（agent 自报）增量进 run.costLive——
+    // 四个提取点（主落册/澄清轮/F1 门内复核/契约门谈判）一处接线全覆盖；
+    // 调用方随后的 persistAndNotify 把它结构化落盘，重启恢复不丢累计。
+    this.bookArtifactUsage(run, nodeId, artifact);
+    return artifact;
+  }
+
+  /**
+   * v12-S2 累账入口（判据全在 token-budget.ts 纯函数）：破烂 usage 静默跳过、绝不估算；
+   * 同节点重提取值不变零增量不双计，重试后报得更多只补差额（只增不减）。
+   */
+  private bookArtifactUsage(run: RunRecord, nodeId: string, artifact: Artifact | undefined): void {
+    const usage = parseUsage(artifact?.extra);
+    if (!usage) return;
+    const next = bookUsage(run.costLive, nodeId, usage);
+    if (next !== run.costLive) run.costLive = next;
+  }
+
+  /**
+   * v12-S2 熔断执行点（节点尝试启动前调用）：超限返回 error 一句（status/watch 原样带出），
+   * 并落「预算熔断（S2）」事件——调用方走既有失败收口（abort → run failed），不新增状态。
+   * 上限现场解析 resolveTokenCap(run.contract, env)：契约可能 run 中途才落册，晚于派单也生效。
+   * 账本为空（从未有合法 usage 自报）不熔断只警示（评审 R3：绝不估算、宁漏不误杀）——
+   * 「usage 未自报，预算比对失效」警示事件全 run 只发一次（判据=时间线里没这句；
+   * 500 条环形卷出或重启后理论上会再发一次，警示无害可接受）。
+   * maxMinutes 时长维度不在本片：节点 timeoutMs 缺省 30min 硬顶是先例。
+   */
+  private tokenBudgetBreach(run: RunRecord, nodeId: string): string | null {
+    const cap = resolveTokenCap(run.contract, this.runMaxTokensEnv);
+    if (cap === null) return null;
+    const breach = budgetBreach(run.costLive, cap);
+    if (!breach) {
+      // 警示时机=「已有节点跑完、账本却仍是空」——首节点启动前没机会自报属正常，不打扰
+      const sawSettled = Object.values(run.nodes).some((n) => n.state === 'done');
+      if (!run.costLive && sawSettled && !(run.events ?? []).some((e) => e.text.includes('预算比对失效'))) {
+        this.recordEvent(
+          run,
+          'run',
+          undefined,
+          'token 预算（S2）：usage 未自报，预算比对失效——产物自报 extra.usage 后才强制；绝不估算，宁漏不误杀',
+        );
+        this.persistAndNotify(run);
+      }
+      return null;
+    }
+    const error = budgetBreachMessage(breach.used, breach.cap);
+    this.recordEvent(
+      run,
+      'run',
+      nodeId,
+      `预算熔断（S2）：${error}，run 停止于「${nodeId}」启动前；后续节点不再调度`,
+    );
+    this.persistAndNotify(run);
+    return error;
   }
 
   private resolveBlackboardRef(

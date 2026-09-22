@@ -2806,3 +2806,97 @@ describe('v12-S3 replay×resume 合流（fromFailed 走 done 继承通道，只�
     await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
   });
 });
+
+// -- v12-S2 token 预算执行点：实时累计 → 启动前熔断 → null 只警示 → persist 往返 -----------
+describe('v12-S2 token 预算熔断（costLive 实时账 + 节点启动前比对）', () => {
+  const writeArt = (cwd: string, name: string, obj: unknown) => {
+    fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, `.herdr/artifacts/${name}.json`), JSON.stringify(obj));
+  };
+  const designWith = (extra: Record<string, unknown>) => ({ summary: '设计完成', extra });
+  const contractExtra = (maxTokens: number) => ({
+    contract: {
+      assertions: [{ id: 'AC-1', assertion: '按契约干', verify_method: '人工核对' }],
+      questions: [],
+      budget: { maxTokens },
+    },
+  });
+
+  it('契约中途落册即生效：design 自报 usage 合计 1000、契约上限 800 → impl 启动前熔断，run failed', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s2-cap-'));
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) writeArt(cwd, 'design', designWith({ usage: { input: 500, output: 500 }, ...contractExtra(800) }));
+    };
+    const run = await runToCompletion(twoNodeGraph(), cwd);
+    expect(run.contract!.budget!.maxTokens).toBe(800);
+    expect(run.state).toBe('failed');
+    // 熔断判据回落到节点：error 一句原文，status/watch 原样带出（CLI 零改动）
+    expect(run.nodes['impl']!.state).toBe('failed');
+    expect(run.nodes['impl']!.error).toBe('token 预算超限（已用 1000 / 上限 800）');
+    expect((run.events ?? []).some((e) => e.text.includes('预算熔断（S2）'))).toBe(true);
+    // 执行点语义：impl 的 attempt 根本没起（无 prompt），后续 end 节点被跳过
+    expect(ops.prompts.some((p) => p.target.includes('impl'))).toBe(false);
+    expect(run.nodes['end']!.state).toBe('skipped');
+    // 盘上也是这本账（persist 与广播同步）
+    expect(store.getRun(run.runId)!.costLive).toEqual({ input: 500, output: 500, byNode: { design: { input: 500, output: 500 } } });
+  });
+
+  it('env 兜底上限（PF_RUN_MAX_TOKENS 注入口）：无契约也熔断；usage 破烂值静默跳过不误伤', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s2-env-'));
+    const engine2 = new Engine(ops, new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s2-env-data-'))), { ...OPTS, runMaxTokens: 800 });
+    let implPrompted = 0;
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) writeArt(cwd, 'design', designWith({ usage: { input: 900, output: 0 } }));
+      else if (target.includes('impl')) implPrompted += 1; // 第二轮：破烂 usage 不入账
+    };
+    const run = await engine2.startRun(twoNodeGraph(), cwd);
+    await waitFor(() => engine2.getRun(run.runId)!.state !== 'running');
+    expect(run.state).toBe('failed');
+    expect(implPrompted).toBe(0);
+    expect(run.nodes['impl']!.error).toBe('token 预算超限（已用 900 / 上限 800）');
+    // 破烂 usage（字符串）不进账：改产物重跑一单验证静默跳过
+    const cwd2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s2-env2-'));
+    const engine3 = new Engine(ops, new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s2-env3-data-'))), { ...OPTS, runMaxTokens: 800 });
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) writeArt(cwd2, 'design', designWith({ usage: { input: '999999', output: 500 } }));
+      if (target.includes('impl')) writeArt(cwd2, 'impl', { summary: '实现完成' });
+    };
+    const r2 = await engine3.startRun(twoNodeGraph(), cwd2);
+    await waitFor(() => engine3.getRun(r2.runId)!.state !== 'running');
+    expect(r2.state).toBe('completed');
+    expect(r2.costLive).toBeUndefined();
+  });
+
+  it('null 只警示不熔断（评审 R3）：再小的预算、全程无 usage 自报也跑得完，警示事件只发一次', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s2-null-'));
+    const engine2 = new Engine(ops, new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s2-null-data-'))), { ...OPTS, runMaxTokens: 1 });
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) writeArt(cwd, 'design', designWith({ note: '没有 usage' }));
+      if (target.includes('impl')) writeArt(cwd, 'impl', { summary: '实现完成' });
+    };
+    const run = await engine2.startRun(twoNodeGraph(), cwd);
+    await waitFor(() => engine2.getRun(run.runId)!.state !== 'running');
+    const fin = engine2.getRun(run.runId)!;
+    expect(fin.state).toBe('completed');
+    expect(fin.costLive).toBeUndefined();
+    const warns = (fin.events ?? []).filter((e) => e.text.includes('预算比对失效'));
+    expect(warns).toHaveLength(1); // design 落册后、impl 启动前的那一次比对
+    expect(warns[0]!.text).toContain('usage 未自报');
+  });
+
+  it('实时累计跨节点累加 + persist 往返：重启（新 Engine 读盘）账本不丢', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-s2-persist-'));
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) writeArt(cwd, 'design', designWith({ usage: { input: 100, output: 50 } }));
+      if (target.includes('impl')) writeArt(cwd, 'impl', { summary: '实现完成', extra: { usage: { input: 30, output: 20 } } });
+    };
+    const run = await runToCompletion(twoNodeGraph(), cwd);
+    expect(run.state).toBe('completed');
+    expect(run.costLive).toEqual({ input: 130, output: 70, byNode: { design: { input: 100, output: 50 }, impl: { input: 30, output: 20 } } });
+    // 收口账照常独立（costLive 与 cost.tokens 不冲突，口径同源同值）
+    expect(run.cost!.tokens).toEqual({ input: 130, output: 70 });
+    // 重启复原：新 Engine 从盘上读回，累计账一字不差
+    const revived = new Engine(ops, store, OPTS).getRun(run.runId)!;
+    expect(revived.costLive).toEqual(run.costLive);
+  });
+});

@@ -56,6 +56,8 @@ watch 退出码表（dispatch/runs/status/approve 恒为 0 成功 / 1 报错）�
 
 `completed-with-failures`（v11-D3）：并行分支带失败收口，不再洗绿——按红（1）处理。
 
+token 预算熔断（v12-S2）：`PF_RUN_MAX_TOKENS=<正整数>` 设 run 级 token 上限（`contract.budget.maxTokens` 优先；0/未设/破烂=关闭）——节点启动前比对 agent 自报 usage 累计（绝不估算，无自报只警示不熔断），超限按既有失败路收 `failed`，watch 照按红（1）、error 一句「token 预算超限（已用 X / 上限 Y）」；`budget.maxMinutes` 仍只展示（时长维已有节点 timeoutMs 缺省 30min 硬顶）。
+
 ### curl 退路（端点 + 关键字段）
 
 所有请求带 `-H 'content-type: application/json'`；远程模式加 `-H "Authorization: Bearer $PANEFLOW_TOKEN"`。

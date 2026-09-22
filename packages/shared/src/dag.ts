@@ -220,7 +220,10 @@ export interface ContractDoc {
   questions: string[];
   /** 范围边界：本次不动哪些文件/模块（自由文本，人读 also 机读） */
   scopeNotes?: string;
-  /** 预算上限（M2 v0 只记账展示；B5 未做前不强制熔断） */
+  /**
+   * 预算上限。token 维度 v12-S2 起有执行点（节点尝试启动前查 run.costLive，超限熔断）；
+   * maxMinutes 仍只记账展示——时长维已有节点 timeoutMs 缺省 30min 硬顶先例，本片不做。
+   */
   budget?: { maxMinutes?: number; maxTokens?: number };
   /** 目标仓 / 分支（H1 交付守卫的锚点） */
   repo?: string;
@@ -392,6 +395,12 @@ export interface RunRecord {
   events?: RunEvent[];
   /** R6a 运行成本汇总（引擎收尾时计算并持久化） */
   cost?: RunCost;
+  /**
+   * v12-S2 实时 token 账：任一节点产物落册时把合法 extra.usage（agent 自报）增量累进这里，
+   * 只增不减、绝不估算——从未自报则该键始终缺省，预算比对只警示不熔断（评审 R3）。
+   * S2 熔断执行点（节点尝试启动前）与重启恢复都只读这一份结构化落册，不收口时重算。
+   */
+  costLive?: RunTokenLedger;
   /** R5.1 归档标记（归档后移出运行中心主列表，记录保留可检索） */
   archived?: boolean;
   /** M2 契约一等公民：本单按什么约定在干（F1 门/H1 守卫/预算的共同引用） */
@@ -498,6 +507,18 @@ export interface RunCost {
   retries: number;
   /** Σ 各节点 artifact extra.usage（agent 自报）；null = 拿不到，明示 unknown，绝不估算 */
   tokens: { input: number; output: number } | null;
+}
+
+/**
+ * v12-S2 实时 token 账（RunRecord.costLive）：与收口 cost.tokens 同源同口径
+ * （都只认 artifact.extra.usage 自报值），区别在时机——落册即入账，供预算熔断
+ * 在节点启动前比对。byNode 记住各节点已入账户头，同产物重提取/重试重报不双计；
+ * 各分量只增不减（新报值取 per-分量 max，差额累进总账）。
+ */
+export interface RunTokenLedger {
+  input: number;
+  output: number;
+  byNode: Record<string, { input: number; output: number }>;
 }
 
 // ---------------------------------------------------------------------------
