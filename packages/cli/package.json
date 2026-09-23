@@ -1,6 +1,6 @@
 {
   "name": "@paneflow/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "paneflow CLI —— server HTTP API 的零业务薄壳（派活/看单/审批/验收）",
