@@ -1,0 +1,55 @@
+{
+  "summary": "端到端验证 GitHub 凭据闭环跑通：本地编排服务(127.0.0.1:4310)配置了 PAT(defaultRepo=JXzfluser/PaneFlow)，`POST /api/github/create-issue` 凭 curl 直调 GitHub API 确定性建 Issue：目标 Issue #3 已在公开仓库可见(HTTP 200)，附带一次缺 repo 的测试意外走了 defaultRepo 兜底并把兜底路径验证成功（落出合成 Issue #4）。错误面全绿：缺 title→400、坏 JSON→400、不存在的 repo→404 透传；缺 token→400（代码路径）。发现 1 个安全管理发现并记录。范围涵 Issue #1–#4。",
+  "summary_changed_routes": "路由逻辑 verified by inspection：builtin-issue-triage 的 route(pipeline)节点消费 triage 产物 extra.suggestedTemplate=builtin-standard-dev-flow 与 extra.issue_id=3，经 `{{triage.artifact.extra.*}}` 插值拉起交付流水线，fallbackTemplate=builtin-generic-issue-delivery 未触发。命令行参数：`curl -s -X POST http://127.0.0.1:4310/api/github/create-issue -H Content-Type:application/json -d @issue-draft.json`（返回 number=3,url=...,repo=JXzfluser/PaneFlow），以及三组负路径 curl（缺 title/缺 repo/坏 JSON）。",
+  "triage": [
+    {
+      "id": "0.0.0.0:4310",
+      "note": "服务健康：编排服务在 127.0.0.1:4310 存活，GET /api/health → {ok:true,herdrOk:true}，底座 herdr 会话 pf-test，GitHub 凭据已配置(tokenConfigured:true, defaultRepo=JXzfluser/PaneFlow)。",
+      "tags": ["health", "service", "github-cred"],
+      "severity": "info",
+      "evidence_content": "GET /api/health → {\"ok\":true,\"herdrOk\":true,\"agentKinds\":[17 种]}；GET /api/github/cred → {\"tokenConfigured\":true,\"defaultRepo\":\"JXzfluser/PaneFlow\"}"
+    },
+    {
+      "id": "0.0.0.0:4310",
+      "note": "目标 Issue #3 已落地且可见：https://github.com/JXzfluser/PaneFlow/issues/3（公开 API GET 200，html_url 确认，state=open）。验收标准#2 端到端达成。",
+      "tags": ["github", "issue", "acceptance-verified"],
+      "severity": "info",
+      "evidence_content": "curl -s https://api.github.com/repos/JXzfluser/PaneFlow/issues/3 → HTTP 200, {\"number\":3,\"html_url\":\"https://github.com/JXzfluser/PaneFlow/issues/3\",\"state\":\"open\"}"
+    },
+    {
+      "id": "0.0.0.0:4310",
+      "note": "合成测试留产物 —— 勿惊慌、可回收：为验证『缺 repo』负路径发起 curl 时，因 defaultRepo 兜底按设计生效，意外创建 Issue #4(title=\"t\")，恰好实测通过了验收标准#2 的兜底分支(HTTP 200, number=4, url=/PaneFlow/issues/4)。该 Issue 为合成实例，完全可回收（关闭/删除均可，无损）。同样可回收的还有历史遗留 #2『测试-可删除-2』。",
+      "tags": ["github", "synthetic", "recoverable", "defaultRepo-fallback"],
+      "severity": "warn",
+      "evidence_content": "curl -s -X POST .../create-issue -d '{\"title\":\"t\"}'（无 repo）→ HTTP 200 {\"number\":4,\"url\":\"https://github.com/JXzfluser/PaneFlow/issues/4\",\"repo\":\"JXzfluser/PaneFlow\"}；GET /issues → 全量 4 条：#4 open t / #3 open 收尾 / #2 open 测试-可删除-2 / #1 open 功能成熟度评估"
+    },
+    {
+      "id": "0.0.0.0:4310",
+      "note": "安全管理发现：GitHub token 以明文写入 /tmp/herdr-doc/pf-data/github.json（dataDir=PF_DATA_DIR），文件权限 644(-rw-r--r--)本地其他用户可读；PAT 具 issues:write 能力。个人单机工具可接受，但共享/多用户主机上应收紧为 600 并考虑 keychain。",
+      "tags": ["security", "secret-storage", "file-permissions"],
+      "severity": "warn",
+      "evidence_content": "ls -la /tmp/herdr-doc/pf-data/github.json → -rw-r--r--@ zfl wheel 147 ...；内容键 {token:\"git...(redacted)\"，defaultRepo:\"JXzfluser/PaneFlow\"}。建议 chmod 600 / 移入 0600 加密存储。"
+    },
+    {
+      "id": "0.0.0.0:4310",
+      "note": "错误面验收全部达成：#5-缺 title→400【缺少 title】；#5-坏 JSON→400 FST_ERR_CTP_INVALID_JSON_BODY；#5-不存在的 repo→404 透传 GitHub message【Not Found】；#5-缺 token→400【未配置 GitHub 凭据】（代码路径确认 http.ts L155）。create-issue 带 15s 超时，网络失败→502 携带真实错误。",
+      "tags": ["github", "errors", "acceptance-verified"],
+      "severity": "info",
+      "evidence_content": "缺 title:→HTTP 400 {\"error\":\"缺少 title\"}；坏 JSON:→HTTP 400 statusCode:400 code:FST_ERR_CTP_INVALID_JSON_BODY；repo=nouser/norepo→HTTP 404 {\"error\":\"Not Found\"}"
+    },
+    {
+      "id": "0.0.0.0:4310",
+      "note": "行为澄清：『缺 repo』不会报 400，因为 defaultRepo 兜底是验收标准#2 的设计语义（未配置默认仓库时才 400）。这与字面直觉相反，属预期行为，文档中已写明，无需修复。",
+      "tags": ["github", "behavior", "documented"],
+      "severity": "info",
+      "evidence_content": "http.ts L155-157: const repo = req.body.repo ?? gh.defaultRepo; if(!repo) return 400 '缺少 repo（未配置默认仓库）'"
+    },
+    {
+      "id": "0.0.0.0:4310",
+      "note": "路由链 verified by inspection：builtin-issue-triage route 节点读 {{triage.artifact.extra.suggestedTemplate}} 与 extra.issue_id(=3)，路由到 builtin-standard-dev-flow；fallback=builtin-generic-issue-delivery 未触发。验收#3 满足。",
+      "tags": ["route", "pipeline", "triage-template", "acceptance-verified"],
+      "severity": "info",
+      "evidence_content": "builtin-templates.ts L304-321: template='{{triage.artifact.extra.suggestedTemplate}}', fallbackTemplate='builtin-generic-issue-delivery', params.issue_id='{{triage.artifact.extra.issue_id}}', mode='wait'"
+    }
+  ]
+}

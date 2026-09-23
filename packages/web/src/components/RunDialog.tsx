@@ -1,0 +1,152 @@
+import { useState } from 'react';
+import type { DagGraph } from '@paneflow/shared';
+import type { DryRunResult } from './dry-run.js';
+import { api } from '../api.js';
+import { useStore } from '../store.js';
+
+/**
+ * Run dialog: collects pipeline cwd + declared template variables, replaces
+ * the old bare-cwd prompt. Submitting starts the run.
+ */
+export function RunDialog({
+  graph,
+  onClose,
+  onStarted,
+}: {
+  graph: DagGraph;
+  onClose: () => void;
+  onStarted: (runId: string) => void;
+}) {
+  const cwd = useStore((s) => s.cwd);
+  const setCwd = useStore((s) => s.setCwd);
+  const log = useStore((s) => s.log);
+  const variables = graph.variables ?? [];
+  const [values, setValues] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    for (const v of variables) init[v.key] = v.default ?? '';
+    return init;
+  });
+  const [busy, setBusy] = useState(false);
+  const [issueId, setIssueId] = useState('');
+  const [preview, setPreview] = useState<DryRunResult | null>(null);
+
+  const missing = variables.filter((v) => v.required && !values[v.key]?.trim());
+
+  const dryRun = async () => {
+    if (!cwd.trim()) {
+      log('error', '请先填写流水线工作目录');
+      return;
+    }
+    setBusy(true);
+    try {
+      setPreview(await api.dryRun(graph, cwd.trim(), values));
+    } catch (e) {
+      log('error', `预演失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submit = async () => {
+    if (!cwd.trim()) {
+      log('error', '请填写流水线工作目录（须已存在）');
+      return;
+    }
+    if (missing.length) {
+      log('error', `缺少必填参数：${missing.map((v) => v.label).join('、')}`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const { run } = await api.startRun(graph, cwd.trim(), values, issueId.trim() || undefined);
+      onStarted(run.runId);
+      log('info', `流水线已启动：${run.runId}`);
+      onClose();
+    } catch (e) {
+      log('error', `启动失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-mask" onClick={onClose}>
+      <div className="modal" style={{ width: 'min(520px, 92vw)' }} onClick={(e) => e.stopPropagation()}>
+        <h2>运行「{graph.name}」</h2>
+        <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: 12, margin: '14px 0 4px' }}>
+          流水线工作目录（须已存在）
+        </label>
+        <input
+          className="gname"
+          value={cwd}
+          onChange={(e) => setCwd(e.target.value)}
+          placeholder="/tmp/my-project"
+          style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
+          autoFocus
+        />
+        <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: 12, margin: '10px 0 4px' }}>
+          关联 Issue（可选，用于运行中心检索与展示）
+        </label>
+        <input
+          value={issueId}
+          onChange={(e) => setIssueId(e.target.value)}
+          placeholder="如 162"
+          style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
+        />
+        {variables.length > 0 && (
+          <>
+            <h3 style={{ margin: '16px 0 6px', fontSize: 13, borderLeft: '3px solid var(--accent)', paddingLeft: 8 }}>
+              运行参数
+            </h3>
+            {variables.map((v) => (
+              <div key={v.key} style={{ marginBottom: 10 }}>
+                <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: 12, marginBottom: 3 }}>
+                  {v.label || v.key}
+                  {v.required && <span style={{ color: 'var(--err)' }}> *</span>}
+                  {v.default ? <span style={{ opacity: 0.6 }}>（默认 {v.default}）</span> : null}
+                </label>
+                <input
+                  value={values[v.key] ?? ''}
+                  onChange={(e) => setValues((s) => ({ ...s, [v.key]: e.target.value }))}
+                  placeholder={`{{${v.key}}} 将注入全部指令与路径`}
+                  style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
+                />
+              </div>
+            ))}
+          </>
+        )}
+        {preview && (
+          <div className="dryrun" style={{ marginTop: 14, border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', maxHeight: 260, overflowY: 'auto' }}>
+            <b style={{ fontSize: 12, color: 'var(--accent)' }}>预演（运行时以实际产物为准）</b>
+            {preview.warnings.map((w, i) => (
+              <div key={i} style={{ color: 'var(--warn)', fontSize: 11.5 }}>⚠ {w}</div>
+            ))}
+            <ol style={{ paddingLeft: 20, margin: '8px 0', fontSize: 11.5 }}>
+              {preview.nodes.map((n) => (
+                <li key={n.id} style={{ marginBottom: 4 }}>
+                  <b>{n.label}</b>
+                  {n.type === 'agent' && <span style={{ color: 'var(--text-dim)' }}> · {n.agentKind ?? '⚠ 未配置'} · {n.cwd}</span>}
+                  {n.role && <span style={{ color: 'var(--text-dim)' }}> · 角色 {n.role}</span>}
+                  {n.checks.length > 0 && <span style={{ color: 'var(--text-dim)' }}> · {n.checks.length} 项检查</span>}
+                  {n.promptPreview && <div style={{ color: 'var(--text-dim)', fontSize: 11 }}>{n.promptPreview}…</div>}
+                </li>
+              ))}
+            </ol>
+            {preview.edges.filter((e) => e.condition).length > 0 && (
+              <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                条件边：{preview.edges.filter((e) => e.condition).map((e) => `${e.source}→${e.target} [${e.condition}]`).join('；')}
+              </div>
+            )}
+          </div>
+        )}
+        <div className="close-row">
+          <button onClick={onClose}>取消</button>
+          <button disabled={busy} onClick={() => void dryRun()}>🔍 预演</button>
+          <button className="primary" disabled={busy} onClick={() => void submit()}>
+            {busy ? '启动中…' : '▶ 启动'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

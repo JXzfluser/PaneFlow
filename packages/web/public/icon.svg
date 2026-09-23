@@ -1,0 +1,15 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- PaneFlow 图标：暗色终端砖上的 DAG 三节点流（起→并行→收口） -->
+  <rect width="512" height="512" rx="112" fill="#15130e"/>
+  <rect x="10" y="10" width="492" height="492" rx="104" stroke="#2c2619" stroke-width="20"/>
+  <!-- 边：起→两分支，两分支→收口 -->
+  <path d="M150 256 L300 128 M150 256 L300 384 M300 128 L400 244 M300 384 L400 268"
+        stroke="#8fb4e8" stroke-width="30" stroke-linecap="round" opacity="0.85"/>
+  <!-- 起点（暖沙色：一次输入） -->
+  <circle cx="150" cy="256" r="44" fill="#e8c9a0"/>
+  <!-- 两个并行 agent 节点（雾蓝 accent） -->
+  <circle cx="300" cy="128" r="44" fill="#8fb4e8"/>
+  <circle cx="300" cy="384" r="44" fill="#8fb4e8"/>
+  <!-- 收口（白：交付） -->
+  <circle cx="404" cy="256" r="44" fill="#fffefa"/>
+</svg>

@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 不给 version：pnpm/action-setup@v4 直接读 package.json 的 packageManager（pnpm@10.28.0）。
+      # 之前 version: 10 与 packageManager 并存 → action-setup 报 "Multiple versions of pnpm specified"，CI 每次 8 秒即挂
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm -r --workspace-concurrency=1 test
+      - run: pnpm --filter @paneflow/web build

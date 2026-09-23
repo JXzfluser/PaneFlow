@@ -1,0 +1,583 @@
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import type { RunRecord } from '@paneflow/shared';
+
+/**
+ * v9-K wiki 沉淀 + 首驾-llmwiki（Issue #6）+ Issue #7 落点改造：绿 run + 用户点赞 →
+ * 蒸馏成 llm-wiki 风格页（七字段 frontmatter + 分类目录）+ index/log 记账，
+ * push 到**主仓默认分支的 `llm-wiki/` 目录**（只依赖 Contents 权限，细粒度 PAT 可推；
+ * 不再走 `<repo>.wiki.git`——dotcom 上该仓库需网页人工初始化且不支持细粒度 PAT）。
+ * K2 读回复用同一缓存目录，只认 `llm-wiki/` 子树。
+ * 所有 git/网络失败都抛可读错误（失败可见不吞）。
+ */
+
+export type WikiType = 'concept' | 'entity' | 'summary' | 'synthesis';
+
+const WIKI_DIRS: Record<WikiType, string> = {
+  concept: 'concepts',
+  entity: 'entities',
+  summary: 'summaries',
+  synthesis: 'syntheses',
+};
+
+export interface WikiPageDraft {
+  /** 相对 wiki 仓库根的路径，如 `summaries/修登录页样式-abc123.md` */
+  file: string;
+  markdown: string;
+  /** index.md 一行条目：markdown 相对链接 + 一行摘要（按 file 路径去重） */
+  indexEntry: string;
+  /** log.md 一条只追加记录：ISO 时间 + run id + 落页路径 */
+  logNote: string;
+}
+
+function clip(s: string, cap: number): string {
+  return s.length > cap ? `${s.slice(0, cap)}…` : s;
+}
+
+function sanitizeTitle(s: string): string {
+  return s.replace(/[/\\:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'run';
+}
+
+/** 文件名 slug：sanitize + 小写 + 只留字母数字/中文/连字符（llm-wiki 小写连字符约定）；
+ * v11-C1 起 wiki-distill 的主题归一化复用同一把尺子，蒸馏匹配与落盘命名口径一致 */
+export function slugify(s: string): string {
+  const out = sanitizeTitle(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return out || 'run';
+}
+
+/** frontmatter 值安全：折行压平、去双引号 */
+function fmVal(s: string): string {
+  return s.replace(/[\r\n]+/g, ' ').replace(/"/g, "'").trim();
+}
+
+/** 产物 extra.assertionResults 里最后一份带结果的（验收/终审节点覆盖实现节点的自测） */
+export function latestAssertionResults(run: RunRecord): { id: string; status: string; evidence: string }[] {
+  let best: { id: string; status: string; evidence: string }[] = [];
+  for (const n of Object.values(run.nodes)) {
+    const raw = (n.artifact?.extra as Record<string, unknown> | undefined)?.assertionResults;
+    if (!Array.isArray(raw)) continue;
+    const rows = raw
+      .filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === 'object')
+      .filter((x) => typeof x.id === 'string' && typeof x.status === 'string')
+      .map((x) => ({
+        id: String(x.id),
+        status: String(x.status),
+        evidence: typeof x.evidence === 'string' ? x.evidence : '',
+      }));
+    if (rows.length) best = rows;
+  }
+  return best;
+}
+
+/** v11-C2：正门（绿沉淀）与反面教材侧门两种发布通道 */
+export type WikiPublishKind = 'green' | 'counterexample';
+
+/**
+ * v11-C2 沉淀门（宁缺毋滥的门面，fail-closed）。绿门与侧门共用同一 {ok, reason} 语义面。
+ * - kind='green'（正门，缺省）：completed + 全节点非兜底 + 断言**≥1 条 status=ok**
+ *   且无 fail——0 条、全没跑、只有 n/a 一律拒：断言没跑≠绿（钻空收口，摩擦账 #17）。
+ * - kind='counterexample'（反面教材侧门）：只收带失败收口的单（failed /
+ *   completed-with-failures）；能过正门的绿单一律拒走侧门——侧门只准沉淀教训，
+ *   不准给正页贴反例标签，两门互斥。
+ */
+export function publishableRun(
+  run: RunRecord | undefined,
+  kind: WikiPublishKind = 'green',
+): { ok: boolean; reason?: string } {
+  if (!run) return { ok: false, reason: '找不到该 run' };
+  if (kind === 'counterexample') {
+    const greenPass = publishableRun(run, 'green');
+    if (greenPass.ok)
+      return { ok: false, reason: '这单能过正门（绿 + 断言有实打实的通过），请直接走正门，别贴反面教材标签' };
+    if (run.state !== 'failed' && run.state !== 'completed-with-failures')
+      return {
+        ok: false,
+        reason: `只有带失败收口的单（failed / completed-with-failures）能走反面教材侧门（当前状态：${run.state}）`,
+      };
+    return { ok: true };
+  }
+  // v11-D3：带失败收口的单不沉淀正页——宁缺毋滥对「有失败节点」同样成立，明示拒绝语免得误读（教训走侧门）
+  if (run.state === 'completed-with-failures')
+    return {
+      ok: false,
+      reason: '本单收口时带有失败节点（completed-with-failures），宁缺毋滥不沉淀；确有教训可带 kind=counterexample 走反面教材侧门',
+    };
+  if (run.state !== 'completed') return { ok: false, reason: `只有跑完且绿的单能沉淀（当前状态：${run.state}）` };
+  const nodes = Object.values(run.nodes);
+  if (nodes.some((n) => n.unverified)) return { ok: false, reason: '有节点的产物来自终端兜底（未经验证），不沉淀' };
+  const results = latestAssertionResults(run);
+  const failed = results.filter((r) => r.status === 'fail');
+  if (failed.length) return { ok: false, reason: `验收断言有 ${failed.length} 条未过，不沉淀` };
+  // v11-C2 fail-closed：断言行必须 ≥1 条 status=ok 才放行——「没跑」不是「通过」的同义词
+  const passed = results.filter((r) => r.status === 'ok').length;
+  if (passed === 0) {
+    return {
+      ok: false,
+      reason: results.length
+        ? `断言 ${results.length} 条里 0 条实打实通过（全没跑/仅 n/a 不算绿）——断言没跑≠绿，不沉淀`
+        : '本单没有跑过任何验收断言（0 条结果），断言没跑≠绿，不沉淀',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * v11-C3b 页↔run 回链：把 C3a 的 `run.wikiReadback` 留痕聚合为 file→引用 runId 索引。
+ * 纯函数、零网络、零新增写路径——引用计数只在读时算出来，写侧（pf-cited-by）
+ * 只是搭既有推送车的展示血缘（stale-safe，权威计数永远以本聚合为准）。
+ * 语义（与 C3b 裁决一致）：
+ * - per-run set：同一 run 内多节点引用同一页，该页只记这个 run 1 次；
+ * - trace.repo 与目标仓不等一律跳过——跨 repo 绝不串页（file 同名也不串）；
+ * - 无留痕 / 留痕里一页都没进 = 该 run 不入 citedRunCount。
+ */
+export interface WikiCitationIndex {
+  /** 页 file（相对 `llm-wiki/` 根）→ 引用它的 runId 数组（字典序，渲染/断言稳定） */
+  byFile: Record<string, string[]>;
+  /** 该 repo 下有任意引用（wiki 读回真注入了至少 1 页）的 run 数 */
+  citedRunCount: number;
+}
+
+export function aggregateWikiCitations(runs: readonly RunRecord[], repo: string): WikiCitationIndex {
+  const byFile = new Map<string, Set<string>>();
+  const citedRuns = new Set<string>();
+  for (const run of runs ?? []) {
+    const trace = run?.wikiReadback;
+    if (!trace || trace.repo !== repo) continue;
+    const files = new Set<string>();
+    for (const node of trace.nodes ?? []) {
+      for (const p of node.pages ?? []) {
+        if (p?.file) files.add(p.file);
+      }
+    }
+    if (!files.size) continue;
+    citedRuns.add(run.runId);
+    for (const f of files) {
+      const s = byFile.get(f) ?? new Set<string>();
+      s.add(run.runId);
+      byFile.set(f, s);
+    }
+  }
+  const index: WikiCitationIndex = { byFile: {}, citedRunCount: citedRuns.size };
+  for (const [f, s] of byFile) index.byFile[f] = [...s].sort();
+  return index;
+}
+
+/**
+ * 纯函数：run → llm-wiki 页。七字段 frontmatter（title/type/tags/created/updated/
+ * sources/confidence，缺省有确定兜底）+ pf-* 溯源扩展键 + 断言表 + 节点结论 + 经验账本 + 双链；
+ * 附 index 条目与 log 记录两条记账字符串。
+ * v11-C2：`kind:'counterexample'`（反面教材侧门页）——同风格三特征：frontmatter
+ * `confidence: low`、正文页首一行固定 `> ⚠ 反面教材…` 警示、index 条目带 ⚠ 前缀；
+ * 旧调用不传 kind 行为不变（正门页）。
+ * v11-C3b：`citations`（aggregateWikiCitations 的 byFile 面）传入时，本页若被历史
+ * run 引用则 frontmatter 顺带 `pf-cited-by: runA, runB`——非权威展示血缘，无引用/未传
+ * 一律省略该键（首次推没有就空）。
+ */
+export function renderWikiPage(
+  run: RunRecord,
+  opts: { repo: string; now?: string; type?: WikiType; kind?: WikiPublishKind; citations?: Record<string, string[]> },
+): WikiPageDraft {
+  const now = opts.now ?? new Date().toISOString();
+  const type: WikiType = opts.type ?? 'summary';
+  const counter = opts.kind === 'counterexample';
+  const slug = `${slugify(run.dagName)}-${run.runId.slice(-6).toLowerCase()}`;
+  const file = `${WIKI_DIRS[type]}/${slug}.md`;
+  const pageTitle = fmVal(`${run.dagName}（run ${run.runId}）`);
+  const results = latestAssertionResults(run);
+  const sources = [`paneflow:run/${run.runId}`, `repo:${opts.repo}`, `dag:${fmVal(run.dagName)}`];
+  if (run.prUrl) sources.push(fmVal(run.prUrl));
+  const confidence = counter ? 'low' : results.length && results.every((r) => r.status === 'ok') ? 'high' : 'medium';
+  const lines: string[] = [];
+  lines.push('---');
+  lines.push(`title: "${pageTitle}"`);
+  lines.push(`type: ${type}`);
+  lines.push(`tags: [paneflow, run-record${run.spaceId ? `, ${fmVal(run.spaceId)}` : ''}${counter ? ', counterexample' : ''}]`);
+  lines.push(`created: ${run.startedAt || now}`);
+  lines.push(`updated: ${now}`);
+  lines.push(`sources: [${sources.map((s) => `"${s}"`).join(', ')}]`);
+  lines.push(`confidence: ${confidence}`);
+  lines.push(`pf-run: ${run.runId}`);
+  lines.push(`pf-repo: ${opts.repo}`);
+  lines.push(`pf-dag: ${fmVal(run.dagName)}`);
+  if (run.spaceId) lines.push(`pf-space: ${run.spaceId}`);
+  if (run.contract) lines.push(`pf-contract-source: ${run.contract.source}`);
+  lines.push(`pf-published: ${now}`);
+  // v11-C3b：推送时顺带引用血缘（逗号分隔 runId，来自读时聚合；无引用省略键，绝不直读 dataDir）
+  const citedBy = opts.citations?.[file];
+  if (citedBy?.length) lines.push(`pf-cited-by: ${citedBy.join(', ')}`);
+  lines.push('---');
+  lines.push('');
+  if (counter) {
+    // 反面教材侧门：正文页首一行固定警示，读者第一眼就知道这页只能避坑不能照抄
+    lines.push(`> ⚠ 反面教材：本单（run \`${run.runId}\`）带失败收口（${fmVal(run.state)}），此页只沉淀教训供避坑，结论与做法不可照抄。同类单子看 [[${sanitizeTitle(run.dagName)}]]，总入口 [[Home]]。`);
+    lines.push('');
+  }
+  lines.push(`# ${run.dagName}（run \`${run.runId}\`）`);
+  lines.push('');
+  lines.push(
+    counter
+      ? `> 本页由 PaneFlow 从一条带失败的 run 显式沉淀为教训页（confidence: low）。`
+      : `> 本页由 PaneFlow 从一条绿 run 自动沉淀。同类单子看 [[${sanitizeTitle(run.dagName)}]]，总入口 [[Home]]。`,
+  );
+  lines.push('');
+  lines.push('## 任务与交付');
+  lines.push(`- 工作目录：\`${run.cwd}\``);
+  if (run.issueId) lines.push(`- 关联 Issue：#${run.issueId}`);
+  if (run.prUrl) lines.push(`- 交付 PR：${run.prUrl}`);
+  const steps = Object.values(run.nodes).filter((n) => n.agentName);
+  lines.push(`- 执行节点 ${steps.length} 个：${steps.map((n) => `${n.nodeId}(${n.agentName})`).join('、') || '—'}`);
+  lines.push('');
+  if (run.contract?.assertions.length) {
+    lines.push('## 契约与验收结论');
+    lines.push('');
+    lines.push('| AC | 断言 | 结果 | 证据 |');
+    lines.push('| --- | --- | --- | --- |');
+    for (const a of run.contract.assertions) {
+      const r = results.find((x) => x.id === a.id);
+      lines.push(
+        `| ${a.id} | ${clip(a.assertion.replace(/\|/g, '\\|'), 120)} | ${r ? (r.status === 'ok' ? '✅ ok' : `❌ ${r.status}`) : '—'} | ${clip((r?.evidence || '').replace(/\|/g, '\\|').replace(/\n/g, ' '), 160)} |`,
+      );
+    }
+    lines.push('');
+  }
+  const summaries = steps.filter((n) => n.artifact?.summary);
+  if (summaries.length) {
+    lines.push('## 各节点结论');
+    for (const n of summaries) lines.push(`- **${n.nodeId}**：${clip(String(n.artifact!.summary).replace(/\n+/g, ' '), 300)}`);
+    lines.push('');
+  }
+  lines.push('## 经验账本');
+  if (run.cost) {
+    const mins = (run.cost.totalMs / 60000).toFixed(1);
+    const tokens = run.cost.tokens ? `in ${run.cost.tokens.input} / out ${run.cost.tokens.output}` : 'unknown（agent 未自报，不估算）';
+    lines.push(`- 用时 ${mins} 分钟 · 重试 ${run.cost.retries} 次 · tokens ${tokens}`);
+  }
+  if (run.variables && Object.keys(run.variables).length) {
+    lines.push(`- 实填变量：${Object.entries(run.variables).map(([k, v]) => `\`${k}=${clip(v, 60)}\``).join(' · ')}`);
+  }
+  lines.push(`- 时间：起 ${run.startedAt.slice(0, 16).replace('T', ' ')}${run.finishedAt ? ` · 止 ${run.finishedAt.slice(0, 16).replace('T', ' ')}` : ''}`);
+  lines.push('');
+  const total = run.contract?.assertions.length ?? results.length;
+  const passed = results.filter((r) => r.status === 'ok').length;
+  const digest = total ? `${passed}/${total} 条验收通过` : '无验收断言';
+  return {
+    file,
+    markdown: lines.join('\n'),
+    // 侧门页 index 条目带 ⚠ 前缀；条目面不变（`](file)` 仍在），mergeWikiIndex 按 file 去重语义不变
+    indexEntry: `- ${counter ? '⚠ ' : ''}[${pageTitle}](${file}) —— ${digest}（run \`${run.runId}\`，${now.slice(0, 10)}）`,
+    logNote: `- ${now} · run \`${run.runId}\` → \`${file}\`（${digest}）`,
+  };
+}
+
+/** index.md 合并（纯函数）：同 file 路径的旧条目原位替换（去重），没有则追加 */
+export function mergeWikiIndex(
+  existing: string,
+  entry: { file: string; line: string },
+): string {
+  if (!existing.trim()) return `# 索引\n\n${entry.line}\n`;
+  const lines = existing.replace(/\r\n/g, '\n').split('\n');
+  const i = lines.findIndex((l) => l.includes(`](${entry.file})`));
+  if (i >= 0) {
+    lines[i] = entry.line;
+    return lines.join('\n');
+  }
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return `${lines.join('\n')}\n${entry.line}\n`;
+}
+
+/** log.md 追加（纯函数）：只追加不改动，旧记录逐字保留 */
+export function appendWikiLog(existing: string, note: string): string {
+  if (!existing.trim()) return `# 沉淀日志\n\n${note}\n`;
+  return `${existing.replace(/\s+$/, '')}\n${note}\n`;
+}
+
+// -- GitHub 可见性 + git 操作 -------------------------------------------------
+
+const API = 'https://api.github.com';
+
+export async function checkRepoVisibility(
+  repo: string,
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<'public' | 'private'> {
+  const res = await fetchImpl(`${API}/repos/${repo}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 120)}`);
+  const body = (await res.json()) as { private?: boolean };
+  return body.private ? 'private' : 'public';
+}
+
+export function wikiCacheDir(dataDir: string, repo: string): string {
+  return path.join(dataDir, 'wiki-cache', repo.replace(/[^a-zA-Z0-9._-]+/g, '_'));
+}
+
+/** Issue #7：沉淀落点 = 主仓默认分支的 `llm-wiki/` 目录（只依赖 Contents 权限，细粒度 PAT 可推） */
+export const WIKI_ROOT = 'llm-wiki';
+
+/**
+ * v11-C0：零网络读本地缓存克隆的当前分支——直接读 .git/HEAD 符号引用
+ * （wikiState 是同步函数，不复用 syncWikiCache 里的 async git rev-parse）。
+ * 缓存不存在 / detached HEAD / 读不到一律回退 'main'。
+ */
+export function readWikiCacheBranch(dataDir: string, repo: string): string {
+  try {
+    const head = fs.readFileSync(path.join(wikiCacheDir(dataDir, repo), '.git', 'HEAD'), 'utf8').trim();
+    return /^ref: refs\/heads\/(.+)$/.exec(head)?.[1] ?? 'main';
+  } catch {
+    return 'main';
+  }
+}
+
+function git(args: string[], cwd?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, timeout: 60_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
+      if (err) reject(new Error(`git ${args[0]} 失败：${(stderr || err.message).trim().slice(0, 200)}`));
+      else resolve(stdout);
+    });
+  });
+}
+
+function repoPlainUrl(repo: string): string {
+  return `https://github.com/${repo}.git`;
+}
+
+function repoAuthUrl(repo: string, token: string): string {
+  return `https://x-access-token:${token}@github.com/${repo}.git`;
+}
+
+/**
+ * clone/更新主仓缓存到默认分支最新（shallow + sparse 只物化 llm-wiki/ 子树）。
+ * token 不进 .git/config：操作完把 origin 洗回无密钥地址。返回本地所在分支（=克隆时的默认分支）。
+ */
+export async function syncWikiCache(o: { dataDir: string; repo: string; token?: string; maxAgeMs?: number }): Promise<{ branch: string }> {
+  const dir = wikiCacheDir(o.dataDir, o.repo);
+  const marker = path.join(dir, '.pf-synced');
+  const fresh = (() => {
+    try {
+      return Date.now() - fs.statSync(marker).mtimeMs < (o.maxAgeMs ?? 5 * 60_000);
+    } catch {
+      return false;
+    }
+  })();
+  const plain = repoPlainUrl(o.repo);
+  const remote = o.token ? repoAuthUrl(o.repo, o.token) : plain;
+  if (!fresh) {
+    if (!fs.existsSync(path.join(dir, '.git'))) {
+      fs.mkdirSync(path.dirname(dir), { recursive: true });
+      await git(['clone', '--depth', '1', '--sparse', remote, dir]);
+    } else {
+      await git(['remote', 'set-url', 'origin', plain], dir).catch(() => undefined);
+      await git(['fetch', '--depth', '1', remote, 'HEAD'], dir);
+      await git(['reset', '--hard', 'FETCH_HEAD'], dir);
+    }
+    await git(['sparse-checkout', 'set', WIKI_ROOT], dir);
+    await git(['remote', 'set-url', 'origin', plain], dir).catch(() => undefined);
+    fs.writeFileSync(marker, new Date().toISOString());
+  }
+  const branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'], dir).catch(() => 'main')).trim() || 'main';
+  return { branch };
+}
+
+function readIf(p: string): string {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+/** 一次落点尝试：同步 → 写页集（llm-wiki/<分类>/）→ index/log 记账 → commit → push 默认分支。失败抛错（不吞）。
+ * v11-C1：从「一次一页」扩成「一次一组页操作」——蒸馏产出新页/改写页混合，一次 commit 多文件；
+ * 记账沿用 mergeWikiIndex 按 file 去重（改写不增条）与 appendWikiLog 只追加语义。 */
+async function publishAttempt(o: {
+  dataDir: string;
+  repo: string;
+  token: string;
+  pages: WikiPageDraft[];
+}): Promise<{ url: string; cacheDir: string; files: string[]; branch: string }> {
+  const { branch } = await syncWikiCache({ dataDir: o.dataDir, repo: o.repo, token: o.token, maxAgeMs: 0 });
+  const dir = wikiCacheDir(o.dataDir, o.repo);
+  const root = path.join(dir, WIKI_ROOT);
+  let indexText = readIf(path.join(root, 'index.md'));
+  let logText = readIf(path.join(root, 'log.md'));
+  const pageFiles: string[] = [];
+  for (const page of o.pages) {
+    const pageAbs = path.join(root, page.file);
+    fs.mkdirSync(path.dirname(pageAbs), { recursive: true });
+    fs.writeFileSync(pageAbs, page.markdown);
+    indexText = mergeWikiIndex(indexText, { file: page.file, line: page.indexEntry });
+    logText = appendWikiLog(logText, page.logNote);
+    pageFiles.push(`${WIKI_ROOT}/${page.file}`);
+  }
+  fs.writeFileSync(path.join(root, 'index.md'), indexText);
+  fs.writeFileSync(path.join(root, 'log.md'), logText);
+  const files = [...new Set([...pageFiles, `${WIKI_ROOT}/index.md`, `${WIKI_ROOT}/log.md`])];
+  await git(['add', '--', ...files], dir);
+  const summary =
+    o.pages.length === 1
+      ? `PaneFlow 沉淀: ${o.pages[0]!.file}`
+      : `PaneFlow 沉淀: ${o.pages.length} 页（${o.pages.map((p) => p.file).join('、')}）`;
+  await git(['commit', '-m', summary], dir).catch((e: Error) => {
+    if (!/nothing to commit/i.test(e.message)) throw e;
+  });
+  await git(['push', repoAuthUrl(o.repo, o.token), `HEAD:${branch}`], dir);
+  return {
+    url: `https://github.com/${o.repo}/blob/${branch}/${WIKI_ROOT}/${o.pages[0]!.file}`,
+    cacheDir: dir,
+    files,
+    branch,
+  };
+}
+
+/**
+ * v11-C1 多文件发布：一组页操作（新页/改写混合）一次同步、一次 commit、一次 push。
+ * push 撞远端前移（交付链刚推过 main）时重同步再试一次，仍失败才抛（语义与单页一致）。
+ */
+export async function publishWikiPages(o: {
+  dataDir: string;
+  repo: string;
+  token: string;
+  pages: WikiPageDraft[];
+}): Promise<{ url: string; cacheDir: string; files: string[] }> {
+  if (!o.pages.length) return { url: '', cacheDir: wikiCacheDir(o.dataDir, o.repo), files: [] };
+  try {
+    return await publishAttempt(o);
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (!/git push 失败/.test(msg)) throw e;
+    return await publishAttempt(o);
+  }
+}
+
+/**
+ * Issue #7 发布：落点为主仓 `llm-wiki/` 目录（只吃 Contents 权限，不再依赖 `<repo>.wiki.git`）。
+ * 单页便捷壳——签名对既有调用方（手动点赞路）保持兼容，内部走多页发布。
+ */
+export async function publishWikiPage(o: {
+  dataDir: string;
+  repo: string;
+  token: string;
+  page: WikiPageDraft;
+}): Promise<{ url: string; cacheDir: string; files: string[] }> {
+  return publishWikiPages({ ...o, pages: [o.page] });
+}
+
+// -- K2 读回：本地页挑选 + 摘要 -------------------------------------------------
+
+export interface WikiPage {
+  /** 相对 `llm-wiki/` 落点根的路径：嵌套页如 `summaries/x.md`，扁平页如 `y.md` */
+  file: string;
+  title: string;
+  text: string;
+  /**
+   * v11-C2 读回降权用：frontmatter confidence 原文（high|medium|low）。
+   * 旧页无 confidence 或解析不到 → undefined，视为正页（兼容读）。
+   */
+  confidence?: string;
+}
+
+const PAGE_CAP = 64;
+const PAGE_BYTES = 32 * 1024;
+
+/** 记账文件不参与读回/摘录（任何层级都排除） */
+function isBookkeeping(rel: string): boolean {
+  const base = path.basename(rel);
+  return base === 'index.md' || base === 'log.md';
+}
+
+/** 递归收集 .md 相对路径（跳过 .git/隐藏项）；旧扁平页与分类目录页混放也能列全 */
+function walkMarkdown(dir: string, rel: string, out: string[]): void {
+  let ents: fs.Dirent[];
+  try {
+    ents = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of ents) {
+    if (e.name.startsWith('.')) continue;
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) walkMarkdown(path.join(dir, e.name), r, out);
+    else if (e.name.endsWith('.md') && !isBookkeeping(r)) out.push(r);
+  }
+}
+
+function titleFromPath(rel: string): string {
+  return path.basename(rel).replace(/\.md$/, '').replace(/-/g, ' ');
+}
+
+/** 从缓存的主仓 `llm-wiki/` 子树读 md 页：frontmatter title 优先，缺省回退文件名；正文留给摘要。落点缺失/为空返回空不抛。 */
+export function readWikiPages(dataDir: string, repo: string): WikiPage[] {
+  const dir = path.join(wikiCacheDir(dataDir, repo), WIKI_ROOT);
+  const files: string[] = [];
+  walkMarkdown(dir, '', files);
+  return files.sort().slice(0, PAGE_CAP).map((rel) => {
+    let text = '';
+    try {
+      text = fs.readFileSync(path.join(dir, rel), 'utf8').slice(0, PAGE_BYTES);
+    } catch {
+      return { file: rel, title: titleFromPath(rel), text: '' };
+    }
+    const fm = text.startsWith('---\n') ? /^---\n([\s\S]*?)\n---/.exec(text)?.[1] : undefined;
+    const fmTitle = fm ? /^title:\s*["']?(.+?)["']?\s*$/m.exec(fm)?.[1]?.trim() : undefined;
+    // v11-C2：读 confidence 做降权；旧页无此键 → undefined 视为正页（兼容读）
+    const confidence = fm ? /^confidence:\s*["']?([A-Za-z]+)["']?\s*$/m.exec(fm)?.[1]?.toLowerCase() : undefined;
+    const body = text.replace(/^---[\s\S]*?---\n?/, '');
+    return { file: rel, title: fmTitle || titleFromPath(rel), text: body, confidence };
+  });
+}
+
+function tokens(q: string): string[] {
+  return (q.toLowerCase().match(/[a-z0-9_]+|[\u4e00-\u9fa5]{2,8}/g) ?? []).filter((t) => t.length >= 2);
+}
+
+/** v11-C2：反面教材页（confidence: low）读回降权系数——相关度折半但绝不丢 */
+const LOW_CONFIDENCE_PENALTY = 0.5;
+
+/** 与需求文本相关度 top-N：标题命中加权，正文按出现次数；无命中返回空（宁缺毋滥）。
+ * v11-C2：`confidence: low` 的反面教材页排序靠后（相关度折半 + 同分正页优先），
+ * 但唯一相关的反例仍会被选中——它就是经验；命中时在 label 上明示反面教材身份。 */
+export function pickWikiExcerpts(
+  pages: WikiPage[],
+  query: string,
+  limit = 3,
+): { label: string; text: string }[] {
+  const ts = tokens(query);
+  if (!ts.length) return [];
+  const scored = pages
+    .map((p) => {
+      const hay = `${p.title}\n${p.text}`.toLowerCase();
+      const titleHay = p.title.toLowerCase();
+      let score = 0;
+      for (const t of ts) {
+        if (titleHay.includes(t)) score += 3;
+        let i = -1;
+        let n = 0;
+        while ((i = hay.indexOf(t, i + 1)) >= 0 && n < 6) {
+          n++;
+          score += 1;
+        }
+      }
+      const low = p.confidence === 'low';
+      return { p, score, effective: low ? score * LOW_CONFIDENCE_PENALTY : score, low };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.effective - a.effective || Number(a.low) - Number(b.low))
+    .slice(0, limit);
+  return scored.map(({ p, low }) => {
+    const para =
+      p.text
+        .split(/\n\s*\n/)
+        .map((s) => s.trim())
+        .find((s) => s && !s.startsWith('#') && !s.startsWith('>')) ?? p.text.trim();
+    const label = low
+      ? `wiki 沉淀页·反面教材（低置信：来自带失败的 run，只作避坑教训，勿照抄）（${p.file}）`
+      : `wiki 沉淀页（${p.file}）`;
+    return { label, text: clip(para.replace(/\n+/g, ' '), 240) };
+  });
+}
