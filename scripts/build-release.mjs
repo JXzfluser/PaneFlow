@@ -51,7 +51,7 @@ const iconSrc = path.join(repoRoot, 'packages', 'web', 'public', 'icon.svg');
 if (fs.existsSync(iconSrc)) fs.copyFileSync(iconSrc, path.join(pkgDir, 'web', 'icon.svg'));
 
 // 5) bin：统一入口（v11-A1 合流）——首参命中编排子命令走 CLI；否则维持原启动行为
-//    （设 PF_WEB_DIR 后启动内联服务）。裸 `paneflow` 的启动路径与合流前逐字节一致。
+//    （设 PF_WEB_DIR 后启动内联服务）。裸 `paneflow` 仍走启动分支（先多导一个零依赖的 cli 薄壳）。
 fs.mkdirSync(path.join(pkgDir, 'bin'), { recursive: true });
 fs.writeFileSync(
   path.join(pkgDir, 'bin', 'paneflow.mjs'),
@@ -60,9 +60,11 @@ fs.writeFileSync(
     "import path from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
     "const dir = path.dirname(fileURLToPath(import.meta.url));",
-    "const CLI_SUBS = new Set(['dispatch', 'runs', 'status', 'watch', 'approve']);",
-    "if (CLI_SUBS.has(process.argv[2])) {",
-    "  const { main, defaultIo } = await import('../lib/cli.mjs');",
+    // 子命令白名单不在此硬编码——从 cli.mjs 导出的 CLI_SUBCOMMANDS 取单一事实源
+    // （教训：发行 v0.2.0 曾漏 replay/experiments，bin 路由掉进起服务分支，摩擦账 #24）
+    "const cli = await import('../lib/cli.mjs');",
+    "if (process.argv[2] && new Set(cli.CLI_SUBCOMMANDS).has(process.argv[2])) {",
+    "  const { main, defaultIo } = cli;",
     "  process.exitCode = await main(process.argv.slice(2), defaultIo());",
     "} else {",
     "  process.env.PF_WEB_DIR ??= path.join(dir, '..', 'web');",
