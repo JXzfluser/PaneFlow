@@ -14,7 +14,7 @@ export class ApiError extends Error {
 
 /**
  * 薄壳请求：拼 base + path、带 Bearer（PANEFLOW_TOKEN，R4.1 远程模式用）、
- * 超时 15s；非 2xx 时把 server 的 error 字段原样抛出——CLI 不自造判据。
+ * 默认超时 15s（慢端点按调用方显式放宽）；非 2xx 时把 server 的 error 字段原样抛出——CLI 不自造判据。
  */
 export async function request<T = unknown>(
   io: CliIo,
@@ -22,6 +22,7 @@ export async function request<T = unknown>(
   method: 'GET' | 'POST' | 'PUT',
   path: string,
   body?: unknown,
+  timeoutMs = 15_000,
 ): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -31,7 +32,7 @@ export async function request<T = unknown>(
     method,
     headers,
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await res.text();
   let parsed: unknown = null;

@@ -33,6 +33,13 @@ export function resolveBaseUrl(io: Pick<CliIo, 'env' | 'homedir' | 'readFile'>, 
 }
 
 export function defaultIo(): CliIo {
+  // 管道下游（| head / | jq）提前关读会抛异步 EPIPE——不吞掉就是满屏栈+非零码，
+  // 把「输出已送达、读者走了」误报成命令失败
+  const quietPipe = (err: NodeJS.ErrnoException) => {
+    if (err.code !== 'EPIPE') throw err;
+  };
+  process.stdout.on('error', quietPipe);
+  process.stderr.on('error', quietPipe);
   return {
     fetch: globalThis.fetch,
     out: (line) => process.stdout.write(line + '\n'),

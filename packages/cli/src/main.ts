@@ -132,7 +132,9 @@ async function cmdDispatch(io: CliIo, baseUrl: string, args: Args): Promise<numb
     body.issueId = issue;
   }
   const q = args.flags.space ? `?space=${encodeURIComponent(args.flags.space)}` : '';
-  const { body: res } = await request<DispatchResult>(io, baseUrl, 'POST', `/api/dispatch${q}`, body);
+  // 120s 专项超时：带 issue 的派发要在服务端现抓 GitHub 正文，代理链路常 >15s；
+  // 默认 15s 会把「已建成单」报成失败（假超时真建单，无人值守脚本据此重试=重复建单，摩擦账 #23）
+  const { body: res } = await request<DispatchResult>(io, baseUrl, 'POST', `/api/dispatch${q}`, body, 120_000);
   if (jsonOr(args)) {
     dump(io, res);
     return EXIT_OK;
