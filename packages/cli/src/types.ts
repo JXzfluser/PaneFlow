@@ -80,6 +80,8 @@ export interface DispatchResult {
   note?: string;
   contract?: { mode: string; assertions?: number; template?: string };
   nodes?: { id: string; name: string; type: string; dependsOn: string[] }[];
+  /** 打标回执：server 认下的实验标原样回显（不给 experiment 键=整键不出现；判据全在 server，这里只渲染） */
+  experiment?: { suite?: string; arm?: string; flag?: string };
 }
 
 export const EXIT_OK = 0;

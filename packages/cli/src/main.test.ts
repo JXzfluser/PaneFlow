@@ -73,6 +73,35 @@ describe('dispatch', () => {
     expect(await main(['dispatch', '活'], bad.io)).toBe(1);
     expect(bad.errLines.join('\n')).toContain('缺少工作目录');
   });
+
+  it('实验标透传：--suite/--arm/--flag 进 body.experiment；回执渲染 server 回显字段；不带=体零新增', async () => {
+    const payload = { runId: 'run-88', issueFetched: false, experiment: { suite: 'c4', arm: 'a', flag: 'readback=off' } };
+    const { fetchImpl, calls } = stubFetch([{ body: payload }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['dispatch', '活', '--suite', 'c4', '--arm', 'a', '--flag', 'readback=off'], io)).toBe(0);
+    expect(JSON.parse(calls[0]!.init.body!)).toEqual({
+      task: '活',
+      experiment: { suite: 'c4', arm: 'a', flag: 'readback=off' },
+    });
+    expect(lines.join('\n')).toContain('实验标: c4/臂 a · flag=readback=off');
+    expect(lines.join('\n')).toContain('paneflow experiments --suite c4');
+    // 不带实验标：body 零新增键（今日语义，对照上面精确断言）
+    const plain = stubFetch([{ body: { runId: 'run-89' } }]);
+    const p = makeIo({ fetch: plain.fetchImpl });
+    expect(await main(['dispatch', '活'], p.io)).toBe(0);
+    expect(JSON.parse(plain.calls[0]!.init.body!)).toEqual({ task: '活' });
+    expect(p.lines.join('\n')).not.toContain('实验标');
+  });
+
+  it('只给 --arm 不给 --suite：CLI 不判、原样透传，server 400 指路照单带出退 1（R4 零判据）', async () => {
+    const { fetchImpl, calls } = stubFetch([
+      { status: 400, body: { error: 'experiment 必须带非空 suite 才算实验标（只给 arm/flag 不进收数表；suite 给了就得是非空字符串）' } },
+    ]);
+    const { io, errLines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['dispatch', '活', '--arm', 'b'], io)).toBe(1);
+    expect(JSON.parse(calls[0]!.init.body!)).toEqual({ task: '活', experiment: { arm: 'b' } });
+    expect(errLines.join('\n')).toContain('必须带非空 suite');
+  });
 });
 
 describe('runs / status / approve', () => {

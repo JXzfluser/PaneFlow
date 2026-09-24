@@ -20,6 +20,10 @@ CLI 是零业务薄壳（铁律 R4：不直读 dataDir、不自造判据），�
 ```bash
 # 1) 派活：一句话或整篇 issue 引用皆可；--repo 必须配 --issue（拼规范 issue URL 给服务端识别）
 paneflow dispatch "给导出模块加空值兜底" --repo my-org/my-repo --issue 123 --space demo
+#    fresh dispatch 也能直接打实验标（v13-V2 勘误后开闸：取臂规程=双臂各 ≥3 run 用 fresh dispatch 起，
+#    replay 只作同臂补分母）：--suite/--arm/--flag 进 experiment 体键，带标单到终态自动落收数表一行；
+#    只有带非空 suite 才算实验标（只给 arm/flag → server 400 指路）；CLI 纯透传不判断据（R4）
+paneflow dispatch "给导出模块加空值兜底" --repo my-org/my-repo --issue 123 --suite c4 --arm a
 
 # 2) 列单：看最近都跑了什么
 paneflow runs
@@ -45,7 +49,7 @@ echo $?
 paneflow approve <runId> <nodeId>
 
 # 6) 复跑实验（v11-E1）：同契约重发 N 份（唯一豁免=同 issue 幂等锁，仅 replay 显式发起）；
-#    --suite/--arm/--flag 打实验标，带 suite 的单到终态自动落收数表
+#    --suite/--arm/--flag 打实验标，带 suite 的单到终态自动落收数表（fresh dispatch 同样可打，见 1）
 paneflow replay <runId> --times 2 --suite c4 --arm a
 #    v12-S1b：源单带副作用（建单/覆写/PR/推送在册）默认拒绝 replay（退出码 1，两行指路文案）；
 #    v12-S3：--from-failed 走 replay×resume 合流——done 节点继承不重跑，只重放失败/未执行节点。
@@ -78,11 +82,17 @@ token 预算熔断（v12-S2）：`PF_RUN_MAX_TOKENS=<正整数>` 设 run 级 tok
 ```bash
 BASE=http://127.0.0.1:4310
 
-# 派活（体：task 必填；issueId/cwd/preview 可选；?space= 选项目）
+# 派活（体：task 必填；issueId/cwd/preview/experiment 可选；?space= 选项目）
 #   v13-E2 fail-closed：档案 defaultAgentKind 与本机实探两路全空 → 400 一句指路（不再猜 claude 起必红单）
 curl -s $BASE/api/dispatch -d '{"task":"...","issueId":"123"}'
+#   实验标（v13-V2 勘误后开闸，体键形状=RunExperimentMeta，与 replay 体的 suite/arm/flag 对齐）：
+#   带标单固化进 RunRecord.experiment，到终态自动落收数表一行，GET /api/runs?suite=&arm= 可命中；
+#   fail-closed：只有带非空 suite 才算实验标；体级未知键（experment 拼错=实验标静默失效，宁拒不错放）
+#   与 experiment 内未知键一律 400 一句指路；不给 experiment 键=旧语义一字不变
+curl -s $BASE/api/dispatch -d '{"task":"...","experiment":{"suite":"c4","arm":"a","flag":"readback=off"}}'
 #   → {runId, issueId?, issueFetched, note?, contract:{mode:extracted|autofilled|gate,...},
-#      nodes:[{id,name,type,dependsOn}]   # v11-A1 节点清单摘要}
+#      nodes:[{id,name,type,dependsOn}],   # v11-A1 节点清单摘要
+#      experiment?:{suite,arm?,flag?}}     # 打了才回显：server 认下的实验标回执
 
 # 列单 / 看单（:id 响应比 RunRecord 多一个只读聚合字段 awaitingApproval:{nodeIds,waiting}，
 #   waiting=true 即 watch 判 3 的显式信号——blocked/paused 节点卡住了整单；

@@ -49,7 +49,8 @@ export function parseArgs(argv: string[]): Args {
 const USAGE = [
   '用法：paneflow <子命令> [参数]',
   '',
-  '  paneflow dispatch "<一句话>" [--repo owner/name] [--issue N] [--space S] [--url U] [--json]',
+  '  paneflow dispatch "<一句话>" [--repo owner/name] [--issue N] [--space S] [--suite S] [--arm A] [--flag F] [--url U] [--json]',
+  '                                                              --suite/--arm/--flag 打实验标（进 experiment 体键，判据全在 server：只给 arm/flag 不给 suite 由 server 400 指路）',
   '  paneflow runs [--json]',
   '  paneflow status <runId> [--json]',
   '  paneflow watch <runId> [--timeout 30m] [--interval 3000]   退出码：0 全绿 / 1 有红 / 2 超时 / 3 停在审批门',
@@ -121,7 +122,11 @@ async function cmdDispatch(io: CliIo, baseUrl: string, args: Args): Promise<numb
   const task = args.positional[0]!;
   const repo = args.flags.repo?.trim();
   const issue = args.flags.issue?.trim();
-  const body: { task: string; issueId?: string } = { task };
+  const body: {
+    task: string;
+    issueId?: string;
+    experiment?: { suite?: string; arm?: string; flag?: string };
+  } = { task };
   if (repo && !issue) throw new Error('--repo 只在配合 --issue 时有意义（issue 归属仓）');
   if (issue && !/^\d+$/.test(issue)) throw new Error(`--issue 需为数字编号，收到：${issue}`);
   if (issue && repo) {
@@ -131,6 +136,14 @@ async function cmdDispatch(io: CliIo, baseUrl: string, args: Args): Promise<numb
   } else if (issue) {
     body.issueId = issue;
   }
+  // 实验标纯透传（R4：CLI 不判「这算不算实验单」——只给 arm/flag 不给 suite 之类，
+  // 由 server 400 指路，错误文案原样带出）；一个都没给=体零新增，今日语义不变
+  const experiment: { suite?: string; arm?: string; flag?: string } = {};
+  for (const k of ['suite', 'arm', 'flag'] as const) {
+    const v = args.flags[k]?.trim();
+    if (v) experiment[k] = v;
+  }
+  if (Object.keys(experiment).length) body.experiment = experiment;
   const q = args.flags.space ? `?space=${encodeURIComponent(args.flags.space)}` : '';
   // 120s 专项超时：带 issue 的派发要在服务端现抓 GitHub 正文，代理链路常 >15s；
   // 默认 15s 会把「已建成单」报成失败（假超时真建单，无人值守脚本据此重试=重复建单，摩擦账 #23）
@@ -141,6 +154,12 @@ async function cmdDispatch(io: CliIo, baseUrl: string, args: Args): Promise<numb
   }
   io.out(`${paint(io, '32', '✔ 已派活')} run ${paint(io, '1', res.runId)}${res.issueId ? ` · Issue #${res.issueId}${res.issueFetched ? '（正文已拉取）' : '（正文未取到，按描述执行）'}` : ''}`);
   if (res.note) io.out(`  ! ${res.note}`);
+  // 打标回执：只渲染 server 回显的 experiment 字段（终态落不收落表由 server 定，这里零判据）
+  if (res.experiment?.suite) {
+    io.out(
+      `  ${paint(io, '33', `实验标: ${res.experiment.suite}${res.experiment.arm ? `/臂 ${res.experiment.arm}` : ''}${res.experiment.flag ? ` · flag=${res.experiment.flag}` : ''}`)}（终态自动落收数表：paneflow experiments --suite ${res.experiment.suite}）`,
+    );
+  }
   const c = res.contract;
   if (c) {
     io.out(
@@ -308,7 +327,7 @@ async function cmdExperiments(io: CliIo, baseUrl: string, args: Args): Promise<n
     return EXIT_OK;
   }
   if (!body.tables.length) {
-    io.out('（暂无实验收数——replay 时带 --suite 起单才会落表）');
+    io.out('（暂无实验收数——dispatch/replay 带 --suite 起单才会落表）');
     return EXIT_OK;
   }
   for (const t of body.tables) {
