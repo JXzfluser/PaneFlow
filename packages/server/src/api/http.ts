@@ -9,6 +9,7 @@ import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
 import { experimentWriteStats, listExperimentRows, reconcileExperimentTables } from '../orchestrate/experiment.js';
 import type { SpaceProfile, TeamMember } from '../orchestrate/store.js';
+import { validateDelivery } from '../orchestrate/delivery.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { loadContractLibrary, matchContractTemplate, renderContractTemplateBlock } from '../orchestrate/contract-templates.js';
 import { detectInstalledAgents, recommendAgentKind } from './env-check.js';
@@ -179,8 +180,8 @@ export function isAllowedOrigin(opts: {
 
 const DEFAULT_SPACE = 'default';
 
-/** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面；maxConcurrentRuns=G3 队列上限，配置文件面） */
-const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'agentOverride', 'maxConcurrentRuns', 'experienceInjection', 'team', 'gatewayProfile'] as const;
+/** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面；maxConcurrentRuns=G3 队列上限，配置文件面；delivery=v13-B1 家规声明位，配置文件面） */
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'agentOverride', 'maxConcurrentRuns', 'experienceInjection', 'team', 'gatewayProfile', 'delivery'] as const;
 
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
@@ -820,6 +821,13 @@ export async function buildHttpServer(deps: HttpDeps) {
         if (new Set(ids).size !== ids.length) {
           return reply.code(400).send({ error: '班底里同一角色不能重复入列' });
         }
+      }
+      // v13-B1：delivery 是 B2 起单要照的家规，写脏（空模板/未知键/破烂 gates）会让家规静默失效——
+      // 机检姿态同 rules，按「宁拒不错放」收紧；校验器与条目类型住 orchestrate/delivery.ts
+      const delivery = (req.body as Record<string, unknown> | undefined)?.delivery;
+      if (delivery !== undefined) {
+        const bad = validateDelivery(delivery);
+        if (bad) return reply.code(400).send({ error: bad });
       }
       // 白名单：只接受可编辑字段，id/name/createdAt 等身份字段不可经 body 注入
       const patch: Partial<SpaceProfile> = {};

@@ -19,6 +19,17 @@ interface SpaceProfile {
   experienceInjection?: boolean;
   team?: TeamMember[];
   gatewayProfile?: string;
+  delivery?: DeliveryRule[];
+}
+
+/** v13-B1 交付约定（家规）条目：配置文件管理（profile.json 的 delivery 数组 / PUT 端点），本页只读展示 */
+interface DeliveryRule {
+  repo?: string;
+  branchFrom: string;
+  branchName: string;
+  prTarget: string;
+  gates?: string[];
+  note?: string;
 }
 
 /** v9-B1/B3 班底成员：roleId 指向全局角色库，alias 是本项目昵称 */
@@ -572,6 +583,24 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
             value={profile.gatewayProfile ?? ''}
             onChange={(id) => setProfile((p) => (p ? { ...p, gatewayProfile: id } : p))}
           />
+          {/* v13-B1 交付约定：配置文件管理、无编辑器（与 rules/skills 登记同款 UX）——
+              本页只如实展示 profile.delivery；没配过（键缺失）整段不渲染，不造「未配置」占位。
+              编辑=改 profile.json 的 delivery 数组或 PUT /api/spaces/:id；保存档案走 merge，不误伤。 */}
+          {profile.delivery && profile.delivery.length > 0 && (
+            <>
+              <label title="交付约定（家规）：拉出基点 / 分支命名 / PR 目标；一仓一副。配置文件管理无编辑器；引擎起单接线在 B2，现配后将读不消费">
+                交付约定（{profile.delivery.length} 副）
+              </label>
+              {profile.delivery.map((d, i) => (
+                <div className="delivery-line" key={i} title={d.note}>
+                  <span className="delivery-repo">{d.repo || '全空间'}</span>
+                  <span>从 {d.branchFrom} 拉 {d.branchName}</span>
+                  <span>PR→{d.prTarget}</span>
+                  {d.gates && d.gates.length > 0 && <span>人闸 {d.gates.join('·')}</span>}
+                </div>
+              ))}
+            </>
+          )}
           <div className="settings-actions">
             <button className="primary" onClick={() => void saveProfile()}>
               保存档案

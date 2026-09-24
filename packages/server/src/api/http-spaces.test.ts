@@ -199,6 +199,123 @@ describe('v9-B1 班底名册（team 机检 + 标准五连装填）', () => {
   });
 });
 
+describe('v13-B1 delivery 声明位（PUT 机检 + GET 原样带出）', () => {
+  const BUG = {
+    repo: 'web-console',
+    branchFrom: 'main',
+    branchName: 'fix/issue-{issue}',
+    prTarget: 'main',
+    gates: ['对齐先行', 'PR 前', '关单前'],
+    note: '驳回开 Bug 链回主 Issue',
+  };
+  const FEATURE = {
+    repo: 'web-console',
+    branchFrom: 'main',
+    branchName: 'feature/v{version}-{issue}',
+    prTarget: 'release/v{version}',
+  };
+
+  it('两副样本家规 PUT→GET 原样往返；GET /api/spaces 列表也带出；占位符不解析', async () => {
+    const { app } = await buildServer(tmp());
+    try {
+      const put = await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/demo',
+        headers: { host: HOST },
+        payload: { delivery: [BUG, FEATURE] },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(put.json().delivery).toEqual([BUG, FEATURE]);
+      const get = await app.inject({ method: 'GET', url: '/api/spaces/demo', headers: { host: HOST } });
+      expect(get.json().delivery).toEqual([BUG, FEATURE]);
+      expect(get.json().delivery[1].branchName).toBe('feature/v{version}-{issue}'); // B1 不解析占位符
+      const list = await app.inject({ method: 'GET', url: '/api/spaces', headers: { host: HOST } });
+      const spaces = list.json().spaces as { id: string; delivery?: unknown }[];
+      expect(spaces.find((s) => s.id === 'demo')?.delivery).toEqual([BUG, FEATURE]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('脏形状 400 拒写：非数组 / 必填缺失 / branchName 空串 / 未知键 / gates 破烂；拒后档案照旧无 delivery', async () => {
+    const { app } = await buildServer(tmp());
+    try {
+      const bad: unknown[] = [
+        'nope',
+        [{ branchFrom: 'main', branchName: 'fix/{issue}' }], // 缺 prTarget
+        [{ branchFrom: 'main', branchName: '  ', prTarget: 'main' }], // branchName 空串
+        [{ ...BUG, branchTo: 'dev' }], // 未知键
+        [{ ...FEATURE, gates: '三道人闸' }], // gates 非数组
+      ];
+      for (const delivery of bad) {
+        const res = await app.inject({
+          method: 'PUT',
+          url: '/api/spaces/demo',
+          headers: { host: HOST },
+          payload: { delivery },
+        });
+        expect(res.statusCode, JSON.stringify(delivery)).toBe(400);
+        expect(res.json().error).toContain('delivery');
+      }
+      const get = await app.inject({ method: 'GET', url: '/api/spaces/demo', headers: { host: HOST } });
+      expect('delivery' in get.json()).toBe(false); // 一次都没写进去——不静默塞半成品
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('红线：旧空间档案（完全没有 delivery 键）读写照常；PUT 其余字段不被静默塞入空数组', async () => {
+    const dir = tmp();
+    const { app } = await buildServer(dir);
+    try {
+      const put = await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/legacy',
+        headers: { host: HOST },
+        payload: { rootCwd: '/r', description: '老档案', team: [{ roleId: 'std-planner' }] },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(put.json().rootCwd).toBe('/r');
+      expect('delivery' in put.json()).toBe(false);
+      const raw = JSON.parse(fs.readFileSync(path.join(dir, 'spaces', 'legacy', 'profile.json'), 'utf8')) as Record<string, unknown>;
+      expect('delivery' in raw).toBe(false);
+      const list = await app.inject({ method: 'GET', url: '/api/spaces', headers: { host: HOST } });
+      const legacy = (list.json().spaces as Record<string, unknown>[]).find((s) => s.id === 'legacy');
+      expect(legacy && 'delivery' in legacy).toBe(false); // 列表端点同样缺省不显示、不造默认值
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('merge 语义：delivery 配好后 PUT 其余字段不误伤；显式 PUT delivery:[] 才清空', async () => {
+    const { app } = await buildServer(tmp());
+    try {
+      await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/demo',
+        headers: { host: HOST },
+        payload: { delivery: [BUG] },
+      });
+      const touch = await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/demo',
+        headers: { host: HOST },
+        payload: { description: '只改描述' },
+      });
+      expect(touch.json().delivery).toEqual([BUG]);
+      const clear = await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/demo',
+        headers: { host: HOST },
+        payload: { delivery: [] },
+      });
+      expect(clear.json().delivery).toEqual([]); // 显式清空如实存，不冒充「已配置家规」
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('v10-U1 GET /api/roles/usage 部署聚合', () => {
   it('按 roleId 聚合各项目班底；alias 带上；无 team 的项目不产条目；悬空 roleId 也返回', async () => {
     const { app } = await buildServer(tmp());

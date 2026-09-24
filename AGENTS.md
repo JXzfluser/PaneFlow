@@ -109,6 +109,13 @@ curl -s -X POST $BASE/api/runs/<runId>/promote     # 插队到队首；不在排
 # 批量派发（一个模板 × 一列 issue 编号，≤20；并发超限自动排队）
 curl -s $BASE/api/dispatch/batch -d '{"template":"my-template","issues":"1\n2\n3"}'
 
+# 空间/项目档案（v13-B1 交付约定声明位；rules/skills/delivery 皆配置文件管理，无编辑器）
+curl -s $BASE/api/spaces                       # → {spaces:[档案数组]}；没配过的可选键整缺不造默认
+curl -s $BASE/api/spaces/<id>                  # 单档案；delivery 配了才出现：[{repo?,branchFrom,branchName,prTarget,gates?,note?}]
+curl -s -X PUT $BASE/api/spaces/<id> -d '{"delivery":[{"repo":"my-repo","branchFrom":"main","branchName":"fix/issue-{issue}","prTarget":"main","gates":["PR 前"]}]}'
+#   PUT=merge 语义（漏发键保旧值，显式 [] 才清空）；脏形状 400 + 一句指路（空 branchName/未知键/gates 破烂…）
+#   v13-B1 只声明不消费：占位符 {issue}/{version} 原样存，引擎接线在 B2
+
 # GitHub 写端点（v12-S1a 副作用归因）：体新增可选 runId——建单/覆写成功且有活跃 runId 时
 # 落进该 run 的 sideEffects 账 + 一条「副作用」事件；不带 runId 行为与今天完全一致
 curl -s $BASE/api/github/create-issue -d '{"title":"...","runId":"<活跃runId>"}'

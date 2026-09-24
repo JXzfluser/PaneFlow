@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DagGraph, RunRecord } from '@paneflow/shared';
 import type { SpaceRule } from './rules.js';
+import type { DeliveryRule } from './delivery.js';
 
 export interface SpaceProfile {
   id: string;
@@ -30,6 +31,12 @@ export interface SpaceProfile {
   team?: TeamMember[];
   /** v9-D2 空间钉档：本空间 Agent 的模型请求固定走这一网关档（缺省=跟全局 current） */
   gatewayProfile?: string;
+  /**
+   * v13-B1 交付约定（家规）：{repo?, branchFrom, branchName, prTarget, gates?, note?} 条目数组，
+   * 按仓匹配一仓一副（repo 语义同 rules）。配置文件管理、无编辑器；只增不改不 bump schema。
+   * 声明位——引擎消费（起单/建 worktree/prompt 注入/对账）在 B2，本片刻意未接线。
+   */
+  delivery?: DeliveryRule[];
 }
 
 /** v9-B1 班底成员（弱引用全局角色库；角色库删了 id 时下发回退旧行为并明说） */
