@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
-import { applyVariables, renderPromptTemplate, runHasEnded, topoSort, validateDag } from '@paneflow/shared';
+import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag } from '@paneflow/shared';
 import type { DagGraph, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
@@ -1473,12 +1473,19 @@ export async function buildHttpServer(deps: HttpDeps) {
     const anyActive = recs.some((n) =>
       ['working', 'starting', 'retrying', 'queued'].includes(n.state),
     );
+    // v13-V1 机检/自报双口径的读端聚合：机检=graph 各节点 checks[] 里引擎实跑得动的类
+    // （file-exists/command/regex/delivery-branch/contract，manual 不算），done⇒机检全过按
+    // state 推导（引擎收 done 前必过门，done 本身就是实跑证据）。零新字段零写路径——
+    // 机检成功历史上就没落过册，写端方案对旧 run 永远缺账，只能读时算（awaitingApproval 同款姿势）。
+    // state 拿不到（缺节点记录/旧 run 图账对不上）→ 整键省略：0 是正断言，「不知道」不是 0。
+    const tally = machineCheckTally(run);
     return {
       ...run,
       awaitingApproval: {
         nodeIds: gateNodeIds,
         waiting: run.state === 'running' && gateNodeIds.length > 0 && !anyActive,
       },
+      ...(tally ? { machineCheckTally: tally } : {}),
     };
   });
 

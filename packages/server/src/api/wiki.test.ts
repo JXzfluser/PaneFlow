@@ -245,6 +245,120 @@ describe('v9-K3 publishableRun 门（宁缺毋滥）', () => {
   });
 });
 
+// -- v13-V1 双口径：assertionDiff（shared 纯函数）+ 沉淀页覆盖读数 + 绿门文案 ----------------
+import { assertionDiff } from '@paneflow/shared';
+
+describe('v13-V1 assertionDiff：契约 × 自报求差三分类（shared 纯函数，读端零 IO）', () => {
+  const contract = [{ id: 'AC-1' }, { id: 'AC-2' }, { id: 'AC-3' }];
+
+  it('passed 只按契约 ∩ ok 计；契约外自报进 outside、不进 passed；fail/n/a 算覆盖过不算缺', () => {
+    expect(
+      assertionDiff(contract, [
+        { id: 'AC-1', status: 'ok' },
+        { id: 'AC-2', status: 'fail' },
+        { id: 'AC-9', status: 'ok' },
+        { id: 'AC-3', status: 'n/a' },
+      ]),
+    ).toEqual({ total: 3, passed: 1, missing: [], outside: ['AC-9'] });
+  });
+
+  it('缺项列出契约里没回写的编号；同 id 重复行取最后一行（终审覆盖自测同款口径）', () => {
+    expect(
+      assertionDiff(contract, [
+        { id: 'AC-1', status: 'ok' },
+        { id: 'AC-2', status: 'ok' },
+      ]),
+    ).toEqual({ total: 3, passed: 2, missing: ['AC-3'], outside: [] });
+    const rerolled = assertionDiff(contract, [
+      { id: 'AC-1', status: 'ok' },
+      { id: 'AC-1', status: 'fail' },
+    ]);
+    expect(rerolled.passed).toBe(0);
+    expect(rerolled.missing).toEqual(['AC-2', 'AC-3']);
+  });
+
+  it('破烂输入不炸：无契约 → total=0、全部自报归 outside；脏行（缺 id/非对象）逐条宽松过滤', () => {
+    expect(assertionDiff(undefined, [{ id: 'AC-7', status: 'ok' }])).toEqual({
+      total: 0,
+      passed: 0,
+      missing: [],
+      outside: ['AC-7'],
+    });
+    expect(assertionDiff([], [])).toEqual({ total: 0, passed: 0, missing: [], outside: [] });
+    expect(
+      assertionDiff(
+        contract,
+        [null, { status: 'ok' }, { id: 'AC-1', status: 'ok' }] as unknown as { id: string; status: string }[],
+      ),
+    ).toEqual({ total: 3, passed: 1, missing: ['AC-2', 'AC-3'], outside: [] });
+  });
+});
+
+describe('v13-V1 沉淀页覆盖读数：>100% bug 修法有判别力 + 缺项折进既有单元格', () => {
+  it('契约外自报虚增分子：旧算法（自报 ok 数 ÷ 契约数）报 4/2 >100%，新算法 2/2 且契约外如实可见', () => {
+    const inflated = greenRun();
+    inflated.nodes.verify!.artifact!.extra = {
+      assertionResults: [
+        { id: 'AC-1', status: 'ok', evidence: '截图无差' },
+        { id: 'AC-2', status: 'ok', evidence: 'e2e 绿' },
+        { id: 'AC-9', status: 'ok', evidence: '自封的' },
+        { id: 'AC-10', status: 'ok', evidence: '自封的' },
+      ],
+    };
+    // 旧算法复现（只作判别力对照，不进生产）：passed=4、分母=契约 2 条
+    const results = latestAssertionResults(inflated);
+    expect(results.filter((r) => r.status === 'ok').length / (inflated.contract?.assertions.length ?? 0)).toBeGreaterThan(1);
+    const { indexEntry, logNote } = renderWikiPage(inflated, { repo: 'me/app' });
+    expect(indexEntry).toContain('2/2 条验收通过（契约外自报 AC-9、AC-10）');
+    expect(indexEntry).not.toMatch(/[34]\/2 条验收通过/);
+    expect(logNote).toContain('2/2 条验收通过（契约外自报 AC-9、AC-10）');
+  });
+
+  it('缺项形状 `2/6（缺 AC-4、AC-5）`：契约没被自报覆盖的编号折进同一句单元格；全覆盖全过则不带括号', () => {
+    const partial = greenRun();
+    partial.contract!.assertions = [
+      { id: 'AC-1', assertion: 'a', verify_method: 'v' },
+      { id: 'AC-2', assertion: 'b', verify_method: 'v' },
+      { id: 'AC-3', assertion: 'c', verify_method: 'v' },
+    ];
+    partial.nodes.verify!.artifact!.extra = {
+      assertionResults: [
+        { id: 'AC-1', status: 'ok', evidence: 'e' },
+        { id: 'AC-2', status: 'ok', evidence: 'e' },
+      ],
+    };
+    expect(renderWikiPage(partial, { repo: 'me/app' }).indexEntry).toContain('2/3 条验收通过（缺 AC-3）');
+    expect(renderWikiPage(greenRun(), { repo: 'me/app' }).indexEntry).toContain('2/2 条验收通过');
+  });
+
+  it('无契约旧单：自报行集就是唯一分母，既有兜底语义一字不变（含「无验收断言」）', () => {
+    const bare = greenRun({ contract: undefined });
+    expect(renderWikiPage(bare, { repo: 'me/app' }).indexEntry).toContain('2/2 条验收通过');
+    const empty = greenRun({ contract: undefined });
+    empty.nodes.verify!.artifact!.extra = {};
+    expect(renderWikiPage(empty, { repo: 'me/app' }).indexEntry).toContain('无验收断言');
+  });
+});
+
+describe('v13-V1 绿门只补文案不改判据：拒因折进契约口径覆盖读数', () => {
+  it('0 条通过的拒因带「契约口径 0/N，缺 AC-x」；判据面（≥1 条自报 ok）与旧绿单放行行为一字不变', () => {
+    const neverRan = greenRun();
+    neverRan.nodes.verify!.artifact!.extra = {};
+    const v1 = publishableRun(neverRan);
+    expect(v1.ok).toBe(false); // 判据不变：照拒
+    expect(v1.reason).toContain('契约口径 0/2，缺 AC-1、AC-2'); // 文案补料：红在哪缺
+    const allNa = greenRun();
+    allNa.nodes.verify!.artifact!.extra = {
+      assertionResults: [
+        { id: 'AC-1', status: 'n/a', evidence: '没法验' },
+        { id: 'AC-2', status: 'n/a', evidence: '跳过' },
+      ],
+    };
+    expect(publishableRun(allNa).reason).toContain('契约口径 0/2）'); // 全报了但没缺项，只给分数
+    expect(publishableRun(greenRun()).ok).toBe(true); // 旧绿单行为零回归
+  });
+});
+
 describe('v11-C2 反面教材侧门页三特征（frontmatter low / 正文首行警示 / index ⚠）', () => {
   function failedRun() {
     const run = greenRun({ runId: 'run-fail99', state: 'failed' });

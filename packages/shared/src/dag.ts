@@ -235,6 +235,58 @@ export function failedAssertionsOf(extra: Record<string, unknown> | undefined): 
   return out;
 }
 
+/** assertionDiff 的结构化输出：契约断言集 × run 实际自报结果的交集求差（读端双口径的共同形状） */
+export interface AssertionDiff {
+  /** 契约断言总数（覆盖率的唯一合法分母；0 = 无契约，交集口径无从谈起） */
+  total: number;
+  /** 通过数 = 契约 ∩ 自报 ok——**与契约取交后**才计（>100% 修法的落点） */
+  passed: number;
+  /** 契约里自报结果压根没覆盖到的编号（没跑/没回写；fail/n/a 算覆盖过、不算缺） */
+  missing: string[];
+  /** 自报了但契约外的编号——旧 >100% bug 的原料，现在如实可见，但绝不再进 passed */
+  outside: string[];
+}
+
+/**
+ * v13-V1 契约断言集与实际断言结果的纯函数求差（零 IO，读端推导）。
+ * 过去为什么错：沉淀页覆盖率（wiki.ts renderWikiPage 的 digest）里 pass 数直接数自报 ok 行、
+ * 分母却是契约断言数——agent 多报几条契约外断言（AC-9 之类）分子就虚增，能报出 `4/2` 的 >100% 绿数；
+ * 现在凭什么对：passed 只按 契约 ∩ status='ok' 计，契约外行归入 outside 单独可见——
+ * 「自报比契约多」从算错分母变成读得出来的事实。
+ * 同 id 重复行取**最后一行**的状态（与 latestAssertionResults 跨节点「终审覆盖自测」同口径）。
+ */
+export function assertionDiff(
+  contract: readonly { id: string }[] | undefined | null,
+  results: readonly { id: string; status: string }[] | undefined | null,
+): AssertionDiff {
+  const contractIds: string[] = [];
+  const seen = new Set<string>();
+  for (const a of contract ?? []) {
+    if (!a || typeof a.id !== 'string' || !a.id || seen.has(a.id)) continue;
+    seen.add(a.id);
+    contractIds.push(a.id);
+  }
+  const statusById = new Map<string, string>();
+  const outside: string[] = [];
+  const outsideSeen = new Set<string>();
+  for (const r of results ?? []) {
+    if (!r || typeof r.id !== 'string' || !r.id) continue;
+    statusById.set(r.id, typeof r.status === 'string' ? r.status : '');
+    if (!seen.has(r.id) && !outsideSeen.has(r.id)) {
+      outsideSeen.add(r.id);
+      outside.push(r.id);
+    }
+  }
+  const missing: string[] = [];
+  let passed = 0;
+  for (const id of contractIds) {
+    const st = statusById.get(id);
+    if (st === undefined) missing.push(id);
+    else if (st === 'ok') passed += 1;
+  }
+  return { total: contractIds.length, passed, missing, outside };
+}
+
 /**
  * M1 契约对象：候选验收断言 + 澄清提问。规划/align 节点写入 extra.contract，
  * 契约接单门（check type 'contract'）消费——契约未确认，下游一律不派。
@@ -867,4 +919,62 @@ export function lintUnresolvedRefs(graph: DagGraph): UnresolvedRef[] {
   }
   scan('metadata', { description: graph.metadata.description });
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// v13-V1 机检/自报双口径（纯读端推导，零新字段、零新写路径）
+// ---------------------------------------------------------------------------
+
+/**
+ * checks[] 里引擎实跑得动的机检类（值域全集见 CHECK_SPEC_TYPES）：manual 是「人看一眼」，
+ * 引擎实跑不了，不进机检账。过去为什么没有这笔账：跑成功的机检从不落册（没有写端字段可数），
+ * 而「上线日之后才开始计数」的写端方案对历史 run 永远缺账——裁决改走纯读端：
+ * 分母今天就在 graph 里（每个节点的 checks[]），done 与否就在 state 里。
+ */
+export const MACHINE_CHECK_TYPES = [
+  'file-exists',
+  'command',
+  'regex',
+  'delivery-branch',
+  'contract',
+] as const satisfies readonly CheckSpecType[];
+
+/** machineCheckTally 的输出：本单「机检实跑」侧的账（与自报断言口径对照着看） */
+export interface MachineCheckTally {
+  /** 图内机检项总数（checks[] 剔 manual） */
+  items: number;
+  /** 带机检的节点数 */
+  nodes: number;
+  /** 其中 state=done 的节点数——引擎门禁保证 done ⇒ 该节点机检全过，done 本身就是实跑证据 */
+  verified: number;
+  /** nodes>0 且机检节点全 done 才是 true；无机检（nodes=0）恒 false——「无机检」不许搭「全过」的绿车 */
+  allPassed: boolean;
+}
+
+/**
+ * 对给定 run 算机检双口径中的「机检」侧（纯函数、零 IO）。
+ * state 拿不到（缺节点记录 / 图与记录对不上，如旧 run 或动态扇出克隆未落册）→ 整个返回 null，
+ * 调用端**整键省略**——0 是正断言（「一条机检都没过」），「不知道」不是 0，绝不画假红也绝不画假绿。
+ * 未知 checks[].type（v13-V0 白名单前的旧图）不算机检：引擎当年对它是静默通过，没资格声称实跑过。
+ */
+export function machineCheckTally(
+  run: Pick<RunRecord, 'graph' | 'nodes'> | undefined | null,
+): MachineCheckTally | null {
+  const graphNodes = run?.graph?.nodes;
+  if (!run || !Array.isArray(graphNodes) || graphNodes.length === 0) return null;
+  let items = 0;
+  let nodes = 0;
+  let verified = 0;
+  for (const n of graphNodes) {
+    const machine = (n?.config?.checks ?? []).filter(
+      (c) => (MACHINE_CHECK_TYPES as readonly string[]).includes(String(c?.type)),
+    );
+    if (!machine.length) continue;
+    nodes += 1;
+    items += machine.length;
+    const rec = run.nodes?.[n.id];
+    if (!rec || typeof rec.state !== 'string') return null;
+    if (rec.state === 'done') verified += 1;
+  }
+  return { items, nodes, verified, allPassed: nodes > 0 && verified === nodes };
 }

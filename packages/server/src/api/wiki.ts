@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { assertionDiff } from '@paneflow/shared';
 import type { RunRecord } from '@paneflow/shared';
 
 /**
@@ -115,11 +116,17 @@ export function publishableRun(
   // v11-C2 fail-closed：断言行必须 ≥1 条 status=ok 才放行——「没跑」不是「通过」的同义词
   const passed = results.filter((r) => r.status === 'ok').length;
   if (passed === 0) {
+    // v13-V1 绿门只补文案不改判据（判据改动属 v11-C2 语义变更，另裁）：拒因里折进契约口径的
+    // 覆盖读数——旧文案只有自报行数，契约分母与「缺哪几条」不露面，人看不出红在哪缺。
+    const diff = assertionDiff(run.contract?.assertions, results);
+    const cover = diff.total
+      ? `；契约口径 ${diff.passed}/${diff.total}${diff.missing.length ? `，缺 ${diff.missing.join('、')}` : ''}`
+      : '';
     return {
       ok: false,
       reason: results.length
-        ? `断言 ${results.length} 条里 0 条实打实通过（全没跑/仅 n/a 不算绿）——断言没跑≠绿，不沉淀`
-        : '本单没有跑过任何验收断言（0 条结果），断言没跑≠绿，不沉淀',
+        ? `断言 ${results.length} 条里 0 条实打实通过（全没跑/仅 n/a 不算绿${cover}）——断言没跑≠绿，不沉淀`
+        : `本单没有跑过任何验收断言（0 条结果${cover}），断言没跑≠绿，不沉淀`,
     };
   }
   return { ok: true };
@@ -261,9 +268,27 @@ export function renderWikiPage(
   }
   lines.push(`- 时间：起 ${run.startedAt.slice(0, 16).replace('T', ' ')}${run.finishedAt ? ` · 止 ${run.finishedAt.slice(0, 16).replace('T', ' ')}` : ''}`);
   lines.push('');
-  const total = run.contract?.assertions.length ?? results.length;
-  const passed = results.filter((r) => r.status === 'ok').length;
-  const digest = total ? `${passed}/${total} 条验收通过` : '无验收断言';
+  // v13-V1 覆盖读数折进既有单元格（index/log 记账行的那句），不加新列不落新字段。
+  // 过去为什么错：passed 直接数自报 ok 行、分母却是契约断言数，agent 多报契约外断言就能
+  // 报出 `4/2` 的 >100% 绿数（自报口径越界进机检分母）；现在凭什么对：assertionDiff 取
+  // 契约 ∩ ok 为 passed，缺哪几条、契约外报了哪几条，如实进括号——「100% 自报」第一次
+  // 变成「机检/自报双口径」可读。无契约 = 没有交集可取，自报行集就是唯一分母（旧兜底语义不变）。
+  const contractAssertions = run.contract?.assertions ?? [];
+  let digest: string;
+  if (contractAssertions.length) {
+    const diff = assertionDiff(contractAssertions, results);
+    const notes = [
+      diff.missing.length ? `缺 ${diff.missing.join('、')}` : '',
+      diff.outside.length ? `契约外自报 ${diff.outside.join('、')}` : '',
+    ]
+      .filter(Boolean)
+      .join('；');
+    digest = `${diff.passed}/${diff.total} 条验收通过${notes ? `（${notes}）` : ''}`;
+  } else {
+    const total = results.length;
+    const passed = results.filter((r) => r.status === 'ok').length;
+    digest = total ? `${passed}/${total} 条验收通过` : '无验收断言';
+  }
   return {
     file,
     markdown: lines.join('\n'),

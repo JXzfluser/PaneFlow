@@ -86,7 +86,11 @@ curl -s $BASE/api/dispatch -d '{"task":"...","issueId":"123"}'
 #   v12-S1a 起带副作用的单多 sideEffects:{issuesCreated?,issuePatched?,prUrl?,pushedAt?}——
 #   引擎可见的外部写账（建单/覆写仅调用方带 runId 才归因；pushedAt 为自报口径，模板未报=不可见）；
 #   v12-V2 起批过门的单多 attention:{waitMs,gates:{approve,reject,input}}——人介入「验证税」落册账，
-#   放门即结算（不靠环形 events 推导；进门时刻不可考的存量轮次只计次不加时长，宁缺毋假））
+#   放门即结算（不靠环形 events 推导；进门时刻不可考的存量轮次只计次不加时长，宁缺毋假）；
+#   v13-V1 起有机检项的单多 machineCheckTally:{items,nodes,verified,allPassed}——「机检实跑」侧的账，
+#   从 graph 各节点 checks[]（file-exists/command/regex/contract/delivery-branch；manual 引擎实跑不了不进账）
+#   × 节点 state 纯读时推导（done⇒该节点机检全过），零新写路径：机检成功历史上没落过册，
+#   写端方案对旧 run 永远缺账。图与账对不上/拿不到 state 时**整键省略**——0 是正断言，「不知道」不是 0）
 curl -s $BASE/api/runs
 curl -s $BASE/api/runs/<runId>
 curl -s $BASE/api/runs/<runId>/events
