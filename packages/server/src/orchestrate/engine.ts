@@ -20,7 +20,7 @@ import type {
   RunHarness,
   RunSideEffects,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
@@ -1381,6 +1381,13 @@ export class Engine {
                 }
                 const keys = artifact && typeof artifact === 'object' ? Object.keys(artifact as object).join(',') : '(无产物)';
                 mark(id, 'failed', `动态扇出未取到数组 {{${exp.from}.${exp.field}}}（上游产物字段: ${keys}）`);
+                fail();
+                continue;
+              }
+              const cap = exp.maxItems ?? FANOUT_MAX_ITEMS_LIMIT;
+              if (items.length > cap) {
+                // v13-V0 有顶：超上限不截断（截断=少交付还报完成）、不放过（N 项=N 个并发 agent 烧配额）
+                mark(id, 'failed', `动态扇出超限：{{${exp.from}.${exp.field}}} 有 ${items.length} 项，上限 ${cap}（请上游分批，或给本节点 expand.maxItems 明确更小上限）`);
                 fail();
                 continue;
               }

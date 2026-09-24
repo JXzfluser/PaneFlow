@@ -4,7 +4,11 @@ import type { AgentStatus } from './states.js';
 // DAG model — the single source of truth for both canvas (web) and orchestrator
 // ---------------------------------------------------------------------------
 
-export type DagNodeType = 'start' | 'agent' | 'fanout' | 'fanin' | 'end' | 'pipeline';
+export const DAG_NODE_TYPES = ['start', 'agent', 'fanout', 'fanin', 'pipeline', 'end'] as const;
+export type DagNodeType = (typeof DAG_NODE_TYPES)[number];
+
+/** 动态扇出一律有顶：无上限 = 上游产物里 N 条数组无声放大成 N 个并发 agent（烧配额 + 挤爆 pane） */
+export const FANOUT_MAX_ITEMS_LIMIT = 64;
 
 export interface DagNodeConfig {
   /** 全局角色库的角色 id（继承 agentKind 默认与 prePrompt） */
@@ -49,6 +53,8 @@ export interface DagNodeConfig {
     field: string;
     /** 数组缺失/为空时的行为：fallback=回退单分支交付（默认），fail=节点失败 */
     onEmpty?: 'fallback' | 'fail';
+    /** 分支上限（1..FANOUT_MAX_ITEMS_LIMIT）；省略=用硬顶。超出即节点失败，绝不静默截断 */
+    maxItems?: number;
   };
   /**
    * 澄清循环（grilling 编排化）：节点完成后读取 artifact.aligned；非 'true' 时
@@ -94,6 +100,24 @@ export type CheckSpec =
    * HEAD 是 main/master → 直接失败——守卫生与提示词两侧都不给「推默认分支」留路径。
    */
   | { type: 'delivery-branch'; expectBranch?: string };
+
+/**
+ * v13-V0 值域白名单（校验器 fail-closed 的判据源）。过去两处都不查值：
+ * 未知 node.type 在引擎里走「结构标记」路直接标 done，未知 checks[].type 在检查循环里没有分支命中
+ * = 静默通过——两条都是把配置打错念成验收通过的最便宜假绿。
+ */
+export const CHECK_SPEC_TYPES = [
+  'file-exists',
+  'command',
+  'regex',
+  'manual',
+  'contract',
+  'delivery-branch',
+] as const satisfies readonly CheckSpec['type'][];
+export type CheckSpecType = (typeof CHECK_SPEC_TYPES)[number];
+// 双向锁死：CheckSpec 联合里新增一类而这里漏登记 → 类型不满足 never，编译即红
+const _checkSpecTypesCovered: Record<Exclude<CheckSpec['type'], CheckSpecType>, never> = {};
+void _checkSpecTypesCovered;
 
 export interface DagNode {
   id: string;
@@ -613,6 +637,34 @@ export function validateDag(graph: DagGraph): DagIssue[] {
     issues.push({ level: 'error', message: `结束节点最多一个（当前 ${ends.length} 个）` });
   }
   for (const n of nodes) {
+    // v13-V0 值域白名单：类型打错过去恒真放行（未知 node.type 走结构标记路标 done、
+    // 未知 checks[].type 在检查循环里没有分支 = 静默通过），宁拒不错放。
+    if (!(DAG_NODE_TYPES as readonly string[]).includes(n.type)) {
+      issues.push({
+        level: 'error',
+        message: `未知节点类型：${n.type || '(空)'}（可用：${DAG_NODE_TYPES.join('/')}）：${n.label}`,
+        nodeId: n.id,
+      });
+    }
+    for (const c of n.config.checks ?? []) {
+      if (!(CHECK_SPEC_TYPES as readonly string[]).includes(c.type)) {
+        issues.push({
+          level: 'error',
+          message: `未知检查类型：${c.type || '(空)'}（可用：${CHECK_SPEC_TYPES.join('/')}）：${n.label}`,
+          nodeId: n.id,
+        });
+      }
+    }
+    if (n.type === 'fanout' && n.config.expand) {
+      const mi = n.config.expand.maxItems;
+      if (mi !== undefined && (!Number.isInteger(mi) || mi < 1 || mi > FANOUT_MAX_ITEMS_LIMIT)) {
+        issues.push({
+          level: 'error',
+          message: `动态扇出上限非法：maxItems=${mi}（需 1..${FANOUT_MAX_ITEMS_LIMIT} 的整数）：${n.label}`,
+          nodeId: n.id,
+        });
+      }
+    }
     if (n.type === 'agent') {
       // AE：agentKind 允许缺省——运行时按 空间默认→自动推荐（已装优先）解析；给了就必须合法
       if (n.config.agentKind !== undefined && !AGENT_KIND_PATTERN.test(n.config.agentKind)) {

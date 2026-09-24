@@ -5,6 +5,7 @@ export type {
   DagNode,
   DagNodeConfig,
   DagNodeType,
+  CheckSpecType,
   DagEdge,
   Artifact,
   AcceptanceAssertion,
@@ -26,6 +27,9 @@ export type {
   CheckSpec,
 } from './dag.js';
 export {
+  DAG_NODE_TYPES,
+  CHECK_SPEC_TYPES,
+  FANOUT_MAX_ITEMS_LIMIT,
   validateDag,
   validateAcceptance,
   failedAssertionsOf,

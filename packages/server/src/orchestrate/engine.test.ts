@@ -604,6 +604,55 @@ describe('Engine (serial DAG)', () => {
     expect(run.nodes['end']!.state).toBe('done');
   });
 
+  it('v13-V0 动态扇出有顶：项数超 expand.maxItems → 节点失败并指路，绝不静默截断分支（少交付还报完成）也不无界放大并发', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const graph: DagGraph = {
+      version: 1,
+      name: 'expand-over-cap',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'plan', type: 'agent', label: '拆分', config: { agentKind: 'fake', prompt: '拆' } },
+        { id: 'fork', type: 'fanout', label: '动态展开', config: { expand: { from: 'plan', field: 'tasks', maxItems: 2 } } },
+        { id: 'dev', type: 'agent', label: '开发 {{item.name}}', config: { agentKind: 'fake', prompt: '做 {{item.name}}' } },
+        { id: 'merge', type: 'fanin', label: '汇总', config: {} },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'plan' },
+        { id: 'e2', source: 'plan', target: 'fork' },
+        { id: 'e3', source: 'fork', target: 'dev' },
+        { id: 'e4', source: 'dev', target: 'merge' },
+        { id: 'e5', source: 'merge', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    ops.onPrompt = (target) => {
+      if (target.includes('plan')) {
+        fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+        fs.writeFileSync(
+          path.join(cwd, '.herdr/artifacts/plan.json'),
+          JSON.stringify({ tasks: [{ name: 'a' }, { name: 'b' }, { name: 'c' }] }),
+        );
+      }
+    };
+    const run = await runToCompletion(graph, cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['fork']!.state).toBe('failed');
+    expect(run.nodes['fork']!.error).toContain('动态扇出超限');
+    expect(run.nodes['fork']!.error).toContain('3 项');
+    expect(run.nodes['fork']!.error).toContain('上限 2');
+    // 一个分支都没被克隆出来（既非截断跑掉两项，也非无界跑掉三项）
+    expect(run.nodes['dev__1']).toBeUndefined();
+    expect(ops.prompts.filter((p) => p.target.includes('dev'))).toHaveLength(0);
+  });
+
+  it('v13-V0 起单面 fail-closed 可达：未知 node.type 的图在 startRun 就被拒（校验器不是只给画布看的装饰）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const g = serialGraph();
+    (g.nodes[1] as { type: string }).type = 'agenta'; // 打错字的 agent
+    await expect(engine.startRun(g, cwd)).rejects.toThrow(/未知节点类型：agenta/);
+  });
+
   it('dynamic fanout fails when upstream yields no array', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
     const graph: DagGraph = {
