@@ -3,7 +3,7 @@ import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag } from '@paneflow/shared';
-import type { DagGraph, RunRecord } from '@paneflow/shared';
+import type { DagGraph, RunExperimentMeta, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
@@ -1170,11 +1170,65 @@ export async function buildHttpServer(deps: HttpDeps) {
     return { error: lastErr?.message ?? String(lastErr) };
   };
 
-  app.post<{ Body: { task: string; issueId?: string; cwd?: string; preview?: boolean }; Querystring: { space?: string } }>(
+  /**
+   * fresh dispatch 实验标（对齐 POST /api/runs/:id/replay 的 suite/arm/flag 体键，形状=RunExperimentMeta）：
+   * 只有带非空 suite 才算实验标——C4 改判后双臂各 ≥3 run 走 fresh dispatch 起单，
+   * 这一路不落标则新规程永远拿不到收数表分母。fail-closed 姿态同 spaces PUT 的 delivery 机检：
+   * 拼错的键（experment/sute…）=实验标静默失效、白跑一批单，宁拒不错放。
+   * 不给 experiment 键=零判据介入，今日语义一字不变。
+   */
+  const DISPATCH_BODY_KEYS = ['task', 'issueId', 'cwd', 'preview', 'experiment'];
+  const parseDispatchExperiment = (
+    body: Record<string, unknown> | undefined,
+  ): { experiment?: RunExperimentMeta; error?: string } => {
+    const unknownBody = Object.keys(body ?? {}).filter((k) => !DISPATCH_BODY_KEYS.includes(k));
+    if (unknownBody.length) {
+      return {
+        error:
+          `派发体含未知键：${unknownBody.join('、')}（合法只有 ${DISPATCH_BODY_KEYS.join('/')}）——` +
+          'experiment 拼错=实验标静默失效、白跑一批单，宁拒不错放',
+      };
+    }
+    const raw = body?.experiment;
+    if (raw === undefined) return {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { error: 'experiment 必须是 {suite, arm?, flag?} 对象（suite 必填非空——收数表按 suite 归档）' };
+    }
+    const { suite, arm, flag } = raw as Record<string, unknown>;
+    const unknownExp = Object.keys(raw as Record<string, unknown>).filter((k) => !['suite', 'arm', 'flag'].includes(k));
+    if (unknownExp.length) {
+      return { error: `experiment 含未知键：${unknownExp.join('、')}（合法只有 suite/arm/flag——拼错=实验标静默失效，宁拒不错放）` };
+    }
+    if (typeof suite !== 'string' || !suite.trim()) {
+      return { error: 'experiment 必须带非空 suite 才算实验标（只给 arm/flag 不进收数表；suite 给了就得是非空字符串）' };
+    }
+    for (const [k, v] of [
+      ['arm', arm],
+      ['flag', flag],
+    ] as const) {
+      if (v !== undefined && (typeof v !== 'string' || !v.trim())) {
+        return { error: `experiment.${k} 给了就必须是非空字符串（不收=整个键别给）` };
+      }
+    }
+    return {
+      experiment: {
+        suite: suite.trim(),
+        ...(typeof arm === 'string' ? { arm: arm.trim() } : {}),
+        ...(typeof flag === 'string' ? { flag: flag.trim() } : {}),
+      },
+    };
+  };
+
+  app.post<{
+    Body: { task: string; issueId?: string; cwd?: string; preview?: boolean; experiment?: unknown };
+    Querystring: { space?: string };
+  }>(
     '/api/dispatch',
     async (req, reply) => {
       const task = String(req.body?.task ?? '').trim();
       if (!task) return reply.code(400).send({ error: '缺少任务描述' });
+      const exp = parseDispatchExperiment(req.body as Record<string, unknown> | undefined);
+      if (exp.error) return reply.code(400).send({ error: exp.error });
       const store0 = spaceStore(deps, req.query.space);
       let rootCwd: string | undefined;
       let plannerAgentKind: string | undefined;
@@ -1277,17 +1331,24 @@ export async function buildHttpServer(deps: HttpDeps) {
         issueId || undefined,
         undefined,
         // M2：机检契约随单落册（run 的首个结构化产物）；无契约模式由契约门谈定后落
-        contractAssertions.length
+        // 实验标走 replay 同一条 opts 通道（engine.startRun 固化进 RunRecord.experiment，
+        // 终态收口经 appendExperimentRow 自动落收数表）；两键皆空照旧传 undefined——零回归
+        contractAssertions.length || exp.experiment
           ? {
-              contract: {
-                assertions: contractAssertions.map((a, i) => ({
-                  id: `AC-${i + 1}`,
-                  assertion: a,
-                  verify_method: '',
-                })),
-                questions: [],
-                source: 'input' as const,
-              },
+              ...(contractAssertions.length
+                ? {
+                    contract: {
+                      assertions: contractAssertions.map((a, i) => ({
+                        id: `AC-${i + 1}`,
+                        assertion: a,
+                        verify_method: '',
+                      })),
+                      questions: [],
+                      source: 'input' as const,
+                    },
+                  }
+                : {}),
+              ...(exp.experiment ? { experiment: exp.experiment } : {}),
             }
           : undefined,
       );
@@ -1296,6 +1357,8 @@ export async function buildHttpServer(deps: HttpDeps) {
         issueId: issueId || undefined,
         issueFetched: Boolean(issueContext),
         note: issueNote,
+        // 打标回执：server 认下的实验标原样回显（不给 experiment 键=整键不出现）
+        ...(run.experiment ? { experiment: run.experiment } : {}),
         // v11-A1 CLI：节点清单摘要（id/name/deps）——派活方在网页前也能报清这单要跑什么
         nodes: graph.nodes.map((n) => ({
           id: n.id,
