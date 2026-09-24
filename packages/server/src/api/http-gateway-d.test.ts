@@ -130,8 +130,11 @@ describe('v11-prep GET /api/gateway/catalog：每档模型清单+缓存', () => 
     });
     const { app } = await buildServer(dir);
     try {
-      const a = (await app.inject({ method: 'POST', url: '/api/gateway/profile', payload: { name: '甲', baseUrl: 'http://127.0.0.1:19001', apiKey: 'ka' } })).json().id as string;
-      const b = (await app.inject({ method: 'POST', url: '/api/gateway/profile', payload: { name: '乙', baseUrl: 'http://127.0.0.1:19002', apiKey: 'kb' } })).json().id as string;
+      // 密钥哨兵不能与「网关档 id 的生成字符集」相撞：id 是 `gw-<Date.now().base36>-<4 位 base36>`，全小写+数字。
+      // 原来用 'ka' 这种两字母串，时间戳段随机撞出 'ka' 整测就红（CI run 36005203061 实撞：id=gw-mufkap5s-rugl）。
+      // 换成带大写的 'kA'/'kB'：断言强度不变（仍是「整串密钥不得出现」），但结构上不可能被 id 冒充。
+      const a = (await app.inject({ method: 'POST', url: '/api/gateway/profile', payload: { name: '甲', baseUrl: 'http://127.0.0.1:19001', apiKey: 'kA' } })).json().id as string;
+      const b = (await app.inject({ method: 'POST', url: '/api/gateway/profile', payload: { name: '乙', baseUrl: 'http://127.0.0.1:19002', apiKey: 'kB' } })).json().id as string;
       const first = await app.inject({ method: 'GET', url: '/api/gateway/catalog' });
       expect(first.statusCode).toBe(200);
       const ps = first.json().profiles as { id: string; models: string[]; isCurrent: boolean }[];
