@@ -3135,3 +3135,82 @@ describe('v12-V2 人介入入账（验证税：放门即结算 waitMs+决策计�
     expect(revived.attention).toEqual(final.attention);
   });
 });
+
+describe('v13-S1 孤儿回收（label 反解轴 + 仅活跃认领 + 周期扫描）', () => {
+  it('非活跃 runId 的 workspace（含重建后缀形/解不出的junk）被回收；在跑 run 的 workspace 不动', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const eng = new Engine(ops, store, {
+      ...OPTS,
+      orphanSweepMs: 0,
+      worktreeRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wt-isolated-')), // 不扫本机真实 paneflow-wt
+    });
+    ops.promptDelayMs = 400; // 让 run 稳处 running
+    const run = await eng.startRun(serialGraph(), cwd);
+    ops.workspaces.set('w-dead', { label: 'paneflow-default-deadbeef', panes: new Set() });
+    ops.workspaces.set('w-rebuild', { label: 'paneflow-12345678-r2', panes: new Set() });
+    ops.workspaces.set('w-junk', { label: 'paneflow-nonsense-space', panes: new Set() });
+
+    const reclaimed = await eng.recoverOrphans();
+    expect([...reclaimed].sort()).toEqual(['w-dead', 'w-junk', 'w-rebuild']);
+    expect(ops.closedWorkspaces).not.toContain(run.workspaceId!);
+    expect(ops.workspaces.has(run.workspaceId!)).toBe(true);
+
+    // 互斥：一轮未毕第二轮直接空手而归
+    ops.promptDelayMs = 0;
+    const [a, b] = await Promise.all([eng.recoverOrphans(), eng.recoverOrphans()]);
+    expect(a.length + b.length).toBeLessThanOrEqual(3); // 至多一轮有动作（已回收者不再在列）
+
+    await waitFor(() => eng.getRun(run.runId)!.state !== 'running');
+    // 收口窗登记后终态自关：workspace 不残留
+    expect(ops.workspaces.has(run.workspaceId!)).toBe(false);
+  });
+
+  it('终态 run（含盘上重读复活）按「仅活跃认领」被回收——旧 workspaceId 轴的隐身孤儿不再有', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.promptDelayMs = 300;
+    const run = await engine.startRun(serialGraph(), cwd);
+    const wsId = run.workspaceId!;
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    // 第二引擎实例从盘重读：run 已终态——残留 workspace（含重试重建后缀形）一律回收
+    const revived = new Engine(ops, store, {
+      ...OPTS,
+      orphanSweepMs: 0,
+      worktreeRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wt-isolated-')), // 不扫本机真实 paneflow-wt
+    });
+    expect(revived.getRun(run.runId)).toBeTruthy();
+    ops.workspaces.set(wsId, { label: `paneflow-default-${run.runId}`, panes: new Set() });
+    ops.workspaces.set('w-stale-ghost', { label: `paneflow-${run.runId}-r9`, panes: new Set() });
+    const reclaimed = await revived.recoverOrphans();
+    expect([...reclaimed].sort()).toEqual(['w-stale-ghost', wsId].sort());
+  });
+
+  it('worktree 泄漏清扫：干净目录回收、脏目录与无主目录保留（宁缺毋滥）', async () => {
+    const wtRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wt-root-'));
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wt-repo-'));
+    execFileSync('git', ['-C', repo, 'init', '-b', 'main']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 't@t']);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'base');
+    execFileSync('git', ['-C', repo, 'add', '.']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'base']);
+    const clean = path.join(wtRoot, 'deadbeef-impl');
+    const dirty = path.join(wtRoot, 'cafebabe-impl');
+    const junk = path.join(wtRoot, 'not-mine');
+    fs.mkdirSync(wtRoot, { recursive: true });
+    execFileSync('git', ['-C', repo, 'worktree', 'add', clean, '-b', 'paneflow/deadbeef-impl']);
+    execFileSync('git', ['-C', repo, 'worktree', 'add', dirty, '-b', 'paneflow/cafebabe-impl']);
+    fs.writeFileSync(path.join(dirty, 'uncommitted.txt'), 'work in progress');
+    fs.mkdirSync(junk);
+
+    const e2 = new Engine(new FakeHerdrOps(), new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wt-store-'))), {
+      ...OPTS,
+      orphanSweepMs: 0,
+      worktreeRoot: wtRoot,
+    });
+    const reclaimed = await e2.recoverOrphans();
+    expect(reclaimed).toEqual([]); // 没有 workspace 可回收不碍着 worktree 账
+    expect(fs.existsSync(clean)).toBe(false);
+    expect(fs.existsSync(dirty)).toBe(true);
+    expect(fs.existsSync(junk)).toBe(true);
+  });
+});

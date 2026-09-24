@@ -95,6 +95,13 @@ export interface EngineOptions {
    * 缺省回落 envInt('PF_RUN_MAX_TOKENS', 0)；0/未设/破烂=关闭。契约 budget.maxTokens 优先于此。
    */
   runMaxTokens?: number;
+  /**
+   * v13-S1 孤儿回收周期扫描间隔（ms）。缺省回落 envInt('PF_ORPHAN_SWEEP_MS', 300000)；<=0 关闭周期扫描
+   * （boot 后的一次性回收不受影响）。测试注入以保确定性。
+   */
+  orphanSweepMs?: number;
+  /** v13-S1 worktree 根目录覆写口（仅测试注入；生产默认 os.tmpdir()/paneflow-wt，B3 再谈迁移） */
+  worktreeRoot?: string;
 }
 
 export interface ApprovalAction {
@@ -108,6 +115,20 @@ type RunListener = (run: RunRecord) => void;
 /** Default artifact file for a node (node-scoped so shared-cwd branches don't clobber each other). */
 function defaultArtifactFile(nodeId: string): string {
   return `.herdr/artifacts/${nodeId}.json`;
+}
+
+/**
+ * v13-S1（D4 转正）：workspace label → runId 反解。两副形状同源：
+ * 起单 `<prefix><spaceId>-<runId>`（startRun）、重试重建 `<prefix><runId>-r<attempts>`（splitPane not_found 路）。
+ * runId 恒为 8 位 hex 且在 label 头部或尾部——解不出 runId 的前缀命中 label 按孤儿处理。
+ */
+function runIdFromLabel(prefix: string, label: string | null | undefined): string | null {
+  if (!label || !label.startsWith(prefix)) return null;
+  const rest = label.slice(prefix.length);
+  const head = /^([0-9a-f]{8})(?:-r\d+)?$/.exec(rest);
+  if (head) return head[1]!;
+  const tail = /-([0-9a-f]{8})$/.exec(rest);
+  return tail ? tail[1]! : null;
 }
 
 /**
@@ -139,6 +160,14 @@ export class Engine {
   private readonly gwThrottleRetries: number;
   /** v12-S2：env PF_RUN_MAX_TOKENS 解析后的兜底上限（0=关闭）；契约上限在比对现场再解析 */
   private readonly runMaxTokensEnv: number;
+  /** v13-S1：孤儿周期扫描间隔（<=0=关）与互斥位（一轮未跑完不起第二轮） */
+  private readonly orphanSweepMs: number;
+  private sweepTimer: NodeJS.Timeout | null = null;
+  private sweeping = false;
+  /** v13-S1：正在收口关闭中的 workspaceId——终态转换与 closeWorkspace 之间的窗，周期扫描须绕行 */
+  private readonly closingWorkspaces = new Set<string>();
+  /** v13-S1 worktree 根目录（泄漏清扫的扫描面） */
+  private readonly wtRoot: string;
 
   constructor(
     private readonly ops: HerdrOps,
@@ -154,9 +183,13 @@ export class Engine {
     this.gwThrottleRetries = Math.max(0, opts.gwThrottleRetries ?? envInt('PF_GW_THROTTLE_RETRIES', 2));
     // v12-S2：env 兜底的 token 预算上限，构造时读一次（env 不热改）；契约 budget.maxTokens 优先
     this.runMaxTokensEnv = Math.max(0, opts.runMaxTokens ?? envInt('PF_RUN_MAX_TOKENS', 0));
+    // v13-S1：孤儿周期扫描（缺省 300s，<=0 关）与 worktree 根
+    this.orphanSweepMs = opts.orphanSweepMs ?? envInt('PF_ORPHAN_SWEEP_MS', 300_000);
+    this.wtRoot = opts.worktreeRoot ?? path.join(os.tmpdir(), 'paneflow-wt');
     // surface past runs (from disk, across all spaces) in listings after boot.
-    // Runs persisted as 'running' belong to a dead process — their workspaces
-    // were reclaimed by the orphan sweep; mark them interrupted.
+    // Runs persisted as 'running' belong to a dead process — mark them
+    // interrupted here; their workspaces are reclaimed by the orphan sweep
+    // (index.ts 的 boot 回收 + v13-S1 起的周期扫描，label 反解轴上活跃 run 才认领)。
     for (const space of Store.listSpaces(store.root)) {
       for (const run of new Store(store.root, space.id).listRuns()) {
         if (run.state === 'running') {
@@ -200,6 +233,8 @@ export class Engine {
     for (const key of [...this.runQueues.keys()]) this.pumpQueue(key);
     // F3：轮询校对通电（PF_RECONCILE_MS<=0 时内部守卫视为关闭）
     this.startReconciler();
+    // v13-S1：孤儿回收从「boot 一次性」升为「常驻周期扫描」——回收失败的「下一次扫描会重试」自此是真话
+    this.startOrphanSweep();
   }
 
   /**
@@ -302,27 +337,117 @@ export class Engine {
     this.runs.set(run.runId, run);
   }
 
-  /** Boot-time sweep: reclaim leftover workspaces from dead previous runs. */
+  /**
+   * v13-S1（D4 转正）孤儿回收：boot 后一次 + 周期扫描（PF_ORPHAN_SWEEP_MS，缺省 300s，<=0 关）。
+   * 认领轴从「run.workspaceId 相等」换成「label 反解 runId ∧ 仅活跃认领」——
+   * 旧轴两处漏：workspaceId 被重试重建覆盖（splitPane not_found 路）后旧 ws 变隐身孤儿；
+   * 且 map 里含终态 run，failed/cancelled 的 workspace 永远「被拥有」永不回收。
+   * 保护：收口窗（closingWorkspaces）与互斥位（一轮未毕不起第二轮）；回收失败明说失败。
+   * 顺手账：worktree 目录泄漏清扫（死掉的 run 留在全新尝试名下的残留）。
+   */
   async recoverOrphans(): Promise<string[]> {
+    if (this.sweeping) return [];
+    this.sweeping = true;
+    try {
+      return await this.sweepOrphansOnce();
+    } finally {
+      this.sweeping = false;
+    }
+  }
+
+  private async sweepOrphansOnce(): Promise<string[]> {
     const reclaimed: string[] = [];
+    const activeRunIds = new Set(
+      [...this.runs.values()].filter((r) => ['running', 'queued'].includes(r.state)).map((r) => r.runId),
+    );
     try {
       const workspaces = await this.ops.listWorkspaces();
       for (const w of workspaces) {
         if (!w.label?.startsWith(this.opts.workspaceLabelPrefix)) continue;
-        const owned = [...this.runs.values()].some((r) => r.workspaceId === w.workspace_id);
-        if (!owned) {
-          try {
-            await this.ops.closeWorkspace(w.workspace_id);
-            reclaimed.push(w.workspace_id);
-          } catch {
-            // leave it; the next sweep will retry
-          }
+        if (this.closingWorkspaces.has(w.workspace_id)) continue; // 收口窗：正被终态流程关闭
+        const ownerId = runIdFromLabel(this.opts.workspaceLabelPrefix, w.label);
+        if (ownerId && activeRunIds.has(ownerId)) continue; // 仅活跃认领
+        this.closingWorkspaces.add(w.workspace_id);
+        try {
+          await this.ops.closeWorkspace(w.workspace_id);
+          reclaimed.push(w.workspace_id);
+        } catch (err) {
+          console.warn(`[engine] 孤儿 workspace 回收失败（下一轮扫描重试）：${w.workspace_id} — ${(err as Error).message}`);
+        } finally {
+          this.closingWorkspaces.delete(w.workspace_id);
         }
       }
-    } catch {
-      // Herdr offline at boot — the sweep runs again on the next start
+    } catch (err) {
+      // Herdr 离线/瞬断：不吞成静默——周期扫描下一轮会再来，但每次都要留痕
+      console.warn(`[engine] 孤儿扫描本轮失败（下一轮 ${this.orphanSweepMs > 0 ? `${Math.round(this.orphanSweepMs / 1000)}s 后` : '无，周期扫描已关'}）：${(err as Error).message}`);
+      return reclaimed;
+    }
+    try {
+      this.sweepWorktreeLeaks(activeRunIds);
+    } catch (err) {
+      console.warn(`[engine] worktree 泄漏清扫失败：${(err as Error).message}`);
     }
     return reclaimed;
+  }
+
+  /**
+   * v13-S1 顺手账（v5-audit:97）：worktree 目录只增不减的残留清扫。
+   * 判据：目录名 `<runId8>-<nodeId>` 的 runId 无活跃 run 认领，且不在本引擎在活登记（liveWorktrees）里。
+   * 干净 → `git worktree remove`；脏/认不出仓库 → 保留但明说（证据链不销毁，回收宁缺毋滥）。
+   */
+  private sweepWorktreeLeaks(activeRunIds: Set<string>): void {
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.wtRoot);
+    } catch {
+      return; // 根目录不存在=从未有过 worktree
+    }
+    const registered = new Set(this.liveWorktrees.map((w) => w.path));
+    for (const name of names) {
+      const dir = path.join(this.wtRoot, name);
+      if (registered.has(dir)) continue;
+      const m = /^([0-9a-f]{8})-/.exec(name);
+      if (!m) continue; // 非本器命名，不认不删
+      if (activeRunIds.has(m[1]!)) continue;
+      let gitdir: string;
+      try {
+        const head = fs.readFileSync(path.join(dir, '.git'), 'utf8');
+        const gm = /^gitdir:\s*(.+)$/m.exec(head);
+        if (!gm) continue;
+        gitdir = gm[1]!.trim();
+      } catch {
+        continue; // 没有 .git 文件=不是 worktree 目录，别人的东西不碰
+      }
+      const repo = gitdir.split('/.git/worktrees/')[0];
+      if (!repo) continue;
+      try {
+        if (gitStatusPorcelain(dir)) {
+          console.warn(`[engine] worktree 泄漏清扫：脏目录保留（成果证据链）：${dir}`);
+          continue;
+        }
+        execFileSync('git', ['-C', repo, 'worktree', 'remove', dir], { timeout: 15_000 });
+        console.log(`[engine] worktree 泄漏已回收：${dir}`);
+      } catch (err) {
+        console.warn(`[engine] worktree 泄漏回收失败（保留）：${dir} — ${(err as Error).message}`);
+      }
+    }
+    try {
+      // 空根目录不留壳（有残余子项则 readdir 非空，rmdir 自然失败即弃）
+      fs.rmdirSync(this.wtRoot);
+    } catch {
+      /* not empty or gone */
+    }
+  }
+
+  /** v13-S1：周期孤儿扫描通电（PF_ORPHAN_SWEEP_MS<=0 视为关闭；照 startReconciler 的守卫形状） */
+  private startOrphanSweep(): void {
+    if (this.sweepTimer || this.orphanSweepMs <= 0) return;
+    this.sweepTimer = setInterval(() => {
+      void this.recoverOrphans().then((reclaimed) => {
+        if (reclaimed.length) console.log(`[engine] 周期孤儿扫描回收 ${reclaimed.length} 个 workspace：${reclaimed.join(', ')}`);
+      });
+    }, this.orphanSweepMs);
+    this.sweepTimer.unref?.();
   }
 
   async startRun(
@@ -969,10 +1094,14 @@ export class Engine {
       );
       // resource cleanup — never leave panes behind
       this.reclaimWorktrees(run.runId);
+      // v13-S1：终态转换→closeWorkspace 之间有窗口，run 已非活跃——登记收口窗防周期扫描抢关
+      if (run.workspaceId) this.closingWorkspaces.add(run.workspaceId);
       try {
         await this.ops.closeWorkspace(run.workspaceId!);
       } catch (err) {
         console.error(`[engine] workspace cleanup failed for ${run.workspaceId}:`, err);
+      } finally {
+        if (run.workspaceId) this.closingWorkspaces.delete(run.workspaceId);
       }
       this.rootPanes.delete(run.runId);
       this.cancels.delete(run.runId);
@@ -1450,11 +1579,19 @@ export class Engine {
       } catch (err) {
         // 重试时根 pane 可能已消失：重建工作区再分割（保交付）
         if (!/not_found|not found/i.test((err as Error).message)) throw err;
+        // v13-S1：先谢旧再换新——旧实现直接覆盖 run.workspaceId，旧 ws 在 herdr 里成永久幽灵
+        const staleWs = run.workspaceId;
         const ws = await this.ops.createWorkspace(
           `${this.opts.workspaceLabelPrefix}${run.runId}-r${rec.attempts}`, run.cwd, this.opts.paneEnv ?? {},
         );
         run.workspaceId = ws.workspaceId;
         this.rootPanes.set(run.runId, ws.rootPaneId);
+        if (staleWs && staleWs !== ws.workspaceId) {
+          this.closingWorkspaces.add(staleWs);
+          void this.ops.closeWorkspace(staleWs)
+            .catch((e) => console.warn(`[engine] 重建后关旧 workspace 失败（留给孤儿扫描）：${staleWs} — ${(e as Error).message}`))
+            .finally(() => this.closingWorkspaces.delete(staleWs));
+        }
         paneId = await this.ops.splitPane(ws.workspaceId, ws.rootPaneId, nodeCwd, paneEnv);
       }
       rec.paneId = paneId;
@@ -2311,7 +2448,7 @@ export class Engine {
    * R3.1 同仓并发隔离：git worktree add 独立目录 + 独立分支（脏目录保留并注明）。
    */
   private createWorktree(repo: string, runId: string, nodeId: string): { path: string; branch: string } {
-    const wtPath = path.join(os.tmpdir(), 'paneflow-wt', `${runId}-${nodeId}`);
+    const wtPath = path.join(this.wtRoot, `${runId}-${nodeId}`);
     const branch = `paneflow/${runId}-${nodeId}`;
     fs.mkdirSync(path.dirname(wtPath), { recursive: true });
     // 首驾-4 重试幂等：上轮尝试的 worktree/分支可能残留（回收只删目录不删分支；脏则保目录）——
