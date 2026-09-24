@@ -41,6 +41,12 @@ export interface TeamMember {
 
 export const DEFAULT_SPACE = 'default';
 
+/** v13-S5 损坏扫描结果：total=全部损坏计数，spaces=按空间聚合（只列有损坏的空间） */
+export interface CorruptRunsReport {
+  total: number;
+  spaces: { spaceId: string; count: number }[];
+}
+
 /**
  * Space-aware JSON persistence: `<root>/spaces/<spaceId>/runs`（运行记录按项目隔离）。
  * 模板是全局资产（v10-Y）：统一住 `<root>/graphs`——切项目模板不再消失。
@@ -51,6 +57,117 @@ export class Store {
   readonly spaceId: string;
   private readonly templatesDir: string;
   private readonly runsDir: string;
+
+  /**
+   * v13-S5：落盘失败次数的进程级内存累计（挂在 Store 类上——空间 Store 多为即用即弃，
+   * 实例字段会随实例蒸发）。刻意不回写那个正在失败的账本文件：把失败计数写进
+   * 大概率写不动的盘，正是本片的病。health 读端直接取此标量。
+   */
+  static persistFailures = 0;
+
+  /** 同进程 tmp 名序列：并发写同一目标也各自有唯一 tmp，避免同名对撞互相覆盖 */
+  private static tmpSeq = 0;
+
+  /**
+   * v13-S5 单一原子写 helper：同目录 .tmp（唯一后缀）→ 写满 → fsync → rename 覆盖目标。
+   * 真病是 ENOSPC 短写：O_TRUNC 直写先把旧文件清掉，写半截失败=旧新皆毁；
+   * （不是 SIGKILL 截断——内核会刷盘，SIGKILL 不产生半截文件。）
+   * 同目录 rename 才是原子交换：目标任一时刻必是完整的旧版或完整的新版。
+   * 失败：console.error 带目标路径实账 + persistFailures 累计；tmp 残留不删——
+   * 它是写崩痕迹，health 的 corruptRuns 扫描会把残留 .tmp 计进损坏信号。最后照抛，由调用方定夺。
+   */
+  private static atomicWriteSync(target: string, content: string): void {
+    const tmp = `${target}.${process.pid}.${++Store.tmpSeq}.tmp`;
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(tmp, 'w');
+      fs.writeFileSync(fd, content);
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = undefined;
+      fs.renameSync(tmp, target);
+    } catch (err) {
+      Store.persistFailures += 1;
+      console.error(`[paneflow] 原子写失败：${target}（${(err as Error).message}）`);
+      throw err;
+    } finally {
+      if (fd !== undefined) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* 关闭失败不盖过原始写错误 */
+        }
+      }
+    }
+  }
+
+  /**
+   * v13-S5 run 账本损坏扫描：遍历 spaces/<id>/runs（含 archive/）下的账本，
+   * JSON 解析失败/结构不是预期对象（无字符串 runId）= 损坏；
+   * 残留 .tmp（有 tmp 没 rename 成功=上次写崩过）同样计进损坏信号。
+   * 扫描本身拿不到（spaces 目录缺失/无权限）→ 返回 null 而不是 []：
+   * [] 是「我查过了，一处都没有」的正断言，静默失败绝不能伪装成正断言。
+   */
+  static scanCorruptRuns(dataDir: string): CorruptRunsReport | null {
+    const spacesDir = path.join(dataDir, 'spaces');
+    let spaceIds: string[];
+    try {
+      if (!fs.existsSync(spacesDir)) return null;
+      spaceIds = fs.readdirSync(spacesDir);
+    } catch {
+      return null;
+    }
+    const report: CorruptRunsReport = { total: 0, spaces: [] };
+    for (const id of spaceIds) {
+      let count = 0;
+      for (const dir of [
+        path.join(spacesDir, id, 'runs'),
+        path.join(spacesDir, id, 'runs', 'archive'),
+      ]) {
+        let files: string[];
+        try {
+          if (!fs.existsSync(dir)) continue;
+          files = fs.readdirSync(dir);
+        } catch {
+          return null; // 半途读不动 = 结论不完整，宁可回 null 不假装有分母
+        }
+        for (const f of files) {
+          const p = path.join(dir, f);
+          try {
+            if (!fs.statSync(p).isFile()) continue;
+          } catch {
+            continue;
+          }
+          if (f.endsWith('.tmp')) {
+            count += 1; // 残留 tmp：写崩的物证
+            continue;
+          }
+          if (!f.endsWith('.json')) continue;
+          if (!Store.isRunLedgerReadable(p)) count += 1;
+        }
+      }
+      if (count > 0) {
+        report.spaces.push({ spaceId: id, count });
+        report.total += count;
+      }
+    }
+    return report;
+  }
+
+  /** 账本文件是否可读且结构符合预期（对象 + 字符串 runId） */
+  private static isRunLedgerReadable(p: string): boolean {
+    try {
+      const v = JSON.parse(fs.readFileSync(p, 'utf8')) as unknown;
+      return (
+        !!v &&
+        typeof v === 'object' &&
+        !Array.isArray(v) &&
+        typeof (v as { runId?: unknown }).runId === 'string'
+      );
+    } catch {
+      return false;
+    }
+  }
 
   constructor(dataDir: string, spaceId: string = DEFAULT_SPACE) {
     this.root = dataDir;
@@ -107,7 +224,7 @@ export class Store {
     const p = path.join(dataDir, 'spaces', id, 'profile.json');
     const profile = JSON.parse(fs.readFileSync(p, 'utf8')) as SpaceProfile;
     profile.name = name;
-    fs.writeFileSync(p, JSON.stringify(profile, null, 2));
+    Store.atomicWriteSync(p, JSON.stringify(profile, null, 2));
     return profile;
   }
 
@@ -187,7 +304,7 @@ export class Store {
   }
 
   writeProfile(profile: SpaceProfile): void {
-    fs.writeFileSync(this.profilePath, JSON.stringify(profile, null, 2));
+    Store.atomicWriteSync(this.profilePath, JSON.stringify(profile, null, 2));
   }
 
   // -- graphs (templates) -----------------------------------------------------
@@ -211,7 +328,7 @@ export class Store {
     }
     graph.metadata.updatedAt = new Date().toISOString();
     if (!graph.metadata.createdAt) graph.metadata.createdAt = graph.metadata.updatedAt;
-    fs.writeFileSync(this.graphPath(graph.name), JSON.stringify(graph, null, 2));
+    Store.atomicWriteSync(this.graphPath(graph.name), JSON.stringify(graph, null, 2));
   }
 
   deleteGraph(id: string): boolean {
@@ -275,7 +392,7 @@ export class Store {
     const rec = this.getArchivedRun(runId);
     if (!rec) return null;
     rec.archived = false;
-    fs.writeFileSync(this.runPath(runId), JSON.stringify(rec, null, 2));
+    Store.atomicWriteSync(this.runPath(runId), JSON.stringify(rec, null, 2));
     fs.rmSync(path.join(this.runsDir, 'archive', `${runId}.json`));
     return rec;
   }
@@ -292,12 +409,12 @@ export class Store {
     if (run.archived) {
       const archiveDir = path.join(this.runsDir, 'archive');
       fs.mkdirSync(archiveDir, { recursive: true });
-      fs.writeFileSync(path.join(archiveDir, `${run.runId}.json`), JSON.stringify(run, null, 2));
+      Store.atomicWriteSync(path.join(archiveDir, `${run.runId}.json`), JSON.stringify(run, null, 2));
       const main = this.runPath(run.runId);
       if (fs.existsSync(main)) fs.rmSync(main);
       return;
     }
-    fs.writeFileSync(this.runPath(run.runId), JSON.stringify(run, null, 2));
+    Store.atomicWriteSync(this.runPath(run.runId), JSON.stringify(run, null, 2));
   }
 
   deleteRun(runId: string): boolean {

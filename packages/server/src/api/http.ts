@@ -860,6 +860,10 @@ export async function buildHttpServer(deps: HttpDeps) {
     const agentsInstalled = herdrOk ? await detectInstalledAgents([...AGENT_KINDS]) : [];
     // AE：推荐与网关状态常备（不依赖 herdr），设置页据此显示「自动推荐：pi」
     const recommendedAgentKind = await recommendAgentKind();
+    // v13-S5 账本健康可见：persistFailures=进程级内存累计（不回写正在失败的账本）；
+    // corruptRuns=run 账本损坏扫描（含残留 .tmp），null=扫描本身拿不到——
+    // 与 []（查过了、一处损坏都没有）严格区分，静默失败不伪装成正断言。
+    const corruptRuns = Store.scanCorruptRuns(deps.dataDir);
     return {
       ok: true,
       herdrOk,
@@ -868,6 +872,8 @@ export async function buildHttpServer(deps: HttpDeps) {
       agentKinds: AGENT_KINDS,
       recommendedAgentKind,
       gatewayEnabled: gatewayActive(deps.dataDir),
+      persistFailures: Store.persistFailures,
+      corruptRuns,
       env: {
         nodeVersion: process.version,
         agentsInstalled,
