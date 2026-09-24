@@ -83,6 +83,7 @@ pnpm dev:web        # 画布开发服务（http://127.0.0.1:4311，代理 API）
 | `PF_PANE_ENV` | 空 | 注入流水线 workspace 的环境变量（`K=V,K2=V2`），如 `OPENCODE_DISABLE_AUTOUPDATE=1,PI_DISABLE_UPDATE_CHECK=1` |
 | `PF_WORKSPACE_PREFIX` | `paneflow-` | 流水线 workspace 标签前缀（自动回收依据） |
 | `PF_PROMPT_CONFIRM_MS` | `45000` | prompt 提交确认窗（ms）：提交后 agent 状态须在此窗口内离开 idle，超时判 `agent_prompt_stalled` 走节点失败/重试；`0` 关闭（fire-and-forget） |
+| `PF_GATE_TIMEOUT_MS` | `0`（关） | 审批门到期上限（v13-S4，run 级）：`0`/未设=门一直等人批（今日语义）。设正整数后，人超时未批的节点按失败路收 `failed`（error 一句「等待审批超时…不放行」），**绝不代放门、不合成按键、不入人等分账**；`contract.budget.gateTimeoutMs` 优先于此 |
 | `PF_CORS_ORIGINS` | 空 | 跨站请求白名单（逗号分隔 origin）。默认不回 CORS 头且拦截一切跨站写操作；同源部署与 curl 不受影响，反向代理改写 Host 时需显式配置 |
 | `PF_GITHUB_REPO` | 空 | 启用模板云端同步（`owner/name`） |
 | `PF_GITHUB_TOKEN` | 空 | GitHub PAT（需 Contents 读写权限；只从环境变量读取，永不入库/入日志） |

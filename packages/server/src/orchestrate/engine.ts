@@ -97,6 +97,12 @@ export interface EngineOptions {
    */
   runMaxTokens?: number;
   /**
+   * v13-S4 审批门到期 fail-closed 的超时（ms，env PF_GATE_TIMEOUT_MS 的显式覆写口，测试注入以保确定性）。
+   * 缺省回落 envInt('PF_GATE_TIMEOUT_MS', 0)；0/未设/破烂=关闭——缺省关闭即今日语义，
+   * 现网不改任何行为。契约 budget.gateTimeoutMs 优先于此（进门现场解析，见 awaitGate）。
+   */
+  gateTimeoutMs?: number;
+  /**
    * v13-S1 孤儿回收周期扫描间隔（ms）。缺省回落 envInt('PF_ORPHAN_SWEEP_MS', 300000)；<=0 关闭周期扫描
    * （boot 后的一次性回收不受影响）。测试注入以保确定性。
    */
@@ -109,6 +115,55 @@ export interface ApprovalAction {
   action: 'approve' | 'reject' | 'input';
   keys?: string[];
   text?: string;
+}
+
+/**
+ * v13-S4 门的三态出路（awaitGate 唯一返回口径，调用方据此分流）：
+ * - released：人经 approve() 放了门，action 即人的原始决策，走各门既有放行路；
+ * - cancelled：stopRun 置取消位后经 waiter 插话唤醒——action 只是 stopRun 合成的
+ *   reject 载体，调用方按旧口径先查 cancels 收「已取消」，绝不读 action 做决策；
+ * - timeout：门到期（fail-closed）——没有 action 可读，引擎不合成 reject、不送键，
+ *   调用方直接以固定句式走既有失败路。
+ */
+export type GateOutcome = 'released' | 'cancelled' | 'timeout';
+export type GateResult =
+  | { outcome: 'released'; action: ApprovalAction }
+  | { outcome: 'cancelled'; action: ApprovalAction }
+  | { outcome: 'timeout'; waitedMs: number; capMs: number };
+
+function legitGateTimeout(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0;
+}
+
+/**
+ * v13-S4 门到期上限解析（纯函数，口径逐字照 resolveTokenCap）：
+ * contract.budget.gateTimeoutMs 优先（进门现场解析——契约可能 run 中途才落册，晚于派单也生效），
+ * 回落 env PF_GATE_TIMEOUT_MS（engine 构造时经 envInt 读成数字传入）；
+ * 0/负数/NaN/缺失=该级关闭，两级都无效返回 null（不武装，门行为与今天完全一致）。
+ */
+export function resolveGateTimeoutMs(
+  contract: RunContract | undefined,
+  envGateTimeoutMs: number | undefined,
+): number | null {
+  const fromContract = contract?.budget?.gateTimeoutMs;
+  if (legitGateTimeout(fromContract)) return fromContract;
+  if (legitGateTimeout(envGateTimeoutMs)) return envGateTimeoutMs;
+  return null;
+}
+
+/** 门时长人话格式：<60s 报秒，否则报分（一位小数）——固定句式的数字口径单一来源 */
+function fmtGateDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '0 秒';
+  return ms < 60_000 ? `${(ms / 1000).toFixed(1)} 秒` : `${(ms / 60_000).toFixed(1)} 分`;
+}
+
+/**
+ * v13-S4 到期 error 固定句式（status/watch 原样带出，watch 按红 1 归因）：
+ * `等待审批超时，<时长>，不放行。`——恒含已等待/上限两个数，失败节点 error 的唯一超时
+ * 文案，测试锁句式。引擎不代替人放行、不合成放行按键，都写死在这句话里。
+ */
+export function gateTimeoutMessage(waitedMs: number, capMs: number): string {
+  return `等待审批超时，已等待 ${fmtGateDuration(waitedMs)}，上限 ${fmtGateDuration(capMs)}，不放行。`;
 }
 
 type RunListener = (run: RunRecord) => void;
@@ -161,6 +216,14 @@ export class Engine {
   private readonly gwThrottleRetries: number;
   /** v12-S2：env PF_RUN_MAX_TOKENS 解析后的兜底上限（0=关闭）；契约上限在比对现场再解析 */
   private readonly runMaxTokensEnv: number;
+  /** v13-S4：env PF_GATE_TIMEOUT_MS 解析后的门到期上限（0=关闭）；契约上限在进门现场再解析 */
+  private readonly gateTimeoutEnv: number;
+  /**
+   * v13-S4 外解唤醒计数（key=runId:nodeId）：armed（有超时）的门到期前被人工放行、
+   * 且非经 sendKeys 模拟——单独记账，不混进 attention（那是人的决策账）、不是新协议。
+   * 只增不删：默认关闭下无人进门记账，增长有界（每 run 每门一个整数）；权威账在 run.events。
+   */
+  private readonly externalReleases = new Map<string, number>();
   /** v13-S1：孤儿周期扫描间隔（<=0=关）与互斥位（一轮未跑完不起第二轮） */
   private readonly orphanSweepMs: number;
   private sweepTimer: NodeJS.Timeout | null = null;
@@ -186,6 +249,8 @@ export class Engine {
     this.gwThrottleRetries = Math.max(0, opts.gwThrottleRetries ?? envInt('PF_GW_THROTTLE_RETRIES', 2));
     // v12-S2：env 兜底的 token 预算上限，构造时读一次（env 不热改）；契约 budget.maxTokens 优先
     this.runMaxTokensEnv = Math.max(0, opts.runMaxTokens ?? envInt('PF_RUN_MAX_TOKENS', 0));
+    // v13-S4：env 兜底的门到期超时，同款口径；契约 budget.gateTimeoutMs 在每次进门现场再解析
+    this.gateTimeoutEnv = Math.max(0, opts.gateTimeoutMs ?? envInt('PF_GATE_TIMEOUT_MS', 0));
     // v13-S1：孤儿周期扫描（缺省 300s，<=0 关）与 worktree 根
     this.orphanSweepMs = opts.orphanSweepMs ?? envInt('PF_ORPHAN_SWEEP_MS', 300_000);
     this.wtRoot = opts.worktreeRoot ?? path.join(os.tmpdir(), 'paneflow-wt');
@@ -1122,6 +1187,85 @@ export class Engine {
     return this.blockedWaiters.has(`${runId}:${nodeId}`);
   }
 
+  /**
+   * v13-S4 唯一门实现：收编七处裸 `new Promise<ApprovalAction>` 的人工门
+   * （运行中对话框 / 澄清轮 / 人工检查 / 验收机器门 / 契约门 / 分支守卫 / 启动确认）。
+   * 只管「进门登记 waiter + 三态出路」；Promise 之外的前后处理（blockedAt 进门留痕、
+   * blockedPrompt、拦侧事件、attention 结算、放门按键、产物复读）一律留在调用方——
+   * 不塞进来，避免七门行为漂移。
+   * 出路判据：
+   * - waiter 被唤醒时 cancels 已置位 → cancelled（stopRun 先置位再插话；与调用方
+   *   「await 后先查 cancels」的旧口径同构）；否则 released。
+   * - released 且本门被武装（有超时上限）→ 外解唤醒：单记 externalRelease（run 级计数落册
+   *   + 内存 per-node 细账 + 一条带 nodeId 的 approval 事件）。严禁在这里 sendKeys 模拟
+   *   按键——放门后的实发键仍归各门调用方。
+   * - 定时器先到期 → timeout：waiter 就地除名（isBlocked 转 false，迟到的 approve 得 409，
+   *   attention 永不再经这笔结算）；进门时刻同步清空（与取消唤醒同款卫生——到期不是人的
+   *   决策，绝不入 attention.gates、不把 waitMs 结算进「人等分」，v12-V2 红线）。
+   * 定时器卫生：unref + 门醒即清（先出者胜，双出路不会重入），run 收口不留活定时器。
+   */
+  private awaitGate(run: RunRecord, nodeId: string): Promise<GateResult> {
+    const key = `${run.runId}:${nodeId}`;
+    const capMs = resolveGateTimeoutMs(run.contract, this.gateTimeoutEnv);
+    return new Promise<GateResult>((resolve) => {
+      const enteredAt = Date.now();
+      let timer: NodeJS.Timeout | null = null;
+      let settled = false;
+      const finish = (res: GateResult): void => {
+        if (settled) return; // 人放 / 取消插话 / 到期三方先到先得，之后另一路一律静默
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        resolve(res);
+      };
+      this.blockedWaiters.set(key, (action) => {
+        if (this.cancels.has(run.runId)) {
+          finish({ outcome: 'cancelled', action });
+          return;
+        }
+        if (capMs !== null) {
+          const n = (this.externalReleases.get(key) ?? 0) + 1;
+          this.externalReleases.set(key, n);
+          // 落册一份总额：per-node 细账在这条 approval 事件里，但 run.events 是 500 条环形
+          // （见 recordEvent）——长单一挤就丢账，故计数本身结构化落 RunRecord（S2 同片裁决）。
+          run.externalReleases = (run.externalReleases ?? 0) + 1;
+          this.recordEvent(
+            run,
+            'approval',
+            nodeId,
+            `外解唤醒（S4）：超时门（上限 ${fmtGateDuration(capMs)}）到期前被人工放行（本节点第 ${n} 次）`,
+          );
+          this.persistAndNotify(run);
+        }
+        finish({ outcome: 'released', action });
+      });
+      if (capMs !== null) {
+        timer = setTimeout(() => {
+          this.blockedWaiters.delete(key);
+          const rec = run.nodes[nodeId];
+          if (rec) rec.blockedAt = undefined;
+          finish({ outcome: 'timeout', waitedMs: Date.now() - enteredAt, capMs });
+        }, capMs);
+        timer.unref?.();
+      }
+    });
+  }
+
+  /**
+   * v13-S4 外解唤醒计数读取（nodeId 省略=该 run 全部节点合计）。内存账随进程生命周期，
+   * 权威事实另有一笔 approval 事件落 run.events（收口不删：默认关闭下此账根本不产生）。
+   */
+  externalReleaseCount(runId: string, nodeId?: string): number {
+    if (nodeId) return this.externalReleases.get(`${runId}:${nodeId}`) ?? 0;
+    let sum = 0;
+    for (const [k, v] of this.externalReleases) {
+      if (k.startsWith(`${runId}:`)) sum += v;
+    }
+    return sum;
+  }
+
   // -- execution ----------------------------------------------------------------
 
   private async execute(run: RunRecord, order: string[], blackboardPreload?: Map<string, Artifact>): Promise<void> {
@@ -1830,10 +1974,12 @@ export class Engine {
         this.recordEvent(run, 'approval', nodeId, '运行中对话框拦截：Agent 弹框等待人工处置（放行/拒绝/补料）');
         rec.blockedAt = new Date().toISOString();
         this.persistAndNotify(run);
-        const action = await new Promise<ApprovalAction>((resolve) => {
-          this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
-        });
+        // v13-S4 门收编进 awaitGate（七门同款接线，后文不再逐处注释）：cancels 短路先于
+        // 一切出路（旧口径零漂移）；到期 fail-closed——固定句式走既有失败路，不合成放行。
+        const decision = await this.awaitGate(run, nodeId);
         if (this.cancels.has(run.runId)) return '已取消';
+        if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
+        const action = decision.action;
         if (action.action === 'input' && action.text) {
           status = await this.promptAndSettle(run, rec, agentName, action.text, timeoutMs);
           continue;
@@ -1886,11 +2032,11 @@ export class Engine {
           this.recordEvent(run, 'approval', nodeId, '澄清轮拦截：aligned 未通过，等待人工补充或强制放行');
           rec.blockedAt = new Date().toISOString();
           this.persistAndNotify(run);
-          const action = await new Promise<ApprovalAction>((resolve) => {
-            this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
-          });
+          const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编（S4 注释只在此说明，余五门同款）
           rec.blockedPrompt = undefined;
           if (this.cancels.has(run.runId)) return '已取消';
+          if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
+          const action = decision.action;
           if (action.action === 'reject') return '澄清被人工终止';
           if (action.action === 'approve') break; // 强制放行
           if (action.action === 'input' && action.text) {
@@ -1994,11 +2140,11 @@ export class Engine {
         this.recordEvent(run, 'approval', nodeId, `人工检查：${c.prompt}`);
         rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻（放门在 approve() 结算）
         this.persistAndNotify(run);
-        const action = await new Promise<ApprovalAction>((resolve) => {
-          this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
-        });
+        const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编
         rec.blockedPrompt = undefined;
         if (this.cancels.has(run.runId)) return '已取消';
+        if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
+        const action = decision.action;
         if (action.action === 'reject') return `人工检查未通过：${c.prompt}`;
         if (action.action === 'input' && action.text) {
           // informational input recorded into the artifact
@@ -2111,11 +2257,11 @@ export class Engine {
       this.recordEvent(run, 'approval', nodeId, `验收机器门拦截：${failed.map((f) => f.id).join('、')}`);
       rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻
       this.persistAndNotify(run);
-      const action = await new Promise<ApprovalAction>((resolve) => {
-        this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
-      });
+      const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编
       rec.blockedPrompt = undefined;
       if (this.cancels.has(run.runId)) return '已取消';
+      if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
+      const action = decision.action;
       if (action.action === 'reject') return `验收断言未通过：${failed.map((f) => f.id).join('、')}`;
       if (action.action === 'approve') {
         this.recordEvent(run, 'approval', nodeId, `人工追认放行：${failed.map((f) => f.id).join('、')}`);
@@ -2173,11 +2319,11 @@ export class Engine {
       );
       rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻
       this.persistAndNotify(run);
-      const action = await new Promise<ApprovalAction>((resolve) => {
-        this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
-      });
+      const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编
       rec.blockedPrompt = undefined;
       if (this.cancels.has(run.runId)) return '已取消';
+      if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
+      const action = decision.action;
       if (action.action === 'reject') {
         // M6 判例回流：整单被拒也值得记——多半是骨架/措辞误导
         this.templateFeedback(run, nodeId, stamp, 'reject', {
@@ -2284,11 +2430,11 @@ export class Engine {
       this.recordEvent(run, 'approval', nodeId, `分支守卫拦截：${cur} ≠ ${expect}`);
       rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻
       this.persistAndNotify(run);
-      const action = await new Promise<ApprovalAction>((resolve) => {
-        this.blockedWaiters.set(`${run.runId}:${nodeId}`, resolve);
-      });
+      const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编；本函数参数名 gate 是 {agentName,timeoutMs} 载体，门出路一律叫 decision 防遮蔽
       rec.blockedPrompt = undefined;
       if (this.cancels.has(run.runId)) return '已取消';
+      if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
+      const action = decision.action;
       if (action.action === 'reject') return `分支守卫未通过：交付分支不符（${cur} ≠ ${expect}）`;
       if (action.action === 'approve') {
         this.recordEvent(run, 'approval', nodeId, `分支守卫人工放行：按「${cur}」继续`);
@@ -2476,11 +2622,11 @@ export class Engine {
         this.recordEvent(run, 'approval', rec.nodeId, '启动确认拦截：自动应答未决，等待人工按键或放行');
         rec.blockedAt = new Date().toISOString();
         this.persistAndNotify(run);
-        const action = await new Promise<ApprovalAction>((resolve) => {
-          this.blockedWaiters.set(`${run.runId}:${rec.nodeId}`, resolve);
-        });
+        const decision = await this.awaitGate(run, rec.nodeId); // v13-S4 门收编；到期经 throw 收口为「启动失败：等待审批超时…」固定句式
         rec.blockedPrompt = undefined;
         if (this.cancels.has(run.runId)) throw new Error('已取消');
+        if (decision.outcome === 'timeout') throw new Error(gateTimeoutMessage(decision.waitedMs, decision.capMs));
+        const action = decision.action;
         if (action.action === 'reject') throw new Error('启动确认被人工拒绝');
         const keys = action.keys ?? (action.action === 'approve' ? (cfg.approveKeys ?? ['enter']) : ['enter']);
         await this.ops.sendKeys(agentName, keys).catch(() => {});

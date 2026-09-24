@@ -67,6 +67,8 @@ watch 退出码表（dispatch/runs/status/approve 恒为 0 成功 / 1 报错）�
 
 token 预算熔断（v12-S2）：`PF_RUN_MAX_TOKENS=<正整数>` 设 run 级 token 上限（`contract.budget.maxTokens` 优先；0/未设/破烂=关闭）——节点启动前比对 agent 自报 usage 累计（绝不估算，无自报只警示不熔断），超限按既有失败路收 `failed`，watch 照按红（1）、error 一句「token 预算超限（已用 X / 上限 Y）」；`budget.maxMinutes` 仍只展示（时长维已有节点 timeoutMs 缺省 30min 硬顶）。
 
+门到期熔断（v13-S4）：`PF_GATE_TIMEOUT_MS=<正整数>` 设 run 级审批门等待上限（`contract.budget.gateTimeoutMs` 优先；**缺省 0=关，门一直等人批**）。七处人工门（运行中对话框/澄清轮/人工检查/验收机器门/契约门/分支守卫/启动确认）共用同一实现。到期按既有失败路收 `failed`——watch 照按红（1）、error 一句「等待审批超时，已等待 X，上限 Y，不放行。」；**到期不是人的决策**：不入 `attention` 人等分账、不发任何按键、迟到 `approve` 得 409。被武装的门若在到期前被人放行，记一笔 `externalReleases`（外解唤醒=「定时器差点替人做了决定」），`GET /api/runs/<runId>` 直读该键、缺省=零。
+
 ### curl 退路（端点 + 关键字段）
 
 所有请求带 `-H 'content-type: application/json'`；远程模式加 `-H "Authorization: Bearer $PANEFLOW_TOKEN"`。

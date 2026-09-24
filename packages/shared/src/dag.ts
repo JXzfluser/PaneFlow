@@ -299,8 +299,10 @@ export interface ContractDoc {
   /**
    * 预算上限。token 维度 v12-S2 起有执行点（节点尝试启动前查 run.costLive，超限熔断）；
    * maxMinutes 仍只记账展示——时长维已有节点 timeoutMs 缺省 30min 硬顶先例，本片不做。
+   * v13-S4 gateTimeoutMs：run 级审批门到期上限（ms），执行点在 engine awaitGate——
+   * 契约优先 > env PF_GATE_TIMEOUT_MS > 0/未设=关闭（到期 fail-closed 收 failed，绝不代放门）。
    */
-  budget?: { maxMinutes?: number; maxTokens?: number };
+  budget?: { maxMinutes?: number; maxTokens?: number; gateTimeoutMs?: number };
   /** 目标仓 / 分支（H1 交付守卫的锚点） */
   repo?: string;
   branch?: string;
@@ -350,10 +352,11 @@ export function contractOf(extra: Record<string, unknown> | undefined): Contract
   const doc: ContractDoc = { assertions, questions };
   if (typeof c.scopeNotes === 'string' && c.scopeNotes.trim()) doc.scopeNotes = c.scopeNotes.trim();
   if (c.budget && typeof c.budget === 'object') {
-    const b = c.budget as { maxMinutes?: unknown; maxTokens?: unknown };
+    const b = c.budget as { maxMinutes?: unknown; maxTokens?: unknown; gateTimeoutMs?: unknown };
     const budget: NonNullable<ContractDoc['budget']> = {};
     if (typeof b.maxMinutes === 'number') budget.maxMinutes = b.maxMinutes;
     if (typeof b.maxTokens === 'number') budget.maxTokens = b.maxTokens;
+    if (typeof b.gateTimeoutMs === 'number') budget.gateTimeoutMs = b.gateTimeoutMs; // v13-S4：不设防在此，非法值由执行点 resolveGateTimeoutMs 判关闭
     if (Object.keys(budget).length) doc.budget = budget;
   }
   if (typeof c.repo === 'string' && c.repo.trim()) doc.repo = c.repo.trim();
@@ -545,6 +548,13 @@ export interface RunRecord {
    * 缺省=本单没经过任何放门动作（旧记录同款向后兼容）。
    */
   attention?: RunAttention;
+  /**
+   * v13-S4 外解唤醒计数：被武装的审批门（有 gateTimeoutMs/PF_GATE_TIMEOUT_MS 上限）在
+   * 到期前被人放行时 +1——「定时器差点替人做了决定」的次数，默认关闭下永不产生。
+   * 与 attention 同理结构化落册，不靠 500 条环形事件推导（S2 同片裁决）。
+   * 缺省=本单没有外解唤醒（旧记录向后兼容）。
+   */
+  externalReleases?: number;
 }
 
 /**

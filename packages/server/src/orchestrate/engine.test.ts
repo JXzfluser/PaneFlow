@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { DagGraph, RunRecord } from '@paneflow/shared';
 import { execFileSync } from 'node:child_process';
-import { Engine } from './engine.js';
+import { Engine, gateTimeoutMessage, resolveGateTimeoutMs } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
 import { BUILTIN_TEMPLATES } from './builtin-templates.js';
 import { contentSha } from './harness.js';
@@ -3486,5 +3486,145 @@ describe('v13-S2 尝试边界掐断（interruptAttemptAgent 三触发点 + recon
     const rec = eng.getRun(run.runId)!.nodes['impl']!;
     expect(rec.abandonments?.some((a) => a.trigger === 'shutdown')).toBe(true);
     expect(ops.closedWorkspaces).toContain(run.workspaceId);
+  });
+});
+
+describe('v13-S4 门到期 fail-closed + 外解唤醒', () => {
+  /** 每轮 prompt 都弹框：working→(10ms)blocked——对话框门（门一）停在人身上 */
+  const alwaysBlocked = () => {
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'blocked'), 10);
+    };
+  };
+
+  // —— 解析链纯函数矩阵（口径逐字照 resolveTokenCap 的测试形态）——
+  it('resolveGateTimeoutMs：契约 > env > 缺省关；0/负数/NaN/破烂=该级关闭', () => {
+    const c = (ms?: number) => ({ assertions: [], questions: [], source: 'input' as const, budget: ms === undefined ? undefined : { gateTimeoutMs: ms } });
+    expect(resolveGateTimeoutMs(c(500), 900)).toBe(500); // 契约优先
+    expect(resolveGateTimeoutMs(c(0), 900)).toBe(900); // 契约 0=关闭，落到 env
+    expect(resolveGateTimeoutMs(c(-5), 900)).toBe(900); // 契约破烂=关闭
+    expect(resolveGateTimeoutMs(c(NaN), 900)).toBe(900);
+    expect(resolveGateTimeoutMs(undefined, 900)).toBe(900); // env 兜底
+    expect(resolveGateTimeoutMs(c(500), 0)).toBe(500);
+    expect(resolveGateTimeoutMs(undefined, 0)).toBeNull(); // 两级都无效=整体不武装
+    expect(resolveGateTimeoutMs(undefined, undefined)).toBeNull();
+    expect(resolveGateTimeoutMs(c(500), undefined)).toBe(500);
+  });
+
+  it('gateTimeoutMessage 固定句式：等待审批超时，<时长>，不放行。', () => {
+    const msg = gateTimeoutMessage(5_200, 5_000);
+    expect(msg).toBe('等待审批超时，已等待 5.2 秒，上限 5.0 秒，不放行。');
+    expect(gateTimeoutMessage(120_000, 60_000)).toContain('2.0 分');
+  });
+
+  // —— 红线：到期绝不自动放行 ——
+  it('红线·到期不放行：门超时后节点收 failed、error 固定句式、不送任何键、不入 attention', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    alwaysBlocked();
+    engine = new Engine(ops, store, { ...OPTS, gateTimeoutMs: 150 });
+    const run = await engine.startRun(serialGraph(), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('failed'); // watch 按红 1
+    const rec = final.nodes['impl']!;
+    expect(rec.state).toBe('failed');
+    // 固定句式逐字锁死（时长数字随计时抖动，只锁两端模板）
+    expect(rec.error).toMatch(/^等待审批超时，已等待 .+，上限 .+，不放行。$/);
+    // 红线本体：到期没有放行——七路按键一次都没发（合成 reject / sendKeys 唤醒均判红）
+    expect(ops.sentKeys).toHaveLength(0);
+    // 到期不是人的决策：attention 分毫不动（v12-V2 红线），blockedAt 清空不残留
+    expect(final.attention).toBeUndefined();
+    expect(rec.blockedAt).toBeUndefined();
+    // 门已除名：isBlocked 转 false，迟到的 approve 敲不上门
+    expect(engine.isBlocked(run.runId, 'impl')).toBe(false);
+    expect(await engine.approve(run.runId, 'impl', { action: 'approve' })).toBe(false);
+    expect(final.attention).toBeUndefined();
+  });
+
+  // —— 缺省关闭：与今天完全一致 ——
+  it('未武装（缺省 0=关）：门永不到期，人照常批', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    alwaysBlocked();
+    const run = await engine.startRun(serialGraph(), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await new Promise((r) => setTimeout(r, 400)); // 远超上一例的 150ms 上限
+    expect(engine.isBlocked(run.runId, 'impl')).toBe(true);
+    expect(engine.getRun(run.runId)!.nodes['impl']!.state).toBe('blocked');
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(engine.getRun(run.runId)!.state).toBe('completed');
+  });
+
+  // —— 外解唤醒 ——
+  it('外解唤醒：armed 门到期前人工放行→走现有放路 + 单记 externalRelease', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    alwaysBlocked();
+    engine = new Engine(ops, store, { ...OPTS, gateTimeoutMs: 60_000 });
+    const run = await engine.startRun(serialGraph(), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await new Promise((r) => setTimeout(r, 15)); // 保证 waitMs 结算非零
+    expect(await engine.approve(run.runId, 'impl', { action: 'approve' })).toBe(true);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    // 现有放路一字不变：approve 的实发 enter 键仍由调用方发出（awaitGate 不碰键）
+    expect(ops.sentKeys).toEqual([{ target: ops.agents.keys().next().value!, keys: ['enter'] }]);
+    // 人的决策照旧入 attention（外解记账不替代它）
+    expect(final.attention!.gates.approve).toBe(1);
+    expect(final.attention!.waitMs).toBeGreaterThan(0);
+    // externalRelease 单记：内存账 + 事件账各一笔
+    expect(engine.externalReleaseCount(run.runId, 'impl')).toBe(1);
+    expect(engine.externalReleaseCount(run.runId)).toBe(1);
+    expect((final.events ?? []).filter((e) => e.text.includes('外解唤醒（S4）'))).toHaveLength(1);
+  });
+
+  it('未武装门的人工放行不算外解：externalRelease 零记、无事件', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    alwaysBlocked();
+    const run = await engine.startRun(serialGraph(), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await engine.approve(run.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    expect(engine.externalReleaseCount(run.runId)).toBe(0);
+    expect((engine.getRun(run.runId)!.events ?? []).some((e) => e.text.includes('外解唤醒'))).toBe(false);
+  });
+
+  // —— 契约优先的现场接线（进门时刻解析，与 resolveTokenCap 同款语义）——
+  it('契约 budget.gateTimeoutMs 优先于注入/env：进门现场解析生效', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    alwaysBlocked();
+    // env 级上限设到 10 分钟（不靠它到期）；契约 150ms 才该是真正的判据
+    engine = new Engine(ops, store, { ...OPTS, gateTimeoutMs: 600_000 });
+    const run = await engine.startRun(serialGraph(), cwd);
+    engine.getRun(run.runId)!.contract = {
+      assertions: [],
+      questions: [],
+      source: 'input',
+      budget: { gateTimeoutMs: 150 },
+    };
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('failed');
+    expect(final.nodes['impl']!.error).toMatch(/^等待审批超时，.+，不放行。$/);
+    expect(ops.sentKeys).toHaveLength(0);
+  });
+
+  // —— 取消路卫生回归：stopRun 插话仍按「已取消」收，绝不被判成到期或放行 ——
+  it('取消唤醒优先于到期：stopRun 后 run 收 cancelled、无超时 error、attention 不动', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    alwaysBlocked();
+    engine = new Engine(ops, store, { ...OPTS, gateTimeoutMs: 5_000 });
+    const run = await engine.startRun(serialGraph(), cwd);
+    await waitFor(() => engine.isBlocked(run.runId, 'impl'));
+    engine.stopRun(run.runId);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('cancelled');
+    expect(final.nodes['impl']!.error ?? '').not.toContain('等待审批超时');
+    expect(final.attention).toBeUndefined();
+    expect((final.events ?? []).some((e) => e.text.includes('外解唤醒'))).toBe(false);
   });
 });
