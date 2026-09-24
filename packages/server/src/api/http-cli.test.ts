@@ -50,9 +50,17 @@ describe('POST /api/dispatch 响应扩 nodes（v11-A1）', () => {
         fakeRun({ runId: 'r-9', graph }),
     });
     try {
+      // v13-E2 fail-closed：探测恒空的机器（如 CI）上派单必须显式有 Planner kind——钉进空间档案
+      const put = await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/e2cli',
+        headers: { host: HOST },
+        payload: { rootCwd: '/tmp', defaultAgentKind: 'pi' },
+      });
+      expect(put.statusCode).toBe(200);
       const res = await app.inject({
         method: 'POST',
-        url: '/api/dispatch',
+        url: '/api/dispatch?space=e2cli',
         headers: { host: HOST },
         payload: { task: '把导出补上', cwd: '/tmp' },
       });

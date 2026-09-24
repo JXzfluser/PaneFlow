@@ -11,9 +11,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { HerdrClient } from '../packages/server/src/herdr/client.js';
+import { defaultHerdrSocketPath } from '../packages/server/src/config.js';
 
 const SESSION = 'pf-test';
-const SOCKET = path.join(os.homedir(), '.config/herdr/sessions', SESSION, 'herdr.sock');
+// v13-E2：socket 缺省路径走 config 同一口径——posix 与今天一字不差（~/.config/herdr/sessions/…），
+// win32 认 %APPDATA%\herdr\sessions\…（该候选本机未实机验证，见 README 支持矩阵）。
+// 注意：win32 上 herdr 若以 .cmd shim 分发，spawn 不经 shell 会 EINVAL——真机验证项，不在此猜。
+const SOCKET = defaultHerdrSocketPath(SESSION);
 const keep = process.argv.includes('--keep');
 const log = (msg: string) => console.log(`[smoke] ${msg}`);
 

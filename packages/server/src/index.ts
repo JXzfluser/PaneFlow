@@ -5,7 +5,6 @@ import { Store } from './orchestrate/store.js';
 import { buildHttpServer } from './api/http.js';
 import { detectInstalledAgents, recommendAgentKind } from './api/env-check.js';
 import { syncPiGatewayProvider } from './api/gateway.js';
-import { DISPATCH_AGENT_KIND } from './api/dispatch.js';
 import { loadConfig } from './config.js';
 import { seedBuiltinTemplates } from './orchestrate/builtin-templates.js';
 import { acquireInstanceLock, annotateInstanceLock, InstanceLockError, installProcessSurvival } from './lifecycle.js';
@@ -90,14 +89,21 @@ async function main(): Promise<void> {
   } catch {
     /* pi 未安装或不可写：忽略 */
   }
-  // E'+AE：Planner agent 已可配置（空间档案 defaultAgentKind），缺省走自动推荐——启动时按实际会用的类型提示缺失
-  const plannerKind =
-    store.readProfile().defaultAgentKind || (await recommendAgentKind()) || DISPATCH_AGENT_KIND;
-  void detectInstalledAgents([plannerKind]).then((installed) => {
-    if (!installed.includes(plannerKind)) {
-      console.warn(`[paneflow] 警告：智能下发依赖的 agent「${plannerKind}」未检测到，下发任务可能起不来`);
-    }
-  });
+  // E'+AE：Planner agent 取空间档案 defaultAgentKind，缺省走自动推荐。
+  // v13-E2：两路全空不再兜底成 claude 去报「claude 未装」——猜一个必红的名字等于把配置缺失
+  // 说成环境问题；这里如实说没有可派的 agent，派单侧由 buildDispatchGraph fail-closed 报 400。
+  const plannerKind = store.readProfile().defaultAgentKind || (await recommendAgentKind());
+  if (!plannerKind) {
+    console.warn(
+      '[paneflow] 警告：未探测到可派 agent（项目档案未配 defaultAgentKind 且实探全空）——智能下发会 fail-closed 报 400；装任一推荐链 CLI 或在项目档案里配 defaultAgentKind',
+    );
+  } else {
+    void detectInstalledAgents([plannerKind]).then((installed) => {
+      if (!installed.includes(plannerKind)) {
+        console.warn(`[paneflow] 警告：智能下发依赖的 agent「${plannerKind}」未检测到，下发任务可能起不来`);
+      }
+    });
+  }
 
   // orphan sweep after boot (give herdr a moment if it is still starting)
   setTimeout(() => {

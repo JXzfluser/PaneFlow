@@ -16,7 +16,8 @@ export interface DispatchOptions {
    * 该节点失败并终止整条下发；否则仅靠 onFail=continue 会照常路由下去。
    */
   preview?: boolean;
-  /** E'：Planner 节点用的 agent 类型（空间档案 defaultAgentKind）；空值回落 DISPATCH_AGENT_KIND */
+  /** E'：Planner 节点用的 agent 类型（空间档案 defaultAgentKind 或实探推荐）；
+   *  v13-E2 起空值=fail-closed 抛 DispatchAgentKindError，不再回落缺省 claude */
   plannerAgentKind?: string;
   /** G1：已拉取的 Issue 真身（正文/评论），注入 Planner 上下文——贴链接零手抄 */
   issueContext?: IssueView;
@@ -179,8 +180,29 @@ export function intakeTemplateMarkdown(): string {
 
 const MAX_TASK_LEN = 4000;
 
-/** Planner agent 缺省类型（E' 后可被空间档案 defaultAgentKind 覆盖） */
-export const DISPATCH_AGENT_KIND = 'claude';
+/**
+ * v13-E2 探测恒空时的 fail-closed 指路文案（单源：throw 与测试都引此处）。
+ * 裁决形状：拿不到可执行的 agent 就别派——宁报错不起必红单。
+ * 历史：v6 裁决在此留过 `DISPATCH_AGENT_KIND = 'claude'` 兜底，改判后零消费方、随 E2 删除。
+ */
+export const DISPATCH_NO_AGENT_ERROR =
+  '无法派发：本机没有可执行、可派单的 agent CLI（空间档案未配 defaultAgentKind，且推荐链 pi/opencode/codex/claude 实探全空）——' +
+  'v13-E2 起不再猜测回落「claude」（claude 常遇未登录，猜了=首节点必红、无人值守半夜白烧）。' +
+  '处理二选一：装任一推荐链 agent CLI；或在空间档案（项目 → 编辑档案）显式配 defaultAgentKind。' +
+  '探测读数看 GET /api/health 的 env.agentsInstalled / recommendedAgentKind。';
+
+/**
+ * 探测恒空时 buildDispatchGraph 抛此错。/api/dispatch 在起单前就显式拦成 400 + 同一句文案
+ * （Fastify 默认错误序列化的 body.error 是状态文本「Bad Request」，CLI 只读 body.error）；
+ * statusCode 是给直调方（脚本/测试）的兜底。
+ */
+export class DispatchAgentKindError extends Error {
+  readonly statusCode = 400;
+  constructor() {
+    super(DISPATCH_NO_AGENT_ERROR);
+    this.name = 'DispatchAgentKindError';
+  }
+}
 
 /**
  * 智能下发：把一句任务描述变成一个三节点临时编排
@@ -190,6 +212,9 @@ export const DISPATCH_AGENT_KIND = 'claude';
  * 拓扑恒为策展骨架——AI 只选编排与填参（确定性红线 D3）。
  */
 export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
+  // v13-E2 fail-closed：没有可执行的 Planner agent 就别派——不再猜 DISPATCH_AGENT_KIND 起必红单
+  const plannerAgentKind = opts.plannerAgentKind?.trim();
+  if (!plannerAgentKind) throw new DispatchAgentKindError();
   // 防模板引擎注入：剥掉 {{ }} 并限长
   const task = opts.task.replace(/\{\{|\}\}/g, '').trim().slice(0, MAX_TASK_LEN);
   const tplList = opts.templateList
@@ -297,7 +322,7 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
         type: 'agent',
         label: 'Planner · 下发规划',
         config: {
-          agentKind: opts.plannerAgentKind || DISPATCH_AGENT_KIND,
+          agentKind: plannerAgentKind,
           ...(plannerRole ? { role: plannerRole.roleId } : {}), // B2：planner 由班底里的规划位担当
           prompt: plannerPrompt,
           clarify: { maxRounds: 2 },

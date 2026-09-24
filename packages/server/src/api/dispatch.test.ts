@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { buildDispatchGraph, candidateRepos, DISPATCH_AGENT_KIND, extractAcceptance, intakeTemplateMarkdown, parseGithubRemote, parseIssueRef, type IssueView } from './dispatch.js';
+import {
+  buildDispatchGraph,
+  candidateRepos,
+  DISPATCH_NO_AGENT_ERROR,
+  DispatchAgentKindError,
+  extractAcceptance,
+  intakeTemplateMarkdown,
+  parseGithubRemote,
+  parseIssueRef,
+  type IssueView,
+} from './dispatch.js';
 import { BUILTIN_TEMPLATES } from '../orchestrate/builtin-templates.js';
 import { applyVariables, validateDag } from '@paneflow/shared';
+
+// v13-E2 fail-closed：buildDispatchGraph 不再回落缺省 claude——所有测试统一显式给 Planner kind
+const KIND = { plannerAgentKind: 'pi' };
 
 describe('buildDispatchGraph', () => {
   const templateList = [
@@ -10,7 +23,7 @@ describe('buildDispatchGraph', () => {
   ];
 
   it('generates a valid 3-node orchestration embedding the task', () => {
-    const g = buildDispatchGraph({ task: '探索项目成熟度并建 Issue', cwd: '/tmp/x', templateList });
+    const g = buildDispatchGraph({ task: '探索项目成熟度并建 Issue', cwd: '/tmp/x', templateList, ...KIND });
     expect(validateDag(g).filter((i) => i.level === 'error')).toEqual([]);
     expect(g.nodes.map((n) => n.type)).toEqual(['start', 'agent', 'pipeline', 'end']);
     const planner = g.nodes.find((n) => n.id === 'planner')!;
@@ -23,36 +36,49 @@ describe('buildDispatchGraph', () => {
   });
 
   it('strips template-injection braces from the task', () => {
-    const g = buildDispatchGraph({ task: '做 {{evil}} 事', cwd: '/tmp/x', templateList });
+    const g = buildDispatchGraph({ task: '做 {{evil}} 事', cwd: '/tmp/x', templateList, ...KIND });
     const planner = g.nodes.find((n) => n.id === 'planner')!;
     expect(planner.config.prompt).not.toContain('{{evil}}');
     expect(planner.config.prompt).toContain('evil');
   });
 
   it('caps oversized task input', () => {
-    const g = buildDispatchGraph({ task: 'x'.repeat(9999), cwd: '/tmp/x', templateList });
+    const g = buildDispatchGraph({ task: 'x'.repeat(9999), cwd: '/tmp/x', templateList, ...KIND });
     const planner = g.nodes.find((n) => n.id === 'planner')!;
     expect(planner.config.prompt!.length).toBeLessThan(6000);
   });
 
   it('task survives variable pass-through to the route params', () => {
-    const g = buildDispatchGraph({ task: 'demo 任务', issueId: '9', cwd: '/tmp/x', templateList });
+    const g = buildDispatchGraph({ task: 'demo 任务', issueId: '9', cwd: '/tmp/x', templateList, ...KIND });
     // 下发 run 启动时 applyVariables(graph, {task}) 不破坏结构
     const { graph: applied } = applyVariables(g, { task: 'demo 任务' });
     expect(applied.nodes.length).toBe(g.nodes.length);
     expect(validateDag(applied).filter((i) => i.level === 'error')).toEqual([]);
   });
 
-  it("E'：planner agent 取档案默认值，空值回落缺省 claude", () => {
+  it("E'：planner agent 取显式指定；v13-E2 起空值 fail-closed，不再兜底缺省 claude", () => {
     const g = buildDispatchGraph({ task: 't', cwd: '/tmp/x', templateList, plannerAgentKind: 'codex' });
     expect(g.nodes.find((n) => n.id === 'planner')!.config.agentKind).toBe('codex');
-    const g2 = buildDispatchGraph({ task: 't', cwd: '/tmp/x', templateList, plannerAgentKind: '' });
-    expect(g2.nodes.find((n) => n.id === 'planner')!.config.agentKind).toBe(DISPATCH_AGENT_KIND);
+    // 改判 v6「兜底 claude」裁决（gate0 实测 claude 开箱即挂→猜了必红）：
+    // 未给 kind / 空串 / 全空白一律拒绝起单，且报错带指路文案
+    expect(() => buildDispatchGraph({ task: 't', cwd: '/tmp/x', templateList, plannerAgentKind: '' })).toThrowError(
+      DISPATCH_NO_AGENT_ERROR,
+    );
+    expect(() => buildDispatchGraph({ task: 't', cwd: '/tmp/x', templateList })).toThrow(DispatchAgentKindError);
+    try {
+      buildDispatchGraph({ task: 't', cwd: '/tmp/x', templateList, plannerAgentKind: '   ' });
+      expect.unreachable('全空白也应 fail-closed');
+    } catch (err) {
+      expect(err).toBeInstanceOf(DispatchAgentKindError);
+      expect((err as DispatchAgentKindError).statusCode).toBe(400);
+      expect((err as Error).message).toContain('不再猜测回落');
+      expect((err as Error).message).toContain('/api/health');
+    }
   });
 
   it('route params keys are declared variables of the fallback template (G: 静默丢弃防线)', () => {
     // applyVariables 只替换模板已声明的变量——params 传了未声明的键会被静默丢掉
-    const g = buildDispatchGraph({ task: 't', issueId: '9', cwd: '/tmp/x', templateList });
+    const g = buildDispatchGraph({ task: 't', issueId: '9', cwd: '/tmp/x', templateList, ...KIND });
     const route = g.nodes.find((n) => n.id === 'route')!;
     const generic = BUILTIN_TEMPLATES.find((t) => t.name === route.config.pipeline!.fallbackTemplate)!;
     const declared = new Set((generic.variables ?? []).map((v) => v.key));
@@ -99,7 +125,7 @@ describe('v8-G1 Issue 正文注入 Planner', () => {
   const templateList = [{ name: 't1', description: 'd' }];
 
   it('plannerPrompt 含标题/正文/评论，且要求 taskBrief 覆盖验收要点', () => {
-    const g = buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, issueContext: issue, issueId: '308' });
+    const g = buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, issueContext: issue, issueId: '308', ...KIND });
     const prompt = g.nodes.find((n) => n.id === 'planner')!.config.prompt!;
     expect(prompt).toContain('关联 Issue #308（acme/app，open）');
     expect(prompt).toContain('台账汇总性能优化');
@@ -109,14 +135,14 @@ describe('v8-G1 Issue 正文注入 Planner', () => {
   });
 
   it('issue 正文里的 {{ }} 被剥掉（防模板注入）', () => {
-    const g = buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, issueContext: issue });
+    const g = buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, issueContext: issue, ...KIND });
     const prompt = g.nodes.find((n) => n.id === 'planner')!.config.prompt!;
     expect(prompt).not.toContain('{{evil}}');
     expect(prompt).toContain('evil');
   });
 
   it('无 issueContext 时保持原语式（禁止照抄原始描述）', () => {
-    const g = buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList });
+    const g = buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...KIND });
     const prompt = g.nodes.find((n) => n.id === 'planner')!.config.prompt!;
     expect(prompt).toContain('禁止照抄原始描述');
     expect(prompt).not.toContain('关联 Issue');
@@ -169,7 +195,7 @@ describe('v8-M1 extractAcceptance（DoR 机检）', () => {
 describe('v8-M1 契约门装配（buildDispatchGraph）', () => {
   const templateList = [{ name: 't1' }];
   const planner = (opts: Partial<import('./dispatch.js').DispatchOptions>) =>
-    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...opts }).nodes.find((n) => n.id === 'planner')!;
+    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...KIND, ...opts }).nodes.find((n) => n.id === 'planner')!;
 
   it('有机检契约 → prompt 逐条列 AC 且【不】设 contract 门', () => {
     const p = planner({ contractAssertions: ['3 秒内出结果', '导出不崩'] });
@@ -212,7 +238,7 @@ describe('v8-M6 契约骨架模板装配（buildDispatchGraph）', () => {
   const templateList = [{ name: 't1' }];
   const tpl = { stamp: 'bugfix@1a2b3c4d', block: '本单命中契约骨架模板「bugfix@1a2b3c4d」（缺陷修复）——照抄骨架再填差异' };
   const planner = (opts: Partial<import('./dispatch.js').DispatchOptions>) =>
-    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...opts }).nodes.find((n) => n.id === 'planner')!;
+    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...KIND, ...opts }).nodes.find((n) => n.id === 'planner')!;
 
   it('gate 模式 + 命中模板 → 骨架块注入立约指令且 contract 门带 id@sha 戳', () => {
     const p = planner({ contractTemplate: tpl });
@@ -236,7 +262,7 @@ describe('v9-B2 编排绑班底（buildDispatchGraph）', () => {
     { roleId: 'std-curator', name: '沉淀' },
   ];
   const build = (opts: Partial<import('./dispatch.js').DispatchOptions> = {}) =>
-    buildDispatchGraph({ task: '优化导出', cwd: '/tmp/x', templateList, ...opts });
+    buildDispatchGraph({ task: '优化导出', cwd: '/tmp/x', templateList, ...KIND, ...opts });
 
   it('带班底下发：planner 节点 role ∈ team，且优先取「规划」位', () => {
     const g = build({ team });
@@ -276,7 +302,7 @@ describe('v9-B2 编排绑班底（buildDispatchGraph）', () => {
 describe('v8-I1 技能索引进 Planner + repos 候选仓解析', () => {
   const templateList = [{ name: 't1' }];
   const plannerPrompt = (opts: Partial<import('./dispatch.js').DispatchOptions>) =>
-    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...opts }).nodes.find((n) => n.id === 'planner')!.config.prompt!;
+    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...KIND, ...opts }).nodes.find((n) => n.id === 'planner')!.config.prompt!;
 
   it('skillIndex 非空 → 索引一行一项并给出 skill:<name> 引用写法', () => {
     const p = plannerPrompt({

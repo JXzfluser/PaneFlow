@@ -77,6 +77,7 @@ token 预算熔断（v12-S2）：`PF_RUN_MAX_TOKENS=<正整数>` 设 run 级 tok
 BASE=http://127.0.0.1:4310
 
 # 派活（体：task 必填；issueId/cwd/preview 可选；?space= 选项目）
+#   v13-E2 fail-closed：档案 defaultAgentKind 与本机实探两路全空 → 400 一句指路（不再猜 claude 起必红单）
 curl -s $BASE/api/dispatch -d '{"task":"...","issueId":"123"}'
 #   → {runId, issueId?, issueFetched, note?, contract:{mode:extracted|autofilled|gate,...},
 #      nodes:[{id,name,type,dependsOn}]   # v11-A1 节点清单摘要}
@@ -129,7 +130,10 @@ curl -s "$BASE/api/runs?suite=c4&arm=a"       # 实验元数据过滤列单
 
 ```bash
 curl -s $BASE/api/health          # → agentKinds（合法 agent 类型全集白名单）、herdrOk、
-                                  #   env.agentsInstalled / agentsMissing、recommendedAgentKind
+                                  #   env.agentsInstalled / agentsMissing、recommendedAgentKind；
+                                  #   v13-E2 起多 platform（process.platform 原样）与 herdrError
+                                  #   （herdr 探测失败的人话原因，拿不到整键省略）两标量。
+                                  #   win32 探测走 PATH×PATHEXT（未实机验证，见 README 支持矩阵）
 curl -s $BASE/api/gateway         # → 当前网关档：{baseUrl, freeModel, enabled, keyConfigured,
                                   #   profiles:[档位数组], current}（apiKey 永不回显）
 curl -s $BASE/api/gateway/catalog # → 每档实探的模型清单：

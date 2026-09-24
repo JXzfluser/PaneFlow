@@ -73,12 +73,12 @@ pnpm dev:web        # 画布开发服务（http://127.0.0.1:4311，代理 API）
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `PF_HERDR_SOCKET` | `~/.config/herdr/herdr.sock` | Herdr api socket 路径 |
+| `PF_HERDR_SOCKET` | `~/.config/herdr/herdr.sock`（win32：`%APPDATA%\herdr\herdr.sock`） | Herdr api socket 路径 |
 | `PF_PORT` | `4310` | 编排服务端口 |
 | `PF_HOST` | `127.0.0.1` | 监听地址；非本机回环时强制启用 `PF_TOKEN` 鉴权（远程/手机访问用） |
 | `PF_TOKEN` | 空 | 访问令牌；远程模式下未设置时首次启动自动生成并持久化到 `PF_DATA_DIR/auth-token.json` |
 | `PF_WEB_DIR` | 自动探测 | 前端构建产物目录（免克隆发行包的启动器注入；源码运行无需设置） |
-| `PF_DATA_DIR` | `~/.paneflow` | 模板与运行记录存储 |
+| `PF_DATA_DIR` | `~/.paneflow`（win32：`%APPDATA%\paneflow`） | 模板与运行记录存储 |
 | `PF_MAX_PANES` | `8` | 全局并行 Pane 上限 |
 | `PF_PANE_ENV` | 空 | 注入流水线 workspace 的环境变量（`K=V,K2=V2`），如 `OPENCODE_DISABLE_AUTOUPDATE=1,PI_DISABLE_UPDATE_CHECK=1` |
 | `PF_WORKSPACE_PREFIX` | `paneflow-` | 流水线 workspace 标签前缀（自动回收依据） |
@@ -119,6 +119,21 @@ pnpm dev:web        # 画布开发服务（http://127.0.0.1:4311，代理 API）
 - 默认：`2`。
 - 调大/调小：调大 → 限流节点更耐受、成功率更高，但每次重试都带退避等待、总时长相应拉长；调小 → 快速失败；设 `0` = 不追加，限流节点只有自身 `retryCount` 次机会。
 - 与其他旋钮的关系：决定退避轮数（每轮等待时长由 `PF_GW_BACKOFF_BASE_MS` 定）；非限流失败不消耗该预算，仍走节点自身 `retryCount` / `onFail` 策略。
+
+## 支持矩阵（安装/运行 · v13-E2 诚实入账）
+
+| 平台 | 状态 | 默认路径（dataDir / herdr socket） | agent 探测 | 验证口径 |
+|---|---|---|---|---|
+| macOS / Linux | ✅ 全支持 | `~/.paneflow` / `~/.config/herdr/herdr.sock` | `sh -c command -v` | ✅ 开发机（darwin）实跑 + CI（ubuntu）全量测试 |
+| Windows (win32) | ⚠️ 代码级支持，**未实机验证** | `%APPDATA%\paneflow` / `%APPDATA%\herdr\herdr.sock`（显式 `PF_DATA_DIR`/`PF_HERDR_SOCKET` 仍最优先；`APPDATA` 缺失回落主目录） | PATH × PATHEXT 纯 fs 枚举（不起 shell） | ❌ **仅单测覆盖**——本机是 darwin，win32 分支从未在真 Windows 上跑过 |
+
+win32 的诚实边界（未验证如实标，不做软化）：
+
+- 探测、默认路径、fail-closed 三路改判都只有单测证据；herdr 自身在 win32 的分发形态（exe/cmd shim、socket vs named pipe）本仓不可考，上表 win32 路径是**约定候选**而非实机读数。
+- 原生 cmd/PowerShell 路径**未验证**：`install.sh` 是 bash 脚本，Windows 免克隆安装走不通原生 shell；npm tgz 直装理论上不依赖 bash，但同样没在真机装过。
+- win32 上不做任何估算读数：`GET /api/health` 如实回 `platform` 与 `herdrError`（探测失败人话原因，拿不到整键省略）；用 named-pipe 名字猜 herdr 的方案已裁撤（实测探不出，猜名=估算）。
+- 无人值守派发全平台 fail-closed：实探不到任何可执行 agent 且空间档案未配 `defaultAgentKind` 时，派活直接报错指路（不再猜「claude」起必红单——claude 开箱常遇未登录，见 `docs/gate0-verdict.md`）。
+- 真机验证清单（win32 到手后跑）：`pnpm smoke`（pf-test 会话）、`paneflow dispatch` 一单、`curl $BASE/api/health` 看 `platform`/`env.agentsInstalled` 是否脱空。
 
 ## 核心机制
 

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { FastifyInstance } from 'fastify';
+import { userHome } from '../config.js';
 
 const MD_SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.venv', 'target']);
 
@@ -60,7 +61,8 @@ export function registerFsRoutes(
 
   // browse: directories under a path (home-rooted) for the root picker
   app.get<{ Querystring: { path?: string } }>('/api/fs/browse', async (req, reply) => {
-    const home = path.join(process.env.HOME ?? '/', 'Documents');
+    // 家目录锚点走 config.userHome 唯一口径（v13-E2：win32 认 USERPROFILE，posix 维持 HOME——今天语义）
+    const home = path.join(userHome(), 'Documents');
     const dir = req.query.path && path.isAbsolute(req.query.path) ? req.query.path : home;
     const entries = listDirSafe(dir)
       .filter((d) => d.isDirectory() && !d.name.startsWith('.'))

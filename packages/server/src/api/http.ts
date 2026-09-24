@@ -70,7 +70,7 @@ interface UpdateIssueBody {
   runId?: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
-import { buildDispatchGraph, candidateRepos, extractAcceptance, INTAKE_TEMPLATE_PATH, intakeTemplateMarkdown, parseIssueRef, type IssueView } from './dispatch.js';
+import { buildDispatchGraph, candidateRepos, DISPATCH_NO_AGENT_ERROR, extractAcceptance, INTAKE_TEMPLATE_PATH, intakeTemplateMarkdown, parseIssueRef, type IssueView } from './dispatch.js';
 import { readSkillIndex } from '../orchestrate/skills.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -114,6 +114,8 @@ export interface HttpDeps {
   lookupGithubLogin?: (token: string) => Promise<string | null>;
   /** v11-C1 蒸馏预览前的 wiki 缓存刷新（缺省 syncWikiCache；测试注入以绝真实 git/网络） */
   wikiDistillSync?: (o: { dataDir: string; repo: string; token: string; maxAgeMs?: number }) => Promise<{ branch: string }>;
+  /** v13-E2：Planner agent 自动推荐器（缺省实探本机已装 CLI；测试注入以固定「探测恒空机器」的形状，不靠跑测试那台机的运气） */
+  recommendAgentKind?: () => Promise<string | undefined>;
 }
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -850,12 +852,17 @@ export async function buildHttpServer(deps: HttpDeps) {
   app.get('/api/health', async () => {
     let herdrOk = false;
     let herdrVersion: string | null = null;
+    // v13-E2：探测失败的人话原因——拿不到（非 Error/空 message）就整键省略，不用默认值冒充读数。
+    // 不做 named-pipe 名字判别 win32 herdr：实测探不出，猜名字=估算（v13 需求文档 E2 已裁）。
+    let herdrError: string | undefined;
     try {
       const pong = (await deps.ops.ping()) as { version?: string } | undefined;
       herdrOk = true;
       herdrVersion = pong?.version ?? null;
-    } catch {
+    } catch (err) {
       herdrOk = false;
+      const msg = err instanceof Error ? err.message.trim() : typeof err === 'string' ? err.trim() : '';
+      if (msg) herdrError = msg;
     }
     const agentsInstalled = herdrOk ? await detectInstalledAgents([...AGENT_KINDS]) : [];
     // AE：推荐与网关状态常备（不依赖 herdr），设置页据此显示「自动推荐：pi」
@@ -866,7 +873,10 @@ export async function buildHttpServer(deps: HttpDeps) {
     const corruptRuns = Store.scanCorruptRuns(deps.dataDir);
     return {
       ok: true,
+      // v13-E2：平台标量原样上报（Windows 支持面诚实入账的读数底座）；herdrError 缺则整键省略
+      platform: process.platform,
       herdrOk,
+      ...(herdrError ? { herdrError } : {}),
       herdrVersion,
       herdrSocket: deps.herdrSocketPath,
       agentKinds: AGENT_KINDS,
@@ -1169,15 +1179,20 @@ export async function buildHttpServer(deps: HttpDeps) {
         profileSkills = profile.skills;
         profileRepos = profile.repos;
         profileTeam = profile.team;
-        // E'+AE：Planner agent 取空间档案默认值；缺省回落自动推荐（已装优先 pi），最终兜底在 buildDispatchGraph 内
+        // E'+AE：Planner agent 取空间档案默认值；缺省回落自动推荐（已装优先 pi）
+        // v13-E2：两路全空不再兜底 claude——下面显式 400 指路（实探读端见 /api/health）
         plannerAgentKind = profile.defaultAgentKind && (AGENT_KINDS as readonly string[]).includes(profile.defaultAgentKind)
           ? profile.defaultAgentKind
-          : ((await recommendAgentKind()) ?? undefined);
+          : ((await (deps.recommendAgentKind ?? recommendAgentKind)()) ?? undefined);
       } catch {
         rootCwd = undefined;
       }
       const cwd = String(req.body.cwd ?? '').trim() || rootCwd;
       if (!cwd) return reply.code(400).send({ error: '缺少工作目录（项目未配置 rootCwd 且未指定）' });
+      // v13-E2 fail-closed：档案与实探两路都空 = 这台机器没有可派的 agent，不起必红单。
+      // 显式 send 而非把 throw 交给 Fastify 默认错误序列化——那里的 body.error 是状态文本
+      // 「Bad Request」，CLI 只读 body.error（cli/client.ts），指路文案会掉进 message 里没人看见。
+      if (!plannerAgentKind?.trim()) return reply.code(400).send({ error: DISPATCH_NO_AGENT_ERROR });
       // G1：任务文本里贴了 issue URL/#123 即自动识别编号与 repo
       let issueId = typeof req.body.issueId === 'string' ? req.body.issueId.trim() : '';
       let issueRepo: string | undefined;

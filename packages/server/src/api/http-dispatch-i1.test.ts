@@ -15,7 +15,7 @@ import type { Store } from '../orchestrate/store.js';
  *  1) profile.skills → Planner 技能索引；
  *  2) 裸 #123 无默认仓 → profile.repos 的 origin 候选仓依次试拉。
  */
-function buildServer(dataDir: string, onRun: (graph: DagGraph) => void) {
+function buildServer(dataDir: string, onRun: (graph: DagGraph) => void, extra: Partial<Parameters<typeof buildHttpServer>[0]> = {}) {
   const engine = {
     onChange: () => {},
     startRun: async (graph: DagGraph) => {
@@ -33,6 +33,7 @@ function buildServer(dataDir: string, onRun: (graph: DagGraph) => void) {
     readGhCliToken: async () => {
       throw new Error('test: gh not logged in');
     },
+    ...extra,
   });
 }
 
@@ -47,7 +48,8 @@ describe('POST /api/dispatch（v8-I1 接线）', () => {
     let graph!: DagGraph;
     const { app } = await buildServer(dataDir, (g) => (graph = g));
     try {
-      await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { rootCwd: root, skills: ['sk.md'] } });
+      // v13-E2 fail-closed：探测恒空机器（CI）上派单要有可执行 Planner——档案钉 pi，判据不降级
+      await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { rootCwd: root, skills: ['sk.md'], defaultAgentKind: 'pi' } });
       const res = await app.inject({ method: 'POST', url: '/api/dispatch?space=demo', headers: { host: HOST }, payload: { task: '把服务灰度上去' } });
       expect(res.statusCode).toBe(200);
       const planner = graph.nodes.find((n) => n.id === 'planner')!;
@@ -93,7 +95,7 @@ describe('POST /api/dispatch（v8-I1 接线）', () => {
       throw new Error(`unexpected fetch: ${u}`);
     });
     try {
-      await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { rootCwd: root, repos: ['alpha', 'beta'] } });
+      await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { rootCwd: root, repos: ['alpha', 'beta'], defaultAgentKind: 'pi' } });
       const res = await app.inject({ method: 'POST', url: '/api/dispatch?space=demo', headers: { host: HOST }, payload: { task: '按 #123 修复' } });
       expect(res.statusCode).toBe(200);
       expect(res.json().issueFetched).toBe(true);
@@ -118,12 +120,28 @@ describe('POST /api/dispatch（v8-I1 接线）', () => {
     const { app } = await buildServer(dataDir, () => {});
     vi.stubGlobal('fetch', async () => ({ ok: false, status: 403, json: async () => ({ message: 'Requires authentication' }) }));
     try {
-      await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { rootCwd: root, repos: ['solo'] } });
+      await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { rootCwd: root, repos: ['solo'], defaultAgentKind: 'pi' } });
       const res = await app.inject({ method: 'POST', url: '/api/dispatch?space=demo', headers: { host: HOST }, payload: { task: '看 #77 办' } });
       expect(res.json().issueFetched).toBe(false);
       expect(res.json().note).toContain('Requires authentication');
     } finally {
       vi.unstubAllGlobals();
+      await app.close();
+    }
+  });
+
+  it('v13-E2 fail-closed：档案未配 defaultAgentKind 且实探恒空 → 400，指路文案落在 body.error（CLI 只读这一处）', async () => {
+    const dataDir = tmp();
+    const root = tmp();
+    // 实探注入为恒空：CI 与本机装了什么不该决定这条断言的成败（同 readGhCliToken 的先例）
+    const { app } = await buildServer(dataDir, () => {}, { recommendAgentKind: async () => undefined });
+    try {
+      await app.inject({ method: 'PUT', url: '/api/spaces/e2x', headers: { host: HOST }, payload: { rootCwd: root } });
+      const res = await app.inject({ method: 'POST', url: '/api/dispatch?space=e2x', headers: { host: HOST }, payload: { task: '随便做点' } });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('defaultAgentKind');
+      expect(res.json().error).not.toBe('Bad Request');
+    } finally {
       await app.close();
     }
   });
