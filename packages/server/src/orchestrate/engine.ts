@@ -450,6 +450,58 @@ export class Engine {
     this.sweepTimer.unref?.();
   }
 
+  /**
+   * v13-S6 优雅停机：掐 agent → 关 workspace → flush 账本（与 boot 对账同款处置）。
+   * 只保证账本落到真实终态、资源不泄漏；不复活执行循环、不假装续跑——
+   * 醒来后这些单走 boot 对账 + ⤴/--from-failed 既有恢复通道。
+   */
+  async shutdown(reason: string): Promise<void> {
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = null;
+    }
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
+    // 放掉所有卡在审批门上的执行循环（reject=人不在，判红不是判批）
+    for (const [key, waiter] of [...this.blockedWaiters.entries()]) {
+      this.blockedWaiters.delete(key);
+      waiter({ action: 'reject' });
+    }
+    for (const run of [...this.runs.values()]) {
+      if (!['running', 'queued'].includes(run.state)) continue;
+      this.cancels.add(run.runId);
+      for (const rec of Object.values(run.nodes)) {
+        if (rec.agentName && ['working', 'blocked', 'starting', 'retrying'].includes(rec.state)) {
+          void this.ops.sendKeys(rec.agentName, ['escape']).catch(() => {});
+        }
+      }
+      for (const rec of Object.values(run.nodes)) {
+        if (['working', 'blocked', 'queued', 'starting', 'retrying'].includes(rec.state)) {
+          rec.state = 'failed';
+          rec.error = `服务退出（${reason}），运行中断`;
+        }
+      }
+      run.state = 'failed';
+      run.finishedAt = run.finishedAt ?? new Date().toISOString();
+      this.recordEvent(run, 'run', undefined, `服务退出（${reason}）：在飞单就地结算落册，恢复走 ⤴/--from-failed`);
+      if (run.workspaceId) {
+        const id = run.workspaceId;
+        this.closingWorkspaces.add(id);
+        try {
+          await this.ops.closeWorkspace(id);
+        } catch (err) {
+          console.warn(`[engine] 停机关 workspace 失败（留给孤儿扫描）：${id} — ${(err as Error).message}`);
+        } finally {
+          this.closingWorkspaces.delete(id);
+        }
+      }
+      this.rootPanes.delete(run.runId);
+      this.persistAndNotify(run);
+    }
+  }
+
   async startRun(
     graph: DagGraph,
     cwd: string,

@@ -3214,3 +3214,32 @@ describe('v13-S1 孤儿回收（label 反解轴 + 仅活跃认领 + 周期扫描
     expect(fs.existsSync(junk)).toBe(true);
   });
 });
+
+describe('v13-S6 优雅停机（engine.shutdown：掐 agent→关 workspace→flush 账本）', () => {
+  it('在飞单就地结算落册：failed+节点带因+workspace 关闭+盘上往返一致', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const eng = new Engine(ops, store, {
+      ...OPTS,
+      orphanSweepMs: 0,
+      worktreeRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wt-isolated-')),
+    });
+    ops.promptDelayMs = 5_000; // 节点卡在 working，等停机处置
+    const run = await eng.startRun(serialGraph(), cwd);
+    const wsId = run.workspaceId!;
+    await waitFor(() => eng.getRun(run.runId)!.state === 'running');
+
+    await eng.shutdown('测试信号');
+    const dead = eng.getRun(run.runId)!;
+    expect(dead.state).toBe('failed');
+    expect(dead.finishedAt).toBeTruthy();
+    expect(dead.events?.at(-1)?.text).toContain('服务退出');
+    expect(ops.closedWorkspaces).toContain(wsId);
+    // flush 账本：新引擎从盘重读，终态一字不差
+    const revived = new Engine(ops, store, { ...OPTS, orphanSweepMs: 0, worktreeRoot: path.join(os.tmpdir(), 'pf-wt-none-') });
+    expect(revived.getRun(run.runId)!.state).toBe('failed');
+    expect(revived.getRun(run.runId)!.nodes['impl']!.error).toContain('服务退出');
+    // 幂等：再停一次不动已终态的单
+    await eng.shutdown('第二次');
+    expect(eng.getRun(run.runId)!.events?.filter((e) => e.text.includes('服务退出'))).toHaveLength(1);
+  });
+});

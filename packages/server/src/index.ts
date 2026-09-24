@@ -8,9 +8,22 @@ import { syncPiGatewayProvider } from './api/gateway.js';
 import { DISPATCH_AGENT_KIND } from './api/dispatch.js';
 import { loadConfig } from './config.js';
 import { seedBuiltinTemplates } from './orchestrate/builtin-templates.js';
+import { acquireInstanceLock, annotateInstanceLock, InstanceLockError, installProcessSurvival } from './lifecycle.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  // v13-S6 单实例守卫：同 dataDir 第二实例拒起——双实例互踩账本，
+  // 且旧行为下第二实例在构造期就把在飞单一律改判 failed 写盘（发行包误敲即触发）
+  let lock;
+  try {
+    lock = acquireInstanceLock(config.dataDir);
+  } catch (err) {
+    if (err instanceof InstanceLockError) {
+      console.error(`[paneflow] ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
   const client = new HerdrClient({ socketPath: config.herdrSocketPath });
   const ops = new RealHerdrOps(client);
   const store = new Store(config.dataDir);
@@ -41,6 +54,28 @@ async function main(): Promise<void> {
   });
 
   await app.listen({ port: config.port, host: config.host });
+  annotateInstanceLock(lock, config.port);
+  // v13-S6 进程级兜底：拒绝无声死亡——未捕获异常落日志，信号到来走「掐 agent→关 workspace→flush 账本」；
+  // 服务化（systemd/pm2/launchd）是操作系统的事，本文件不造 daemon 壳
+  installProcessSurvival({
+    onSignal: async (signal) => {
+      try {
+        await engine.shutdown(`收到 ${signal}`);
+        await app.close();
+      } finally {
+        lock.release();
+        process.exit(0);
+      }
+    },
+    exitNow: (code) => {
+      try {
+        lock.release();
+      } catch {
+        /* 尽力而为 */
+      }
+      process.exit(code);
+    },
+  });
   console.log(`[paneflow] server listening on http://${config.host}:${config.port}`);
   console.log('[paneflow] 一键模式：浏览器打开上述地址即是画布（前端由服务端托管）');
   if (config.authToken) {
