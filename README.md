@@ -38,8 +38,14 @@ curl -fsSL https://raw.githubusercontent.com/JXzfluser/PaneFlow/main/install.sh 
 （不愿走脚本也可以直接 `npm install -g` 发行包：
 `npm i -g https://github.com/JXzfluser/PaneFlow/releases/latest/download/paneflow-latest.tgz`）
 
+脚本装法自带三道检查（v13-E1）：本机 herdr api socket 在不在（缺了就是「装完即白装」）、
+下载包与 `paneflow-latest.tgz.sha256` sidecar 的 digest 是否一致（对不上拒绝安装）、
+临时文件全程落在退出即清的临时目录里。逃生阀：`PF_HERDR_SOCKET=<路径>` 指认非默认 socket、
+`PF_INSTALL_SKIP_HERDR_CHECK=1` 明确跳过检查（后果自负）。
+
 ```bash
-paneflow            # 启动编排服务并同源托管画布
+paneflow            # 启动编排服务并同源托管画布（等价显式写法：paneflow serve）
+paneflow --help     # 派活/看单/验收走 CLI：其余任何首参都不会起第二个服务实例
 ```
 
 打开 http://127.0.0.1:4310 即是画布。升级重跑同一条命令即可；卸载：`npm uninstall -g paneflow`。
@@ -138,7 +144,10 @@ pnpm typecheck   # TS 全量类型检查
 
 ### 发布免克隆发行包
 
-`node scripts/build-release.mjs` 在本地产出 `out/release/paneflow-<ver>.tgz`（+ `paneflow-latest.tgz`）。
+`node scripts/build-release.mjs` 在本地产出 `out/release/paneflow-<ver>.tgz`（+ `paneflow-latest.tgz`，
+各带 `.sha256` sidecar 供 `install.sh` 校验；入口 `bin/paneflow.mjs` 与 `LICENSE` 原样入包）。
+产物冒烟是发布的一环：`node scripts/smoke-release.mjs` 对真产物跑断言，每条同时钉精确退出码与输出子串
+（防「非零即绿」假验），CI 在打包后、发 Release 前必跑，任一不符即不发。
 正式分发走 CI：改 `package.json` 版本号 → 打标签推送，`.github/workflows/release.yml` 自动构建并发布 GitHub Release，
 `install.sh` 与 `npm i -g <release-url>` 即刻可用：
 

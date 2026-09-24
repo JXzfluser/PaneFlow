@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.2.0",
   "description": "PaneFlow — deterministic multi-agent DAG orchestration on Herdr terminal panes",
+  "license": "MIT",
   "scripts": {
     "typecheck": "tsc -b packages/shared packages/server packages/cli",
     "test": "pnpm -r --workspace-concurrency=1 test",

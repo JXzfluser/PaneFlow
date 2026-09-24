@@ -19,6 +19,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: node scripts/build-release.mjs
+      # v13-E1：打包后真跑一遍产物——每条用例同时钉精确退出码与输出子串（防「非零即绿」假验），
+      # 断言 CLI 分支（--help/未知子命令/连不上退 1）与 server 分支（裸参、serve 真起服务后薄壳打得通）。
+      # 任一不符即 exit 1，Release 不发。
+      - name: Smoke test the packaged artifact
+        run: node scripts/smoke-release.mjs
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -28,4 +33,6 @@ jobs:
             --title "PaneFlow $GITHUB_REF_NAME" \
             --notes "免克隆安装：\`curl -fsSL https://raw.githubusercontent.com/JXzfluser/PaneFlow/main/install.sh | bash\` 或 \`npm i -g https://github.com/JXzfluser/PaneFlow/releases/download/$GITHUB_REF_NAME/paneflow-$VERSION.tgz\`，然后运行 \`paneflow\`。" \
             out/release/paneflow-"$VERSION".tgz \
-            out/release/paneflow-latest.tgz
+            out/release/paneflow-"$VERSION".tgz.sha256 \
+            out/release/paneflow-latest.tgz \
+            out/release/paneflow-latest.tgz.sha256

@@ -11,6 +11,10 @@ CLI 是零业务薄壳（铁律 R4：不直读 dataDir、不自造判据），�
 `--url` > 环境变量 `PANEFLOW_URL` > `~/.paneflow/cli.json`（`{"url": ...}`）> 默认
 `http://127.0.0.1:4310`；远程暴露模式带令牌 `PANEFLOW_TOKEN`（转成 `Authorization: Bearer`）。
 
+入口分流（v13-E1 窄判据）：**只有裸 `paneflow` 或 `paneflow serve` 起 server**（起服务与在飞单同源，
+别在已有实例的机器上随手敲第二下）；其余任何首参——含 `--help` 与未知命令——一律进 CLI 薄壳，
+未知命令由 CLI 报错退 1。这里不维护第二份子命令清单。
+
 ### CLI 优先（每条可原样执行）
 
 ```bash
