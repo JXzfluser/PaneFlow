@@ -137,6 +137,44 @@ export function skeletonSha(graph: DagGraph, literals: SkeletonLiteral[]): strin
   return contentSha(skeletonGraph(graph, literals));
 }
 
+// ---------------------------------------------------------------------------
+// v13-V4 ctxSha 注入留痕：注入面指纹的构成与漂移比对（纯函数，判据只在这里）
+// ---------------------------------------------------------------------------
+
+/**
+ * ctxSha 的取材形状——三块构成钉死在此单源（engine 只喂注入现场的实读值）：
+ * ① files：resolveContext 注入现场实读成功的文件集，绝对路径 → 逐文件内容指纹
+ *    （contentSha 口径）；没配任何约定文档/技能时为空对象——仍算得出确定指纹，
+ *    「什么都没注入」也是正读数；
+ * ② gwThrottleRetries / ③ nodeTimeoutMsDefault：两枚 env 级运行旋钮——同模板
+ *    同档案但旋钮不同的真实混淆因子，并入同一指纹。
+ */
+export interface CtxFingerprintInput {
+  files: Record<string, string>;
+  gwThrottleRetries: number;
+  nodeTimeoutMsDefault: number;
+}
+
+/** 注入面指纹：规范化结构的 contentSha（键序由 canonicalJson 归一，可复算）。 */
+export function computeCtxSha(ctx: CtxFingerprintInput): string {
+  return contentSha(ctx);
+}
+
+/**
+ * v13-V4 ctxSha 进 replay 漂移比对面（评审 R5：只披露不拦，与 model/钉档/skeletonSha 同款）。
+ * 与 harnessDriftDiffs 分家：ctxSha 的当前值要到注入现场才存在（起单时读文件=假账，
+ * 见 engine.noteContextInjection），比对只能在指纹落册时点做，喂进来的就是两侧在册值。
+ * 任一侧缺键（v13-V4 前的旧单/旧记录）返回 null 跳过比对，宁缺毋假；相等返回 null。
+ */
+export function ctxShaDriftDiff(
+  source: RunHarness | undefined,
+  current: RunHarness | undefined,
+): string | null {
+  if (!source?.ctxSha || !current?.ctxSha) return null;
+  if (source.ctxSha === current.ctxSha) return null;
+  return `上下文 #${source.ctxSha}→#${current.ctxSha}（约定文档/技能实读集或运行旋钮已变）`;
+}
+
 const show = (v: string | undefined, none: string) => v || none;
 
 /**
@@ -147,7 +185,8 @@ const show = (v: string | undefined, none: string) => v || none;
  *    宁缺毋假。
  * 不比的：graphSha 与 readback/readbackOutcome——graphSha 被注入块改写，注入块
  * 本体变必变，证不了「只差读回块」；readback 差值正是 A/B 的受测变量（v13-V2
- * 裁决：fresh dispatch 两臂 readback 不等=实验设计，不是漂移）。
+ * 裁决：fresh dispatch 两臂 readback 不等=实验设计，不是漂移）。ctxSha 也不在此比
+ * ——它的当前值要到注入现场才存在，起单时点上没有（v13-V4 分家，见 ctxShaDriftDiff）。
  * 原记录无 harness=旧单无从比，返回空。每项差异给「原→今」可读文案。
  */
 export function harnessDriftDiffs(

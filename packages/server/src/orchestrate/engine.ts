@@ -42,7 +42,9 @@ import {
 import { appendExperimentRow } from './experiment.js';
 import { bookGateRelease } from './attention.js';
 import {
+  computeCtxSha,
   contentSha,
+  ctxShaDriftDiff,
   EXPERIENCE_BLOCK_HEAD_PREFIX,
   EXPERIENCE_BLOCK_TAIL_PREFIX,
   graphHasReadbackBlock,
@@ -252,6 +254,12 @@ export class Engine {
   private readonly closingWorkspaces = new Set<string>();
   /** v13-S2 尝试内掐断幂等键（runId:nodeId:attempt）：同一轮尝试多个触发点连发只掐一次、只落一笔账 */
   private readonly interruptedAttempts = new Set<string>();
+  /**
+   * v13-V4 ctxSha 注入面账（runId → 注入现场逐次累计的实读文件集 + 漂移事件 once 位）。
+   * 只在内存、不当第二本账——权威账是 run.harness.ctxSha（随单落盘）；这里只存归一
+   * 过程量（跨节点并集）与「每单至多一条漂移事件」的幂等位。归档驱逐随 evictRun 清。
+   */
+  private readonly ctxLedger = new Map<string, { files: Map<string, string>; driftNoted: boolean }>();
   /** v13-S1 worktree 根目录（泄漏清扫的扫描面） */
   private readonly wtRoot: string;
 
@@ -420,6 +428,7 @@ export class Engine {
   /** R5.1 归档后从内存移除（记录已落盘 archive/） */
   evictRun(runId: string): void {
     this.runs.delete(runId);
+    this.ctxLedger.delete(runId); // v13-V4：内存过程量随主账一起清，权威账已在盘上
   }
 
   /** v7-A2 反归档后回注内存（与 evictRun 对称；记录已是终态，不会被重新调度） */
@@ -1106,7 +1115,8 @@ export class Engine {
     // 才是「两臂差的不是读回块、是真拓扑」的机器证据。graphSha 与 readback/readbackOutcome
     // 不比——graphSha 被注入块改写证不了等臂；readback 不等正是 A/B 的受测变量（实验设计，
     // 不是漂移）。骨架比对两侧任缺键（v13-V2 前的旧单）跳过，宁缺毋假。原记录无
-    // harness=旧单，不发。
+    // harness=旧单，不发。v13-V4 ctxSha 的漂移比对不在这里——新值的唯一诞生点是注入
+    // 现场（起单时点还没有它），见 noteContextInjection。
     const diffs = harnessDriftDiffs(source.harness, run.harness);
     if (diffs.length) {
       this.recordEvent(
@@ -2009,7 +2019,10 @@ export class Engine {
       );
       const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
       const artifactRel = cfg.artifactFile ?? defaultArtifactFile(nodeId);
-      const { block, agentKind } = this.resolveContext(run, cfg, nodeCwd);
+      const { block, agentKind, ctxFiles } = this.resolveContext(run, cfg, nodeCwd);
+      // v13-V4：ctxSha 就地在注入发生的这一刻取值落册（实读集=resolveContext 返回值，
+      // 不在起单时取——那是本片命门，取错点=假账）
+      this.noteContextInjection(run, ctxFiles);
       const prompt = this.withArtifactConvention(
         `${block}${rendered}`,
         path.join(nodeCwd, artifactRel),
@@ -2717,6 +2730,8 @@ export class Engine {
    * v13-V2 等臂机检三字段：readback 扫 run.graph 实态（不读 env、不看留痕）；
    * readbackOutcome 取 planWikiReadback 的出口判定；skeletonSha 剥注入块+归一路径
    * 字面量后复用 contentSha——等臂判据=skeletonSha 相等 ∧ readback 不等。
+   * v13-V4 特意不在此固化 ctxSha：约定文档/技能要到注入现场才知道实读了哪一版
+   * （此刻重读可能与实发不一致）——由 noteContextInjection 在注入当刻补写进本对象。
    */
   private async buildRunHarness(
     run: RunRecord,
@@ -2806,15 +2821,21 @@ export class Engine {
     run: RunRecord,
     cfg: DagNodeConfig,
     nodeCwd?: string,
-  ): { block: string; agentKind?: string } {
+  ): { block: string; agentKind?: string; ctxFiles: Record<string, string> } {
     const parts: string[] = [];
+    const ctxFiles: Record<string, string> = {};
     const role = this.roleById(run, cfg.role);
     if (role?.prePrompt) parts.push(`${role.prePrompt}\n`);
     try {
       const profile = this.storeFor(run).readProfile();
+      // v13-V4：实读现场逐文件记指纹——只登记实读成功（非 null）的那份；指纹取读到的
+      // 全文（其后被 PER_FILE_CAP/TOTAL_CAP 截不截是呈现层的事，「实读」就是实读）。
+      // 这份 ctxFiles 就是 ctxSha 的唯一取材：注入发生的那一刻吃了什么，账上就是什么。
       const read = (p: string) => {
         try {
-          return fs.readFileSync(p, 'utf8');
+          const content = fs.readFileSync(p, 'utf8');
+          ctxFiles[p] = contentSha(content);
+          return content;
         } catch {
           return null;
         }
@@ -2829,7 +2850,56 @@ export class Engine {
     } catch {
       // profile unreadable — proceed without conventions
     }
-    return { block: parts.join('\n'), agentKind: role?.agentKind };
+    return { block: parts.join('\n'), agentKind: role?.agentKind, ctxFiles };
+  }
+
+  /**
+   * v13-V4 ctxSha 注入留痕：在注入真正发生的现场（每次组 prompt、resolveContext
+   * 返回实读集之后）取值落册——起单时再读一遍文件可能与实发不同（那是假账）。
+   * 设计取舍：每单一个 ctxSha——M3 作用域规则让「哪几个文件被读到」随节点 cwd 变化，
+   * 以整单注入面并集（逐路径后读覆盖先读）归一一枚指纹，披露「注入面最终吃进的
+   * 状态」；逐节点分账不在本片量级。诚实边界：只证 PaneFlow 注入面，agent 自己的
+   * CLI 在 pane cwd 里自读的那份 AGENTS.md 引擎不可考（注释随 dag.ts ctxSha 键入册）。
+   * 只披露不拦（评审 R5）：任何意外静默，拿不到就整键缺省，绝不拦跑、绝不估算。
+   * 漂移比对：replay 单在指纹落册当刻与源单在册 ctxSha 比（此刻新值的唯一诞生点，
+   * harnessDriftDiffs 的起单时点比不了它）；不等→落一条「harness 漂移」事件，
+   * 每单至多一条；任一侧缺键（v13-V4 前旧单/源已被归档驱逐）跳过，宁缺毋假。
+   */
+  private noteContextInjection(run: RunRecord, files: Record<string, string>): void {
+    try {
+      const harness = run.harness;
+      if (!harness) return; // 起单未固成 harness 的防御路：不造半枚旁账
+      let led = this.ctxLedger.get(run.runId);
+      if (!led) {
+        led = { files: new Map(), driftNoted: false };
+        this.ctxLedger.set(run.runId, led);
+      }
+      for (const [p, sha] of Object.entries(files)) led.files.set(p, sha);
+      const sha = computeCtxSha({
+        files: Object.fromEntries(led.files),
+        gwThrottleRetries: this.gwThrottleRetries,
+        nodeTimeoutMsDefault: this.opts.defaultNodeTimeoutMs,
+      });
+      const changed = harness.ctxSha !== sha;
+      harness.ctxSha = sha;
+      let driftEvented = false;
+      if (!led.driftNoted && run.replayOf) {
+        const diff = ctxShaDriftDiff(this.runs.get(run.replayOf)?.harness, harness);
+        if (diff) {
+          led.driftNoted = true;
+          driftEvented = true;
+          this.recordEvent(
+            run,
+            'run',
+            undefined,
+            `harness 漂移（V4）：复跑时上下文注入面与原 run ${run.replayOf} 已变——${diff}；只记事件不拦停（本账只证 PaneFlow 注入面，agent 在 cwd 自读的不算）`,
+          );
+        }
+      }
+      if (changed || driftEvented) this.persistAndNotify(run);
+    } catch {
+      // 披露旁账不许把运行挡下来（与起单 harness 固化同款防御姿势）
+    }
   }
 
   /**

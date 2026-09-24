@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { DagGraph } from '@paneflow/shared';
 import {
   canonicalJson,
+  computeCtxSha,
   contentSha,
+  ctxShaDriftDiff,
   EXPERIENCE_BLOCK_HEAD_PREFIX,
   EXPERIENCE_BLOCK_TAIL_PREFIX,
   graphHasReadbackBlock,
@@ -14,8 +16,8 @@ import {
 } from './harness.js';
 import { READBACK_HEADER } from './readback.js';
 
-/** v13-V2 起 RunHarness 必填等臂两键的底座（比对面只认逐字段） */
-const h = (over: { graphSha?: string; agentKind?: string; gwProfile?: string; model?: string; skeletonSha?: string } = {}) => ({
+/** v13-V2 起 RunHarness 必填等臂两键的底座（比对面只认逐字段）；v13-V4 ctxSha 同为可选比对面 */
+const h = (over: { graphSha?: string; agentKind?: string; gwProfile?: string; model?: string; skeletonSha?: string; ctxSha?: string } = {}) => ({
   graphSha: 'x',
   agentKind: 'pi',
   readback: false as const,
@@ -208,5 +210,44 @@ describe('v13-V2 skeletonGraph / skeletonSha（剥注入块 + 归一 run_id/draf
     expect(JSON.stringify(g)).toBe(before); // 入参一字不动
     expect(JSON.stringify(sk)).not.toContain('aaaa1111');
     expect(JSON.stringify(sk)).toContain('{{run_id}}');
+  });
+});
+
+// -- v13-V4 ctxSha：注入面指纹的构成与漂移比对（引擎端接线与生产可达路径见 engine.test.ts） --
+describe('v13-V4 computeCtxSha / ctxShaDriftDiff（注入面指纹单源）', () => {
+  it('三块构成任一变动即换指纹；files 键序不影响（canonicalJson 归一，可复算）', () => {
+    const base = {
+      files: { '/repo/AGENTS.md': contentSha('约定甲'), '/repo/skills/x.md': contentSha('技能乙') },
+      gwThrottleRetries: 2,
+      nodeTimeoutMsDefault: 1_800_000,
+    };
+    const sha = computeCtxSha(base);
+    expect(sha).toMatch(/^[0-9a-f]{8}$/);
+    expect(computeCtxSha(base)).toBe(sha);
+    expect(computeCtxSha({ ...base, files: { ...base.files, '/repo/extra.md': 'zzzz1111' } })).not.toBe(sha);
+    expect(
+      computeCtxSha({ ...base, files: { ...base.files, '/repo/AGENTS.md': contentSha('约定甲改') } }),
+    ).not.toBe(sha);
+    expect(computeCtxSha({ ...base, gwThrottleRetries: 3 })).not.toBe(sha);
+    expect(computeCtxSha({ ...base, nodeTimeoutMsDefault: 60_000 })).not.toBe(sha);
+    // 键插入序不同 → 同一枚指纹
+    expect(computeCtxSha({ files: { '/repo/skills/x.md': base.files['/repo/skills/x.md']!, '/repo/AGENTS.md': base.files['/repo/AGENTS.md']! }, gwThrottleRetries: 2, nodeTimeoutMsDefault: 1_800_000 })).toBe(sha);
+  });
+
+  it('零文件也是正读数：没配约定/技能的单得到确定指纹（只含两枚旋钮），不是 undefined', () => {
+    const empty = computeCtxSha({ files: {}, gwThrottleRetries: 2, nodeTimeoutMsDefault: 1_800_000 });
+    expect(empty).toMatch(/^[0-9a-f]{8}$/);
+    expect(empty).not.toBe(computeCtxSha({ files: { '/a.md': 'x' }, gwThrottleRetries: 2, nodeTimeoutMsDefault: 1_800_000 }));
+  });
+
+  it('漂移比对：两侧在册值不等给「原→今」文案；相等不报；任一侧缺键（v13-V4 前旧单）跳过，宁缺毋假', () => {
+    const src = { ...h({ ctxSha: 'aaaa1111' }) };
+    const cur = { ...h({ ctxSha: 'bbbb2222' }) };
+    expect(ctxShaDriftDiff(src, cur)).toBe('上下文 #aaaa1111→#bbbb2222（约定文档/技能实读集或运行旋钮已变）');
+    expect(ctxShaDriftDiff(src, src)).toBeNull();
+    expect(ctxShaDriftDiff(h(), cur)).toBeNull(); // 源侧旧单：无 ctxSha 不猜
+    expect(ctxShaDriftDiff(src, h())).toBeNull(); // 新侧没落上（防御路/没走注入）：不猜
+    expect(ctxShaDriftDiff(undefined, cur)).toBeNull();
+    expect(ctxShaDriftDiff(src, undefined)).toBeNull();
   });
 });

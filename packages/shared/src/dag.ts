@@ -643,6 +643,16 @@ export interface RunHarness {
    * 可选：v13-V2 前的旧记录拿不到，整键省略（宁缺毋假，不回填）。
    */
   skeletonSha?: string;
+  /**
+   * v13-V4 注入面指纹：本单实发 prompt 里「PaneFlow 注入面」的可复算字节身份——
+   * resolveContext 注入现场实读到的约定文档/技能文件集（逐文件内容指纹）并入
+   * gwThrottleRetries / nodeTimeoutMsDefault 两枚运行旋钮后的 contentSha。
+   * 口径与取值时点见 engine.noteContextInjection 注释；只披露不参与编排判定（评审 R5）。
+   * 可选：v13-V4 前的旧记录、以及整单没走过注入路径的防御路拿不到，整键省略
+   * （宁缺毋假，不回填、不估算）。诚实边界：agent 自己的 CLI 在 pane cwd 里
+   * 自读的那份 AGENTS.md 引擎不可考，本键只证注入面这一份。
+   */
+  ctxSha?: string;
 }
 
 /**
