@@ -353,6 +353,34 @@ export type NodeRunState =
   | 'skipped'
   | 'cancelled';
 
+/**
+ * v13-S2 掐断触发点（NodeAbandonment.trigger）——「一次节点尝试到此为止」的原因归类：
+ * - settle-timeout：等 agent 状态收敛超时（waitForSettle deadline 路）
+ * - retry：进入重试——下一轮起窗之前必须先掐上一轮（含限流扩预算的再轮）
+ * - stop：stopRun/取消
+ * - shutdown：SIGTERM 优雅停机（v13-S6 停机序列复用同一掐断函数）
+ * - agent-gone：后台对账拿到明确 not_found 判 agent 已没（传输错/读不到不判，见 reconcile）
+ */
+export type NodeAbandonmentTrigger = 'settle-timeout' | 'retry' | 'stop' | 'shutdown' | 'agent-gone';
+
+/**
+ * v13-S2 尝试边界掐断账：每一次引擎主动「掐断在飞尝试」都结构化落到节点记录上——
+ * 字段要能回答「哪一轮尝试（attempt）、什么触发点（trigger）、掐的是什么状态
+ * （agentStatus，掐断现场实读）」。append-only，掐断即落册；
+ * K2 打回账（rejections）按需求口径复用本形状。
+ * 红线：不靠环形 events 字符串推导（v12-V2 attention 账同款卫生）。
+ */
+export interface NodeAbandonment {
+  at: string;
+  /** 被掐的是第几轮尝试（与 NodeRunRecord.attempts 同一口径） */
+  attempt: number;
+  trigger: NodeAbandonmentTrigger;
+  /** 掐断时刻读到的 agent 状态；读不到/已没=unknown——绝不估算 */
+  agentStatus: AgentStatus | 'unknown';
+  /** 掐的是哪个 agent（事后对账用） */
+  agentName: string;
+}
+
 export interface NodeRunRecord {
   nodeId: string;
   state: NodeRunState;
@@ -381,6 +409,11 @@ export interface NodeRunRecord {
   blockedAt?: string;
   artifact?: Artifact;
   error?: string;
+  /**
+   * v13-S2 掐断账：本节点每次被中途掐断的尝试各落一条（见 NodeAbandonment）。
+   * 缺省=从未掐断（旧记录同款 JSON 向后兼容，只增不改）。
+   */
+  abandonments?: NodeAbandonment[];
 }
 
 export type RunState =

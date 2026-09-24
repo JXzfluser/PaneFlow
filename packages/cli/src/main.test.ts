@@ -184,6 +184,33 @@ describe('runs / status / approve', () => {
     expect(legacy.lines.join('\n')).not.toContain('人等分');
   });
 
+  it('v13-S2 status 掐断账行：节点带 abandonments 就报最新一笔（轮次/触发/掐时状态），无账不显示', async () => {
+    const ab = [
+      { at: '2026-09-24T10:00:00.000Z', attempt: 1, trigger: 'settle-timeout', agentStatus: 'working', agentName: 'a-impl-1' },
+      { at: '2026-09-24T10:20:00.000Z', attempt: 2, trigger: 'agent-gone', agentStatus: 'unknown', agentName: 'a-impl-2' },
+    ];
+    const { fetchImpl } = stubFetch([
+      {
+        body: {
+          runId: 'r-ab',
+          state: 'failed',
+          dagName: 'g',
+          nodes: { impl: { nodeId: 'impl', state: 'failed', abandonments: ab } },
+        },
+      },
+      { body: { runId: 'r-ab', state: 'completed', dagName: 'g', nodes: { impl: { nodeId: 'impl', state: 'done' } } } },
+    ]);
+    const withLedger = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-ab'], withLedger.io)).toBe(0);
+    const out = withLedger.lines.join('\n');
+    // 只呈最新一笔（第 2 轮 agent-gone），且是 server 字段原样、CLI 不自造判据
+    expect(out).toContain('第 2 轮尝试已掐断（agent-gone · 掐时状态 unknown）');
+    expect(out).not.toContain('第 1 轮');
+    const noLedger = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-ab'], noLedger.io)).toBe(0);
+    expect(noLedger.lines.join('\n')).not.toContain('已掐断');
+  });
+
   it('approve POST 审批端点、体是 {action:"approve"}；409 时把 server 指路原样带出', async () => {
     const { fetchImpl, calls } = stubFetch([{ body: { delivered: true } }]);
     const { io } = makeIo({ fetch: fetchImpl });

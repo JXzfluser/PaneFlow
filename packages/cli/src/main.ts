@@ -229,6 +229,10 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
   if (gate?.waiting) io.out(`  ${paint(io, '33', `⏸ 等待审批：${gate.nodeIds.join('、')}`)}`);
   for (const n of Object.values(run.nodes ?? {})) {
     io.out(`  ${stateMark(io, n.state)}  ${n.nodeId}${n.error ? `  ${paint(io, '31', n.error.slice(0, 120))}` : ''}`);
+    // v13-S2 掐断账：这一轮尝试被引擎中途掐断过（超时/重试/停止/停机/agent 已没），
+    // 只呈 server 字段不自造判据——夜跑后看清「哪一轮、为什么、掐时它正干什么」
+    const ab = (n.abandonments ?? []).at(-1);
+    if (ab) io.out(`    ⚡ 第 ${ab.attempt} 轮尝试已掐断（${ab.trigger} · 掐时状态 ${ab.agentStatus}）`);
   }
   if (run.cost?.totalMs !== undefined) io.out(`  用时 ${humanMs(run.cost.totalMs)}${run.prUrl ? ` · ${run.prUrl}` : ''}`);
   return EXIT_OK;

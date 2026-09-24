@@ -18,6 +18,8 @@ export type {
   RunTokenLedger,
   NodeCost,
   NodeRunRecord,
+  NodeAbandonment,
+  NodeAbandonmentTrigger,
   WikiReadbackTrace,
   RunExperimentMeta,
   RunHarness,

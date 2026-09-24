@@ -30,6 +30,8 @@ paneflow runs --json            # 原始 API 负载，stdout 干净可直接 | j
 #    + 人等分行（v12-V2 人介入账：人等分: 等待 4.2 分 · 批 2/驳 0/补料 1——审批门
 #      拦→放的累计等待时长与决策计数，放门即结算落册；没批过门/旧 run 整缺不显示）
 #    + 每个节点状态 + 审批门提示
+#    + 掐断账行（v13-S2：节点尝试被引擎中途掐断过时出「⚡ 第 N 轮尝试已掐断（触发点 · 掐时状态）」，
+#      触发点取值 settle-timeout/retry/stop/shutdown/agent-gone；一次都没掐过整行不显示）
 paneflow status <runId>
 paneflow status <runId> --json
 

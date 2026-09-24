@@ -52,6 +52,14 @@ export interface NodeRunView {
   state: string;
   error?: string;
   blockedPrompt?: string;
+  /** v13-S2 掐断账（引擎结构化落册，只取最新一条展示） */
+  abandonments?: {
+    at: string;
+    attempt: number;
+    trigger: string;
+    agentStatus: string;
+    agentName: string;
+  }[];
 }
 
 /** POST /api/dispatch 的响应（nodes 为 v11-A1 新增节点清单摘要） */

@@ -18,6 +18,11 @@ export class FakeHerdrOps implements HerdrOps {
   maxConcurrent = 0;
   /** artificial per-prompt delay to observe real overlap (ms) */
   promptDelayMs = 0;
+  /**
+   * v13-S2：这些名字在 probeAgent 眼里等于「server 明确应答查无此 agent」（'gone'）——
+   * 对账判别读的测试面。getAgentStatus 不受影响（两条读的语义本就不同）。
+   */
+  goneAgents = new Set<string>();
   /** script: called on each prompt; may flip agent status to simulate work */
   onPrompt: (target: string, text: string) => void = () => {
     // default: pretend the agent did one working→idle cycle instantly
@@ -62,6 +67,13 @@ export class FakeHerdrOps implements HerdrOps {
     throw new Error(`timeout waiting ${target} for ${until.join(',')}`);
   }
   async getAgentStatus(target: string) {
+    // goneAgents 同时让状态读不到——「查无此 agent」在两把尺上口径要一致，
+    // 否则测试里会出现「agent 已没但仍读得到状态」的自相矛盾现场
+    if (this.goneAgents.has(target)) return null;
+    return this.agents.get(target)?.status ?? null;
+  }
+  async probeAgent(target: string): Promise<AgentStatus | 'gone' | null> {
+    if (this.goneAgents.has(target)) return 'gone';
     return this.agents.get(target)?.status ?? null;
   }
   async sendKeys(target: string, keys: string[]) {

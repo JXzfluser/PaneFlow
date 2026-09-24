@@ -19,6 +19,7 @@ import type {
   RunExperimentMeta,
   RunHarness,
   RunSideEffects,
+  NodeAbandonmentTrigger,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
@@ -166,6 +167,8 @@ export class Engine {
   private sweeping = false;
   /** v13-S1：正在收口关闭中的 workspaceId——终态转换与 closeWorkspace 之间的窗，周期扫描须绕行 */
   private readonly closingWorkspaces = new Set<string>();
+  /** v13-S2 尝试内掐断幂等键（runId:nodeId:attempt）：同一轮尝试多个触发点连发只掐一次、只落一笔账 */
+  private readonly interruptedAttempts = new Set<string>();
   /** v13-S1 worktree 根目录（泄漏清扫的扫描面） */
   private readonly wtRoot: string;
 
@@ -217,8 +220,10 @@ export class Engine {
           }
           try {
             new Store(store.root, space.id).saveRun(run);
-          } catch {
-            // best-effort persistence
+          } catch (err) {
+            // v13-S5：改判结果落不下去就是真丢账（内存改了、盘上还是 running）——
+            // 计数由 Store.atomicWriteSync 记，这里只补一句人话进日志
+            console.error(`[paneflow] boot 改判落盘失败 run=${run.runId}：${(err as Error).message}`);
           }
         }
         this.runs.set(run.runId, run);
@@ -472,11 +477,12 @@ export class Engine {
     for (const run of [...this.runs.values()]) {
       if (!['running', 'queued'].includes(run.state)) continue;
       this.cancels.add(run.runId);
-      for (const rec of Object.values(run.nodes)) {
-        if (rec.agentName && ['working', 'blocked', 'starting', 'retrying'].includes(rec.state)) {
-          void this.ops.sendKeys(rec.agentName, ['escape']).catch(() => {});
-        }
-      }
+      // v13-S2/S6 合流：停机掐 agent 复用同一掐断共用函数（旧实现只裸发 escape 不落账；
+      // 现统一 escape→ctrl+c 序列 + abandonments 结构化落册，停机序列语义「掐→关→flush」不变）
+      const interrupts = Object.values(run.nodes)
+        .filter((rec) => rec.agentName && ['working', 'blocked', 'starting', 'retrying'].includes(rec.state))
+        .map((rec) => this.interruptAttemptAgent(run, rec, 'shutdown'));
+      await Promise.allSettled(interrupts);
       for (const rec of Object.values(run.nodes)) {
         if (['working', 'blocked', 'queued', 'starting', 'retrying'].includes(rec.state)) {
           rec.state = 'failed';
@@ -1029,19 +1035,57 @@ export class Engine {
     // v12-V2：取消经 waiter 直接放行，不走 approve() 的结算口——撤销不是人的门决策，
     // 绝不入账（红线）；进门时刻就地清空，防残留时刻被后续轮次误结。
     for (const rec of Object.values(run.nodes)) rec.blockedAt = undefined;
-    // actively interrupt in-flight agents (esc dismisses dialogs, ctrl+c
-    // interrupts the turn) so server-held prompt waits settle promptly
+    // v13-S2 触发点 (c)：取消/停止——旧实现在这里内联「escape→300ms→ctrl+c」，现复用
+    // 同一掐断共用函数（键序列一字不差），额外把掐断事实结构化落 rec.abandonments。
+    // 状态过滤保持旧口径（working/blocked/starting），行为不得退化。
     for (const rec of Object.values(run.nodes)) {
       if (!rec.agentName || !['working', 'blocked', 'starting'].includes(rec.state)) continue;
-      const agentName: string = rec.agentName;
-      void this.ops
-        .sendKeys(agentName, ['escape'])
-        .catch(() => {})
-        .then(() => sleep(300))
-        .then(() => this.ops.sendKeys(agentName, ['ctrl+c']))
-        .catch(() => {});
+      void this.interruptAttemptAgent(run, rec, 'stop');
     }
     return true;
+  }
+
+  /**
+   * v13-S2 尝试边界掐断（唯一实现）：「一次节点尝试到此为止，别让它的 agent 继续活着」。
+   * 旧实现只在 stopRun 有这一段动作，重试直接另起一轮——上一轮 pane 里的 agent 还在
+   * 吃 prompt 烧钱（双跑账）。零新协议动词：只做既有逃逸键序列（escape 关对话框 →
+   * ctrl+c 打断回合）；workspace/pane 回收沿用各触发点既有动作（本函数不越权关人）。
+   * 掐断事实结构化落 rec.abandonments（哪一轮、什么触发点、掐的是什么状态）——
+   * S2 红线：不靠环形 events 人话字符串推导。
+   * 尝试内幂等：settle 超时掐过后紧接着进重试，同一轮只掐一次（第二个触发点空手而归）。
+   * 永不 reject：任何观测/送键失败都静默降级，不许反噬触发点主流程。
+   */
+  private async interruptAttemptAgent(
+    run: RunRecord,
+    rec: NodeRunRecord,
+    trigger: NodeAbandonmentTrigger,
+  ): Promise<void> {
+    if (!rec.agentName) return; // agent 从未起成——没东西可掐，也不落假账
+    const agentName = rec.agentName;
+    const key = `${run.runId}:${rec.nodeId}:${rec.attempts}`;
+    if (this.interruptedAttempts.has(key)) return;
+    this.interruptedAttempts.add(key);
+    let observed: AgentStatus | 'unknown' = 'unknown';
+    try {
+      observed = (await this.ops.getAgentStatus(agentName)) ?? 'unknown';
+    } catch {
+      // 状态读不到照掐——账上记 unknown，绝不估算
+    }
+    try {
+      await this.ops.sendKeys(agentName, ['escape']);
+      await sleep(300);
+      await this.ops.sendKeys(agentName, ['ctrl+c']);
+    } catch {
+      // agent 可能已没/pane 已碎：逃逸键送不到不算掐断失败，账照落
+    }
+    (rec.abandonments ??= []).push({
+      at: new Date().toISOString(),
+      attempt: rec.attempts,
+      trigger,
+      agentStatus: observed,
+      agentName,
+    });
+    this.persistAndNotify(run);
   }
 
   /** Human approval for a blocked node. */
@@ -1157,6 +1201,10 @@ export class Engine {
       }
       this.rootPanes.delete(run.runId);
       this.cancels.delete(run.runId);
+      // v13-S2：尝试掐断幂等键随 run 收口清账，不留内存残渣
+      for (const k of [...this.interruptedAttempts]) {
+        if (k.startsWith(`${run.runId}:`)) this.interruptedAttempts.delete(k);
+      }
       run.cost = this.computeRunCost(run); // R6a：先记账再广播（持久化含 cost）
       this.persistAndNotify(run);
       this.pumpQueue(run.spaceId ?? 'default'); // G3：终态腾出额度，队列放行
@@ -1164,8 +1212,9 @@ export class Engine {
       // 纯 fire-and-forget：void + maybeAutoDistill 内部全捕获，永不 reject，
       // 收口路径不 await 任何 LLM/git/网络，蒸馏炸与否都流不回终态广播。
       if (run.state === 'completed') void this.maybeAutoDistill(run);
-      // v11-E1c：实验收数（同样只加不改）——只认带 suite 的实验单，旁账落盘失败静默，
-      // 不 await 进收口关键路径之外的任何网络/git（纯本地 append）。
+      // v11-E1c：实验收数（同样只加不改）——只认带 suite 的实验单。v13-V3 起落盘失败不再无声：
+      // appendExperimentRow 三态返回 + 进程级计数（/api/health 的 experimentWrites 可读），
+      // 但收口路径依旧不 await（纯本地 append，炸不回灌终态广播）。
       if (run.experiment?.suite) void appendExperimentRow(this.store.root, run);
     }
   }
@@ -1525,6 +1574,17 @@ export class Engine {
       rec.error = lastError;
       rec.finishedAt = new Date().toISOString();
       this.persistAndNotify(run);
+
+      // v13-S2 触发点 (b)：进入重试——下一轮起窗之前（含限流退避窗前）先掐断这一轮的
+      // agent，重试不再双跑。还会不会再进循环两种判据都要问：常规预算没耗尽，或
+      // 纯限流失败还有专属额外预算（下方 throttle 分支会扩 maxAttempts）。
+      // 同一轮若已被 (a) 掐过，幂等键让这里空手而归、不双落账。
+      const willRetry =
+        attempt < maxAttempts ||
+        (gwHost !== null && throttleBudget > 0 && looksLikeGatewayThrottle(lastError));
+      if (willRetry) {
+        await this.interruptAttemptAgent(run, rec, 'retry');
+      }
 
       if (gwHost && looksLikeGatewayThrottle(lastError)) {
         throttleStreak += 1;
@@ -2640,7 +2700,12 @@ export class Engine {
         continue;
       }
       blockedStreak = 0;
-      if (Date.now() >= deadline) throw new Error('等待节点完成超时');
+      if (Date.now() >= deadline) {
+        // v13-S2 触发点 (a)：收敛超时——这一轮到此为止，先掐旧 agent 再抛错进下一步，
+        // 不许它还活着把退避窗/下一轮的预算烧掉（旧实现直接抛，agent 原地续跑）
+        await this.interruptAttemptAgent(run, rec, 'settle-timeout');
+        throw new Error('等待节点完成超时');
+      }
       await sleep(1000);
     }
   }
@@ -2797,18 +2862,26 @@ export class Engine {
   }
 
   /** Polling reconciliation against live agent status (guards event loss). */
-  private async reconcile(): Promise<void> {
+  async reconcile(): Promise<void> {
     for (const run of this.runs.values()) {
       if (run.state !== 'running') continue;
       for (const rec of Object.values(run.nodes)) {
-        if (rec.agentName && (rec.state === 'working' || rec.state === 'blocked')) {
-          const status = await this.ops.getAgentStatus(rec.agentName);
-          if (status && status !== rec.agentStatus) {
-            rec.agentStatus = status;
-            if (rec.state === 'working' && status === 'blocked') rec.state = 'blocked';
-            if (rec.state === 'blocked' && status === 'working') rec.state = 'working';
-            this.persistAndNotify(run);
-          }
+        if (!rec.agentName || (rec.state !== 'working' && rec.state !== 'blocked')) continue;
+        // v13-S2 判据重做：走 probeAgent 三态判别读——'gone'（herdr 明确应答 not_found 类错误码）
+        // 才判「agent 已没」，掐断该轮尝试并落 agent-gone 账；null=没答上话（传输错/超时/
+        // 破烂应答）一律不判。旧实现用 getAgentStatus，它把一切错误压成 null，「查无此 agent」
+        // 与「server 没答上话」塌成同一读数——判死与不判两头都拿它当证据，故这条读单独开。
+        const probed = await this.ops.probeAgent(rec.agentName);
+        if (probed === 'gone') {
+          await this.interruptAttemptAgent(run, rec, 'agent-gone');
+          continue;
+        }
+        if (!probed) continue;
+        if (probed !== rec.agentStatus) {
+          rec.agentStatus = probed;
+          if (rec.state === 'working' && probed === 'blocked') rec.state = 'blocked';
+          if (rec.state === 'blocked' && probed === 'working') rec.state = 'working';
+          this.persistAndNotify(run);
         }
       }
     }
@@ -2826,8 +2899,10 @@ export class Engine {
   private persistAndNotify(run: RunRecord): void {
     try {
       this.storeFor(run).saveRun(run);
-    } catch {
-      // never let persistence break a live run
+    } catch (err) {
+      // never let persistence break a live run —— 但不等于不说：v13-S5 起写盘失败会抛，
+      // 这里只降级为日志 + Store.persistFailures 计数（挂 health 读端），在飞单照跑
+      console.error(`[paneflow] 在飞 run 落账失败 run=${run.runId}：${(err as Error).message}`);
     }
     for (const l of this.listeners) {
       try {

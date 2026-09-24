@@ -3341,3 +3341,150 @@ describe('v13-S6 优雅停机（engine.shutdown：掐 agent→关 workspace→fl
     expect(eng.getRun(run.runId)!.events?.filter((e) => e.text.includes('服务退出'))).toHaveLength(1);
   });
 });
+
+describe('v13-S2 尝试边界掐断（interruptAttemptAgent 三触发点 + reconcile not_found 判据）', () => {
+  it('触发点 (a) waitForSettle 收敛超时：先掐旧 agent（escape→ctrl+c）再判失败，落册 settle-timeout（轮次/触发/实读状态）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = (target) => ops.setStatus(target, 'working'); // 永不收敛，只等超时路
+    const run = await runToCompletion(serialGraph(), cwd);
+    const rec = run.nodes['impl']!;
+    expect(run.state).toBe('failed');
+    expect(rec.abandonments).toHaveLength(1);
+    const ab = rec.abandonments![0]!;
+    expect(ab.trigger).toBe('settle-timeout');
+    expect(ab.attempt).toBe(1);
+    expect(ab.agentStatus).toBe('working'); // 掐断现场实读，不是估算
+    expect(ab.agentName).toBe(rec.agentName);
+    const name = rec.agentName!;
+    expect(ops.sentKeys.filter((s) => s.target === name).map((s) => s.keys.join('+'))).toEqual([
+      'escape',
+      'ctrl+c',
+    ]);
+  });
+
+  it('触发点 (b) 进入重试：下一轮起窗（startAgent/prompt）之前旧尝试已被掐，落册 retry', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const g = serialGraph();
+    g.nodes[1]!.config.retryCount = 1;
+    let prompts = 0;
+    let keysSeenAtSecondPrompt = -1;
+    ops.onPrompt = (target) => {
+      prompts += 1;
+      if (prompts === 1) {
+        // 快速失败路（非 settle 超时）：agent 活着working、prompt 提交即炸——只有 (b) 能掐它
+        ops.setStatus(target, 'working');
+        throw new Error('prompt 提交即炸（模拟 herdr 判杀）');
+      }
+      keysSeenAtSecondPrompt = ops.sentKeys.length; // 此刻（第二轮已起 agent 并再次提交）掐断键必须已送达
+    };
+    const run = await runToCompletion(g, cwd);
+    expect(run.state).toBe('completed');
+    const rec = run.nodes['impl']!;
+    expect(rec.attempts).toBe(2);
+    expect(rec.abandonments).toHaveLength(1);
+    expect(rec.abandonments![0]!.trigger).toBe('retry');
+    expect(rec.abandonments![0]!.attempt).toBe(1);
+    expect(rec.abandonments![0]!.agentStatus).toBe('working');
+    expect(ops.starts).toHaveLength(2);
+    expect(keysSeenAtSecondPrompt).toBe(2); // escape+ctrl+c 成对且先于第二轮 prompt
+    expect(ops.sentKeys[0]!.target).toBe(ops.starts[0]!.name); // 掐的是上一轮的 agent
+  });
+
+  it('触发点 (c) stopRun：掐断收编进共用函数（键序列与旧内联一致）落册 stop，回收 workspace 行为不退化', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = (target) => ops.setStatus(target, 'working'); // 永不 settle：保持 running
+    const run = await engine.startRun(serialGraph(), cwd);
+    await waitFor(() => run.nodes['impl']!.state === 'working');
+    const rec = run.nodes['impl']!;
+    const name = rec.agentName!;
+    expect(engine.stopRun(run.runId)).toBe(true);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    await waitFor(() => (rec.abandonments?.length ?? 0) >= 1); // 掐断在 stopRun 返回后异步落账
+    expect(run.state).toBe('cancelled');
+    expect(ops.closedWorkspaces).toContain(run.workspaceId);
+    // 键序列与旧内联实现同款：escape → ctrl+c
+    expect(ops.sentKeys.filter((s) => s.target === name).map((s) => s.keys.join('+'))).toEqual([
+      'escape',
+      'ctrl+c',
+    ]);
+    const stops = rec.abandonments!.filter((a) => a.trigger === 'stop');
+    expect(stops).toHaveLength(1);
+    expect(stops[0]!.attempt).toBe(1);
+    // 取消不再触发超时/重试的额外掐断（幂等 + cancels 短路）：整账就这一笔
+    await new Promise((r) => setTimeout(r, 100));
+    expect(rec.abandonments).toHaveLength(1);
+  });
+
+  it('尝试内幂等：(a) 掐过后进入重试不双发键不双落账（settle-timeout 一笔），run 照常经重试收绿', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const g = serialGraph();
+    g.nodes[1]!.config.retryCount = 1;
+    let prompts = 0;
+    ops.onPrompt = (target) => {
+      prompts += 1;
+      if (prompts === 1) ops.setStatus(target, 'working'); // 第一轮超时被掐，随后进入重试
+    };
+    const run = await runToCompletion(g, cwd);
+    expect(run.state).toBe('completed');
+    const rec = run.nodes['impl']!;
+    expect(rec.attempts).toBe(2);
+    expect(rec.abandonments).toHaveLength(1); // 同一轮两个触发点只落一笔
+    expect(rec.abandonments![0]!.trigger).toBe('settle-timeout');
+    const name1 = ops.starts[0]!.name;
+    expect(ops.sentKeys.filter((s) => s.target === name1)).toHaveLength(2); // escape+ctrl+c，不是翻倍的四发
+  });
+
+  it('reconcile 判据：判别读出「gone」（生产路=herdr 明确回 not_found 码，见 herdr-ops.test.ts）才判「agent 已没」→ 掐断并落册 agent-gone（状态读不到记 unknown，绝不估算）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = (target) => ops.setStatus(target, 'working');
+    const run = await engine.startRun(serialGraph(), cwd);
+    const rec = run.nodes['impl']!;
+    await waitFor(() => rec.state === 'working' && Boolean(rec.agentName));
+    ops.goneAgents.add(rec.agentName!);
+    await engine.reconcile();
+    expect(rec.abandonments).toHaveLength(1);
+    expect(rec.abandonments![0]!.trigger).toBe('agent-gone');
+    expect(rec.abandonments![0]!.attempt).toBe(1);
+    expect(rec.abandonments![0]!.agentStatus).toBe('unknown');
+    expect(rec.state).toBe('working'); // 对账只掐断落账，不越权改节点状态（收敛归主循环）
+    // 取消收尾，不给测试留活体循环
+    engine.stopRun(run.runId);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+  });
+
+  it('reconcile 三态里的 null（没答上话：传输错/超时/破烂应答，生产路同样映成 null）一律不判：不掐、不落账、不发键', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    ops.onPrompt = (target) => ops.setStatus(target, 'working');
+    const run = await engine.startRun(serialGraph(), cwd);
+    const rec = run.nodes['impl']!;
+    await waitFor(() => rec.state === 'working' && Boolean(rec.agentName));
+    const orig = ops.probeAgent.bind(ops);
+    try {
+      ops.probeAgent = async () => null; // 旧「两轮 null」式含糊读数正是本判据要否掉的形态
+      await engine.reconcile();
+      await engine.reconcile();
+    } finally {
+      ops.probeAgent = orig;
+    }
+    expect(rec.abandonments).toBeUndefined();
+    expect(ops.sentKeys).toHaveLength(0);
+    engine.stopRun(run.runId);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+  });
+
+  it('S6 停机序列复用掐断共用函数：在飞节点除旧裸 escape 外还落 shutdown 触发账', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
+    const eng = new Engine(ops, store, {
+      ...OPTS,
+      orphanSweepMs: 0,
+      worktreeRoot: path.join(os.tmpdir(), 'pf-wt-none-'),
+    });
+    ops.onPrompt = (target) => ops.setStatus(target, 'working');
+    const run = await eng.startRun(serialGraph(), cwd);
+    await waitFor(() => eng.getRun(run.runId)!.nodes['impl']!.state === 'working');
+    await eng.shutdown('测试信号');
+    const rec = eng.getRun(run.runId)!.nodes['impl']!;
+    expect(rec.abandonments?.some((a) => a.trigger === 'shutdown')).toBe(true);
+    expect(ops.closedWorkspaces).toContain(run.workspaceId);
+  });
+});

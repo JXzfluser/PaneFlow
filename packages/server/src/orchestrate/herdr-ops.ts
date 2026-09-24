@@ -1,6 +1,18 @@
 import type { AgentStatus } from '@paneflow/shared';
-import { HerdrClient } from '../herdr/client.js';
+import { HerdrClient, HerdrRequestError } from '../herdr/client.js';
 import type { WorkspaceInfo } from '../herdr/types.js';
+
+/**
+ * v13-S2 「agent 已没」的唯一判据：**只看协议错误码里的 not_found 类**
+ * （`not_found`/`agent_not_found`/`pane_not_found` 都算——target 已不存在就是不存在）。
+ * 传输错（HerdrConnectionError）、超时（code=timeout）、invalid_request 一律不算——
+ * 那些是「没答上话」，拿它判死就是把含糊读数当证据（宁缺毋假）。
+ * 错误码是 client 拼进 message 的（`herdr <code>: <message>`，见 client.ts HerdrRequestError），
+ * 这里认结构化的 `code` 字段，不认 message 里的人话。
+ */
+export function isAgentNotFoundError(err: unknown): boolean {
+  return err instanceof HerdrRequestError && /not_found/i.test(err.code);
+}
 
 /**
  * The engine-facing surface over Herdr. Isolated behind an interface so the
@@ -21,6 +33,13 @@ export interface HerdrOps {
   waitAgent(target: string, until: AgentStatus[], timeoutMs: number): Promise<void>;
   /** Current agent status (explicit read — used for polling reconciliation). */
   getAgentStatus(target: string): Promise<AgentStatus | null>;
+  /**
+   * v13-S2 对账专用三态判别读：`AgentStatus`=还在、`'gone'`=server 明确应答查无此 agent、
+   * `null`=拿不到判据（传输错/超时/无法归类）。与 getAgentStatus 的关键差别：后者把一切错误
+   * 压成 null，于是「明确没有」与「没答上话」塌成同一读数——判「agent 已没」若用那把尺，
+   * 要么永远判不了（生产路 null 吞掉），要么把瞬断判成死单。只此一个用途，别处别拿它当状态读。
+   */
+  probeAgent(target: string): Promise<AgentStatus | 'gone' | null>;
   /** Send key presses (approval flow). */
   sendKeys(target: string, keys: string[]): Promise<void>;
   /** Send raw text to a pane's terminal (manual intervention channel). */
@@ -95,6 +114,16 @@ export class RealHerdrOps implements HerdrOps {
       return r.agent?.agent_status ?? null;
     } catch {
       return null;
+    }
+  }
+
+  async probeAgent(target: string): Promise<AgentStatus | 'gone' | null> {
+    try {
+      const r = await this.client.agentGet(target);
+      // 答上了但没状态字段=判据不齐，不判 gone（宁缺毋假）——'gone' 只由明确错误码给出
+      return r.agent?.agent_status ?? null;
+    } catch (err) {
+      return isAgentNotFoundError(err) ? 'gone' : null;
     }
   }
 
