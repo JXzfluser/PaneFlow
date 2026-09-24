@@ -2612,7 +2612,15 @@ describe('v11-E1 engine：replayRun 穿透同 issue 锁 / 实验元数据 / 收�
     await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
     expect(run.state).toBe('completed');
     const file = path.join(dataDir, 'experiments', 'c4', `${engine.getRun(run.runId)!.finishedAt!.slice(0, 10)}.md`);
-    await waitFor(() => fs.existsSync(file));
+    // 等「这一行到位」而不是「文件存在」：落行是 fire-and-forget，慢机器上文件可先于
+    // 本行出现（同日另一臂的表已建）——existsSync 判据在 CI 上是假绿/假红两用（v13 首推脆测试②）
+    await waitFor(() => {
+      try {
+        return fs.readFileSync(file, 'utf8').includes(`| ${run.runId} |`);
+      } catch {
+        return false;
+      }
+    });
     const text = fs.readFileSync(file, 'utf8');
     expect(text).toContain('# 实验收数');
     expect(text).toContain(`| ${run.runId} | b | - | completed |`);
