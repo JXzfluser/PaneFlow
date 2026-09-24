@@ -7,7 +7,7 @@ import type { DagGraph, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
-import { listExperimentRows } from '../orchestrate/experiment.js';
+import { experimentWriteStats, listExperimentRows, reconcileExperimentTables } from '../orchestrate/experiment.js';
 import type { SpaceProfile, TeamMember } from '../orchestrate/store.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { loadContractLibrary, matchContractTemplate, renderContractTemplateBlock } from '../orchestrate/contract-templates.js';
@@ -874,6 +874,9 @@ export async function buildHttpServer(deps: HttpDeps) {
       gatewayEnabled: gatewayActive(deps.dataDir),
       persistFailures: Store.persistFailures,
       corruptRuns,
+      // v13-V3 收数表写入健康：内存累计（append 三态里 failed 的计数与末次失败），
+      // 与 persistFailures 同理——失败的是表，就不写进表里自证
+      experimentWrites: experimentWriteStats(),
       env: {
         nodeVersion: process.version,
         agentsInstalled,
@@ -1533,11 +1536,19 @@ export async function buildHttpServer(deps: HttpDeps) {
   });
 
   // v11-E1c 收数表只读表达面：直读 dataDir/experiments/（零网络零解析加工，够 CLI 用即止）
-  app.get<{ Querystring: { suite?: string; runId?: string } }>('/api/experiments', async (req) => {
+  app.get<{ Querystring: { suite?: string; runId?: string; reconcile?: string } }>('/api/experiments', async (req) => {
     const tables = await listExperimentRows(deps.dataDir, {
       ...(req.query.suite ? { suite: req.query.suite } : {}),
       ...(req.query.runId ? { runId: req.query.runId } : {}),
     });
+    // v13-V3 收数表自证：?reconcile=1 时把「盘上表行」与「应有 run 集」对账（expected 只取
+    // 盘上记录并显式归档口径），缺行/孤儿行都点名——不猜、不静默补。
+    if (req.query.reconcile) {
+      return {
+        tables,
+        reconcile: await reconcileExperimentTables(deps.dataDir, req.query.suite ? { suite: req.query.suite } : {}),
+      };
+    }
     return { tables };
   });
 

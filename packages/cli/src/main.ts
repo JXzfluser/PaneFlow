@@ -302,7 +302,10 @@ async function cmdExperiments(io: CliIo, baseUrl: string, args: Args): Promise<n
     return EXIT_OK;
   }
   for (const t of body.tables) {
-    io.out(`${t.file}（${t.rows.length} 行）`);
+    // v13-V3 行数如实口径：server 零加工直呈、rows 含表头行（CLI 读列名用），
+    // 计数只算数据行——旧口径把表头算进「N 行」是现成的谎报。行照样全打。
+    const dataRows = t.rows.filter((r) => !/^\|\s*runId\s*\|/.test(r));
+    io.out(`${t.file}（${dataRows.length} 行，不含表头）`);
     for (const row of t.rows) io.out(`  ${row}`);
   }
   return EXIT_OK;

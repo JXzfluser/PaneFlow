@@ -253,23 +253,27 @@ describe('replay / experiments（v11-E1）', () => {
     expect(JSON.parse(calls[1]!.init.body!)).toEqual({ times: 1 });
   });
 
-  it('experiments：人读按表列文件+行；空表给指路文案；--suite 进 query；--json 原样', async () => {
-    const rows = ['| runId | arm | flag | state | 断言 pass/total | 重试 | 墙钟秒 | replayOf |', '| a1 | on | - | completed | 2/2 | 0 | 90 | - |'];
+  it('experiments：行数只算数据行（v13-V3 去表头谎报）；表头/行照打；空表给指路文案；--suite 进 query；--json 原样', async () => {
+    const rows = [
+      '| runId | arm | flag | state | 断言 pass/total | 重试 | 墙钟秒 | token in | token out | replayOf | harness | 人等分 |',
+      '| a1 | on | - | completed | 2/2 | 0 | 90 | 12000 | 3400 | - | a1b2c3d4·pi | 4.2 |',
+    ];
     const payload = { tables: [{ suite: 'c4', date: '2026-09-21', file: 'experiments/c4/2026-09-21.md', rows }] };
     const { fetchImpl, calls } = stubFetch([{ body: payload }, { body: { tables: [] } }]);
     const { io, lines } = makeIo({ fetch: fetchImpl });
     expect(await main(['experiments', '--suite', 'c4', '--url', 'http://x:1'], io)).toBe(0);
     expect(calls[0]!.url).toBe('http://x:1/api/experiments?suite=c4');
     const out = lines.join('\n');
-    expect(out).toContain('experiments/c4/2026-09-21.md（2 行）');
-    expect(out).toContain('| a1 | on | - | completed |');
+    expect(out).toContain('experiments/c4/2026-09-21.md（1 行，不含表头）'); // 表头不再被算进账
+    expect(out).toContain('| runId | arm |'); // 表头行照样打出来（读列名用）
+    expect(out).toContain('| a1 | on | - | completed |'); // 新 token 列原样渲染（行直呈）
     const empty = makeIo({ fetch: fetchImpl });
     expect(await main(['experiments'], empty.io)).toBe(0);
     expect(calls[1]!.url).toBe('http://127.0.0.1:4310/api/experiments');
     expect(empty.lines.join('\n')).toContain('暂无实验收数');
     const json = makeIo({ fetch: stubFetch([{ body: payload }]).fetchImpl });
     expect(await main(['experiments', '--json'], json.io)).toBe(0);
-    expect(JSON.parse(json.lines.join('\n'))).toEqual(payload);
+    expect(JSON.parse(json.lines.join('\n'))).toEqual(payload); // --json 原样直呈，不受行数口径影响
   });
 });
 
