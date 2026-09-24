@@ -885,6 +885,55 @@ describe('Engine (serial DAG)', () => {
     }
   });
 
+  it('v13-S3 出闸判据=「锁是否还在」而非「锁是否还归旧 holder」：三家同仓串行，一家放行后只有一家门前让路，排队文案随锁转手刷新、拿到锁即清陈旧 error（旧判据下双等待者同刻出闸互相踩 set，fake 并发探针当场抓到重叠）', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-lock3-'));
+    execFileSync('git', ['-C', repo, 'init']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 't@t']);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'base');
+    execFileSync('git', ['-C', repo, 'add', '-A']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'base']);
+
+    // 三家各一个 manual 门：run1 卡门持锁 → r2/r3 排队 → 放行 run1 后仅一家出闸（随即卡在自己的门上继续持锁），
+    // 另一家必须改排在「新」holder 面前。旧判据拿已死的 run1 比对 → 两家同时出闸 = 同仓并发写。
+    const gated = (name: string): DagGraph => {
+      const g = serialGraph();
+      g.name = name;
+      g.nodes[1]!.config.checks = [{ type: 'manual', prompt: '放行' }];
+      return g;
+    };
+    const errOf = (runId: string) => engine.getRun(runId)!.nodes['impl']!.error ?? '';
+    const implState = (runId: string) => engine.getRun(runId)!.nodes['impl']!.state;
+
+    process.env.PF_DIRTY_CHECK = '0';
+    try {
+      const r1 = await engine.startRun(gated('lock-holder'), repo);
+      await waitFor(() => implState(r1.runId) === 'blocked');
+      const r2 = await engine.startRun(gated('lock-waiter-b'), repo);
+      const r3 = await engine.startRun(gated('lock-waiter-c'), repo);
+      await waitFor(() => errOf(r2.runId).includes(r1.runId) && errOf(r3.runId).includes(r1.runId));
+      ops.maxConcurrent = 0; // 探针只看过闸之后的两段执行是否重叠
+      await engine.approve(r1.runId, 'impl', { action: 'approve' });
+      await waitFor(() => engine.getRun(r1.runId)!.state === 'completed');
+      // 只有一家出闸（随即卡在自己的门上、继续持锁），另一家把排队文案改指向这个新 holder
+      await waitFor(() => errOf(r2.runId).includes(r3.runId) || errOf(r3.runId).includes(r2.runId), 12_000);
+      const [winner, loser] = errOf(r2.runId).includes(r3.runId) ? [r3.runId, r2.runId] : [r2.runId, r3.runId];
+      expect(implState(winner)).toBe('blocked');
+      expect(errOf(winner)).toBe(''); // 拿到锁：排队文案不留陈缺（旧实现一路挂到节点结束）
+      await engine.approve(winner, 'impl', { action: 'approve' });
+      // 落闸者接手后同样要过自己的门——此刻它已出闸，陈旧排队文案必须清干净
+      await waitFor(() => implState(loser) === 'blocked', 20_000);
+      expect(errOf(loser)).toBe('');
+      await engine.approve(loser, 'impl', { action: 'approve' });
+      await waitFor(() => engine.getRun(loser)!.state === 'completed', 20_000);
+      await waitFor(() => engine.getRun(winner)!.state === 'completed', 20_000);
+      expect(ops.maxConcurrent).toBe(1); // fake 并发探针：整段从未两个节点同刻在跑
+      expect(ops.prompts).toHaveLength(3); // 三家各一次提示 = 严格串行，无一被踩掉重跑
+    } finally {
+      delete process.env.PF_DIRTY_CHECK;
+    }
+  }, 45_000);
+
   it('R6.5 resume: done nodes inherited, failed node re-executes only', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
     const graph = twoNodeGraph();

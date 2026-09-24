@@ -1605,11 +1605,30 @@ export class Engine {
             this.recordEvent(run, 'node', nodeId, `排队等待仓库锁：${holder.runId}/${holder.nodeId} 占用中`);
             this.persistAndNotify(run);
             const lockDeadline = Date.now() + Math.max(60_000, timeoutMs);
-            while (this.repoClaims.get(repo)?.runId === holder.runId) {
+            // v13-S3 出闸判据修正：问「锁还在不在」而不是「锁还归不归于进队时那个 holder」——
+            // 旧式下 holder 释放瞬间若有人抢入，等待者手里攥着已死 holder 的 runId 作比对对象，
+            // 永远对不上 = 两个等待者同刻出闸、随后各自无条件 set 互相踩（隔离形同虚设）。
+            // 红线：本 while 与其后的 repoClaims.set 之间严禁引入 await——JS 单线程下
+            // 「同 tick 的 has() 判定 + set 写入」天然原子，插一个 await 就把这块补成新的竞态。
+            let waitingHolder = holder;
+            while (this.repoClaims.has(repo)) {
+              const cur = this.repoClaims.get(repo);
+              if (cur && cur.key !== myKey && cur.runId !== waitingHolder.runId) {
+                // 锁转手（前一家放行、后一家接手）：排队文案要说清现在挡在谁面前
+                waitingHolder = cur;
+                rec.error = `等待仓库锁：${repo}（被 run ${cur.runId} 的 ${cur.nodeId} 占用）`;
+                this.recordEvent(run, 'node', nodeId, `仍在排队：锁已转手 ${cur.runId}/${cur.nodeId}`);
+                this.persistAndNotify(run);
+              }
               if (this.cancels.has(run.runId)) return '已取消（等待仓库锁）';
               if (Date.now() > lockDeadline) return `仓库锁等待超时：${repo}`;
               await sleep(1500);
             }
+            // 拿到锁：清掉排队期留下的 error（旧实现让「等待仓库锁」字样一直挂在节点记录上直到结束）
+            delete rec.error;
+            rec.state = 'starting';
+            this.recordEvent(run, 'node', nodeId, '仓库锁到手，继续执行');
+            this.persistAndNotify(run);
           }
         }
         this.repoClaims.set(repo, { runId: run.runId, nodeId, key: myKey });
