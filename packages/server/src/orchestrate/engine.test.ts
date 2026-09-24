@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { Engine, gateTimeoutMessage, resolveGateTimeoutMs } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
 import { BUILTIN_TEMPLATES } from './builtin-templates.js';
-import { contentSha } from './harness.js';
+import { computeCtxSha, contentSha } from './harness.js';
 import { READBACK_HEADER } from './readback.js';
 import { WIKI_ROOT, wikiCacheDir } from '../api/wiki.js';
 import { upsertGatewayProfile } from '../api/gateway.js';
@@ -3818,5 +3818,152 @@ describe('v13-S4 门到期 fail-closed + 外解唤醒', () => {
     expect(final.nodes['impl']!.error ?? '').not.toContain('等待审批超时');
     expect(final.attention).toBeUndefined();
     expect((final.events ?? []).some((e) => e.text.includes('外解唤醒'))).toBe(false);
+  });
+});
+
+// -- v13-V4 ctxSha 注入留痕：取值在注入现场、每单一枚、入漂移比对面、只披露不拦 ----------------
+describe('v13-V4 engine ctxSha 注入留痕（注入现场实读集成指纹，replay 漂移只发事件不拦）', () => {
+  const GW_RETRIES = 5; // 显式钉死旋钮：指纹在测试里逐字节可复算，不赌机器 env
+  const ctxOpts: EngineOptions = { ...OPTS, gwThrottleRetries: GW_RETRIES };
+
+  /** 串行 N 个 agent 节点的图（N=2 时验「多节点注入仍归一一枚指纹/一条漂移」） */
+  function ctxGraph(name: string, prompts: string[]): DagGraph {
+    const nodes: DagGraph['nodes'] = [{ id: 'start', type: 'start', label: '开始', config: {} }];
+    const edges: DagGraph['edges'] = [];
+    prompts.forEach((prompt, i) => {
+      const id = `a${i + 1}`;
+      nodes.push({ id, type: 'agent' as const, label: id, config: { agentKind: 'fake', prompt } });
+      edges.push({ id: `e${i}`, source: i ? `a${i}` : 'start', target: id });
+    });
+    nodes.push({ id: 'end', type: 'end', label: '结束', config: {} });
+    edges.push({ id: 'ez', source: `a${prompts.length}`, target: 'end' });
+    return { version: 1, name, nodes, edges, metadata: { createdAt: '', updatedAt: '' } };
+  }
+
+  function v4Root(files: Record<string, string>): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v4-'));
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = path.join(root, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, content);
+    }
+    return root;
+  }
+
+  /** 与 harness.computeCtxSha 同款构成独立复算——「在册且可复算」里「可复算」那一半 */
+  const ctxOf = (files: Record<string, string>) =>
+    computeCtxSha({
+      files: Object.fromEntries(Object.entries(files).map(([p, c]) => [p, contentSha(c)])),
+      gwThrottleRetries: GW_RETRIES,
+      nodeTimeoutMsDefault: ctxOpts.defaultNodeTimeoutMs,
+    });
+
+  const driftEvents = (r: RunRecord) => (r.events ?? []).filter((e) => e.text.includes('harness 漂移'));
+
+  it('①配了约定文档+技能的单：ctxSha 注入现场取值、随单落册且可复算', async () => {
+    const root = v4Root({ 'conv.md': '约定甲', 'sk.md': '技能乙' });
+    store.writeProfile({
+      id: 'default',
+      name: 'default',
+      createdAt: '',
+      rootCwd: root,
+      rules: [{ file: 'conv.md' }],
+      skills: ['sk.md'],
+    });
+    engine = new Engine(ops, store, ctxOpts);
+    const run = await runToCompletion(ctxGraph('v4-basic', ['做A']), root);
+    expect(run.state).toBe('completed');
+    expect(run.harness!.ctxSha).toMatch(/^[0-9a-f]{8}$/);
+    const expected = ctxOf({ [path.join(root, 'conv.md')]: '约定甲', [path.join(root, 'sk.md')]: '技能乙' });
+    expect(run.harness!.ctxSha).toBe(expected);
+    // 落册不只在内存：盘上记录读回同值
+    expect(store.getRun(run.runId)!.harness!.ctxSha).toBe(expected);
+  });
+
+  it('②改注入面（换文件内容 / 加一个文件）→ ctxSha 必变，且仍等于现场复算', async () => {
+    const root = v4Root({ 'conv.md': '约定甲', 'sk.md': '技能乙' });
+    store.writeProfile({
+      id: 'default',
+      name: 'default',
+      createdAt: '',
+      rootCwd: root,
+      rules: [{ file: 'conv.md' }],
+      skills: ['sk.md'],
+    });
+    engine = new Engine(ops, store, ctxOpts);
+    const r1 = await runToCompletion(ctxGraph('v4-c1', ['做A']), root);
+    const sha1 = r1.harness!.ctxSha!;
+    fs.writeFileSync(path.join(root, 'conv.md'), '约定甲改了一个字');
+    const r2 = await runToCompletion(ctxGraph('v4-c2', ['做A']), root);
+    expect(r2.harness!.ctxSha).not.toBe(sha1);
+    expect(r2.harness!.ctxSha).toBe(
+      ctxOf({ [path.join(root, 'conv.md')]: '约定甲改了一个字', [path.join(root, 'sk.md')]: '技能乙' }),
+    );
+    // 加一本技能文档（档案里多勾一项）→ 指纹再变
+    fs.writeFileSync(path.join(root, 'extra.md'), '新技能');
+    store.writeProfile({ ...store.readProfile(), skills: ['sk.md', 'extra.md'] });
+    const r3 = await runToCompletion(ctxGraph('v4-c3', ['做A']), root);
+    expect(r3.harness!.ctxSha).not.toBe(r2.harness!.ctxSha);
+    expect(r3.harness!.ctxSha).toBe(
+      ctxOf({
+        [path.join(root, 'conv.md')]: '约定甲改了一个字',
+        [path.join(root, 'sk.md')]: '技能乙',
+        [path.join(root, 'extra.md')]: '新技能',
+      }),
+    );
+  });
+
+  it('③没配任何约定/技能：ctxSha 仍是只含两枚旋钮的确定值（正读数）；旧落册记录该键整缺不回填', async () => {
+    const root = v4Root({});
+    engine = new Engine(ops, store, ctxOpts);
+    const run = await runToCompletion(ctxGraph('v4-empty', ['做A']), root);
+    expect(run.harness!.ctxSha).toBe(ctxOf({})); // 「什么都没吃进去」也是正读数，不是 undefined
+    // v13-V4 前的旧落册记录：harness 里没这键就是没有——存取不炸、读回整缺
+    const legacy = {
+      runId: 'oldv4rec',
+      dagName: 'g',
+      graph: ctxGraph('v4-empty', ['做A']),
+      state: 'completed',
+      cwd: root,
+      nodes: {},
+      startedAt: '2026-09-25T00:00:00.000Z',
+      harness: { graphSha: 'x', agentKind: 'pi', readback: false, readbackOutcome: 'no-pages', skeletonSha: 'y' },
+    } as unknown as RunRecord;
+    store.saveRun(legacy);
+    const back = store.getRun('oldv4rec')!;
+    expect(back.harness).toBeDefined();
+    expect('ctxSha' in back.harness!).toBe(false);
+    expect(back.harness!.ctxSha).toBeUndefined();
+  });
+
+  it('④replay 注入面已变→恰好一条「harness 漂移」事件且不拦跑；未变/源侧缺键→零条', async () => {
+    const root = v4Root({ 'conv.md': '约定甲' });
+    store.writeProfile({ id: 'default', name: 'default', createdAt: '', rootCwd: root, rules: [{ file: 'conv.md' }] });
+    engine = new Engine(ops, store, ctxOpts);
+    // 两个 agent 节点各自走注入——并集归一后仍只一枚指纹、一条漂移
+    const r1 = await runToCompletion(ctxGraph('v4-replay', ['做A', '做B']), root);
+    expect(r1.harness!.ctxSha).toBe(ctxOf({ [path.join(root, 'conv.md')]: '约定甲' }));
+    fs.writeFileSync(path.join(root, 'conv.md'), '约定甲改');
+    const r2 = await engine.replayRun(r1.runId);
+    expect(r2.replayOf).toBe(r1.runId);
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+    const back2 = engine.getRun(r2.runId)!;
+    expect(back2.state).toBe('completed'); // R5：只披露不拦，单照常跑完
+    const d2 = driftEvents(back2);
+    expect(d2).toHaveLength(1);
+    expect(d2[0]!.text).toContain('harness 漂移（V4）');
+    expect(d2[0]!.text).toContain(`上下文 #${r1.harness!.ctxSha}→#${back2.harness!.ctxSha}`);
+    expect(back2.harness!.ctxSha).toBe(ctxOf({ [path.join(root, 'conv.md')]: '约定甲改' }));
+    // 注入面没再变：同契约复跑零漂移
+    const r3 = await engine.replayRun(r2.runId);
+    await waitFor(() => engine.getRun(r3.runId)!.state !== 'running');
+    expect(driftEvents(engine.getRun(r3.runId)!)).toHaveLength(0);
+    // 源侧缺键（v13-V4 前的旧单）：无从比对，宁缺毋假不发
+    delete engine.getRun(r1.runId)!.harness!.ctxSha;
+    const r4 = await engine.replayRun(r1.runId);
+    await waitFor(() => engine.getRun(r4.runId)!.state !== 'running');
+    const back4 = engine.getRun(r4.runId)!;
+    expect(driftEvents(back4)).toHaveLength(0);
+    expect(back4.harness!.ctxSha).toBeDefined(); // 比对跳过≠不留痕：本单指纹照常落册
   });
 });

@@ -31,7 +31,9 @@ paneflow runs --json            # 原始 API 负载，stdout 干净可直接 | j
 
 # 3) 看细节：run 头 + harness 行（v12-V1 起单实发配置：graph#指纹 · kind= · model= · 档位=，缺项跳过）
 #    + 等臂读数（v13-V2：读回=有/无(结局六态 injected/switch-off/no-pages/not-injected/error/inherited)
-#      · 骨架#=剥注入块并归一 run_id/draft_dir 后的指纹——两臂骨架#相等 ∧ 读回不等，「只差一个读回块」才算机器证）
+#      · 骨架#=剥注入块并归一 run_id/draft_dir 后的指纹——两臂骨架#相等 ∧ 读回不等，「只差一个读回块」才算机器证
+#      · 上下文#=v13-V4 注入面指纹（注入现场实读的约定文档/技能 + gwThrottleRetries/节点缺省时长并一枚；
+#        只证 PaneFlow 注入面，agent 在 cwd 自读的 AGENTS.md 不可考）；replay 时上下文#变了落「harness 漂移（V4）」事件只提示不拦；旧单缺键整缺不显）
 #    + 副作用行（v12-S1a 落册账：建单#12 · 回写#7 · PR <url> · 已推送 <时刻>，缺项跳过、无账不显示）
 #    + 人等分行（v12-V2 人介入账：人等分: 等待 4.2 分 · 批 2/驳 0/补料 1——审批门
 #      拦→放的累计等待时长与决策计数，放门即结算落册；没批过门/旧 run 整缺不显示）

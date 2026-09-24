@@ -227,6 +227,7 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
         ? ''
         : `读回=${h.readback ? '有' : '无'}${h.readbackOutcome ? `(${h.readbackOutcome})` : ''}`,
       h.skeletonSha ? `骨架#${h.skeletonSha}` : '',
+      h.ctxSha ? `上下文#${h.ctxSha}` : '',
     ].filter(Boolean);
     io.out(`  harness: ${bits.join(' · ')}`);
   }

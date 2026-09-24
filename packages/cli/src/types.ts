@@ -50,6 +50,8 @@ export interface RunView {
     readback?: boolean;
     readbackOutcome?: string;
     skeletonSha?: string;
+    /** v13-V4 注入面指纹：注入现场实读文件集+两枚运行旋钮，server 算好；旧单缺键不渲染 */
+    ctxSha?: string;
   };
   /** v12-S1a 副作用落册账（server 判据算好，CLI 只渲染；缺项跳过、整缺不显示） */
   sideEffects?: { issuesCreated?: number[]; issuePatched?: number[]; prUrl?: string; pushedAt?: string };

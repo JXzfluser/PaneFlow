@@ -189,6 +189,25 @@ describe('runs / status / approve', () => {
     expect(odd.lines.join('\n')).not.toContain('骨架#');
   });
 
+  it('v13-V4 status 上下文#：server 给了就照渲染，旧单缺键整缺不显（CLI 零判据不猜）', async () => {
+    const base = { runId: 'r-h4', state: 'completed', dagName: 'g', nodes: {} };
+    const { fetchImpl } = stubFetch([
+      {
+        body: {
+          ...base,
+          harness: { graphSha: 'g4', agentKind: 'pi', readback: false, readbackOutcome: 'no-pages', skeletonSha: 'sk4', ctxSha: 'cx4' },
+        },
+      },
+      { body: { ...base, harness: { graphSha: 'g5', agentKind: 'pi', skeletonSha: 'sk5' } } },
+    ]);
+    const withCtx = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-h4'], withCtx.io)).toBe(0);
+    expect(withCtx.lines.join('\n')).toContain('harness: graph#g4 · kind=pi · 读回=无(no-pages) · 骨架#sk4 · 上下文#cx4');
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-h4'], legacy.io)).toBe(0);
+    expect(legacy.lines.join('\n')).not.toContain('上下文#');
+  });
+
   it('v12-S1a status 副作用行：只渲染 server 落册账——全量一行、缺项跳过、无账/空账整缺不显示', async () => {
     const base = { runId: 'r-se', state: 'completed', dagName: 'g', nodes: {} };
     const { fetchImpl } = stubFetch([
