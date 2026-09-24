@@ -194,7 +194,9 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
     return EXIT_OK;
   }
   io.out(`run ${paint(io, '1', run.runId)} · ${run.dagName ?? '-'} · ${stateMark(io, run.state)}${run.issueId ? ` · Issue #${run.issueId}` : ''}`);
-  // v12-V1 harness 披露行：只渲染 server 返回字段（R4），缺项跳过、整缺不显示
+  // v12-V1 harness 披露行：只渲染 server 返回字段（R4），缺项跳过、整缺不显示。
+  // v13-V2 等臂读数追加两枚 bit：读回=<有/无(结局)>（server 扫 graph 实态算好的，
+  // false 也是正读数所以照显）+ 骨架#（剥注入块+归一路径后的指纹，两臂相等=只差读回块）。
   const h = run.harness;
   if (h && (h.graphSha || h.agentKind)) {
     const bits = [
@@ -202,6 +204,10 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
       h.agentKind ? `kind=${h.agentKind}` : '',
       h.model ? `model=${h.model}` : '',
       h.gwProfile ? `档位=${h.gwProfile}` : '',
+      h.readback === undefined
+        ? ''
+        : `读回=${h.readback ? '有' : '无'}${h.readbackOutcome ? `(${h.readbackOutcome})` : ''}`,
+      h.skeletonSha ? `骨架#${h.skeletonSha}` : '',
     ].filter(Boolean);
     io.out(`  harness: ${bits.join(' · ')}`);
   }

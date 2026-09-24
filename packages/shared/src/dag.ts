@@ -589,9 +589,32 @@ export interface RunSideEffects {
 }
 
 /**
+ * v13-V2 等臂机检：本单 wiki 读回的**实发结局**六态枚举（五出口 + inherited）。
+ * 判据全部来自起单现场（planWikiReadback 走到哪个出口 ∧ 出场 graph 里到底有没有块），
+ * 不是现读 env——env 是「想不想注入」，graph 里最终有没有块才是「实发是什么」。
+ * 老「off 臂」与「on 但无沉淀页」塌成同一个缺键的账，从这里起分开。
+ */
+export type ReadbackOutcome =
+  /** 注入：本次实跑至少给一个节点 append 了读回块（留痕非空 ∧ graph 实扫有块） */
+  | 'injected'
+  /** 关闭出口：readbackEnabled=false（EngineOptions.wikiReadback / PF_WIKI_READBACK=off） */
+  | 'switch-off'
+  /** 无页出口：目标仓认不出（resolveRunRepo 三路全空）或本地缓存读不出一页——都没有可读的页源 */
+  | 'no-pages'
+  /** 不注入出口：有页源但本单零节点入块——无 plan/impl 目标节点、词面零相关、或预算连表头都装不下 */
+  | 'not-injected'
+  /** 失败出口：注入旁路整体异常被 catch（读回是加分项，炸了也不拦 run） */
+  | 'error'
+  /** +1 态：本次一个块都没注入，但出场 graph 的 prompt 里已有读回块——replay 从源 run 在册字面量带进来的旧块 */
+  | 'inherited';
+
+/**
  * v12-V1 起单时固化的实发 harness（写一次即成历史）。
  * 拿不到的键直接省略——绝不估算（与 cost.tokens 的 null 原则同款）；
  * 只做披露与比对，不参与任何编排判据（评审 R5）。
+ * v13-V2 等臂机检：readback/readbackOutcome/skeletonSha 三键使「两臂只差一个读回块」
+ * 可证——等臂判据 = skeletonSha 相等 ∧ readback 不等。v13-V2 之前的旧落册记录无这三键
+ * （JSON 只增不改，照常读得出，消费端按缺项跳过）。
  */
 export interface RunHarness {
   /**
@@ -605,6 +628,21 @@ export interface RunHarness {
   model?: string;
   /** 起单时空间档案钉的网关档 id（未钉/读不到=省略，语义=跟全局 current 档） */
   gwProfile?: string;
+  /**
+   * v13-V2 本单实态：读回块最终在不在 prompt 里。扫出场 graph 实态得出
+   * （判据=任一字符串值有独占一行且等于读回块表头的行），不读 env、不看留痕——
+   * 所以 replay 的 off 臂带着旧块也照出 true。
+   */
+  readback: boolean;
+  /** v13-V2 读回实发结局（五出口+inherited，每态判据见 ReadbackOutcome 注释） */
+  readbackOutcome: ReadbackOutcome;
+  /**
+   * v13-V2 骨架指纹：剥掉注入块（读回块 + I2 经验块）、并把每次必然不同的
+   * run_id/draft_dir 字面量归一之后的 graph 内容指纹（口径同 graphSha）。
+   * 两臂 skeletonSha 相等 = 真拓扑逐字节只差被剥掉的注入面；不等 = 动了真格的东西。
+   * 可选：v13-V2 前的旧记录拿不到，整键省略（宁缺毋假，不回填）。
+   */
+  skeletonSha?: string;
 }
 
 /**

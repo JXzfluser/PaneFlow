@@ -114,3 +114,20 @@ R1 范围膨胀→批次全为还债/补链无新表面；R2 关键路径长→C
 7. **起单**：首臂 `paneflow dispatch "<任务>" --repo <r> --issue <n>` 跑绿后 `paneflow replay <runId> --times 1 --suite c4 --arm a/b` 复用同契约；同 issue 两臂勿重叠窗口（replay 穿透 R3.4 锁，双开自己撞自己）。
 8. **收数**：`paneflow experiments --suite c4` 直读表格（断言 pass/total、重试、墙钟自动落行）；两臂各 ≥3 单才有最低分母。
 9. **护栏**：PF_MAX_PANES=3 顶住免费档 fanout 503（摩擦账 #10）；审批门必须人批；结论写 gate0 风格文档，不达标就明说复利未成立。
+
+（**v13-V2 勘误（2026-09-24 改判）——取臂规程：第 4/7 条的 replay 取臂路作废，等臂改机证**：
+上列 4/7 条原案「每臂 `replay --suite c4 --arm a/b` 防撞同 issue 锁」经 v13 批判轮实锤作废——
+replay 取的是源 run **在册 graph 字面量**，I2/C3a 注入照跑且旧块不剥、二次堆叠，off 臂照样带着
+源 run 的旧读回块（engine replayRun 注释自认，v13 需求文档 :67 Verifier 补账）：replay 之下
+「两臂只差 `PF_WIKI_READBACK`」根本不成立，第 6 条的 env 重启仪式再严也保不住等臂。**改判后的规程**：
+①双臂各 ≥3 run 一律 **fresh dispatch** 起（`paneflow dispatch "<任务>" --repo <r> --issue <n>`；
+同 issue 两臂仍勿重叠窗口——R3.4 锁照旧，先跑完一臂再派另一臂）。**在册缺口如实标注**：
+今日 server 的 suite/arm 实验标只开在 replay 体上（POST /api/runs/:id/replay），
+POST /api/dispatch 无 experiment 体键——fresh dispatch 的单暂不会自动落收数表，
+C4 开跑前需一小片放开闸面（dispatch 体接 suite/arm/flag + CLI 透传，属 http.ts/cli 另排）；
+②replay 只作**同臂补分母**（同臂承受同等旧块污染，不跨臂充当对照）；
+③等臂不再靠仪式自律，改读 harness 三字段机证：**两臂 `harness.skeletonSha` 相等 ∧ `readback`/
+`readbackOutcome` 不等（injected vs switch-off）=「只差读回块」可证**；skeleton 不等=replay 路
+落「harness 漂移」事件（v13-V2 起骨架入比对面，readback 差不算漂移=受测变量），这样的单不进
+C4 分母。收数表 harness 列自 v13-V2 起带 `rb=`/`skel#` 读数，`paneflow experiments --suite c4`
+直接分组核对。第 8 条「各臂 ≥3 单」分母要求不变，只换起单方式。）

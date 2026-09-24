@@ -39,8 +39,18 @@ export interface RunView {
   };
   /** v11-A1 只读聚合字段：审批门显式信号（老 server 没有时按节点 state 兜底推导） */
   awaitingApproval?: { waiting: boolean; nodeIds: string[] };
-  /** v12-V1 起单时固化的实发 harness（旧 run/旧 server 没有=不渲染，判定零在 CLI） */
-  harness?: { graphSha?: string; agentKind?: string; model?: string; gwProfile?: string };
+  /** v12-V1 起单时固化的实发 harness（旧 run/旧 server 没有=不渲染，判定零在 CLI）；
+   *  v13-V2 等臂读数三键：readback=读回块最终在不在 prompt（server 扫 graph 实态）、
+   *  readbackOutcome=实发结局枚举、skeletonSha=剥注入块+归一路径后的骨架指纹——缺项跳过 */
+  harness?: {
+    graphSha?: string;
+    agentKind?: string;
+    model?: string;
+    gwProfile?: string;
+    readback?: boolean;
+    readbackOutcome?: string;
+    skeletonSha?: string;
+  };
   /** v12-S1a 副作用落册账（server 判据算好，CLI 只渲染；缺项跳过、整缺不显示） */
   sideEffects?: { issuesCreated?: number[]; issuePatched?: number[]; prUrl?: string; pushedAt?: string };
   /** v12-V2 人介入账（验证税）：放门结算好的等待时长 + 决策计数；无=本单没批过门，整缺不显示 */

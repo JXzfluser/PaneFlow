@@ -8,6 +8,8 @@ import { Engine, gateTimeoutMessage, resolveGateTimeoutMs } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
 import { BUILTIN_TEMPLATES } from './builtin-templates.js';
 import { contentSha } from './harness.js';
+import { READBACK_HEADER } from './readback.js';
+import { WIKI_ROOT, wikiCacheDir } from '../api/wiki.js';
 import { upsertGatewayProfile } from '../api/gateway.js';
 import { Store } from './store.js';
 
@@ -2714,6 +2716,188 @@ describe('v12-V1 engine replay 漂移比对（只落透明性事件，不拦起�
     expect(r2.replayOf).toBe(r1.runId);
     expect(driftEvents(r2)).toHaveLength(0);
     await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+  });
+});
+
+// -- v13-V2 等臂机检：harness 三字段起单固化 + 骨架不受注入面扰动 --------------------------
+const REPO_V2 = 'me/arm';
+
+/** 种 wiki 缓存页（零网络零 git，姿势同 readback.test.ts）：让读回在生产数据形态下真注得上 */
+function seedSummaryPage(repo: string, file: string, o: { title: string; body: string }): void {
+  const abs = path.join(wikiCacheDir(dataDir, repo), WIKI_ROOT, file);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, `---\ntitle: "${o.title}"\ntype: summary\nconfidence: high\n---\n\n${o.body}\n`);
+}
+
+/** 带契约（携 repo=读回认仓三路之一）把单跑到终态并回读在册记录 */
+async function runWithContract(
+  eng: Engine,
+  cwd: string,
+  opts: Parameters<Engine['startRun']>[6],
+  graph = serialGraph(),
+) {
+  const started = await eng.startRun(graph, cwd, undefined, undefined, undefined, undefined, opts);
+  await waitFor(() => eng.getRun(started.runId)!.state !== 'running');
+  return eng.getRun(started.runId)!;
+}
+
+describe('v13-V2 engine 等臂三字段固化（readback / readbackOutcome / skeletonSha）', () => {
+  it('普通单（无仓可读回）：readback=false、outcome=no-pages；graph 无注入块无 run_id 字面量时 skeletonSha=graphSha', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v2-plain-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.harness!.readback).toBe(false);
+    expect(run.harness!.readbackOutcome).toBe('no-pages'); // tmp cwd 无 git remote、无契约/默认仓
+    expect(run.harness!.skeletonSha).toMatch(/^[0-9a-f]{8}$/);
+    // serial-test 未声明 run_id/draft_dir 变量、这单也没吃到任何注入块 → 剥/归一全是 no-op
+    expect(run.harness!.skeletonSha).toBe(run.harness!.graphSha);
+  });
+
+  it('开关 off 的单：outcome=switch-off（与「on 但无页」不再塌同一读数）', async () => {
+    const offEngine = new Engine(ops, store, { ...OPTS, wikiReadback: 'off' });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v2-off-'));
+    const run = await offEngine.startRun(serialGraph(), cwd);
+    await waitFor(() => offEngine.getRun(run.runId)!.state !== 'running');
+    expect(run.harness!.readback).toBe(false);
+    expect(run.harness!.readbackOutcome).toBe('switch-off');
+  });
+
+  it('fresh dispatch 两单只差 I2 经验注入：graphSha 必不同、skeletonSha 相等（命门的引擎端实跑）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v2-skel-'));
+    const g1 = serialGraph();
+    const first = await runToCompletion(g1, cwd);
+    // 同模板绿 run 在前 → 第二单纯 fresh dispatch 会吃到 I2 经验注入（prompt 多一块）
+    const second = await runToCompletion(structuredClone(g1), cwd);
+    expect(JSON.stringify(second.graph.nodes)).toContain('【上次经验 · I2 自动注入');
+    expect(second.harness!.graphSha).not.toBe(first.harness!.graphSha);
+    expect(second.harness!.skeletonSha).toBe(first.harness!.skeletonSha);
+  });
+
+  it('replay 同契约：骨架与原单相等 → 不产「harness 漂移」事件（旧 run_id 字面量与二次注入都不假阳）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v2-replay-'));
+    const r1 = await runToCompletion(serialGraph(), cwd);
+    const r2 = await engine.replayRun(r1.runId, { suite: 'c4', arm: 'a' });
+    expect(r2.harness!.skeletonSha).toBe(r1.harness!.skeletonSha);
+    expect((r2.events ?? []).filter((e) => e.text.includes('harness 漂移'))).toHaveLength(0);
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+  });
+
+  it('声明 run_id/draft_dir 的模板 replay：旧字面量烧在册 graph 里，血缘链同步归一 → 骨架仍等、零漂移事件', async () => {
+    // 生产形态=内置模板同款：prompt 里 {{run_id}}/{{draft_dir}} 起单被真值替换（分支名 pf/<id> 等），
+    // replay 复用在册 graph——旧真值不再是占位符、applyVariables 不触碰，全靠 skeletonLiteralsFor 上溯链归一
+    const g = serialGraph();
+    g.variables = [
+      { key: 'run_id', label: '运行编号', required: false },
+      { key: 'draft_dir', label: '草稿目录', required: false },
+    ];
+    g.nodes[1]!.config.prompt = `在分支 pf/{{run_id}} 交付，草稿落 {{draft_dir}}/issue-draft.json`;
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v2-lit-'));
+    const r1 = await runToCompletion(structuredClone(g), cwd);
+    expect(r1.graph.nodes[1]!.config.prompt).toContain(`pf/${r1.runId}`); // 真值确实烧进在册 graph
+    const r2 = await engine.replayRun(r1.runId);
+    expect(r2.runId).not.toBe(r1.runId);
+    expect(r2.harness!.skeletonSha).toBe(r1.harness!.skeletonSha);
+    expect((r2.events ?? []).filter((e) => e.text.includes('harness 漂移'))).toHaveLength(0);
+    await waitFor(() => engine.getRun(r2.runId)!.state !== 'running');
+  });
+
+  //  Integrator 补（v13-V2 收口）：on 臂实注入与 inherited 是 C4 真正吃的两个读数，
+  //  只有合成块的单测=假绿。以下三组走引擎实路（种 wiki-cache，零网络零 git）。
+  it('命门·on 臂实注入 vs off 臂：readback 不等而 skeletonSha 相等，「两臂只差读回块」机器证成', async () => {
+    seedSummaryPage(REPO_V2, 'summaries/export-null.md', {
+      title: '实现功能与导出空值',
+      body: '实现功能时先给导出模块加空值兜底，再补一条回归测试。',
+    });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v2-arm-'));
+    // 两臂同一份拓扑（各自 structuredClone）：serialGraph 每次盖创建时刻，共用同一份才排掉夹具噪声
+    const g = serialGraph();
+    const on = await runWithContract(
+      engine,
+      cwd,
+      { contract: { source: 'input', assertions: [], questions: [], repo: REPO_V2 } },
+      structuredClone(g),
+    );
+    expect(JSON.stringify(on.graph.nodes)).toContain(READBACK_HEADER);
+    expect(on.harness!.readback).toBe(true);
+    expect(on.harness!.readbackOutcome).toBe('injected');
+    expect(on.wikiReadback?.nodes.length).toBeGreaterThan(0);
+
+    const offEng = new Engine(ops, store, { ...OPTS, wikiReadback: 'off' });
+    const off = await runWithContract(
+      offEng,
+      cwd,
+      { contract: { source: 'input', assertions: [], questions: [], repo: REPO_V2 } },
+      structuredClone(g),
+    );
+    expect(JSON.stringify(off.graph.nodes)).not.toContain(READBACK_HEADER);
+    expect(off.harness!.readback).toBe(false);
+    expect(off.harness!.readbackOutcome).toBe('switch-off');
+    // 等臂判据本体：实发拓扑 sha 不等（注入块改了 prompt），骨架 sha 相等（剥净后逐字节同构）
+    expect(on.harness!.graphSha).not.toBe(off.harness!.graphSha);
+    expect(on.harness!.skeletonSha).toBe(off.harness!.skeletonSha);
+  });
+
+  it('inherited 态（replay 带旧块）：off 引擎 replay on 单 → 本次一克没注但 prompt 里有块，readback=true、outcome=inherited', async () => {
+    seedSummaryPage(REPO_V2, 'summaries/replay-block.md', {
+      title: '实现功能的旧沉淀',
+      body: '实现功能前先读这条旧沉淀。',
+    });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v2-inh-'));
+    const src = await runWithContract(engine, cwd, {
+      contract: { source: 'input', assertions: [], questions: [], repo: REPO_V2 },
+    });
+    expect(src.harness!.readbackOutcome).toBe('injected');
+    // 新引擎=独立实例，boot 时从盘上复原 run 册；off 开关让本次一克不注
+    const offEng = new Engine(ops, store, { ...OPTS, wikiReadback: 'off' });
+    const re = await offEng.replayRun(src.runId);
+    await waitFor(() => offEng.getRun(re.runId)!.state !== 'running');
+    const back = offEng.getRun(re.runId)!;
+    expect(back.harness!.readback).toBe(true); // 扫实态：旧块还在 prompt 里，不因开关是 off 就报「无」
+    expect(back.harness!.readbackOutcome).toBe('inherited');
+    expect(back.harness!.skeletonSha).toBe(src.harness!.skeletonSha); // 堆叠的旧块剥净后骨架仍等
+  });
+
+  it('not-injected 态：有页源但本单零目标节点（与「无页源」不再塌同一读数）', async () => {
+    seedSummaryPage(REPO_V2, 'summaries/orphan.md', {
+      title: '实现功能的沉淀',
+      body: '实现功能的经验。',
+    });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-v2-noinj-'));
+    // 把 impl 节点改名为纯核对节点（id/label 都不命中读回目标式）
+    const g = serialGraph();
+    const n = g.nodes[1]!;
+    n.id = 'check';
+    n.label = '核对';
+    n.config.prompt = '核对产物';
+    g.edges[0]!.target = 'check';
+    g.edges[1]!.source = 'check';
+    const run = await runWithContract(
+      engine,
+      cwd,
+      { contract: { source: 'input', assertions: [], questions: [], repo: REPO_V2 } },
+      g,
+    );
+    expect(run.state).toBe('completed');
+    expect(run.harness!.readback).toBe(false);
+    expect(run.harness!.readbackOutcome).toBe('not-injected');
+  });
+
+  it('旧记录兼容：v13-V2 前的 harness（只有 graphSha/agentKind）落册读回不炸，三新键整缺为 undefined', () => {
+    const legacy = {
+      runId: 'old2v13',
+      dagName: 'g',
+      graph: serialGraph(),
+      state: 'completed',
+      cwd: '/tmp/x',
+      nodes: {},
+      startedAt: '2026-09-20T00:00:00.000Z',
+      harness: { graphSha: 'deadbeef', agentKind: 'pi' },
+    } as unknown as RunRecord;
+    store.saveRun(legacy);
+    const back = store.getRun('old2v13')!;
+    expect(back.harness).toEqual({ graphSha: 'deadbeef', agentKind: 'pi' });
+    expect(back.harness!.readback).toBeUndefined();
+    expect(back.harness!.readbackOutcome).toBeUndefined();
+    expect(back.harness!.skeletonSha).toBeUndefined();
   });
 });
 

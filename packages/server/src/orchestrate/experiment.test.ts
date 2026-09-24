@@ -77,10 +77,49 @@ describe('v11-E1c experimentRow（收数行：只如实记账）', () => {
   });
 
   it('v12-V1 harness 摘要列：graphSha·agentKind；缺半边照实只留有的', () => {
-    const withH = mkRun({ experiment: { suite: 'c4' }, harness: { graphSha: 'a1b2c3d4', agentKind: 'pi' } });
-    expect(experimentRow(withH)).toBe('| abc12345 | - | - | completed | 0/0 | 0 | 150 | - | - | - | a1b2c3d4·pi | - |');
-    const partial = mkRun({ experiment: { suite: 'c4' }, harness: { graphSha: '', agentKind: 'pi' } });
-    expect(experimentRow(partial)).toContain('| - | pi |'); // graphSha 空串（怪单）不产出孤零零的「·pi」
+    const withH = mkRun({
+      experiment: { suite: 'c4' },
+      harness: { graphSha: 'a1b2c3d4', agentKind: 'pi', readback: false, readbackOutcome: 'switch-off' },
+    });
+    // v13-V2 起新单 harness 必带 rb=；本例是「有 outcome」的常规形态（等臂读数随行落表）
+    expect(experimentRow(withH)).toContain('| a1b2c3d4·pi·rb=switch-off |');
+    const partial = mkRun({
+      experiment: { suite: 'c4' },
+      harness: { graphSha: '', agentKind: 'pi', readback: true, readbackOutcome: 'injected' },
+    });
+    expect(experimentRow(partial)).toContain('| pi·rb=injected |'); // graphSha 空串（怪单）不产出孤零零的「·pi」
+  });
+
+  it('v13-V2 等臂读数列：rb=<readbackOutcome> 与 skel#<骨架指纹>；旧单缺三键只有前两截、无 outcome 有实态时 rb=yes/no 兜底', () => {
+    const armOn = mkRun({
+      runId: 'run-a1',
+      experiment: { suite: 'c4', arm: 'on' },
+      harness: {
+        graphSha: 'g1', agentKind: 'pi', readback: true, readbackOutcome: 'injected', skeletonSha: 'sk111111',
+      },
+    });
+    const armOff = mkRun({
+      runId: 'run-b2',
+      experiment: { suite: 'c4', arm: 'off' },
+      harness: {
+        graphSha: 'g2', agentKind: 'pi', readback: false, readbackOutcome: 'switch-off', skeletonSha: 'sk111111',
+      },
+    });
+    // 两臂 skel 相同、rb 不同——「只差读回块」在收数表上直接读得出（graphSha 不同不碍事）
+    expect(experimentRow(armOn)).toContain('| g1·pi·rb=injected·skel#sk111111 |');
+    expect(experimentRow(armOff)).toContain('| g2·pi·rb=switch-off·skel#sk111111 |');
+    // 旧形状（v13-V2 前的落册记录，JSON 里没有三键）：照 v12-V1 口径只有前两截
+    const legacy = mkRun({
+      experiment: { suite: 'c4' },
+      harness: { graphSha: 'g9', agentKind: 'pi' } as unknown as RunRecord['harness'],
+    });
+    expect(experimentRow(legacy)).toContain('| g9·pi |');
+    // 怪单兜底：有 readback 实态没结局枚举 → rb=yes/no，不猜结局
+    const odd = mkRun({
+      experiment: { suite: 'c4' },
+      harness: { graphSha: 'g8', agentKind: 'pi', readback: true } as unknown as RunRecord['harness'],
+    });
+    expect(experimentRow(odd)).toContain('| g8·pi·rb=yes |');
   });
 
   it('v12-V2 人等分列：attention.waitMs 折分钟一位小数；无 attention 画 -；零等待也如实 0.0', () => {

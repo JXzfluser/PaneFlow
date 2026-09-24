@@ -125,9 +125,39 @@ describe('runs / status / approve', () => {
     const partial = makeIo({ fetch: fetchImpl });
     expect(await main(['status', 'r-h'], partial.io)).toBe(0);
     expect(partial.lines.join('\n')).toContain('harness: graph#a1b2c3d4 · kind=pi');
+    expect(partial.lines.join('\n')).not.toContain('读回'); // v13-V2 前的旧读数：缺项跳过，不补假值
     const legacy = makeIo({ fetch: fetchImpl });
     expect(await main(['status', 'r-h'], legacy.io)).toBe(0);
     expect(legacy.lines.join('\n')).not.toContain('harness');
+  });
+
+  it('v13-V2 status 等臂读数：读回=有/无(结局)·骨架#照单渲染；读回=无（false）是正读数照显；只有实态没结局不猜', async () => {
+    const base = { runId: 'r-h2', state: 'completed', dagName: 'g', nodes: {} };
+    const { fetchImpl } = stubFetch([
+      {
+        body: {
+          ...base,
+          harness: { graphSha: 'g1', agentKind: 'pi', readback: true, readbackOutcome: 'injected', skeletonSha: 'sk111111' },
+        },
+      },
+      {
+        body: {
+          ...base,
+          harness: { graphSha: 'g2', agentKind: 'pi', readback: false, readbackOutcome: 'switch-off', skeletonSha: 'sk111111' },
+        },
+      },
+      { body: { ...base, harness: { graphSha: 'g3', agentKind: 'pi', readback: true } } },
+    ]);
+    const on = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-h2'], on.io)).toBe(0);
+    expect(on.lines.join('\n')).toContain('harness: graph#g1 · kind=pi · 读回=有(injected) · 骨架#sk111111');
+    const off = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-h2'], off.io)).toBe(0);
+    expect(off.lines.join('\n')).toContain('harness: graph#g2 · kind=pi · 读回=无(switch-off) · 骨架#sk111111');
+    const odd = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-h2'], odd.io)).toBe(0);
+    expect(odd.lines.join('\n')).toContain('harness: graph#g3 · kind=pi · 读回=有');
+    expect(odd.lines.join('\n')).not.toContain('骨架#');
   });
 
   it('v12-S1a status 副作用行：只渲染 server 落册账——全量一行、缺项跳过、无账/空账整缺不显示', async () => {

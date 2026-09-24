@@ -18,6 +18,7 @@ import type {
   WikiReadbackTrace,
   RunExperimentMeta,
   RunHarness,
+  ReadbackOutcome,
   RunSideEffects,
   NodeAbandonmentTrigger,
 } from '@paneflow/shared';
@@ -40,7 +41,15 @@ import {
 } from './token-budget.js';
 import { appendExperimentRow } from './experiment.js';
 import { bookGateRelease } from './attention.js';
-import { contentSha, harnessDriftDiffs } from './harness.js';
+import {
+  contentSha,
+  EXPERIENCE_BLOCK_HEAD_PREFIX,
+  EXPERIENCE_BLOCK_TAIL_PREFIX,
+  graphHasReadbackBlock,
+  harnessDriftDiffs,
+  skeletonSha,
+  type SkeletonLiteral,
+} from './harness.js';
 import { hasSideEffects, sideEffectsSummary } from './side-effects.js';
 import { recommendAgentKind as probeRecommendAgentKind } from '../api/env-check.js';
 import { buildGithubEnv, readGithubSettings } from '../api/github-cred.js';
@@ -55,6 +64,17 @@ import {
   readbackQuery,
   resolveRunRepo,
 } from './readback.js';
+
+/**
+ * v13-V2：一次起单的 wiki 读回计划结果（planWikiReadback 的返回形状）。
+ * trace=本次实注入的留痕（有则入 RunRecord.wikiReadback）；outcome=实发结局枚举，
+ * 起单时固化进 harness.readbackOutcome。判据来源：planWikiReadback 走到哪个出口 ∧
+ * 出场 graph 实态——不是现读 env。
+ */
+interface ReadbackPlan {
+  trace?: WikiReadbackTrace;
+  outcome: ReadbackOutcome;
+}
 
 export interface EngineOptions {
   workspaceLabelPrefix: string;
@@ -612,7 +632,10 @@ export class Engine {
     // v11-D5：内置变量 draft_dir——dataDir 下的 run 草稿目录（模板声明后才替换，与 run_id 同机制）；
     // 显式传同名 variables 可覆盖（留调试后门），默认父子 run 共享血缘根目录
     const draftDir = this.ensureDraftDir(spaceId, this.draftOwnerRunId(opts?.parentRunId) ?? runId);
-    const applied = applyVariables(graph, { run_id: runId, draft_dir: draftDir, ...variables });
+    // v13-V2：内置+实填一次收口——骨架归一要用「本次生效」的 run_id/draft_dir 值
+    //（显式传同名 variables 的调试后门也在生效值里，不另算一遍）
+    const builtinVars: Record<string, string> = { run_id: runId, draft_dir: draftDir, ...(variables ?? {}) };
+    const applied = applyVariables(graph, builtinVars);
     if (applied.missing.length) {
       throw new Error(`缺少必填参数：${applied.missing.join('、')}`);
     }
@@ -667,7 +690,8 @@ export class Engine {
     // v11-C3a wiki 读回注入：plan/impl 类 agent 节点起笔前，把目标仓本地 llm-wiki/ 缓存
     // 里词面相关的 top-k 摘录附进 prompt 尾部。只读现成缓存（零网络），缺仓/缺缓存静默跳过；
     // 必须在 RunRecord 创建前做——graph 会被 structuredClone 进记录，留痕与实注入同源。
-    const wikiReadback = this.planWikiReadback(graph, cwd, opts?.contract?.repo);
+    const readbackPlan = this.planWikiReadback(graph, cwd, opts?.contract?.repo);
+    const wikiReadback = readbackPlan.trace;
     const nodes: Record<string, NodeRunRecord> = {};
     for (const n of graph.nodes) {
       nodes[n.id] = { nodeId: n.id, state: 'pending', attempts: 0 };
@@ -696,8 +720,14 @@ export class Engine {
     // 所以指纹就是实发终态；agentKind 是 AE 解析链对执行序首个 agent 节点的一次性入口
     // 结果（以往每试现算不写回）；gwProfile/model 起单现读，拿不到键即缺省——绝不估算
     // （与 cost.tokens 的 null 原则同款）。
+    // v13-V2 追加等臂三读数：readback（扫 run.graph 实态）、readbackOutcome（planWikiReadback
+    // 的出口+入场旧块判定）、skeletonSha（剥注入块+归一 run_id/draft_dir 字面量后的指纹）。
     try {
-      run.harness = await this.buildRunHarness(run, order);
+      run.harness = await this.buildRunHarness(run, order, readbackPlan, {
+        run_id: builtinVars.run_id,
+        draft_dir: builtinVars.draft_dir,
+        replayOf: opts?.replay?.of,
+      });
     } catch {
       // 防御（读回同款姿势）：披露旁账不许把起跑挡下来，最坏这单缺 harness 字段
     }
@@ -935,13 +965,13 @@ export class Engine {
         }`
       : '未知（无成本记录）';
     return [
-      `【上次经验 · I2 自动注入，仅变量层】同空间同模板（${safe(prev.dagName)}）的绿 run ${prev.runId}` +
+      `${EXPERIENCE_BLOCK_HEAD_PREFIX}，仅变量层】同空间同模板（${safe(prev.dagName)}）的绿 run ${prev.runId}` +
         `${prev.finishedAt ? `（完成于 ${prev.finishedAt.slice(0, 16).replace('T', ' ')}）` : ''}：`,
       `· 当时实填变量：${varLine}`,
       `· 当时的断言清单（措辞与颗粒度可借鉴；本单以自身契约为准）：`,
       acBlock,
       `· 成本画像：${costLine}`,
-      `——以上是历史经验参考，不是本单需求；不要因为「上次这么干过」就照抄路径。`,
+      `${EXPERIENCE_BLOCK_TAIL_PREFIX}，不是本单需求；不要因为「上次这么干过」就照抄路径。`,
     ].join('\n');
   }
 
@@ -949,20 +979,30 @@ export class Engine {
    * v11-C3a：wiki 读回注入（照 I2 同款姿势——startRun 前对 graph 节点 prompt 动刀）。
    * 与 I2 的差别：经验块进首个 agent 节点、全局一份；读回块进每个 plan/impl 类节点、
    * 按各节点任务词面各挑各的 top-k。返回注入留痕（RunRecord.wikiReadback，C3b 数据源）。
+   * v13-V2 等臂机检：五出口逐一定名（关闭/无页/不注入/失败/注入成功），另判 +1 态
+   * inherited——入场 graph 已有块（replay 从源 run 带进来的旧字面量）而本次一克没注，
+   * 哪怕开关是 off，实发 prompt 里也带着块。outcome 供 harness 固化，判据是
+   * 「走了哪个出口 ∧ 入场实态」，不是现读 env。
    */
-  private planWikiReadback(graph: DagGraph, cwd: string, contractRepo?: string): WikiReadbackTrace | undefined {
+  private planWikiReadback(graph: DagGraph, cwd: string, contractRepo?: string): ReadbackPlan {
+    // 入场实态先扫：replay 的源 graph 可能已带旧读回块（在册字面量），本次注入在其上叠加
+    const inheritedBlocks = graphHasReadbackBlock(graph);
+    /** 非注入出口统一过一遍 inherited 判定：带着旧块=inherited，干干净净=各自的出口 */
+    const exit = (outcome: ReadbackOutcome): ReadbackPlan => ({
+      outcome: inheritedBlocks ? 'inherited' : outcome,
+    });
     try {
-      if (!readbackEnabled(this.opts.wikiReadback)) return undefined;
+      if (!readbackEnabled(this.opts.wikiReadback)) return exit('switch-off');
       const repo = resolveRunRepo({
         cwd,
         contractRepo,
         defaultRepo: readGithubSettings(this.store.root).defaultRepo,
       });
-      if (!repo) return undefined;
+      if (!repo) return exit('no-pages'); // 仓都认不出 = 没有可读的页源，与「有仓零页」同出口
       // 起跑异步刷一次缓存（唯一触网路径，失败静默）：本次吃现成的，下次吃新鲜的
       void this.refreshWikiReadbackCache(repo);
       const pages = loadReadbackPages(this.store.root, repo);
-      if (!pages.length) return undefined;
+      if (!pages.length) return exit('no-pages');
       const traceNodes: WikiReadbackTrace['nodes'] = [];
       for (const n of graph.nodes) {
         if (!isReadbackTarget(n)) continue;
@@ -973,10 +1013,14 @@ export class Engine {
         n.config.prompt = `${n.config.prompt}\n\n${block}`;
         traceNodes.push({ nodeId: n.id, pages: used.map((p) => ({ file: p.file, title: p.title })) });
       }
-      return traceNodes.length ? { repo, nodes: traceNodes } : undefined;
+      return traceNodes.length
+        ? { trace: { repo, nodes: traceNodes }, outcome: 'injected' }
+        : exit('not-injected'); // 有页源但零节点入块：无目标节点/词面零相关/预算装不下
     } catch {
-      // 读回是纯加分项：任何意外都不许把 run 起跑挡下来
-      return undefined;
+      // 读回是纯加分项：任何意外都不许把 run 起跑挡下来。注意 catch 前可能已给部分
+      // 节点注了块——入场无块而出场有块时 outcome 仍报 error（readback 由 buildRunHarness
+      // 扫出场 graph 兜底，实态不撒谎）。
+      return exit('error');
     }
   }
 
@@ -999,8 +1043,11 @@ export class Engine {
    * v11-E1a 同契约 replay：取原 run 在册的 graph 快照与实填变量重新 startRun——
    * 「同契约」是照本宣科（复跑的就是当时落册的那一单）。豁免只开在 R3.4 同 issue
    * 幂等锁上（opts.replay 声明），其余门（脏检查/DAG 校验/cwd/变量必填）一条不少。
-   * 已知限制：I2/C3a 注入照跑（当时注入进的是在册 graph 的字面量，新单还会各得一份
-   * 新注入）——实验若在意，同 suite 各臂承受同等注入，A/B 差值仍读得出。
+   * 已知限制（v13-V2 在册化）：I2/C3a 注入照跑（当时注入进的是在册 graph 的字面量，
+   * 新单还会各得一份新注入）——旧块不会被剥掉而是二次堆叠，off 臂同样带着源 run 的
+   * 旧读回块。所以 replay 之下「两臂只差 readback」不成立：该结局现在机检可见
+   * （harness.readbackOutcome=inherited ∧ readback=true），且 C4 取臂规程已改判为
+   * 双臂 fresh dispatch（各 ≥3 run），replay 只作同臂补分母（见 v11 前置清单勘误）。
    * v12-S1b：源 run 带在册副作用（含 prUrl）且未显式放行（allowSideEffects）→ 起单前
    * 拒绝。评审 R5 口径：这道门只卡 replay 显式路，且 withSideEffects 穿透不开其余任何
    * 门（脏检查/锁豁免边界等语义一丝不动）。
@@ -1055,14 +1102,18 @@ export class Engine {
     }
     // v12-V1 replay 漂移比对（评审 R5：只落透明性事件不拦）：model/钉档两个闸口，
     // 新单起单现读值与原 run.harness 不一致即实验两臂档位已变的机器证据；
-    // graphSha 不比对（replay 复用原在册 graph，恒等）；原记录无 harness=旧单，不发。
+    // v13-V2 改判加比对面 skeletonSha：剥注入块+归一 run_id/draft_dir 字面量后仍不等，
+    // 才是「两臂差的不是读回块、是真拓扑」的机器证据。graphSha 与 readback/readbackOutcome
+    // 不比——graphSha 被注入块改写证不了等臂；readback 不等正是 A/B 的受测变量（实验设计，
+    // 不是漂移）。骨架比对两侧任缺键（v13-V2 前的旧单）跳过，宁缺毋假。原记录无
+    // harness=旧单，不发。
     const diffs = harnessDriftDiffs(source.harness, run.harness);
     if (diffs.length) {
       this.recordEvent(
         run,
         'run',
         undefined,
-        `harness 漂移（V1）：复跑时档位/模型与原 run ${source.runId} 已变——${diffs.join(' · ')}；只记事件不拦停，实验要等臂请先对齐网关再复跑`,
+        `harness 漂移（V1/V2）：复跑时档位/模型/骨架图与原 run ${source.runId} 已变——${diffs.join(' · ')}；只记事件不拦停，实验要等臂请先对齐网关与模板（readback 差不算漂移：那是 A/B 受测变量，v13-V2）`,
       );
       this.persistAndNotify(run);
     }
@@ -2663,8 +2714,16 @@ export class Engine {
    * v12-V1：起单时一次性算好本单实发 harness（graphSha + agentKind + 网关档/模型）。
    * agentKind 走 resolveAgentKind 同款链，作用域取执行序首个 agent 节点的 config——
    * 落册一次不每节点重写，节点间 kind 差异（若有）仍以各节点实发为准。
+   * v13-V2 等臂机检三字段：readback 扫 run.graph 实态（不读 env、不看留痕）；
+   * readbackOutcome 取 planWikiReadback 的出口判定；skeletonSha 剥注入块+归一路径
+   * 字面量后复用 contentSha——等臂判据=skeletonSha 相等 ∧ readback 不等。
    */
-  private async buildRunHarness(run: RunRecord, order: string[]): Promise<RunHarness> {
+  private async buildRunHarness(
+    run: RunRecord,
+    order: string[],
+    readbackPlan: ReadbackPlan,
+    vars: { run_id?: string; draft_dir?: string; replayOf?: string },
+  ): Promise<RunHarness> {
     const firstAgentCfg =
       order
         .map((id) => run.graph.nodes.find((n) => n.id === id))
@@ -2676,7 +2735,52 @@ export class Engine {
       agentKind,
       ...(model ? { model } : {}),
       ...(gwProfile ? { gwProfile } : {}),
+      readback: graphHasReadbackBlock(run.graph),
+      readbackOutcome: readbackPlan.outcome,
+      skeletonSha: skeletonSha(run.graph, this.skeletonLiteralsFor(run, vars)),
     };
+  }
+
+  /**
+   * v13-V2：骨架归一的「每次必然变」字面量集——本单生效的 run_id/draft_dir，
+   * 外加 replay 血缘链上各祖先 run 的同两值：replay 拿的是源 run 的在册 graph，
+   * 旧值已烧进 prompt 字面量（applyVariables 只换 {{占位}}、不再触碰旧字面量），
+   * 不同步归一，同契约复跑的骨架必然对不上、漂移比对全线假阳。
+   * 祖先的 draft_dir 记录里没存，按 ensureDraftDir 同款纯路径函数复原（其
+   * variables 若有显式覆盖值则直读在册值）。链上溯带 seen 防环，找不到记录即停。
+   */
+  private skeletonLiteralsFor(
+    run: RunRecord,
+    vars: { run_id?: string; draft_dir?: string; replayOf?: string },
+  ): SkeletonLiteral[] {
+    const lits: SkeletonLiteral[] = [];
+    const push = (value: string | undefined, token: string) => {
+      if (value) lits.push({ token, value });
+    };
+    push(vars.run_id, '{{run_id}}');
+    push(vars.draft_dir, '{{draft_dir}}');
+    const seen = new Set<string>([run.runId]);
+    for (let cur = vars.replayOf; cur && !seen.has(cur); ) {
+      seen.add(cur);
+      const anc = this.runs.get(cur);
+      if (!anc) break;
+      push(anc.variables?.run_id ?? anc.runId, '{{run_id}}');
+      push(
+        anc.variables?.draft_dir ??
+          path.join(
+            this.store.root,
+            'spaces',
+            anc.spaceId ?? 'default',
+            'runs',
+            'drafts',
+            // 与 ensureDraftDir 同款定位：父子 run 共享血缘根目录，键不是各自 runId
+            this.draftOwnerRunId(anc.parentRunId) ?? anc.runId,
+          ),
+        '{{draft_dir}}',
+      );
+      cur = anc.replayOf;
+    }
+    return lits;
   }
 
   /** v12-V1：现读网关两个闸口（空间钉档 id + 生效档 freeModel）；读不到一律留缺省，不估算 */

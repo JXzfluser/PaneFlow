@@ -18,8 +18,9 @@ import { Store } from './store.js';
  * v13-V3 表版本单点常量：口径变更只改这里 + experimentTableHeader 的口径戳。
  * append-only 表头只写一次，历史文件拿不到新戳——「旧行不回填」是结构事实，
  * 边界随戳声明：新口径自本版新建的表/新行起生效。
+ * v13-V2：harness 列追加 rb=/skel# 等臂读数 → 版本 bump 到 3。
  */
-export const EXPERIMENT_TABLE_VERSION = 2;
+export const EXPERIMENT_TABLE_VERSION = 3;
 
 /** 日切口径（定死=UTC）：run 时间戳都是 toISOString()，slice(0,10) 即 UTC 日期 */
 function experimentDay(run: RunRecord): string {
@@ -43,8 +44,21 @@ export function experimentRow(run: RunRecord): string {
   const tokens = run.cost?.tokens ?? null;
   // v12-V1 harness 摘要列：起单实发指纹·agentKind（旧 run 无 harness 字段画 '-'）——
   // A/B 两臂「只差 readback」要能在这张表上机器读出，不靠起单人自律
+  // v13-V2 追加等臂读数 rb=<readbackOutcome> 与 skel#<skeletonSha>（缺项跳过）：
+  // 两臂 skel 相等 ∧ rb 一个 injected 一个 switch-off，「只差读回块」这行才算机证。
   const harness = run.harness
-    ? [run.harness.graphSha, run.harness.agentKind].filter(Boolean).join('·') || '-'
+    ? [
+        run.harness.graphSha,
+        run.harness.agentKind,
+        run.harness.readbackOutcome
+          ? `rb=${run.harness.readbackOutcome}`
+          : run.harness.readback === undefined
+            ? ''
+            : `rb=${run.harness.readback ? 'yes' : 'no'}`, // 怪单：有实态没结局，只呈实态
+        run.harness.skeletonSha ? `skel#${run.harness.skeletonSha}` : '',
+      ]
+        .filter(Boolean)
+        .join('·') || '-'
     : '-';
   // v12-V2 人等分列：验证税入账——放门结算好的 attention.waitMs 折分钟（一位小数）；
   // 无 attention（旧 run/没人批过门）画 '-'，读这张表即知人的等待占了多少
@@ -78,6 +92,9 @@ export function experimentTableHeader(suite: string): string {
     '断言列=latestAssertionResults 里 ok 数/总数（agent 自报口径）；' +
     'token in/out=run.cost.tokens，引擎收口汇总的 agent 自报 usage（Σ artifact.extra.usage），无自报画「-」——绝不估算；' +
     '人等分=attention.waitMs 折分钟（一位小数，放门结算账），无账画「-」；' +
+    'harness=graphSha·agentKind·rb=<readbackOutcome>·skel#<骨架指纹>（v13-V2 等臂读数：' +
+    'rb 六态 injected/switch-off/no-pages/not-injected/error/inherited，skel 剥注入块并归一 run_id/draft_dir；' +
+    '两臂 skel 相等 ∧ rb 不等=「只差读回块」机证；v13-V2 前的单只有前两截，缺项跳过）；' +
     '日切按 UTC（finishedAt??startedAt 的 ISO 前 10 位），+08 夜跑跨日会拆两张表、行数按表各自计；' +
     `本表只追加不回改——新列/新口径自 v${EXPERIMENT_TABLE_VERSION} 起的新行生效，历史行不回填。`;
   return [
