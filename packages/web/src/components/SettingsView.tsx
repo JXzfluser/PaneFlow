@@ -2,15 +2,33 @@ import { useEffect, useRef, useState } from 'react';
 import { api, fetchJson, type Channel, type ChannelType, type NotifyEvent } from '../api.js';
 import { useStore } from '../store.js';
 import { groupWikiPages, WIKI_GROUP_CAP } from '../wiki-sediment.js';
+import { Icon, type IconName } from './Icon.js';
 
-/** 设置页章节：v10-W 起「项目档案」已迁往「项目」视图，这里只留全局项 */
-const SECTIONS: { id: string; label: string; icon: string }[] = [
-  { id: 'channels', label: '通道', icon: '📡' },
-  { id: 'roles', label: '角色库', icon: '👤' },
-  { id: 'gateway', label: '模型网关', icon: '🌐' },
-  { id: 'github', label: 'GitHub 凭据', icon: '🐙' },
-  { id: 'env', label: '环境', icon: '🧩' },
+/**
+ * 设置页章节分两组（v13 排版分类整顿）：
+ * 「运行底座」= 这机能跑起来吗（环境→模型→凭据，按上手依赖序）；
+ * 「班底与复利」= 谁在干活、留下什么（角色→沉淀→外呼）。
+ * v10-W 起「项目档案」已迁往「项目」视图，这里只留全局项。
+ */
+const SECTION_GROUPS: { label: string; items: { id: string; icon: IconName; label: string }[] }[] = [
+  {
+    label: '运行底座',
+    items: [
+      { id: 'env', icon: 'cpu', label: '环境' },
+      { id: 'gateway', icon: 'globe', label: '模型网关' },
+      { id: 'github', icon: 'code', label: 'GitHub 凭据' },
+    ],
+  },
+  {
+    label: '班底与复利',
+    items: [
+      { id: 'roles', icon: 'user', label: '角色库' },
+      { id: 'wiki', icon: 'book', label: '知识沉淀' },
+      { id: 'channels', icon: 'radio', label: '出站通道' },
+    ],
+  },
 ];
+const SECTIONS = SECTION_GROUPS.flatMap((g) => g.items);
 
 const CHANNEL_TYPES: { id: ChannelType; label: string; hint: string }[] = [
   {
@@ -112,7 +130,7 @@ function ChannelsEditor() {
                 title="删除通道"
                 onClick={() => setChannels((cs) => cs.filter((x) => x.id !== ch.id))}
               >
-                🗑
+                <Icon name="trash" size={13} />
               </button>
             </div>
 
@@ -170,7 +188,7 @@ function ChannelsEditor() {
 
             <div className="settings-row channel-card-ops">
               <button className="ghost" disabled={testing === ch.id} onClick={() => void test(ch)}>
-                {testing === ch.id ? '发送中…' : '📤 测试发送'}
+                <Icon name="send" size={12} /> {testing === ch.id ? '发送中…' : '测试发送'}
               </button>
             </div>
           </div>
@@ -296,7 +314,7 @@ function GithubCredCard() {
         GitHub Token {g.tokenConfigured && <span className="inline-ok">（已配置，留空保持不变）</span>}
       </label>
       <p className="settings-hint">
-        {g.source === 'stored-pat' && <>来源：本机存储的 PAT · 尾号 {g.tokenTail}{credIdentity(g)}{g.ghLoggedIn ? '；gh 登录态可作兜底' : ''}</>}
+        {g.source === 'stored-pat' && <>来源：本机存储的 PAT · 尾号 <code>{g.tokenTail}</code>{credIdentity(g)}{g.ghLoggedIn ? '；gh 登录态可作兜底' : ''}</>}
         {g.source === 'gh-cli' && <>来源：本机 gh 登录态（现取现用，未写盘）{credIdentity(g)}。动作侧照常可用；想让它也喂给 Agent Pane 里的 gh，可一键导入落盘。</>}
         {g.source === 'none' && <>来源：无。要么贴一个 PAT，要么本机 gh auth login——登录后无需任何存储即可直连。</>}
       </p>
@@ -317,11 +335,11 @@ function GithubCredCard() {
           保存凭据
         </button>
         <button title="读取本机 `gh auth token` 的登录态并存入（gh 未登录会给出两条备选路）" disabled={importing} onClick={() => void importGh()}>
-          {importing ? '导入中…' : '🔑 从 gh CLI 一键导入'}
+          <Icon name="key" size={12} /> {importing ? '导入中…' : '从 gh CLI 一键导入'}
         </button>
         {g.source === 'stored-pat' && (
           <button className="ghost" title="只清本机存的 PAT（默认仓库保留；gh 登录态兜底不受影响）" onClick={() => void unlink()}>
-            🔓 解绑本机存储
+            解绑本机存储
           </button>
         )}
         <button
@@ -333,7 +351,11 @@ function GithubCredCard() {
           }
           onClick={() => void writeIntake()}
         >
-          {writing ? '回写中…' : '📋 回写接单模板 → 默认仓库'}
+          {writing ? '回写中…' : (
+            <>
+              <Icon name="doc" size={12} /> 回写接单模板 → 默认仓库
+            </>
+          )}
         </button>
       </div>
     </>
@@ -389,7 +411,7 @@ function WikiSedimentCard() {
   if (noRepo) {
     return (
       <p className="settings-hint">
-        还没配默认仓库（owner/name）——在上方填好保存后，绿单点赞沉淀的页就会出现在这里。
+        还没配默认仓库（owner/name）——在上方「GitHub 凭据」一节填好保存后，绿单点赞沉淀的页就会出现在这里。
       </p>
     );
   }
@@ -399,14 +421,12 @@ function WikiSedimentCard() {
   const groups = st ? groupWikiPages(st.pages) : [];
   return (
     <div className="wiki-sediment">
-      <div className="wiki-sed-head">
-        <b>📚 wiki 沉淀（知识复利）</b>
-        {st && (
-          <a className="link" href={treeUrl} target="_blank" rel="noreferrer">
-            github.com/{st.repo}/tree/{st.branch}/llm-wiki ↗
-          </a>
-        )}
-      </div>
+      {st && (
+        <a className="link wiki-sed-repo" href={treeUrl} target="_blank" rel="noreferrer">
+          <code>github.com/{st.repo}/tree/{st.branch}/llm-wiki</code>
+          <Icon name="external" size={11} />
+        </a>
+      )}
       {!st && <p className="settings-hint">读取中…</p>}
       {st && st.pageCount === 0 && (
         <p className="settings-hint">
@@ -455,7 +475,7 @@ function WikiSedimentCard() {
       )}
       <div className="settings-actions">
         <button className="ghost" disabled={syncing || noRepo} onClick={() => void sync()}>
-          {syncing ? '同步中…' : '🔄 从远端拉最新沉淀'}
+          <Icon name="refresh" size={12} /> {syncing ? '同步中…' : '从远端拉最新沉淀'}
         </button>
       </div>
     </div>
@@ -493,24 +513,24 @@ function GatewayCard() {
   const [g, setG] = useState({ baseUrl: '', freeModel: '', enabled: false, keyConfigured: false });
   const [profiles, setProfiles] = useState<GatewayProfileView[]>([]);
   const [apiKey, setApiKey] = useState('');
-  const [testing, setTesting] = useState<string>('');
+  type GatewayTestResult = { ok: boolean; models?: number; error?: string; chatOk?: boolean; chatError?: string };
+  const [testing, setTesting] = useState<{ note: string; cls: string } | null>(null);
   const [newName, setNewName] = useState('');
   const [swPath, setSwPath] = useState('');
   const [swCandidates, setSwCandidates] = useState<SwitchCandidate[] | null>(null);
   const [swPicked, setSwPicked] = useState<string[]>([]);
-  type GatewayTestResult = { ok: boolean; models?: number; error?: string; chatOk?: boolean; chatError?: string };
   const runTest = async (): Promise<void> => {
-    setTesting('探测中…');
+    setTesting({ note: '探测中…', cls: 'settings-action-note' });
     const r = await fetchJson<GatewayTestResult>('POST', '/api/gateway/test').catch(
       (e: Error): GatewayTestResult => ({ ok: false, error: e.message }),
     );
     // 列模型 ≠ 能对话：只有真实 chat completion 通过才算「可用」
     setTesting(
       !r.ok
-        ? `✗ ${r.error ?? '失败'}`
+        ? { note: r.error ?? '连接失败', cls: 'settings-fail' }
         : r.chatOk
-          ? `✓ 已连通 · ${r.models} 个模型 · 对话验证通过`
-          : `⚠ 能列模型但对话失败：${r.chatError ?? '原因未知'}（展开「免费档模型」换个 id）`,
+          ? { note: `已连通 · ${r.models} 个模型 · 对话验证通过`, cls: 'inline-ok' }
+          : { note: `能列模型但对话失败：${r.chatError ?? '原因未知'}（展开「免费档模型」换个 id）`, cls: 'settings-warn' },
     );
   };
   const refresh = async (): Promise<GatewayGet> => {
@@ -638,19 +658,22 @@ function GatewayCard() {
         </details>
       </div>
       <div className="settings-actions">
-        {testing && <span className={testing.startsWith('✓') ? 'inline-ok' : 'settings-action-note'}>{testing}</span>}
+        {testing && <span className={testing.cls}>{testing.note}</span>}
         <button className="primary" onClick={() => void save()}>
-          💾 保存并测试
+          <Icon name="save" size={12} /> 保存并测试
         </button>
       </div>
       {/* v9-D2 多网关档：上面表单编辑的是生效档；并存其他网关在下方列表里切/删 */}
       <div className="gw-profiles">
-        <label>网关档位（{profiles.length} 档 · 上方表单保存 = 改生效档「{profiles.find((p) => p.isCurrent)?.name ?? '—'}」）</label>
+        <h4>网关档位</h4>
+        <p className="settings-hint">
+          共 {profiles.length} 档 · 上方表单保存 = 改生效档「{profiles.find((p) => p.isCurrent)?.name ?? '—'}」
+        </p>
         {profiles.map((p) => (
           <div className="gw-profile" key={p.id}>
             <b className={p.isCurrent ? 'gw-cur' : ''}>{p.isCurrent ? '● ' : '○ '}{p.name}</b>
             <span className="settings-hint">
-              {p.baseUrl || '（无地址）'} · {p.keyConfigured ? 'key ✓' : '无 key'}
+              <code>{p.baseUrl || '（无地址）'}</code> · {p.keyConfigured ? 'key ✓' : '无 key'}
               {p.freeModel ? ` · ${p.freeModel}` : ''}
               {p.enabled === false ? ' · 已停用' : ''}
             </span>
@@ -658,7 +681,9 @@ function GatewayCard() {
               <button className="sm" onClick={() => void switchTo(p)}>设为生效</button>
             )}
             {profiles.length > 1 && (
-              <button className="sm ghost" title="删除此档" onClick={() => void removeProfile(p)}>✕</button>
+              <button className="sm ghost" title="删除此档" onClick={() => void removeProfile(p)}>
+                <Icon name="x" size={11} />
+              </button>
             )}
           </div>
         ))}
@@ -679,7 +704,7 @@ function GatewayCard() {
         </div>
       </div>
       <details className="settings-more">
-        <summary>📥 从外部配置导入网关（cc Switch / 同类 switcher 的 JSON）</summary>
+        <summary>从外部配置导入网关（cc Switch / 同类 switcher 的 JSON）</summary>
         <div className="settings-row">
           <input
             value={swPath}
@@ -687,7 +712,9 @@ function GatewayCard() {
             placeholder="配置文件绝对路径，如 /Users/you/.cc-switch/config.json"
             aria-label="外部配置文件路径"
           />
-          <button disabled={!swPath.trim()} onClick={() => void probeImport()}>🔍 识别</button>
+          <button disabled={!swPath.trim()} onClick={() => void probeImport()}>
+            <Icon name="search" size={12} /> 识别
+          </button>
         </div>
         {swCandidates && (
           <>
@@ -701,12 +728,12 @@ function GatewayCard() {
                     setSwPicked((xs) => (e.target.checked ? [...xs, c.name] : xs.filter((x) => x !== c.name)))
                   }
                 />
-                {c.name} · {c.baseUrl} · key…**{c.keyTail}{c.freeModel ? ` · ${c.freeModel}` : ''}
+                {c.name} · <code>{c.baseUrl}</code> · key…<code>{c.keyTail}</code>{c.freeModel ? ` · ${c.freeModel}` : ''}
               </label>
             ))}
             <div className="settings-actions">
               <button className="primary" disabled={!swPicked.length} onClick={() => void applyImport()}>
-                ⬇ 导入勾选（{swPicked.length}）
+                <Icon name="download" size={12} /> 导入勾选（{swPicked.length}）
               </button>
             </div>
           </>
@@ -798,7 +825,7 @@ function RolesEditor() {
                 </span>
                 <div className="bot-id">
                   <strong>{r.name}</strong>
-                  <span className="bot-meta">{r.agentKind ? `⚡ ${r.agentKind}` : '⚡ 默认 Agent'}</span>
+                  <span className="bot-meta">{r.agentKind ? <code>{r.agentKind}</code> : '默认 Agent'}</span>
                   {/* v13-W1 三轴划界的可见面：没配装备槽的岗其实在吃项目全量，这事实摊开在卡面上 */}
                   <span className="bot-meta">
                     {r.skills === undefined && r.rules === undefined
@@ -874,7 +901,7 @@ function RolesEditor() {
                     onClick={() => save(roles.filter((x) => x.id !== r.id))}
                     title="从角色库删除（各项目班底里的引用会悬空，界面会标出）"
                   >
-                    🗑 删除角色
+                    <Icon name="trash" size={12} /> 删除角色
                   </button>
                 </div>
               </details>
@@ -884,7 +911,7 @@ function RolesEditor() {
       </div>
       {ghosts.length > 0 && (
         <p className="bot-ghosts">
-          ⚠️ 班底里还引用着已不在库的角色：
+          <Icon name="alert" size={12} /> 班底里还引用着已不在库的角色：
           {ghosts.map(([id, ps]) => ` ${id}（${ps.map((p) => p.name).join('、')}）`).join('；')}
         </p>
       )}
@@ -939,34 +966,39 @@ export function SettingsView() {
   return (
     <div className="settings-view">
       <nav className="settings-nav" aria-label="设置章节">
-        {SECTIONS.map((s) => (
-          <button
-            key={s.id}
-            className={`settings-nav-item${active === s.id ? ' on' : ''}`}
-            onClick={() => jump(s.id)}
-          >
-            <span className="settings-nav-icon">{s.icon}</span>
-            {s.label}
-          </button>
+        {SECTION_GROUPS.map((g) => (
+          <div className="settings-nav-group" key={g.label}>
+            <span className="settings-nav-grouplabel">{g.label}</span>
+            {g.items.map((s) => (
+              <button
+                key={s.id}
+                className={`settings-nav-item${active === s.id ? ' on' : ''}`}
+                onClick={() => jump(s.id)}
+              >
+                <span className="settings-nav-icon">
+                  <Icon name={s.icon} size={13} />
+                </span>
+                {s.label}
+              </button>
+            ))}
+          </div>
         ))}
       </nav>
 
       <div className="settings-body" ref={bodyRef}>
-        <section className="settings-card" id="sec-channels">
-          <h3>出站通道</h3>
-          <p className="settings-hint">
-            运行事件（等待审批 / 完成 / 失败）会推送到下面每条已启用的通道。
-            原先的「飞书 webhook」配置会在首次读取时自动迁移为一条飞书通道，不会丢。
-          </p>
-          <ChannelsEditor />
-        </section>
-
-        <section className="settings-card" id="sec-roles">
-          <h3>全局角色库</h3>
-          <p className="settings-hint">
-            角色供画布 Agent 节点选择：继承默认 Agent 类型与前置提示。约定文档在「项目」视图的档案里按项目配置。
-          </p>
-          <RolesEditor />
+        <section className="settings-card" id="sec-env">
+          <h3>环境</h3>
+          {env && (
+            <p className="settings-hint">
+              Herdr：{env.herdrOk ? `已连接 ${env.herdrVersion ?? ''}` : '未连接'} · 已安装 Agent：
+              {env.env.agentsInstalled.join('、') || '无'}
+            </p>
+          )}
+          <div className="settings-actions">
+            <button onClick={() => void api.health().then(setEnv)}>
+              <Icon name="refresh" size={12} /> 重新检测
+            </button>
+          </div>
         </section>
 
         <section className="settings-card" id="sec-gateway">
@@ -979,25 +1011,34 @@ export function SettingsView() {
         </section>
 
         <section className="settings-card" id="sec-github">
-          <h3>GitHub 凭据（供流水线内 gh 命令使用）</h3>
+          <h3>GitHub 凭据</h3>
           <p className="settings-hint">
-            解决企业托管账号（EMU）无法操作外部仓库的问题：注入 GH_TOKEN 后，Agent 的 gh issue/pr 命令将以此身份执行。
+            供流水线内 gh 命令使用。解决企业托管账号（EMU）无法操作外部仓库的问题：
+            注入 GH_TOKEN 后，Agent 的 gh issue/pr 命令将以此身份执行。
           </p>
           <GithubCredCard />
+        </section>
+
+        <section className="settings-card" id="sec-wiki">
+          <h3>知识沉淀（wiki 复利）</h3>
           <WikiSedimentCard />
         </section>
 
-        <section className="settings-card" id="sec-env">
-          <h3>环境</h3>
-          {env && (
-            <p className="settings-hint">
-              Herdr：{env.herdrOk ? `已连接 ${env.herdrVersion ?? ''}` : '未连接'} · 已安装 Agent：
-              {env.env.agentsInstalled.join('、') || '无'}
-            </p>
-          )}
-          <div className="settings-actions">
-            <button onClick={() => void api.health().then(setEnv)}>🔄 重新检测</button>
-          </div>
+        <section className="settings-card" id="sec-roles">
+          <h3>全局角色库</h3>
+          <p className="settings-hint">
+            角色供画布 Agent 节点选择：继承默认 Agent 类型与前置提示。约定文档在「项目」视图的档案里按项目配置。
+          </p>
+          <RolesEditor />
+        </section>
+
+        <section className="settings-card" id="sec-channels">
+          <h3>出站通道</h3>
+          <p className="settings-hint">
+            运行事件（等待审批 / 完成 / 失败）会推送到下面每条已启用的通道。
+            原先的「飞书 webhook」配置会在首次读取时自动迁移为一条飞书通道，不会丢。
+          </p>
+          <ChannelsEditor />
         </section>
       </div>
     </div>

@@ -9,6 +9,7 @@ import { ProjectsView } from './components/ProjectsView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import { Guide } from './components/Guide.jsx';
 import { EnvWizard } from './components/EnvWizard.jsx';
+import { Icon } from './components/Icon.js';
 
 let healthLogged = false; // dedupe across StrictMode double-mounts
 
@@ -102,10 +103,18 @@ export function App() {
           </span>
           <div className="spacer" />
           <button
+            className="icon theme-toggle"
+            data-theme={theme}
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             title={theme === 'dark' ? '切到浅色' : '切到暗夜'}
           >
-            {theme === 'dark' ? '🌙' : '☀️'}
+            {/* 日月两枚常驻，靠 opacity/scale/blur 交叉淡入——表情符硬切换没有过渡语言 */}
+            <span className="theme-face theme-sun">
+              <Icon name="sun" size={15} />
+            </span>
+            <span className="theme-face theme-moon">
+              <Icon name="moon" size={15} />
+            </span>
           </button>
           <button onClick={() => setGuideOpen(true)} title="使用指南">? 指南</button>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>v{__PF_VERSION__}</span>

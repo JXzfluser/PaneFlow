@@ -5,6 +5,25 @@ import { api, fetchJson } from '../api.js';
 import { runCostLabel } from '../cost.js';
 import { needsPublicConfirm, type WikiPreviewRes } from '../wiki-sediment.js';
 import { RunTimeline } from './RunTimeline.js';
+import { Icon, type IconName } from './Icon.js';
+
+/** 运行终章徽章：状态色 + 一枚线性图符（蓝皮书批注感，不用彩色表情符）。 */
+function stateBadge(state: RunRecord['state']): { cls: string; icon: IconName | null; text: string } {
+  switch (state) {
+    case 'running':
+      return { cls: 'working', icon: null, text: '运行中' };
+    case 'queued':
+      return { cls: '', icon: 'clock', text: '排队中' };
+    case 'completed':
+      return { cls: 'done', icon: 'check', text: '完成' };
+    case 'completed-with-failures':
+      return { cls: 'failed', icon: 'alert', text: '完成（有失败）' };
+    case 'failed':
+      return { cls: 'failed', icon: 'x', text: '失败' };
+    default:
+      return { cls: '', icon: null, text: '已取消' };
+  }
+}
 
 /** v8-H2 产物货架的单个文件条目（<nodeId>.json 会挂上对应节点信息） */
 type ArtifactFile = {
@@ -109,13 +128,13 @@ function ArchivedPanel() {
   };
 
   if (archived === null) return <div className="runs-empty">归档加载中…</div>;
-  if (archived.length === 0) return <div className="runs-empty">没有归档记录。运行卡片上按 📦 可归档到这里。</div>;
+  if (archived.length === 0) return <div className="runs-empty">没有归档记录。运行卡片上按「归档」可归档到这里。</div>;
   return (
     <div>
       {archived.map((r) => (
         <div key={r.runId} className="run-card" style={{ opacity: 0.85 }}>
           <div className="run-card-head">
-            <b>#{r.runId}</b> <span style={{ fontFamily: 'var(--font-display)', fontSize: 13.5 }}>{r.dagName}</span>
+            <b>#{r.runId}</b> <span className="run-card-title">{r.dagName}</span>
             <span className={`badge ${r.state === 'completed' ? 'done' : r.state === 'failed' || r.state === 'completed-with-failures' ? 'failed' : ''}`}>
               {r.state === 'completed' ? '完成' : r.state === 'completed-with-failures' ? '完成（有失败）' : r.state === 'failed' ? '失败' : r.state}
             </span>
@@ -126,9 +145,15 @@ function ArchivedPanel() {
                 a.href = `/api/runs/${encodeURIComponent(r.runId)}/export`;
                 a.download = `${r.runId}.json`;
                 a.click();
-              }}>⤓</button>
-              <button title="恢复到主列表（反归档）" onClick={() => void unarchive(r.runId)}>↩</button>
-              <button className="danger" title="真删除（不可恢复；可选一并清理本 run 产物，默认保留）" onClick={() => void purge(r.runId)}>🗑</button>
+              }}>
+                <Icon name="download" />
+              </button>
+              <button title="恢复到主列表（反归档）" onClick={() => void unarchive(r.runId)}>
+                <Icon name="undo" />
+              </button>
+              <button className="danger" title="真删除（不可恢复；可选一并清理本 run 产物，默认保留）" onClick={() => void purge(r.runId)}>
+                <Icon name="trash" />
+              </button>
             </div>
           </div>
         </div>
@@ -182,7 +207,7 @@ function WikiPublishModal({ run, preview, onClose }: { run: RunRecord; preview: 
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal modal-wiki" role="dialog" aria-modal="true" aria-label="沉淀预览" onClick={(e) => e.stopPropagation()}>
-        <h2>👍 沉淀预览 · {run.dagName}</h2>
+        <h2>沉淀预览 · {run.dagName}</h2>
         <div className="wiki-pv-meta">
           <span>
             目标仓 <b>{preview.repo || '（未配置）'}</b>
@@ -190,7 +215,10 @@ function WikiPublishModal({ run, preview, onClose }: { run: RunRecord; preview: 
           <span>
             落点 <b>{preview.page?.file ?? '—'}</b>
           </span>
-          <span className={gateOk ? 'ok' : 'bad'}>{gateOk ? '✅ 已过沉淀门' : '⛔ 门不过'}</span>
+          <span className={`gate-flag ${gateOk ? 'ok' : 'bad'}`}>
+            <Icon name={gateOk ? 'check' : 'pause'} size={11} />
+            {gateOk ? '已过沉淀门' : '门不过'}
+          </span>
         </div>
         {preview.kind === 'counterexample' && (
           <p className="wiki-pv-counter">
@@ -219,7 +247,7 @@ function WikiPublishModal({ run, preview, onClose }: { run: RunRecord; preview: 
             title={!gateOk ? '沉淀门不过，推不动' : publicWarn && !publicChecked ? '先勾选「我确认公开」' : '把这份草稿推到仓库 llm-wiki/ 目录'}
             onClick={() => void push()}
           >
-            {busy ? '⏳ 推送中' : '推到仓库'}
+            {busy ? '推送中…' : '推到仓库'}
           </button>
         </div>
       </div>
@@ -277,9 +305,9 @@ export function RunsCenter() {
         'GET',
         `/api/runs/${encodeURIComponent(runId)}/artifacts/file?path=${encodeURIComponent(name)}`,
       );
-      setArtView((c) => ({ ...c, [key]: d.content + (d.truncated ? '\n…（内容过大，已截断——用 ⤓ 下载看全文）' : '') }));
+      setArtView((c) => ({ ...c, [key]: d.content + (d.truncated ? '\n…（内容过大，已截断——用「下载」看全文）' : '') }));
     } catch (e) {
-      setArtView((c) => ({ ...c, [key]: `（无法内联预览：${(e as Error).message}——试 ⤓ 下载）` }));
+      setArtView((c) => ({ ...c, [key]: `（无法内联预览：${(e as Error).message}——试「下载」）` }));
     }
   };
 
@@ -358,8 +386,10 @@ export function RunsCenter() {
     <div className="runs-center">
       <div className="runs-status">
         <button className={tab === 'active' ? 'active' : ''} onClick={() => setTab('active')}>全部运行</button>
-        <button className={tab === 'archived' ? 'active' : ''} title="已归档记录：可恢复或真删除" onClick={() => setTab('archived')}>📦 已归档</button>
-        <span style={{ marginLeft: 'auto' }}><b>{runningCount}</b> 运行中</span>
+        <button className={tab === 'archived' ? 'active' : ''} title="已归档记录：可恢复或真删除" onClick={() => setTab('archived')}>
+          <Icon name="box" size={12} /> 已归档
+        </button>
+        <span className="runs-status-stats"><b>{runningCount}</b> 运行中</span>
         {queuedCount > 0 && <span><b>{queuedCount}</b> 排队中</span>}
         <span className={blockedCount ? 'runs-alert' : ''}><b>{blockedCount}</b> 待审批</span>
         <span style={{ color: 'var(--text-dim)' }}>共 {list.length} 条历史</span>
@@ -368,7 +398,7 @@ export function RunsCenter() {
           title={notifyOn ? '浏览器通知已开启（点击关闭）' : '开启浏览器通知：等待审批/完成/失败时提醒'}
           style={notifyOn ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : undefined}
         >
-          🔔
+          <Icon name="bell" size={13} />
         </button>
       </div>
       {tab === 'archived' && <ArchivedPanel />}
@@ -383,12 +413,14 @@ export function RunsCenter() {
         const events = liveEvents && liveEvents.length ? liveEvents : fetched[r.runId];
         const open = openTl === r.runId;
         const eventCount = events?.length ?? liveEvents?.length ?? 0;
+        const badge = stateBadge(r.state);
         return (
-          <div key={r.runId} className="run-card">
+          <div key={r.runId} className={`run-card state-${r.state}`}>
             <div className="run-card-head">
-              <b>{r.issueId ? `#${r.issueId}` : `#${r.runId}`}</b> <span style={{ fontFamily: 'var(--font-display)', fontSize: 13.5 }}>{r.dagName}</span>
-              <span className={`badge ${r.state === 'completed' ? 'done' : r.state === 'failed' || r.state === 'completed-with-failures' ? 'failed' : r.state === 'running' ? 'working' : ''}`}>
-                {r.state === 'running' ? '运行中' : r.state === 'queued' ? '⏳ 排队中' : r.state === 'completed' ? '完成 ✅' : r.state === 'completed-with-failures' ? '完成（有失败）⚠' : r.state === 'failed' ? '失败 ❌' : '已取消'}
+              <b>{r.issueId ? `#${r.issueId}` : `#${r.runId}`}</b> <span className="run-card-title">{r.dagName}</span>
+              <span className={`badge ${badge.cls}`}>
+                {badge.icon && <Icon name={badge.icon} size={11} />}
+                {badge.text}
               </span>
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{r.state === 'queued' ? `已等 ${elapsed}s` : `${elapsed}s`}</span>
               {runCostLabel(r) && (
@@ -396,7 +428,7 @@ export function RunsCenter() {
               )}
               {Object.values(r.nodes).some((n) => n.unverified) && (
                 <span className="run-cost-chip" style={{ borderColor: 'var(--warn)', color: 'var(--warn)' }} title="部分节点结果文件缺失，产物取自终端尾部兜底（未经文件验证，结论可信度打折）">
-                  ⚠ 未验证产物
+                  <Icon name="alert" size={11} /> 未验证产物
                 </span>
               )}
               {r.contract && (
@@ -408,7 +440,7 @@ export function RunsCenter() {
                     ...(r.contract.scopeNotes ? [`边界：${r.contract.scopeNotes}`] : []),
                   ].join('\n')}
                 >
-                  📜 契约 {r.contract.assertions.length} 条{r.contract.source === 'generated' && !r.contract.confirmedAt ? '·待确认' : ''}
+                  <Icon name="doc" size={11} /> 契约 {r.contract.assertions.length} 条{r.contract.source === 'generated' && !r.contract.confirmedAt ? '·待确认' : ''}
                 </span>
               )}
               {r.prUrl && (
@@ -420,7 +452,7 @@ export function RunsCenter() {
                   style={{ borderColor: 'var(--ok, var(--accent))', color: 'var(--ok, var(--accent))', textDecoration: 'none' }}
                   title={`交付出口：${r.prUrl}（人类可 review 的东西已经出网）`}
                 >
-                  🔗 PR
+                  <Icon name="pr" size={11} /> PR
                 </a>
               )}
               {/* v11-C3b 回链的 run→页面：C3a 读回真注入了才显（留痕只计进了 prompt 的页） */}
@@ -432,7 +464,7 @@ export function RunsCenter() {
                     ...[...new Set(r.wikiReadback.nodes.flatMap((n) => n.pages.map((p) => `${p.title}（${p.file}）`)))],
                   ].join('\n')}
                 >
-                  📖 读了 {[...new Set(r.wikiReadback.nodes.flatMap((n) => n.pages.map((p) => p.file)))].length} 页沉淀
+                  <Icon name="book" size={11} /> 读了 {[...new Set(r.wikiReadback.nodes.flatMap((n) => n.pages.map((p) => p.file)))].length} 页沉淀
                 </span>
               )}
               <div className="run-card-ops">
@@ -441,14 +473,14 @@ export function RunsCenter() {
                   title={`事件时间线：谁在何时做了什么${eventCount ? `（${eventCount} 条）` : ''}`}
                   onClick={() => void toggleTimeline(r.runId, !!liveEvents?.length)}
                 >
-                  ⏱{eventCount ? ` ${eventCount}` : ''}
+                  <Icon name="clock" size={12} />{eventCount ? ` ${eventCount}` : ''}
                 </button>
                 <button
                   className={openArts === r.runId ? 'active' : ''}
                   title={artLists[r.runId] ? `产物货架：这单落下了 ${artLists[r.runId]!.files.length} 个文件（可点开/下载）` : '产物货架：这单落下的交付文件（点开看清单）'}
                   onClick={() => void toggleArtifacts(r.runId)}
                 >
-                  🗂{artLists[r.runId] ? ` ${artLists[r.runId]!.files.length}` : ''}
+                  <Icon name="shelf" size={12} />{artLists[r.runId] ? ` ${artLists[r.runId]!.files.length}` : ''}
                 </button>
                 {['completed', 'failed', 'completed-with-failures'].includes(r.state) && (
                   <button
@@ -460,7 +492,13 @@ export function RunsCenter() {
                     }
                     onClick={() => void openWikiPreview(r)}
                   >
-                    {wikiPreview?.run.runId === r.runId && wikiPreview.loading ? '⏳ 预览中' : r.state === 'completed' ? '👍 沉淀' : '👍 沉淀教训'}
+                    {wikiPreview?.run.runId === r.runId && wikiPreview.loading ? (
+                      '预览中…'
+                    ) : (
+                      <>
+                        <Icon name="bookmark" size={12} /> {r.state === 'completed' ? '沉淀' : '沉淀教训'}
+                      </>
+                    )}
                   </button>
                 )}
                 <button title="导出完整记录 JSON" onClick={() => {
@@ -468,7 +506,9 @@ export function RunsCenter() {
                   a.href = `/api/runs/${r.runId}/export`;
                   a.download = `${r.runId}.json`;
                   a.click();
-                }}>⤓</button>
+                }}>
+                  <Icon name="download" size={12} />
+                </button>
                 {!['running', 'queued'].includes(r.state) && (
                   <button title="归档（移出主列表，记录保留）" onClick={() => {
                     void fetchJson<{ archived: boolean }>('POST', `/api/runs/${r.runId}/archive`)
@@ -480,14 +520,28 @@ export function RunsCenter() {
                         });
                       })
                       .catch((e: Error) => useStore.getState().log('error', `归档失败：${e.message}`));
-                  }}>📦</button>
+                  }}>
+                    <Icon name="box" size={12} />
+                  </button>
                 )}
                 {r.state === 'failed' && (
-                  <button title="从断点续跑（已完成节点直接继承，失败/未跑节点重执行）" onClick={() => void resume(r)}>⤴</button>
+                  <button title="从断点续跑（已完成节点直接继承，失败/未跑节点重执行）" onClick={() => void resume(r)}>
+                    <Icon name="resume" size={12} />
+                  </button>
                 )}
-                <button title="在画布中打开" onClick={() => { openRun(r.runId); setView('orchestrate'); }}>↗</button>
-                {r.state === 'running' && <button className="danger" title="停止" onClick={() => void stop(r.runId)}>⏹</button>}
-                {r.state === 'queued' && <button className="danger" title="取消排队（尚未开跑，撤回即终态）" onClick={() => void stop(r.runId)}>✕</button>}
+                <button title="在画布中打开" onClick={() => { openRun(r.runId); setView('orchestrate'); }}>
+                  <Icon name="external" size={12} />
+                </button>
+                {r.state === 'running' && (
+                  <button className="danger" title="停止" onClick={() => void stop(r.runId)}>
+                    <Icon name="stop" size={12} />
+                  </button>
+                )}
+                {r.state === 'queued' && (
+                  <button className="danger" title="取消排队（尚未开跑，撤回即终态）" onClick={() => void stop(r.runId)}>
+                    <Icon name="x" size={12} />
+                  </button>
+                )}
               </div>
             </div>
             <div className="run-progress">
@@ -499,7 +553,9 @@ export function RunsCenter() {
               </div>
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{p.done}/{p.total} 节点</span>
               {blockedNodes.length > 0 && (
-                <span className="badge blocked">⛔ {blockedNodes.map((n) => n.nodeId).join('、')} 等审批</span>
+                <span className="badge blocked">
+                  <Icon name="pause" size={11} /> {blockedNodes.map((n) => n.nodeId).join('、')} 等审批
+                </span>
               )}
               {r.spaceId && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>项目 {r.spaceId}</span>}
             </div>
@@ -533,7 +589,7 @@ export function RunsCenter() {
                         )}
                         {f.unverified && (
                           <span className="artifact-chip warn" title="该节点产物取自终端尾部兜底，未经文件验证">
-                            ⚠ 未验证
+                            <Icon name="alert" size={10} /> 未验证
                           </span>
                         )}
                         <span className="dim">
@@ -546,7 +602,7 @@ export function RunsCenter() {
                           download={f.name}
                           title="下载原文件"
                         >
-                          ⤓
+                          <Icon name="download" size={12} />
                         </a>
                       </div>
                       {artView[viewKey] && <pre className="artifact-content">{artView[viewKey]}</pre>}

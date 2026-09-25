@@ -95,9 +95,7 @@ export function RunDialog({
         />
         {variables.length > 0 && (
           <>
-            <h3 style={{ margin: '16px 0 6px', fontSize: 13, borderLeft: '3px solid var(--accent)', paddingLeft: 8 }}>
-              运行参数
-            </h3>
+            <h3>运行参数</h3>
             {variables.map((v) => (
               <div key={v.key} style={{ marginBottom: 10 }}>
                 <label style={{ display: 'block', color: 'var(--text-dim)', fontSize: 12, marginBottom: 3 }}>

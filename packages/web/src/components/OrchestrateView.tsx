@@ -8,6 +8,7 @@ import { PropertyPanel } from './PropertyPanel.jsx';
 import { Console } from './Console.jsx';
 import { RunDialog } from './RunDialog.jsx';
 import { VariablesEditor } from './VariablesEditor.jsx';
+import { Icon } from './Icon.js';
 
 type PaneMode = 'list' | 'canvas';
 const PANE_KEY = 'pf-pane-mode';
@@ -108,12 +109,14 @@ export function OrchestrateView() {
       <div className="topbar">
         <div className="tb-group" title="当前画布的模板">
           <input className="gname" value={graphName} onChange={(e) => renameGraph(e.target.value)} placeholder="模板名" style={{ width: 150 }} />
-          <button onClick={saveTemplate} title="保存模板（用左侧模板名）">💾</button>
+          <button onClick={saveTemplate} title="保存模板（用左侧模板名）">
+            <Icon name="save" /> 保存
+          </button>
         </div>
 
         <div className="tb-group">
           <button className="primary" title="回到「任务」：一句话描述需求，自动编排（可先看编排预告）" onClick={() => setView('tasks')}>
-            ✎ 描述需求
+            <Icon name="pen" /> 描述需求
           </button>
         </div>
 
@@ -132,9 +135,13 @@ export function OrchestrateView() {
             style={{ width: 180 }}
           />
           {!running ? (
-            <button className="primary" onClick={run}>▶ 运行</button>
+            <button className="primary" onClick={run}>
+              <Icon name="play" /> 运行
+            </button>
           ) : (
-            <button className="danger" onClick={() => void stop()} title="停止流水线">⏹</button>
+            <button className="danger" onClick={() => void stop()} title="停止流水线">
+              <Icon name="stop" />
+            </button>
           )}
         </div>
 
@@ -157,7 +164,7 @@ export function OrchestrateView() {
           )}
           <div className="tb-more">
             <button title="更多（变量 / 云端同步 / 清空）" onClick={() => setMoreOpen((v) => !v)}>
-              ⋯ 更多
+              <Icon name="more" /> 更多
             </button>
             {moreOpen && (
               <>
@@ -186,7 +193,9 @@ export function OrchestrateView() {
               </>
             )}
           </div>
-          <button onClick={() => setView('runs')} title="打开运行中心（多流水线总览）">🕘 运行中心</button>
+            <button onClick={() => setView('runs')} title="打开运行中心（多流水线总览）">
+              <Icon name="clock" /> 运行中心
+            </button>
         </div>
       </div>
       {varsOpen && <VariablesEditor />}

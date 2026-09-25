@@ -23,7 +23,26 @@ export const THEMES: { id: ThemeName; label: string; icon: string }[] = [
 ];
 
 function applyTheme(theme: ThemeName): void {
+  // 主题翻转同时改动几乎每个元素的颜色——不掐掉过渡，切换会糊成整页交叉淡化。
+  // （测试环境的 document 桩只有 documentElement，故先探测 createElement）
+  if (typeof document.createElement !== 'function') {
+    document.documentElement.dataset.theme = theme;
+    return;
+  }
+  const kill = document.createElement('style');
+  kill.appendChild(document.createTextNode('*,*::before,*::after{transition:none !important}'));
+  document.head.appendChild(kill);
   document.documentElement.dataset.theme = theme;
+  // 浏览器外壳色（移动地址栏/刘海描边）跟随实主题：light 是默认档，静态 meta 不能写死暗值
+  if (typeof document.querySelector === 'function') {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) {
+      const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+      if (bg) meta.setAttribute('content', bg);
+    }
+  }
+  void document.body.offsetHeight; // 强制 reflow，让上面的规则先落地
+  requestAnimationFrame(() => kill.remove());
 }
 
 function initialTheme(): ThemeName {

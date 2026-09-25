@@ -6,6 +6,7 @@ import { deriveSteps, hasParallel, summarizeSteps } from '../steps.js';
 import { queuedReasonText } from '../queue-view.js';
 import { ADVANCED_FIELDS, ONBOARDING_STEPS } from '../onboarding.js';
 import { templateLabel } from '../template-labels.js';
+import { Icon } from './Icon.js';
 import { addableRoles, type TeamMemberLite, type TeamRoleLite } from '../team-bar.js';
 
 /**
@@ -169,7 +170,7 @@ export function TasksView() {
         />
         <div className="tasks-enhance-row">
           <button disabled={draftBusy} onClick={() => void enhance(false)}>
-            {draftBusy ? '扩写中（约 15-60 秒）…' : '✨ 扩写成完整需求'}
+            {draftBusy ? '扩写中（约 15–60 秒）…' : '✨ 扩写成完整需求'}
           </button>
           <button disabled={draftBusy} onClick={() => void enhance(true)}>
             ✨✨ 深档（两稿择优，慢一倍）
@@ -240,7 +241,13 @@ export function TasksView() {
         )}
         <div className="tasks-actions">
           <button className="primary" disabled={busy} onClick={() => void submit()}>
-            {busy ? '提交中…' : confirmGate ? '🎯 开始：先给我看计划再跑' : '🎯 开始执行'}
+            {busy ? (
+              '提交中…'
+            ) : (
+              <>
+                <Icon name="target" size={13} /> {confirmGate ? '开始：先给我看计划再跑' : '开始执行'}
+              </>
+            )}
           </button>
         </div>
         <div className="tasks-advanced">
