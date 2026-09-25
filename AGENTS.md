@@ -167,7 +167,7 @@ curl -s -X POST $BASE/api/runs/<runId>/promote     # 插队到队首；不在排
 # 批量派发（一个模板 × 一列 issue 编号，≤20；并发超限自动排队）
 curl -s $BASE/api/dispatch/batch -d '{"template":"my-template","issues":"1\n2\n3"}'
 
-# 空间/项目档案（v13-B1 交付约定声明位；rules/skills/delivery 皆配置文件管理，无编辑器）
+# 空间/项目档案（v13-B1 交付约定声明位；rules/skills/delivery 在「项目」视图中有编辑器，机器改走下面的 PUT）
 curl -s $BASE/api/spaces                       # → {spaces:[档案数组]}；没配过的可选键整缺不造默认
 curl -s $BASE/api/spaces/<id>                  # 单档案；delivery 配了才出现：[{repo?,branchFrom,branchName,prTarget,gates?,note?}]
 curl -s -X PUT $BASE/api/spaces/<id> -d '{"delivery":[{"repo":"my-repo","branchFrom":"main","branchName":"fix/issue-{issue}","prTarget":"main","gates":["PR 前"]}]}'

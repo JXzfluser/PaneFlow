@@ -19,6 +19,7 @@ interface SpaceProfile {
   experienceInjection?: boolean;
   team?: TeamMember[];
   gatewayProfile?: string;
+  rules?: SpaceRule[];
   delivery?: DeliveryRule[];
 }
 
@@ -85,6 +86,237 @@ function GatewayPinField({ value, onChange }: { value: string; onChange: (id: st
         ))}
         {dangling && <option value="__dangling__">{value}（已删除，暂跟随全局）</option>}
       </select>
+    </>
+  );
+}
+
+/** M3 目录作用域规则条目（profile.rules）：与 PUT /api/spaces/:id 的校验同形 */
+interface SpaceRule {
+  repo?: string;
+  pathsGlob?: string;
+  file: string;
+  note?: string;
+}
+
+/**
+ * 目录作用域规则编辑器：原来只能改 profile.json，现在在界面上填。
+ * 文档名从「发现约定文档与技能」的清单里选（datalist：可选也可补没扫到的路径），
+ * 判据（glob 怎么匹配、注入给哪些节点）全在 server 的 rules.matchRules，这里只组形状。
+ */
+function RulesEditor({
+  rules,
+  docs,
+  repos,
+  onChange,
+}: {
+  rules: SpaceRule[];
+  docs: string[];
+  repos: string[];
+  onChange: (next: SpaceRule[]) => void;
+}) {
+  const patch = (i: number, part: Partial<SpaceRule>) =>
+    onChange(rules.map((r, idx) => (idx === i ? { ...r, ...part } : r)));
+  const remove = (i: number) => onChange(rules.filter((_, idx) => idx !== i));
+  return (
+    <>
+      <label title="按作用域注入的约定文档：只给在该仓 / 该路径下工作的节点，不像全量那样人人都吃">
+        作用域规则（{rules.length} 条）
+      </label>
+      {rules.length === 0 && (
+        <p className="settings-hint">
+          还没配作用域规则：约定文档要么全空间注入（上面的勾选），要么没有中间档。
+          子仓各有家规时才需要这里——先点「🔍 发现约定文档与技能」，文档名就能从清单里选。
+        </p>
+      )}
+      <datalist id="pf-rule-docs">
+        {docs.map((d) => (
+          <option key={d} value={d} />
+        ))}
+      </datalist>
+      {rules.map((r, i) => (
+        <div className="delivery-rule" key={i}>
+          <div className="delivery-rule-head">
+            <span className="delivery-repo">{r.file.trim() || '（还没选文档）'}</span>
+            <button className="ghost tiny" onClick={() => remove(i)}>
+              删除本条
+            </button>
+          </div>
+          <div className="delivery-grid">
+            <label>
+              约定文档
+              <input
+                list="pf-rule-docs"
+                value={r.file}
+                onChange={(e) => patch(i, { file: e.target.value })}
+                placeholder="docs/review/checklist.md"
+              />
+            </label>
+            <label>
+              只在这个仓生效
+              <select
+                value={r.repo ?? ''}
+                onChange={(e) => patch(i, e.target.value ? { repo: e.target.value } : { repo: undefined })}
+              >
+                <option value="">不限仓</option>
+                {repos.map((repo) => (
+                  <option key={repo} value={repo}>
+                    {repo}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              只对匹配这条路径的节点
+              <input
+                value={r.pathsGlob ?? ''}
+                onChange={(e) => patch(i, e.target.value ? { pathsGlob: e.target.value } : { pathsGlob: undefined })}
+                placeholder="packages/admin/**"
+              />
+            </label>
+            <label>
+              备注（随文档一起给 agent 看）
+              <input value={r.note ?? ''} onChange={(e) => patch(i, { note: e.target.value })} placeholder="什么时候守这条" />
+            </label>
+          </div>
+          <p className="settings-hint">两把尺都留空=全空间规则（与上面的勾选等价，按文档去重）。</p>
+        </div>
+      ))}
+      <div className="settings-row">
+        <button onClick={() => onChange([...rules, { file: '' }])}>＋ 加一条</button>
+      </div>
+    </>
+  );
+}
+
+/**
+ * v13-B2 交付约定编辑器：家规从「改 profile.json」变成在界面上填。
+ * 条目形状与 PUT /api/spaces/:id 的校验一一对齐（三必填 + 三可选），判据仍在 server：
+ * 这里只组形状、不渲染占位符（客户端复刻 {issue}/{version} 替换会和引擎两套真相）。
+ */
+function DeliveryEditor({
+  rules,
+  repos,
+  onChange,
+}: {
+  rules: DeliveryRule[];
+  repos: string[];
+  onChange: (next: DeliveryRule[]) => void;
+}) {
+  const [gateDraft, setGateDraft] = useState<Record<number, string>>({});
+  const patch = (i: number, part: Partial<DeliveryRule>) =>
+    onChange(rules.map((r, idx) => (idx === i ? { ...r, ...part } : r)));
+  const remove = (i: number) => onChange(rules.filter((_, idx) => idx !== i));
+  const addGate = (i: number) => {
+    const name = (gateDraft[i] ?? '').trim();
+    const cur = rules[i];
+    if (!name || !cur || cur.gates?.includes(name)) return;
+    patch(i, { gates: [...(cur.gates ?? []), name] });
+    setGateDraft((d) => ({ ...d, [i]: '' }));
+  };
+  return (
+    <>
+      <label title="家规三件事：从哪条分支拉、分支叫什么、PR 提回哪条。一仓一副（repo 留空=全空间通配副）；命中后引擎建 worktree 按它拉起，拉不到基点即拒建">
+        交付约定（家规 · {rules.length} 副）
+      </label>
+      {rules.length === 0 && (
+        <p className="settings-hint">
+          还没学家规：起单时按老样子从当前 HEAD 拉 <code>paneflow/&lt;runId&gt;-&lt;nodeId&gt;</code>。
+          加一副之后，命中的仓会按家规拉基点与分支名，基点解析不到直接拒建（绝不静默从 HEAD 拉）。
+        </p>
+      )}
+      {rules.map((r, i) => (
+        <div className="delivery-rule" key={i}>
+          <div className="delivery-rule-head">
+            <span className="delivery-repo">{r.repo || '全空间'}</span>
+            <button className="ghost tiny" onClick={() => remove(i)}>
+              删除本副
+            </button>
+          </div>
+          <div className="delivery-grid">
+            <label>
+              仓库
+              <select
+                value={r.repo ?? ''}
+                onChange={(e) => patch(i, e.target.value ? { repo: e.target.value } : { repo: undefined })}
+              >
+                <option value="">全空间通配（任何仓都命中）</option>
+                {repos.map((repo) => (
+                  <option key={repo} value={repo}>
+                    {repo}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              从哪条分支拉
+              <input
+                value={r.branchFrom}
+                onChange={(e) => patch(i, { branchFrom: e.target.value })}
+                placeholder="main"
+              />
+            </label>
+            <label>
+              分支名
+              <input
+                value={r.branchName}
+                onChange={(e) => patch(i, { branchName: e.target.value })}
+                placeholder="fix/issue-{issue}"
+              />
+            </label>
+            <label>
+              PR 提回哪条
+              <input
+                value={r.prTarget}
+                onChange={(e) => patch(i, { prTarget: e.target.value })}
+                placeholder="main"
+              />
+            </label>
+          </div>
+          <p className="settings-hint">
+            分支名里的 <code>{'{issue}'}</code> / <code>{'{version}'}</code> 起单时实填；解析不到占位符=拒建即时红。
+            {repos.length === 0 && '（还没登记仓库，只能配全空间通配副）'}
+          </p>
+          <label className="delivery-gates">
+            人闸声明（可留空）
+            <span className="gate-chips">
+              {(r.gates ?? []).map((g) => (
+                <button
+                  key={g}
+                  className="gate-chip"
+                  title="点一下取消声明"
+                  onClick={() => patch(i, { gates: (r.gates ?? []).filter((x) => x !== g) })}
+                >
+                  {g} ×
+                </button>
+              ))}
+              <input
+                value={gateDraft[i] ?? ''}
+                placeholder="如 对齐先行 / PR 前"
+                onChange={(e) => setGateDraft((d) => ({ ...d, [i]: e.target.value }))}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === '，' || e.key === ',') {
+                    e.preventDefault();
+                    addGate(i);
+                  }
+                }}
+              />
+            </span>
+          </label>
+          <label>
+            备注（随约定块一起给 agent 看）
+            <input value={r.note ?? ''} onChange={(e) => patch(i, { note: e.target.value })} placeholder="为什么守这副家规" />
+          </label>
+        </div>
+      ))}
+      <div className="settings-row">
+        <button
+          onClick={() =>
+            onChange([...rules, { branchFrom: 'main', branchName: 'fix/issue-{issue}', prTarget: 'main' }])
+          }
+        >
+          ＋ 加一副
+        </button>
+      </div>
     </>
   );
 }
@@ -251,6 +483,8 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
   });
   const [browseDir, setBrowseDir] = useState<string | null>(null);
   const [browseList, setBrowseList] = useState<string[] | null>(null);
+  // 保存结果就地回执：日志面板默认收起，只 log() 等于「点了没反应」——成败都要在按钮旁边说一句
+  const [saveState, setSaveState] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     setProfile(null);
@@ -258,6 +492,7 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
     setBrowsing(false);
     setBrowseDir(null);
     setBrowseList(null);
+    setSaveState(null);
     // AE：默认项目也要能配「项目默认 Agent/统一覆盖」——档案照常读取（表单仅呈现可配项）
     void fetchJson<SpaceProfile>('GET', `/api/spaces/${encodeURIComponent(projectId)}`)
       .then(setProfile)
@@ -280,6 +515,16 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
 
   const saveProfile = async () => {
     if (!profile) return;
+    // 作用域规则：没选文档的行写了也是惰条（server 读端按 file 非空过滤），不入库、但如实回执
+    const blankRules = (profile.rules ?? []).filter((r) => !r.file.trim()).length;
+    const rules = (profile.rules ?? [])
+      .map((r) => ({
+        ...(r.repo?.trim() ? { repo: r.repo.trim() } : {}),
+        ...(r.pathsGlob?.trim() ? { pathsGlob: r.pathsGlob.trim() } : {}),
+        file: r.file.trim(),
+        ...(r.note?.trim() ? { note: r.note.trim() } : {}),
+      }))
+      .filter((r) => r.file);
     try {
       // 全字段回写：PUT 是 merge 语义，漏发的键会保住旧值——勾选过的约定/技能/仓库必须随表单一并发出
       await fetchJson<unknown>('PUT', `/api/spaces/${encodeURIComponent(projectId)}`, {
@@ -293,6 +538,16 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
         experienceInjection: profile.experienceInjection !== false,
         team: profile.team ?? [], // v9-B1：漏发=保住旧班底，但清空必须发得出去
         gatewayProfile: profile.gatewayProfile ?? '', // v9-D2：空串=取消钉档，跟随全局
+        rules, // M3：作用域规则（空数组=清空，显式发得出去）
+        // v13-B2 家规：空数组=清空（显式发得出）；条目里没填的可选键整键省略，不拿 '' 冒充声明过
+        delivery: (profile.delivery ?? []).map((d) => ({
+          ...(d.repo?.trim() ? { repo: d.repo.trim() } : {}),
+          branchFrom: d.branchFrom.trim(),
+          branchName: d.branchName.trim(),
+          prTarget: d.prTarget.trim(),
+          ...(d.gates?.length ? { gates: d.gates } : {}),
+          ...(d.note?.trim() ? { note: d.note.trim() } : {}),
+        })),
       });
       if (profile?.rootCwd) {
         const next = [profile.rootCwd, ...recentRoots.filter((x) => x !== profile.rootCwd)].slice(0, 5);
@@ -300,10 +555,19 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
         localStorage.setItem('pf-recent-roots', JSON.stringify(next));
       }
       log('info', `项目「${profile.name || projectId}」档案已保存`);
+      setSaveState({
+        ok: true,
+        text: `已保存 ${new Date().toLocaleTimeString()}${blankRules ? `（${blankRules} 条没选文档，未写入）` : ''}`,
+      });
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
+      setSaveState({ ok: false, text: `保存失败：${(e as Error).message}（改动还在表单里，按指路改完再存）` });
     }
   };
+
+  const saveReceipt = saveState && (
+    <span className={`save-receipt${saveState.ok ? ' ok' : ' err'}`}>{saveState.text}</span>
+  );
 
   // AE/I2 Agent 选择控件：默认项目档案表单虽精简，这几个必须可配（实机阻塞点）
   const installedKinds = (env?.env.agentsInstalled ?? []).filter((k) => (agentKinds as readonly string[]).includes(k));
@@ -404,6 +668,7 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
             <button className="primary" onClick={() => void saveProfile()}>
               保存档案
             </button>
+            {saveReceipt}
           </div>
         </>
       ) : (
@@ -583,28 +848,29 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
             value={profile.gatewayProfile ?? ''}
             onChange={(id) => setProfile((p) => (p ? { ...p, gatewayProfile: id } : p))}
           />
-          {/* v13-B1 交付约定：配置文件管理、无编辑器（与 rules/skills 登记同款 UX）——
-              本页只如实展示 profile.delivery；没配过（键缺失）整段不渲染，不造「未配置」占位。
-              编辑=改 profile.json 的 delivery 数组或 PUT /api/spaces/:id；保存档案走 merge，不误伤。 */}
-          {profile.delivery && profile.delivery.length > 0 && (
-            <>
-              <label title="交付约定（家规）：拉出基点 / 分支命名 / PR 目标；一仓一副。配置文件管理无编辑器；引擎起单接线在 B2，现配后将读不消费">
-                交付约定（{profile.delivery.length} 副）
-              </label>
-              {profile.delivery.map((d, i) => (
-                <div className="delivery-line" key={i} title={d.note}>
-                  <span className="delivery-repo">{d.repo || '全空间'}</span>
-                  <span>从 {d.branchFrom} 拉 {d.branchName}</span>
-                  <span>PR→{d.prTarget}</span>
-                  {d.gates && d.gates.length > 0 && <span>人闸 {d.gates.join('·')}</span>}
-                </div>
-              ))}
-            </>
-          )}
+          <RulesEditor
+            rules={profile.rules ?? []}
+            docs={[
+              ...new Set([
+                ...(discover?.markdowns ?? []),
+                ...(profile.conventionFiles ?? []),
+                ...(profile.rules ?? []).map((r) => r.file),
+              ]),
+            ].sort()}
+            repos={profile.repos ?? []}
+            onChange={(rs) => setProfile((p) => (p ? { ...p, rules: rs } : p))}
+          />
+          {/* v13-B2 起家规是三层消费的输入面，界面上就得填得出来：编辑器直改草稿，保存随档案一并 PUT */}
+          <DeliveryEditor
+            rules={profile.delivery ?? []}
+            repos={profile.repos ?? []}
+            onChange={(d) => setProfile((p) => (p ? { ...p, delivery: d } : p))}
+          />
           <div className="settings-actions">
             <button className="primary" onClick={() => void saveProfile()}>
               保存档案
             </button>
+            {saveReceipt}
           </div>
         </>
       )}
