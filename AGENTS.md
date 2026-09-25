@@ -38,6 +38,12 @@ paneflow runs --json            # 原始 API 负载，stdout 干净可直接 | j
 #    + 人等分行（v12-V2 人介入账：人等分: 等待 4.2 分 · 批 2/驳 0/补料 1——审批门
 #      拦→放的累计等待时长与决策计数，放门即结算落册；没批过门/旧 run 整缺不显示）
 #    + 每个节点状态 + 审批门提示
+#    + 岗位两枚 bit（v13-W2 起在同一行 harness: 尾部）：roleSha=角色+实解析装备的路径集指纹
+#      （换装备=换指纹、同装备=同指纹——文档内容改了算 上下文# 的账，不算它的；于是「两臂
+#      骨架#相等 ∧ roleSha 不等」= 岗位级 A/B 的机器证，V2 那套零新机制复用）；
+#      injected=<KB，一位小数>=本单各节点实注上下文块的 UTF-8 字节合计（0.0KB 是正读数=整单
+#      一个字都没注，与「缺键」分家：缺键=注入现场没走到/旧单）。两枚都在注入现场落册、
+#      取值时点同 上下文#；判据全在 server，CLI 只渲染）
 #    + 装备行（v13-W1 三轴划界：该节点实发吃进 prompt 的「技能 N · 岗位文档 M」计数，绑了岗还标岗名；
 #      scope=space 且绑了角色 → 整行升级为「⚠ 该角色未配装备，正吃空间全量」；
 #      装备槽引用了项目登记清单外的技能 → 另起一行「⚠ 装备引用不在登记清单，已跳过：…」（只披露不拦）；
@@ -108,6 +114,14 @@ curl -s $BASE/api/dispatch -d '{"task":"...","experiment":{"suite":"c4","arm":"a
 #   实态（false 也是正读数，不是缺键）、readbackOutcome 六态、skeletonSha 剥注入块+归一 run_id/draft_dir
 #   后指纹；漂移比对面自 v13-V2 加 skeletonSha（骨架不等=两臂差的不是读回块而是真拓扑），
 #   readback/readbackOutcome 不比——它们差是实验的受测变量；v13-V2 前的旧单无 skeletonSha 则跳过比对（宁缺毋假）；
+#   v13-W2 起同一对象再多两键 {roleSha?,injectedBytes?}——都在**注入现场**落册（取值时点同 v13-V4 ctxSha，
+#   起单时点没有实发值）：roleSha=「角色身份 + 该岗实解析出的技能/岗位文档路径集」按条目去重后并成的指纹
+#   （**换装备=换指纹、同装备=同指纹**：文档内容改了走 ctxSha，不抖它；scope 不入指纹），
+#   与 skeletonSha 联用即「两臂只差一格装备」的岗位级 A/B 机器证（V2 机制零新造复用）；
+#   injectedBytes=本单各 agent 节点实注上下文块的 UTF-8 字节合计（逐节点取最后一轮值，重试不双计；
+#   0 是正读数=一个字都没注）。整单没解析出装备（档案不可读/没走注入路）或旧 run → 整键省略；
+#   另外起单时若本空间配了班底（profile.team 非空）而某节点 role 不在名册，events 落一条
+#   「⚠ 班底名册外引用 N 处」warn 事件（shared.validateRoleRefs 纯读推导，只披露绝不硬拦，存量模板不变红）
 #   v12-S1a 起带副作用的单多 sideEffects:{issuesCreated?,issuePatched?,prUrl?,pushedAt?}——
 #   引擎可见的外部写账（建单/覆写仅调用方带 runId 才归因；pushedAt 为自报口径，模板未报=不可见）；
 #   v12-V2 起批过门的单多 attention:{waitMs,gates:{approve,reject,input}}——人介入「验证税」落册账，

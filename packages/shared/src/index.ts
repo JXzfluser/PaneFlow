@@ -37,6 +37,7 @@ export {
   CHECK_SPEC_TYPES,
   FANOUT_MAX_ITEMS_LIMIT,
   validateDag,
+  validateRoleRefs,
   validateAcceptance,
   failedAssertionsOf,
   assertionDiff,

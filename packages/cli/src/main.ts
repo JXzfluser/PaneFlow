@@ -12,6 +12,11 @@ import { EXIT_OK, EXIT_RED, type CliIo, type DispatchResult, type RunView } from
 /** 与 release launcher（bin/paneflow.mjs）的路由表同源：这几枚子命令走 CLI，其余起 server */
 export const CLI_SUBCOMMANDS = ['dispatch', 'runs', 'status', 'watch', 'approve', 'replay', 'experiments'] as const;
 
+/** v13-W2 注入字节读数为人话（`injected=12.3KB`）；纯格式换算，不是判据 */
+function kBytes(n: number): string {
+  return `${(n / 1024).toFixed(1)}KB`;
+}
+
 /** 带值的长选项；不在列的 --xxx 视为布尔开关（目前只有 --json） */
 const VALUE_FLAGS = new Set(['url', 'repo', 'issue', 'timeout', 'interval', 'space', 'times', 'arm', 'suite', 'flag']);
 
@@ -228,6 +233,11 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
         : `读回=${h.readback ? '有' : '无'}${h.readbackOutcome ? `(${h.readbackOutcome})` : ''}`,
       h.skeletonSha ? `骨架#${h.skeletonSha}` : '',
       h.ctxSha ? `上下文#${h.ctxSha}` : '',
+      // v13-W2 岗位两枚 bit：roleSha=「哪一岗挂哪几篇」的内容指纹（换装备=换指纹，
+      // 岗位级 A/B 自此复用 V2 等臂机制），injected=实注字节的 KB 读数（G1 降重账）——
+      // 都是 server 注入现场算好落册的账，CLI 零判据；旧单缺键整缺不显（不拿 0 冒充）
+      h.roleSha ? `roleSha=${h.roleSha}` : '',
+      h.injectedBytes === undefined ? '' : `injected=${kBytes(h.injectedBytes)}`,
     ].filter(Boolean);
     io.out(`  harness: ${bits.join(' · ')}`);
   }

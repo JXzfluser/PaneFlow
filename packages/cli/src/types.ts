@@ -52,6 +52,10 @@ export interface RunView {
     skeletonSha?: string;
     /** v13-V4 注入面指纹：注入现场实读文件集+两枚运行旋钮，server 算好；旧单缺键不渲染 */
     ctxSha?: string;
+    /** v13-W2 岗位指纹：角色+实解析装备的路径集指纹（server 注入现场算好）；旧单缺键不渲染 */
+    roleSha?: string;
+    /** v13-W2 注入字节账：本单各节点注入块的 UTF-8 字节合计（0 是正读数；缺键=没走到注入现场） */
+    injectedBytes?: number;
   };
   /** v12-S1a 副作用落册账（server 判据算好，CLI 只渲染；缺项跳过、整缺不显示） */
   sideEffects?: { issuesCreated?: number[]; issuePatched?: number[]; prUrl?: string; pushedAt?: string };

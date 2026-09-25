@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { DagGraph, RunHarness } from '@paneflow/shared';
+import type { DagGraph, NodeEquip, RunHarness } from '@paneflow/shared';
 import { READBACK_HEADER } from './readback.js';
 
 /**
@@ -173,6 +173,49 @@ export function ctxShaDriftDiff(
   if (!source?.ctxSha || !current?.ctxSha) return null;
   if (source.ctxSha === current.ctxSha) return null;
   return `上下文 #${source.ctxSha}→#${current.ctxSha}（约定文档/技能实读集或运行旋钮已变）`;
+}
+
+// ---------------------------------------------------------------------------
+// v13-W2 岗位指纹 roleSha：角色 + 实解析装备的内容指纹（纯函数，构成只在这里）
+// ---------------------------------------------------------------------------
+
+/**
+ * v13-W2 岗位指纹 roleSha 的取材形状——构成钉死在此单源（engine 只喂注入现场的装备账）：
+ * 每枚条目=一岗实发吃进的东西：
+ *  · role：节点绑的角色 id（没绑=null——「没岗」和「有岗」是两回事，不混同一指纹）；
+ *  · skills / rules：注入现场**解析出的路径集**（按注入顺序，路径本身入指纹）。
+ *    刻意**不**逐文件算内容指纹——文件改了是 ctxSha 的账（V4 已占坑），本键只证
+ *    「哪一岗挂哪几篇」这格配置，于是「同装备同指纹」不被文档编辑噪声打破（判据外延自 V2）；
+ *  · unknownSkills：装备槽引用了登记清单外的项（虽不注入，但它变了=这岗的配置确实被改过）。
+ * scope（role/space 兼容带）不入指纹：它由「槽有没有配过」推得、与路径集冗余，
+ * 算进去会让「配了一格内容等价的槽」也换指纹，破「同装备=同指纹」那半条判据。
+ */
+export interface RoleEquipFingerprint {
+  role: string | null;
+  skills: string[];
+  rules: string[];
+  unknownSkills?: string[];
+}
+
+/** NodeEquip → 指纹取材：装备账是注入现场落册的现成结构，这里只做剥字段与归一 */
+export function roleFingerprint(equip: NodeEquip): RoleEquipFingerprint {
+  return {
+    role: equip.role ?? null,
+    skills: [...equip.skills],
+    rules: [...equip.rules],
+    ...(equip.unknownSkills?.length ? { unknownSkills: [...equip.unknownSkills] } : {}),
+  };
+}
+
+/**
+ * 岗位指纹：把一单里各节点的装备取材（按整条目去重后排序）并成一枚 contentSha。
+ * 口径：①去重——同一岗位挂在多个节点上不重复记账；②排序——「同一批装备挂在不同节点上」
+ * 不额外换指纹（节点拓扑是 skeletonSha 的账）。单角色单岗时等价于那一格取材直接取 sha
+ * （测试据此现算比对）。
+ */
+export function computeRoleSha(equips: readonly NodeEquip[]): string {
+  const uniq = [...new Set(equips.map((e) => canonicalJson(roleFingerprint(e))))].sort();
+  return contentSha(uniq);
 }
 
 const show = (v: string | undefined, none: string) => v || none;

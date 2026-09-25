@@ -208,6 +208,37 @@ describe('runs / status / approve', () => {
     expect(legacy.lines.join('\n')).not.toContain('上下文#');
   });
 
+  it('v13-W2 status 岗位两枚 bit：roleSha 照渲染 + injected 走 KB（一位小数），旧单缺键整缺不显；0 是正读数照显', async () => {
+    const base = { runId: 'r-w2', state: 'completed', dagName: 'g', nodes: {} };
+    const { fetchImpl } = stubFetch([
+      {
+        body: {
+          ...base,
+          harness: {
+            graphSha: 'g1', agentKind: 'pi', readback: false, readbackOutcome: 'no-pages',
+            ctxSha: 'cx1', roleSha: 'rl2a', injectedBytes: 12595,
+          },
+        },
+      },
+      { body: { ...base, harness: { graphSha: 'g2', agentKind: 'pi', ctxSha: 'cx2' } } },
+      { body: { ...base, harness: { graphSha: 'g3', agentKind: 'pi', roleSha: 'rl3', injectedBytes: 0 } } },
+    ]);
+    const armed = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-w2'], armed.io)).toBe(0);
+    expect(armed.lines.join('\n')).toContain(
+      'harness: graph#g1 · kind=pi · 读回=无(no-pages) · 上下文#cx1 · roleSha=rl2a · injected=12.3KB',
+    );
+    // v13-W2 前的旧单：两键都没给就整缺不显（CLI 不拿 0 冒充「读了零」）
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-w2'], legacy.io)).toBe(0);
+    expect(legacy.lines.join('\n')).not.toContain('roleSha');
+    expect(legacy.lines.join('\n')).not.toContain('injected=');
+    // 0 是 server 的正读数（整单一个字都没注），照显 0.0KB
+    const zero = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-w2'], zero.io)).toBe(0);
+    expect(zero.lines.join('\n')).toContain('roleSha=rl3 · injected=0.0KB');
+  });
+
   it('v12-S1a status 副作用行：只渲染 server 落册账——全量一行、缺项跳过、无账/空账整缺不显示', async () => {
     const base = { runId: 'r-se', state: 'completed', dagName: 'g', nodes: {} };
     const { fetchImpl } = stubFetch([

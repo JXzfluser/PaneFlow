@@ -23,7 +23,7 @@ import type {
   NodeAbandonmentTrigger,
   NodeEquip,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
@@ -44,6 +44,7 @@ import { appendExperimentRow } from './experiment.js';
 import { bookGateRelease } from './attention.js';
 import {
   computeCtxSha,
+  computeRoleSha,
   contentSha,
   ctxShaDriftDiff,
   EXPERIENCE_BLOCK_HEAD_PREFIX,
@@ -256,11 +257,21 @@ export class Engine {
   /** v13-S2 尝试内掐断幂等键（runId:nodeId:attempt）：同一轮尝试多个触发点连发只掐一次、只落一笔账 */
   private readonly interruptedAttempts = new Set<string>();
   /**
-   * v13-V4 ctxSha 注入面账（runId → 注入现场逐次累计的实读文件集 + 漂移事件 once 位）。
-   * 只在内存、不当第二本账——权威账是 run.harness.ctxSha（随单落盘）；这里只存归一
-   * 过程量（跨节点并集）与「每单至多一条漂移事件」的幂等位。归档驱逐随 evictRun 清。
+   * v13-V4 ctxSha 注入面账（runId → 注入现场逐次累计的实读文件集 + 漂移事件 once 位）；
+   * v13-W2 起同一格并收岗位装备账与注入字节账（nodeId → 本轮实发值，重试=后读覆盖先读）。
+   * 只在内存、不当第二本账——权威账是 run.harness.ctxSha / roleSha / injectedBytes（随单落盘）；
+   * 这里只存归一过程量（跨节点并集、逐节点最后一轮值）与「每单至多一条漂移事件」的幂等位。
+   * 归档驱逐随 evictRun 清。
    */
-  private readonly ctxLedger = new Map<string, { files: Map<string, string>; driftNoted: boolean }>();
+  private readonly ctxLedger = new Map<
+    string,
+    {
+      files: Map<string, string>;
+      driftNoted: boolean;
+      equips: Map<string, NodeEquip>;
+      bytes: Map<string, number>;
+    }
+  >();
   /** v13-S1 worktree 根目录（泄漏清扫的扫描面） */
   private readonly wtRoot: string;
 
@@ -778,6 +789,19 @@ export class Engine {
         'run',
         undefined,
         `⚠ 引用未解析 ${unresolved.length} 处（花括号将原样进提示词——核对变量声明与节点名）：${detail}${unresolved.length > 6 ? ' 等' : ''}`,
+      );
+    }
+    // v13-W2 名册机检（与 G2 同款姿势：纯读推导 + warn 事件上时间线，绝不硬拦）：
+    // 有班底（profile.team 非空）的单里，节点点的岗不在名册 → 报出来；没配班底的空间
+    // 一条不报（存量模板不许变红），档案不可读同样一条不报（宁缺毋假，不猜名册）
+    const rosterIssues = validateRoleRefs(graph, this.rosterRoleIdsFor(spaceId));
+    if (rosterIssues.length) {
+      const detail = rosterIssues.slice(0, 6).map((i) => i.message).join('；');
+      this.recordEvent(
+        run,
+        'run',
+        undefined,
+        `⚠ 班底名册外引用 ${rosterIssues.length} 处（只披露不拦，跑单照旧）：${detail}${rosterIssues.length > 6 ? ' 等' : ''}`,
       );
     }
     this.persistAndNotify(run);
@@ -2026,7 +2050,13 @@ export class Engine {
       if (equip) rec.equip = equip;
       // v13-V4：ctxSha 就地在注入发生的这一刻取值落册（实读集=resolveContext 返回值，
       // 不在起单时取——那是本片命门，取错点=假账）
-      this.noteContextInjection(run, ctxFiles);
+      // v13-W2：同一条写者路径顺带并收 roleSha（岗位装备指纹）与 injectedBytes（本次注入块
+      // 的实际字节数）；两者与 ctxSha 共享取值时点，起单时点没有实发值
+      this.noteContextInjection(run, ctxFiles, {
+        nodeId,
+        equip,
+        blockBytes: Buffer.byteLength(block, 'utf8'),
+      });
       this.persistAndNotify(run);
       const prompt = this.withArtifactConvention(
         `${block}${rendered}`,
@@ -2822,6 +2852,24 @@ export class Engine {
   }
 
   /**
+   * v13-W2 本空间的班底名册（roleId 集，判据消费方是 shared.validateRoleRefs）。
+   * 读法与 findGreenPredecessor 同款（跨空间即用即弃的 Store，不缓存）。
+   * 档案不可读 → undefined（= 拿不到名册，一条不报，宁缺毋假）；team 缺省/空数组 →
+   * 空名册 = 「没配班底」，同样一条不报（不配班底是合法现状，不是每个节点的岗都欠编制）。
+   */
+  private rosterRoleIdsFor(spaceId: string | undefined): string[] | undefined {
+    try {
+      const profile =
+        spaceId && spaceId !== this.store.spaceId
+          ? new Store(this.store.root, spaceId).readProfile()
+          : this.store.readProfile();
+      return (profile.team ?? []).map((m) => m.roleId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * 组装节点 prompt 前置的上下文块。三轴划界（v13-W1）各守本分：
    *  · 空间轴=事实与家规（无作用域 rules/conventionFiles + skills **登记清单**）；
    *  · 目录轴=M3 作用域规则（matchRules 按节点 cwd 命中，本片不动）；
@@ -2909,17 +2957,32 @@ export class Engine {
    * 漂移比对：replay 单在指纹落册当刻与源单在册 ctxSha 比（此刻新值的唯一诞生点，
    * harnessDriftDiffs 的起单时点比不了它）；不等→落一条「harness 漂移」事件，
    * 每单至多一条；任一侧缺键（v13-V4 前旧单/源已被归档驱逐）跳过，宁缺毋假。
+   * v13-W2 同一条写者路径顺带并收两枚账（取值时点必须与 ctxSha 同——起单时点没有实发值）：
+   *  · roleSha：各节点装备账（rec.equip 同一份 NodeEquip）按节点取最后一轮值、去重后并成
+   *    一枚（构成见 harness.computeRoleSha）——「这单实际吃了哪几岗的哪几篇装备」自此可证；
+   *    整单一次装备都没解析出来（档案不可读/没走注入路径）→ 整键省略，不拿空账冒充「吃了零」。
+   *  · injectedBytes：各节点注入块的 UTF-8 字节数按节点取最后一轮值再求和（重试不双计）；
+   *    0 是正读数（确实一个字都没注），与「整键缺失」分家。
    */
-  private noteContextInjection(run: RunRecord, files: Record<string, string>): void {
+  private noteContextInjection(
+    run: RunRecord,
+    files: Record<string, string>,
+    injected?: { nodeId: string; equip?: NodeEquip; blockBytes: number },
+  ): void {
     try {
       const harness = run.harness;
       if (!harness) return; // 起单未固成 harness 的防御路：不造半枚旁账
       let led = this.ctxLedger.get(run.runId);
       if (!led) {
-        led = { files: new Map(), driftNoted: false };
+        led = { files: new Map(), driftNoted: false, equips: new Map(), bytes: new Map() };
         this.ctxLedger.set(run.runId, led);
       }
       for (const [p, sha] of Object.entries(files)) led.files.set(p, sha);
+      if (injected) {
+        led.bytes.set(injected.nodeId, injected.blockBytes);
+        // 装备账没解析出来（resolveContext 的档案不可读路）就不记：宁缺毋假
+        if (injected.equip) led.equips.set(injected.nodeId, injected.equip);
+      }
       const sha = computeCtxSha({
         files: Object.fromEntries(led.files),
         gwThrottleRetries: this.gwThrottleRetries,
@@ -2927,6 +2990,13 @@ export class Engine {
       });
       const changed = harness.ctxSha !== sha;
       harness.ctxSha = sha;
+      // v13-W2：两枚新账各自比对「有没有变」，变了就要落盘（ctxSha 未变不代表它们未变）
+      const roleSha = led.equips.size ? computeRoleSha([...led.equips.values()]) : undefined;
+      const injectedBytes = [...led.bytes.values()].reduce((sum, n) => sum + n, 0);
+      const bytesChanged = harness.injectedBytes !== injectedBytes;
+      const roleChanged = roleSha !== undefined && harness.roleSha !== roleSha;
+      if (roleSha !== undefined) harness.roleSha = roleSha;
+      if (led.bytes.size) harness.injectedBytes = injectedBytes;
       let driftEvented = false;
       if (!led.driftNoted && run.replayOf) {
         const diff = ctxShaDriftDiff(this.runs.get(run.replayOf)?.harness, harness);
@@ -2941,7 +3011,7 @@ export class Engine {
           );
         }
       }
-      if (changed || driftEvented) this.persistAndNotify(run);
+      if (changed || roleChanged || bytesChanged || driftEvented) this.persistAndNotify(run);
     } catch {
       // 披露旁账不许把运行挡下来（与起单 harness 固化同款防御姿势）
     }

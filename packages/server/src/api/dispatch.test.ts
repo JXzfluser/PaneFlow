@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   buildDispatchGraph,
   candidateRepos,
@@ -8,6 +11,7 @@ import {
   intakeTemplateMarkdown,
   parseGithubRemote,
   parseIssueRef,
+  teamEquipView,
   type IssueView,
 } from './dispatch.js';
 import { BUILTIN_TEMPLATES } from '../orchestrate/builtin-templates.js';
@@ -343,5 +347,83 @@ describe('v8-I1 技能索引进 Planner + repos 候选仓解析', () => {
     expect(candidateRepos(['alpha', 'beta', 'gamma', '../evil', 'delta'], '/root', readRemote)).toEqual(['o/alpha']);
     expect(candidateRepos(undefined, '/root', readRemote)).toEqual([]);
     expect(candidateRepos(['alpha'], undefined, readRemote)).toEqual([]);
+  });
+});
+
+// -- v13-W2 名册会说话：planner 名册行从「只有名字」升级为「名字 + 装备索引」 ----------------
+describe('v13-W2 planner 名册装备块（按装备结合场景点人）', () => {
+  const templateList = [{ name: 't1' }];
+  const REGISTRY = ['skills/deploy.md', 'skills/export-guard.md', 'skills/review.md'];
+
+  /** 一台真项目：登记清单里三篇技能（首行=描述），外加一篇岗上专属清单 */
+  function w2Root(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-w2-plan-'));
+    for (const rel of REGISTRY) {
+      const abs = path.join(root, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, `# ${path.basename(rel, '.md')} 的标题行\n\n正文。`);
+    }
+    fs.writeFileSync(path.join(root, 'role-checklist.md'), '# 评审清单\n\n- 逐条核对 AC');
+    return root;
+  }
+
+  const plannerPrompt = (opts: Partial<import('./dispatch.js').DispatchOptions>) =>
+    buildDispatchGraph({ task: '优化', cwd: '/tmp/x', templateList, ...KIND, ...opts }).nodes.find(
+      (n) => n.id === 'planner',
+    )!.config.prompt!;
+
+  it('①配了装备槽的岗：名册行按角色分列实挂技能名（索引通道，不是整篇）+ 岗位文档名', () => {
+    const root = w2Root();
+    const armed = teamEquipView({ skills: ['skills/deploy.md'], rules: ['role-checklist.md'] }, REGISTRY, root);
+    expect(armed).toMatchObject({ skillSlotted: true, skillNames: ['deploy'], ruleNames: ['role-checklist'] });
+    const p = plannerPrompt({
+      team: [
+        { roleId: 'r-arm', name: '实现', alias: '阿实', equip: armed },
+        { roleId: 'r-plain', name: '评审', equip: teamEquipView({}, REGISTRY, root) },
+      ],
+    });
+    expect(p).toContain('阿实（roleId: r-arm · 装备：技能 deploy · 岗位文档 role-checklist）');
+    // 索引不是整篇：正文与绝对路径都不进 prompt
+    expect(p).not.toContain('的标题行');
+    expect(p).not.toContain(root);
+    // 点人指引自此有的可指
+    expect(p).toContain('点人看装备');
+  });
+
+  it('②没配装备槽的岗如实显示「吃空间全量」（W1 兼容带，绝不显示成零装备）；显式 [] 才是正读数空槽', () => {
+    const root = w2Root();
+    const unslotted = teamEquipView({}, REGISTRY, root);
+    expect(unslotted.skillSlotted).toBe(false);
+    const p = plannerPrompt({
+      team: [
+        { roleId: 'r-plain', name: '沉淀', equip: unslotted },
+        { roleId: 'r-zero', name: '验收', equip: teamEquipView({ skills: [] }, REGISTRY, root) },
+      ],
+    });
+    expect(p).toContain('沉淀（roleId: r-plain · 装备：技能=吃空间全量（登记 3 项））');
+    // 兼容带的岗绝对不许被读成「零装备」：那一行里不出现空槽字样
+    expect(p.split('\n').find((l) => l.includes('roleId: r-plain'))).not.toContain('空槽');
+    expect(p).toContain('验收（roleId: r-zero · 装备：不挂技能文档（显式空槽））');
+  });
+
+  it('③装备槽引用了登记清单外的技能：不进名字列表（与引擎注入现场同源判据），行照出、单照建', () => {
+    const root = w2Root();
+    const view = teamEquipView({ skills: ['skills/deploy.md', 'ghost.md'] }, REGISTRY, root);
+    expect(view.skillNames).toEqual(['deploy']);
+    const p = plannerPrompt({ team: [{ roleId: 'r', name: '甲', equip: view }] });
+    expect(p).toContain('装备：技能 deploy）');
+    expect(p).not.toContain('ghost');
+  });
+
+  it('④旧接线/读不到档案（无 equip、role 缺省、rootCwd 不可读）：名册退回 v9 旧形状，不崩不猜', () => {
+    const p = plannerPrompt({
+      team: [
+        { roleId: 'std-planner', name: '规划', alias: '阿规' }, // 调用方没给装备账
+        { roleId: 'r-x', name: '乙', equip: teamEquipView(undefined, undefined, '/nonexistent/nope') },
+      ],
+    });
+    expect(p).toContain('- 阿规（roleId: std-planner）');
+    // 没配技能槽/清单读不到：仍是「吃空间全量」，但没有登记清单就不报规模，也不编名字
+    expect(p).toContain('乙（roleId: r-x · 装备：技能=吃空间全量）');
   });
 });

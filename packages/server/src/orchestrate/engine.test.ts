@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { Engine, gateTimeoutMessage, resolveGateTimeoutMs } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
 import { BUILTIN_TEMPLATES } from './builtin-templates.js';
-import { computeCtxSha, contentSha } from './harness.js';
+import { computeCtxSha, computeRoleSha, contentSha } from './harness.js';
 import { READBACK_HEADER } from './readback.js';
 import { WIKI_ROOT, wikiCacheDir } from '../api/wiki.js';
 import { upsertGatewayProfile } from '../api/gateway.js';
@@ -4102,5 +4102,199 @@ describe('v13-W1 岗位装备槽（空间登记 / 目录作用域 / 角色装备
     // 换装备=换注入面：ctxSha 不等（改装备不再是查不出的暗改）
     expect(rev.harness!.ctxSha).toBeDefined();
     expect(rev.harness!.ctxSha).not.toBe(plain.harness!.ctxSha);
+  });
+});
+
+// -- v13-W2 角色指纹与上岗：roleSha/injectedBytes 落在注入现场 + 名册机检只披露不拦 ----------
+describe('v13-W2 角色指纹与上岗（roleSha 换装备必变/同装备必等 · injectedBytes 现算可比 · 名册外只警告）', () => {
+  const REGISTRY = ['sk-a.md', 'sk-b.md', 'sk-c.md'];
+  const bodyOf = (f: string) => `${f} 正文开始\n${'填'.repeat(2000)}\n${f} 正文结束`;
+
+  /** 与 W1 同款一台项目：3 篇登记技能 + 1 篇空间家规 + 1 篇岗位专属清单 */
+  function w2Root(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-w2-'));
+    for (const f of REGISTRY) fs.writeFileSync(path.join(root, f), bodyOf(f));
+    fs.writeFileSync(path.join(root, 'space-rule.md'), '空间家规：分支必须 pf/ 前缀');
+    fs.writeFileSync(path.join(root, 'role-only.md'), '评审岗专属清单：逐条核对 AC');
+    return root;
+  }
+
+  function w2Profile(root: string, extra: Record<string, unknown> = {}): void {
+    store.writeProfile({
+      id: 'default',
+      name: 'default',
+      createdAt: '',
+      rootCwd: root,
+      rules: [{ file: 'space-rule.md' }],
+      skills: REGISTRY,
+      ...extra,
+    });
+  }
+
+  /** N 个 agent 节点的串行图；每格可带 tag（在 ops.prompts 里认人）与 role */
+  function w2Graph(name: string, nodes: { tag: string; role?: string }[]): DagGraph {
+    const list: DagGraph['nodes'] = [{ id: 'start', type: 'start', label: '开始', config: {} }];
+    const edges: DagGraph['edges'] = [];
+    nodes.forEach((n, i) => {
+      const id = `a${i + 1}`;
+      list.push({
+        id,
+        type: 'agent' as const,
+        label: id,
+        config: { agentKind: 'fake', prompt: `做 ${n.tag}`, ...(n.role ? { role: n.role } : {}) },
+      });
+      edges.push({ id: `e${i}`, source: i ? `a${i}` : 'start', target: id });
+    });
+    list.push({ id: 'end', type: 'end', label: '结束', config: {} });
+    edges.push({ id: 'ez', source: `a${nodes.length}`, target: 'end' });
+    return { version: 1, name, nodes: list, edges, metadata: { createdAt: '', updatedAt: '' } };
+  }
+
+  /** 从实发 prompt 里切出「注入现场喂进去的那一截上下文块」——injectedBytes 的独立现算口径 */
+  const injectedSliceOf = (tag: string): string => {
+    const text = ops.prompts.find((p) => p.text.includes(`做 ${tag}`))!.text;
+    return text.slice(0, text.indexOf(`做 ${tag}`));
+  };
+  const rosterEvents = (r: RunRecord) => (r.events ?? []).filter((e) => e.text.includes('班底名册外'));
+
+  it('①换装备=换 roleSha、同装备同岗重跑=同 roleSha（岗位级 A/B 零新机制复用，判据外延自 V2）；文档内容改算 ctxSha 的账', async () => {
+    const root = w2Root();
+    w2Profile(root);
+    saveRoles(dataDir, [{ id: 'r-arm', name: '装备岗', skills: ['sk-a.md'] }]);
+    const r1 = await runToCompletion(w2Graph('w2-arm', [{ tag: '甲', role: 'r-arm' }]), root);
+    expect(r1.state).toBe('completed');
+    const eq1 = r1.nodes.a1!.equip!;
+    expect(eq1.skills).toEqual(['sk-a.md']);
+    // 在册值 = 拿现场装备账现算的值（可复算，不是随手一串随机位）
+    expect(r1.harness!.roleSha).toBe(computeRoleSha([eq1]));
+    // 真落盘：从盘上读回同一枚（harness 不是只在内存里活着的摆设）
+    const reloaded = store.getRun(r1.runId)!;
+    expect(reloaded.harness!.roleSha).toBe(r1.harness!.roleSha);
+    expect(reloaded.harness!.injectedBytes).toBe(r1.harness!.injectedBytes);
+    // 同岗同装备再发一单：指纹必等
+    const r2 = await runToCompletion(w2Graph('w2-arm', [{ tag: '乙', role: 'r-arm' }]), root);
+    expect(r2.harness!.roleSha).toBe(r1.harness!.roleSha);
+    // 文档内容改了（吃了什么变没变=ctxSha 的账）：roleSha 不跟着抖，「同装备=同指纹」不被编辑噪声破
+    fs.writeFileSync(path.join(root, 'sk-a.md'), `${bodyOf('sk-a.md')}\n补了一段做法`);
+    const r3 = await runToCompletion(w2Graph('w2-arm', [{ tag: '丙', role: 'r-arm' }]), root);
+    expect(r3.harness!.roleSha).toBe(r1.harness!.roleSha);
+    expect(r3.harness!.ctxSha).toBeDefined();
+    expect(r3.harness!.ctxSha).not.toBe(r1.harness!.ctxSha);
+    // 岗上多挂一篇装备 → 指纹必变（换装备自此是查得出的改动）
+    saveRoles(dataDir, [{ id: 'r-arm', name: '装备岗', skills: ['sk-a.md', 'sk-b.md'] }]);
+    const r4 = await runToCompletion(w2Graph('w2-arm', [{ tag: '丁', role: 'r-arm' }]), root);
+    expect(r4.harness!.roleSha).not.toBe(r3.harness!.roleSha);
+    expect(r4.harness!.roleSha).toBe(computeRoleSha([r4.nodes.a1!.equip!]));
+    // 同一批装备挂在另一岗：角色身份入指纹，照样变
+    saveRoles(dataDir, [
+      { id: 'r-arm', name: '装备岗', skills: ['sk-a.md', 'sk-b.md'] },
+      { id: 'r-other', name: '另一岗', skills: ['sk-a.md', 'sk-b.md'] },
+    ]);
+    const r5 = await runToCompletion(w2Graph('w2-other', [{ tag: '戊', role: 'r-other' }]), root);
+    expect(r5.harness!.roleSha).not.toBe(r4.harness!.roleSha);
+    // 同一岗挂在两个节点上：按条目去重，不重复记账（多节点同岗=同一格账）
+    const r6 = await runToCompletion(w2Graph('w2-two', [{ tag: '己', role: 'r-arm' }, { tag: '庚', role: 'r-arm' }]), root);
+    expect(r6.harness!.roleSha).toBe(r4.harness!.roleSha);
+    // 装备槽里的坏引用变了（虽不注入）也是配置变了：入指纹，只披露不拦
+    saveRoles(dataDir, [{ id: 'r-bad', name: '坏引用岗', skills: ['sk-a.md', 'ghost.md'] }]);
+    const r7 = await runToCompletion(w2Graph('w2-bad', [{ tag: '辛', role: 'r-bad' }]), root);
+    expect(r7.state).toBe('completed');
+    expect(r7.nodes.a1!.equip!.unknownSkills).toEqual(['ghost.md']);
+    const r8 = await runToCompletion(w2Graph('w2-bad2', [{ tag: '壬', role: 'r-bad' }]), root);
+    expect(r8.harness!.roleSha).toBe(r7.harness!.roleSha);
+    saveRoles(dataDir, [{ id: 'r-bad', name: '坏引用岗', skills: ['sk-a.md', 'gone.md'] }]);
+    const r9 = await runToCompletion(w2Graph('w2-bad3', [{ tag: '癸', role: 'r-bad' }]), root);
+    expect(r9.harness!.roleSha).not.toBe(r7.harness!.roleSha);
+  });
+
+  it('②injectedBytes 与实发注入块逐字节一致（UTF-8 字节不是字符数；多节点求和；一个字没注=正读数 0）', async () => {
+    const root = w2Root();
+    w2Profile(root);
+    saveRoles(dataDir, [{ id: 'r-arm', name: '装备岗', skills: ['sk-a.md', 'sk-b.md'] }]);
+    const run = await runToCompletion(
+      w2Graph('w2-bytes', [{ tag: '甲', role: 'r-arm' }, { tag: '乙', role: 'r-arm' }]),
+      root,
+    );
+    expect(run.state).toBe('completed');
+    const b1 = Buffer.byteLength(injectedSliceOf('甲'), 'utf8');
+    const b2 = Buffer.byteLength(injectedSliceOf('乙'), 'utf8');
+    expect(b1).toBeGreaterThan(0);
+    expect(run.harness!.injectedBytes).toBe(b1 + b2);
+    // 中文按字节算：块里 2×2000 个「填」= 6000+ 字节，字符数口径必然对不上
+    expect(b1).toBeGreaterThan(4000);
+    // 降重账量得出：只挂一篇技能的岗，注入字节比吃全量的岗明显小
+    saveRoles(dataDir, [{ id: 'r-one', name: '单篇岗', skills: ['sk-a.md'] }]);
+    const lean = await runToCompletion(w2Graph('w2-lean', [{ tag: '丙', role: 'r-one' }]), root);
+    expect(Buffer.byteLength(injectedSliceOf('丙'), 'utf8')).toBe(lean.harness!.injectedBytes);
+    expect(lean.harness!.injectedBytes!).toBeLessThan(b1);
+    // 整单没东西可注：0 是正读数（与「整键缺失」分家）
+    const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-w2-empty-'));
+    store.writeProfile({ id: 'default', name: 'default', createdAt: '', rootCwd: emptyRoot });
+    const bare = await runToCompletion(w2Graph('w2-bare', [{ tag: '丁' }]), emptyRoot);
+    expect(bare.state).toBe('completed');
+    expect(bare.harness!.injectedBytes).toBe(0);
+    expect(bare.harness!.roleSha).toBeDefined(); // 吃了零也是解析过装备的（空数组正读数）
+  });
+
+  it('③旧形状单（未配槽角色 / 无 role 存量图）跑单照旧绿，装备账不显示成零装备；旧落册记录两键整缺不回填', async () => {
+    const root = w2Root();
+    w2Profile(root);
+    saveRoles(dataDir, [{ id: 'r-plain', name: '普通岗' }]);
+    const unbound = await runToCompletion(w2Graph('w2-unbound', [{ tag: '甲' }]), root);
+    const plain = await runToCompletion(w2Graph('w2-plain', [{ tag: '乙', role: 'r-plain' }]), root);
+    expect(unbound.state).toBe('completed');
+    expect(plain.state).toBe('completed');
+    for (const r of [unbound, plain]) {
+      const eq = r.nodes.a1!.equip!;
+      expect(eq.scope).toBe('space');
+      expect(eq.skills).toEqual(REGISTRY); // 全量正读数——「没配槽」绝不是零装备
+      expect(r.harness!.roleSha).toBe(computeRoleSha([eq]));
+    }
+    // 未绑角色与绑了未配槽角色是两格账（角色身份入指纹），但都吃全量
+    expect(unbound.harness!.roleSha).not.toBe(plain.harness!.roleSha);
+    // v13-W2 前的旧落册记录：没这两键就是没有——存取不炸、读回整缺（宁缺毋假不回填）
+    const legacy = {
+      runId: 'oldw2rec',
+      dagName: 'g',
+      graph: w2Graph('w2-legacy', [{ tag: '丙' }]),
+      state: 'completed',
+      cwd: root,
+      nodes: {},
+      startedAt: '2026-09-25T00:00:00.000Z',
+      harness: { graphSha: 'x', agentKind: 'pi', readback: false, readbackOutcome: 'no-pages', ctxSha: 'cx' },
+    } as unknown as RunRecord;
+    store.saveRun(legacy);
+    const back = store.getRun('oldw2rec')!;
+    expect(back.harness).toBeDefined();
+    expect('roleSha' in back.harness!).toBe(false);
+    expect('injectedBytes' in back.harness!).toBe(false);
+  });
+
+  it('④名册机检：有班底 run 里名册外的 role 只出 warning 事件且单照跑完；名册内/没配班底 → 零条', async () => {
+    const root = w2Root();
+    saveRoles(dataDir, [
+      { id: 'r-in', name: '在册岗', skills: ['sk-a.md'] },
+      { id: 'r-out', name: '黑户岗', skills: ['sk-a.md'] },
+    ]);
+    w2Profile(root, { team: [{ roleId: 'r-in', alias: '在册别名' }] });
+    const off = await runToCompletion(w2Graph('w2-roster-off', [{ tag: '甲', role: 'r-out' }]), root);
+    expect(off.state).toBe('completed'); // 只披露不拦（评审 R5）：这单照绿
+    const warn = rosterEvents(off);
+    expect(warn).toHaveLength(1);
+    expect(warn[0]!.text).toContain('班底名册外');
+    expect(warn[0]!.text).toContain('节点 a1 点的岗「r-out」不在本空间班底名册');
+    // 在册岗：零条
+    const on = await runToCompletion(w2Graph('w2-roster-on', [{ tag: '乙', role: 'r-in' }]), root);
+    expect(on.state).toBe('completed');
+    expect(rosterEvents(on)).toHaveLength(0);
+    // 没配班底（存量模板的正身）：随便点岗也零条，不许变红
+    w2Profile(root);
+    const noTeam = await runToCompletion(w2Graph('w2-roster-none', [{ tag: '丙', role: 'r-out' }]), root);
+    expect(noTeam.state).toBe('completed');
+    expect(rosterEvents(noTeam)).toHaveLength(0);
+    // 不绑角色的节点也不报（没岗就谈不上「岗欠编制」）
+    const unbound = await runToCompletion(w2Graph('w2-roster-unbound', [{ tag: '丁' }]), root);
+    expect(rosterEvents(unbound)).toHaveLength(0);
+    expect(unbound.state).toBe('completed');
   });
 });

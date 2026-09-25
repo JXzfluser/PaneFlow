@@ -678,6 +678,26 @@ export interface RunHarness {
    * 自读的那份 AGENTS.md 引擎不可考，本键只证注入面这一份。
    */
   ctxSha?: string;
+  /**
+   * v13-W2 岗位指纹：本单实发「角色 + 解析后的装备」的内容指纹——每枚输入=节点绑定的角色 id
+   * （未绑=null）∪ 注入现场实解析出的技能/岗位文档路径集（含装备槽里清单外的引用），
+   * 多节点/多角色按节点去重后并入一枚（口径与构成见 harness.computeRoleSha）。
+   * 与 ctxSha 分家：ctxSha 证「文件内容那一面吃了什么」（逐文件内容指纹），
+   * 本键证「哪一岗挂哪几篇」这格配置——**换装备=换指纹、同装备=同指纹**（文件内容改了
+   * 是 ctxSha 的事），于是 V2 的等臂判据（骨架# 相等 ∧ 受测变量不等）零新机制外延到岗位级 A/B。
+   * 取值时点同 ctxSha：注入现场（起单时点还没有实发值）。
+   * 可选：v13-W2 前的旧记录、以及整单没解析出装备（档案不可读/没走注入路径）拿不到，
+   * 整键省略（宁缺毋假，不回填、不拿「吃了零」冒充）。
+   */
+  roleSha?: string;
+  /**
+   * v13-W2 注入字节账：本单实发 prompt 里「注入面」的 UTF-8 字节总量——各 agent 节点
+   * 注入现场实算的上下文块（角色 prePrompt + 约定/技能文档）逐节点取最后一轮值再求和
+   * （重试不双计）。0 是正读数（「确实一个字都没注」），缺键=没走到注入现场。
+   * G1 降重账的分子：配了装备槽后本值应肉眼掉下来。
+   * 可选：v13-W2 前的旧记录整键省略。
+   */
+  injectedBytes?: number;
 }
 
 /**
@@ -1001,6 +1021,36 @@ export function lintUnresolvedRefs(graph: DagGraph): UnresolvedRef[] {
     scan(n.id, { label: n.label, config: n.config });
   }
   scan('metadata', { description: graph.metadata.description });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// v13-W2 名册引用机检（纯读推导，与 lintUnresolvedRefs 同款姿势：只报告不拦跑）
+// ---------------------------------------------------------------------------
+
+/**
+ * 节点引用的岗位在不在本空间班底名册里（v13-W2「上岗」的判据面）。
+ * `rosterRoleIds` = SpaceProfile.team 的 roleId 集（调用方从档案读好喂进来——validateDag
+ * 只吃 graph、拿不到档案，故分此一枚共用纯函数，web 校验面与引擎时间线同源同一判据）。
+ * 判据：
+ *  · 名册为空/未传 = **没有班底这回事** → 一条不报（存量模板与未配班底的空间不许变红）；
+ *  · 节点没绑 role → 不报（不绑岗是合法现状，吃空间默认）；
+ *  · 绑了名册外的 role → level:'warning'（跑单照旧绿，只上时间线；评审 R5：只披露不拦）。
+ */
+export function validateRoleRefs(graph: DagGraph, rosterRoleIds: readonly string[] | undefined): DagIssue[] {
+  const roster = new Set((rosterRoleIds ?? []).filter((s): s is string => typeof s === 'string' && s !== ''));
+  if (!roster.size) return [];
+  const out: DagIssue[] = [];
+  for (const n of graph.nodes ?? []) {
+    const role = n.config?.role;
+    if (typeof role !== 'string' || role === '') continue;
+    if (roster.has(role)) continue;
+    out.push({
+      level: 'warning',
+      nodeId: n.id,
+      message: `节点 ${n.id} 点的岗「${role}」不在本空间班底名册（跑单照旧，只是这岗没进编制）`,
+    });
+  }
   return out;
 }
 

@@ -71,7 +71,7 @@ interface UpdateIssueBody {
   runId?: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
-import { buildDispatchGraph, candidateRepos, DISPATCH_NO_AGENT_ERROR, extractAcceptance, INTAKE_TEMPLATE_PATH, intakeTemplateMarkdown, parseIssueRef, type IssueView } from './dispatch.js';
+import { buildDispatchGraph, candidateRepos, DISPATCH_NO_AGENT_ERROR, extractAcceptance, INTAKE_TEMPLATE_PATH, intakeTemplateMarkdown, parseIssueRef, teamEquipView, type IssueView } from './dispatch.js';
 import { readSkillIndex } from '../orchestrate/skills.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1318,7 +1318,13 @@ export async function buildHttpServer(deps: HttpDeps) {
       const roleIndex = new Map(loadRoles(deps.dataDir).map((r) => [r.id, r]));
       const dispatchTeam = (profileTeam ?? [])
         .filter((m) => roleIndex.has(m.roleId))
-        .map((m) => ({ roleId: m.roleId, name: roleIndex.get(m.roleId)!.name, ...(m.alias ? { alias: m.alias } : {}) }));
+        .map((m) => ({
+          roleId: m.roleId,
+          name: roleIndex.get(m.roleId)!.name,
+          ...(m.alias ? { alias: m.alias } : {}),
+          // v13-W2：名册行带「装备」——规划手自此按装备结合场景点人（判据在 teamEquipView）
+          equip: teamEquipView(roleIndex.get(m.roleId), profileSkills, rootCwd),
+        }));
       const graph = buildDispatchGraph({
         task,
         issueId: issueId || undefined,

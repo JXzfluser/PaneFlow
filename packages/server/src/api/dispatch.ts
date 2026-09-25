@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { CheckSpec, DagGraph } from '@paneflow/shared';
+import { readSkillIndex, resolveSkillRefs } from '../orchestrate/skills.js';
 
 export interface DispatchOptions {
   task: string;
@@ -36,8 +37,59 @@ export interface DispatchOptions {
    * v9-B2 空间班底（调用方已对着全局角色库解析好 name；悬空 roleId 应在调用处滤掉）：
    * 非空 → Planner 节点绑名册中的规划角色、prompt 点名册（拆步只从班底点人）；
    * 空 → 回退旧行为，且在编排预告里明说「未配班底」。
+   * v13-W2 起每格可带 `equip`（该岗实挂装备的名字）——规划手自此**按装备结合场景点人**，
+   * 名册不再只是一串人名。不带 equip = 调用方没解析装备（旧接线/档案不可读），
+   * 名册行退回 v9 旧形状（宁缺毋假，不猜这岗吃了什么）。
    */
-  team?: { roleId: string; name: string; alias?: string }[];
+  team?: { roleId: string; name: string; alias?: string; equip?: TeamEquipView }[];
+}
+
+/**
+ * v13-W2 名册装备行取材（判据全在调用方解析现场，这里只负责说人话）：
+ *  · `skillSlotted=false` = 该岗没配技能装备槽 → 它实际**吃空间全量**（W1 兼容带语义），
+ *    必须照实显示成「吃空间全量」，不许显示成「零装备」；`registryCount` 给全量的规模。
+ *  · `skillSlotted=true` = 槽生效 → `skillNames` 是该岗**实挂**技能的名字（[]=显式一篇都不吃，
+ *    评审/验收岗常见的正读数）。
+ * 名字来自 readSkillIndex 索引通道（不是整篇），岗位文档取路径的文件名。
+ */
+export interface TeamEquipView {
+  skillSlotted: boolean;
+  /** 实挂技能名（readSkillIndex 口径；未配槽时忽略本数组） */
+  skillNames: string[];
+  /** 岗位文档名（Role.rules 解析后的文件名集，未配=空） */
+  ruleNames: string[];
+  /** 空间技能登记清单总项数（未配槽时显「全量 N 项」） */
+  registryCount?: number;
+}
+
+/** 装备名显示用的文件名：剥目录与 .md 后缀；脏路径原样给（只披露不拦） */
+const docName = (file: string): string => path.basename(file).replace(/\.md$/i, '') || file;
+
+/**
+ * v13-W2 名册装备行的取材器：把「角色槽 + 空间登记清单」折成名册行那一格账。
+ * 判据与引擎注入现场（engine.resolveContext）**同源**：技能槽只看键在不在——
+ * `role.skills === undefined` = 没配技能槽 = 该岗吃空间全量登记清单（W1 兼容带），
+ * 配了（含显式 []）= 只挂槽里那些且必须是登记清单内的引用（清单外的引用不进名字列表）。
+ * 技能名走 readSkillIndex 索引通道（名字，不是整篇；读不到的文件如实少列）；
+ * 岗位文档（Role.rules）取文件名。
+ */
+export function teamEquipView(
+  role: { skills?: string[]; rules?: string[] } | undefined,
+  registry: string[] | undefined,
+  rootCwd: string | undefined,
+): TeamEquipView {
+  const known = Array.isArray(registry) ? registry.filter((f): f is string => typeof f === 'string' && f !== '') : [];
+  const slotted = role?.skills !== undefined;
+  const files = slotted ? resolveSkillRefs(known, role!.skills).files : known;
+  const ruleNames = (Array.isArray(role?.rules) ? role!.rules : []).filter(
+    (f): f is string => typeof f === 'string' && f !== '',
+  ).map(docName);
+  return {
+    skillSlotted: slotted,
+    skillNames: readSkillIndex(rootCwd, files).map((s) => s.name),
+    ruleNames,
+    ...(known.length ? { registryCount: known.length } : {}),
+  };
 }
 
 /** G1：Issue 读取器的出参形状（http 路由与下发注入共用） */
@@ -113,6 +165,29 @@ function defaultGitRemote(repoDir: string): string | null {
 /** 防模板引擎注入：issue 正文里的 {{ }} 会污染提示词渲染 */
 function debraces(s: string): string {
   return s.replace(/\{\{|\}\}/g, '');
+}
+
+/**
+ * v13-W2 名册行「装备：…」小节的措辞单源（判据在调用方解析现场，这里只说人话）。
+ * 体积卫生：名字逐个列，超过 MAX_EQUIP_NAMES 收「等 N 项」——索引不是整篇，
+ * 名册块不许把 planner prompt 撑爆。没给装备账（旧接线/档案不可读）返回空串=整段省略。
+ */
+const MAX_EQUIP_NAMES = 8;
+
+function equipLabel(equip: TeamEquipView | undefined): string {
+  if (!equip) return '';
+  const list = (names: string[]): string =>
+    names.length > MAX_EQUIP_NAMES
+      ? `${names.slice(0, MAX_EQUIP_NAMES).join('、')} 等 ${names.length} 项`
+      : names.join('、');
+  const bits: string[] = [];
+  if (equip.skillSlotted) {
+    bits.push(equip.skillNames.length ? `技能 ${list(equip.skillNames)}` : '不挂技能文档（显式空槽）');
+  } else {
+    bits.push(`技能=吃空间全量${equip.registryCount ? `（登记 ${equip.registryCount} 项）` : ''}`);
+  }
+  if (equip.ruleNames.length) bits.push(`岗位文档 ${list(equip.ruleNames)}`);
+  return `装备：${bits.join(' · ')}`;
 }
 
 /**
@@ -283,13 +358,23 @@ export function buildDispatchGraph(opts: DispatchOptions): DagGraph {
     : '';
 
   // B2：班底名册块——规划员拆步派活只能点名册里的人（复用的第一层：人固定，人设随角色库走）
+  // v13-W2 升级：每行带「装备」——这岗挂哪几篇技能/岗位文档（名字来自索引通道，不整篇），
+  // 规划手第一次能按装备结合场景点人；未配槽的岗如实显示「吃空间全量」（W1 兼容带，不装零装备）
   const teamBlock = team.length
     ? [
         '',
         `本空间班底名册（执行人员仅此 ${team.length} 位，名册之外没有角色可用）：`,
-        ...team.map((m) => `- ${m.alias || m.name}（roleId: ${m.roleId}）`),
+        ...team.map((m) => {
+          const equip = equipLabel(m.equip);
+          return `- ${m.alias || m.name}（roleId: ${m.roleId}${equip ? ` · ${equip}` : ''}）`;
+        }),
         '拆解步骤、指定负责人时只用以上名册（写别名即可）；不要虚构名册外的“工程师/测试”人设。',
-      ].join('\n')
+        team.some((m) => m.equip)
+          ? '点人看装备：谁的实挂技能/岗位文档与这一步的活对口就派谁；「吃空间全量」= 这岗还没配装备槽、能力不可期，能派给配了装备的岗就别派它。'
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
     : '';
 
   const plannerPrompt = [
