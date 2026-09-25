@@ -897,15 +897,22 @@ describe('Engine (serial DAG)', () => {
     // 运行中：后到者获得 worktree（目录存在、独立分支）
     await waitFor(() => (engine.getRun(run.runId)!.nodes['b']!.worktree ?? '') !== '');
     const wtPath = engine.getRun(run.runId)!.nodes['b']!.worktree!;
-    expect(wtPath).toContain('paneflow-wt');
-    // 运行结束：完成 + worktree 回收（分支引用保留、目录移除）——fake 环境毫秒级完成，中途存在性断言有竞态
+    // v13-B3：生产默认根 = <dataDir>/worktrees（证据链不再落 OS 扫荡区）
+    expect(wtPath.startsWith(path.join(dataDir, 'worktrees') + path.sep)).toBe(true);
+    // 运行结束：完成 + worktree 回收——v13-B3 起分支半笔也结清：目录删、已合并的引擎自建分支
+    // 被 git branch -d 删掉、账进 events（fake 环境毫秒级完成，中途存在性断言有竞态）
     await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
     const final = engine.getRun(run.runId)!;
     expect(final.state).toBe('completed');
     expect(final.nodes['b']!.worktree).toBe(wtPath);
     expect(fs.existsSync(wtPath)).toBe(false);
     const branches = execFileSync('git', ['-C', repo, 'branch', '--list', 'paneflow/*']).toString();
-    expect(branches).toContain('paneflow/');
+    expect(branches).not.toContain('paneflow/');
+    const reclaimEvents = (final.events ?? []).filter((e) => e.text.includes('worktree 回收'));
+    expect(reclaimEvents).toHaveLength(1);
+    expect(reclaimEvents[0]!.nodeId).toBe('b');
+    expect(reclaimEvents[0]!.text).toContain('已删除');
+    expect(reclaimEvents[0]!.text).toContain(`paneflow/${run.runId}-b`);
   });
 
   it('首驾-3 跨 run 软锁随节点尝试结束释放：run1 审批放行后，同仓排队等待的 run2 得以跑完（旧实现 claim 只写不还 → 等锁必至超时）', async () => {
@@ -3560,6 +3567,155 @@ describe('v13-S1 孤儿回收（label 反解轴 + 仅活跃认领 + 周期扫描
     expect(fs.existsSync(clean)).toBe(false);
     expect(fs.existsSync(dirty)).toBe(true);
     expect(fs.existsSync(junk)).toBe(true);
+  });
+});
+
+describe('v13-B3 分支与目录生命周期（回收分支半笔入账 + 脏保留进 events + 档案覆写根）', () => {
+  // 真 git 仓 + 同仓并发 fanout（生产路：engine.runNode 撞仓锁 → createWorktree → 收口 reclaimWorktrees）
+  function initRepo(prefix: string): string {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    execFileSync('git', ['-C', repo, 'init']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 't@t']);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'base');
+    execFileSync('git', ['-C', repo, 'add', '-A']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'base']);
+    return repo;
+  }
+  function siblingGraph(repo: string, name: string): DagGraph {
+    return {
+      version: 1,
+      name,
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'fork', type: 'fanout', label: '展开', config: {} },
+        { id: 'a', type: 'agent', label: '任务A', config: { agentKind: 'fake', prompt: 'A', cwd: repo } },
+        { id: 'b', type: 'agent', label: '任务B', config: { agentKind: 'fake', prompt: 'B', cwd: repo } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'fork' },
+        { id: 'e2', source: 'fork', target: 'a' },
+        { id: 'e3', source: 'fork', target: 'b' },
+        { id: 'e4', source: 'a', target: 'end' },
+        { id: 'e5', source: 'b', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+  }
+  const reclaimEventsOf = (run: RunRecord) => (run.events ?? []).filter((e) => e.text.includes('worktree 回收'));
+  // 钩子先于 startRun 装好（startRun 只是点火，b 的 prompt 可能同轮就发）：worktree 目录是
+  // createWorktree 里 `git worktree add` 同步建出来的——目录一出现（=名字以 -b 结尾出现在
+  // 默认根下）就对它做给定动作，不依赖 runId 时序
+  const tamperBWorktree = (fn: (wt: string) => void): (() => boolean) => {
+    let done = false;
+    ops.onPrompt = () => {
+      if (done) return;
+      let names: string[];
+      try {
+        names = fs.readdirSync(path.join(dataDir, 'worktrees'));
+      } catch {
+        return; // 根还不存在=没人建过 worktree
+      }
+      const hit = names.find((n) => n.endsWith('-b'));
+      if (hit) {
+        done = true;
+        fn(path.join(dataDir, 'worktrees', hit));
+      }
+    };
+    return () => done;
+  };
+
+  it('脏保留进账：worktree 有未提交变更 → 分支名与目录路径都进 events（不再只有一行 console.warn），状态判定零改动', async () => {
+    const repo = initRepo('pf-b3-dirty-');
+    const did = tamperBWorktree((wt) => fs.writeFileSync(path.join(wt, 'wip.txt'), '未提交的工作'));
+    const run = await engine.startRun(siblingGraph(repo, 'b3-dirty'), repo);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(did()).toBe(true);
+    expect(final.state).toBe('completed'); // 只披露不拦：脏保留不碰收口判定
+    const wtPath = final.nodes['b']!.worktree!;
+    expect(fs.existsSync(wtPath)).toBe(true); // 目录保留（成果证据链）
+    const evs = reclaimEventsOf(final);
+    expect(evs).toHaveLength(1);
+    expect(evs[0]!.text).toContain('未提交变更');
+    expect(evs[0]!.text).toContain('保留待人工定夺');
+    expect(evs[0]!.text).toContain(wtPath); // 路径进账
+    expect(evs[0]!.text).toContain(`paneflow/${run.runId}-b`); // 分支名进账
+    // 幂等兜底：同单不重复落账（reclaim 后再来的重复调用无登记可记）
+    expect(evs.filter((e) => e.text.includes(wtPath))).toHaveLength(1);
+  });
+
+  it('分支未合并是读数不是失败：目录照删、git branch -d 被拒不重试不强删，事件带分支名如实写「保留待人工定夺」', async () => {
+    const repo = initRepo('pf-b3-unmerged-');
+    // 在 b 的 worktree 里提交一笔不合回主支 → 收口时目录干净可删，但分支 -d 必被拒
+    const did = tamperBWorktree((wt) => {
+      fs.writeFileSync(path.join(wt, 'feature.txt'), 'done');
+      execFileSync('git', ['-C', wt, 'add', '-A']);
+      execFileSync('git', ['-C', wt, 'commit', '-m', '未合并的工作']);
+    });
+    const run = await engine.startRun(siblingGraph(repo, 'b3-unmerged'), repo);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(did()).toBe(true);
+    expect(final.state).toBe('completed'); // -d 被拒同样不碰收口判定
+    const wtPath = final.nodes['b']!.worktree!;
+    expect(fs.existsSync(wtPath)).toBe(false); // 目录已回收
+    const branches = execFileSync('git', ['-C', repo, 'branch', '--list', 'paneflow/*']).toString();
+    expect(branches).toContain(`paneflow/${run.runId}-b`); // 分支保留（未合并）
+    const evs = reclaimEventsOf(final);
+    expect(evs).toHaveLength(1);
+    expect(evs[0]!.text).toContain('未合并，保留待人工定夺');
+    expect(evs[0]!.text).toContain(`paneflow/${run.runId}-b`);
+  });
+
+  it('空间档案 worktreeRoot 覆写生效：该空间的 worktree 落覆写根（消费现场=起单后建 worktree 时读档案）', async () => {
+    const repo = initRepo('pf-b3-ovr-');
+    const ovrRoot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pf-b3-ovr-root-')), 'wt');
+    const sp = new Store(dataDir, 'ovr');
+    sp.writeProfile({ ...sp.readProfile(), worktreeRoot: ovrRoot });
+    const run = await engine.startRun(siblingGraph(repo, 'b3-ovr'), repo, 'ovr');
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    const wtPath = final.nodes['b']!.worktree!;
+    expect(wtPath.startsWith(ovrRoot + path.sep)).toBe(true);
+    // 默认根没被顺手造出来——覆写赢在唯一取材处
+    expect(fs.existsSync(path.join(dataDir, 'worktrees'))).toBe(false);
+    // 回收账照常（覆写根下 reclaim 逻辑同一把尺）
+    expect(reclaimEventsOf(final)[0]!.text).toContain('已删除');
+  });
+
+  it('泄漏清扫覆盖覆写根：档案声明的根里的无主残留同样被扫；默认根空壳才删（用户的根不替人删）', async () => {
+    const wtRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-b3-sweep-'));
+    const repo = initRepo('pf-b3-sweep-repo-');
+    const clean = path.join(wtRoot, 'deadbeef-impl');
+    const dirty = path.join(wtRoot, 'cafebabe-impl');
+    execFileSync('git', ['-C', repo, 'worktree', 'add', clean, '-b', 'paneflow/deadbeef-impl']);
+    execFileSync('git', ['-C', repo, 'worktree', 'add', dirty, '-b', 'paneflow/cafebabe-impl']);
+    fs.writeFileSync(path.join(dirty, 'uncommitted.txt'), 'work in progress');
+    const data = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-b3-sweep-store-'));
+    const sp = new Store(data, 'swept');
+    sp.writeProfile({ ...sp.readProfile(), worktreeRoot: wtRoot });
+    const e2 = new Engine(new FakeHerdrOps(), new Store(data), { ...OPTS, orphanSweepMs: 0 });
+    const reclaimed = await e2.recoverOrphans();
+    expect(reclaimed).toEqual([]);
+    expect(fs.existsSync(clean)).toBe(false); // 覆写根里的干净残留被回收
+    expect(fs.existsSync(dirty)).toBe(true); // 脏的照旧保留
+    expect(fs.existsSync(wtRoot)).toBe(true); // 覆写根=用户点名的目录，空不空都不替人删壳
+    // v13-B3 分支半笔的孤儿侧：目录名即 `paneflow/<name>` 的取材处，删了目录就要删分支，
+    // 否则清扫只把 N3 账从「目录只增不减」挪成「分支只增不减」
+    const branches = execFileSync('git', ['-C', repo, 'branch', '--list', 'paneflow/*']).toString();
+    expect(branches).not.toContain('paneflow/deadbeef-impl'); // 已合并（与 main 同尖）→ -d 放行
+    expect(branches).toContain('paneflow/cafebabe-impl'); // 脏目录保留时分支一并不动
+  });
+
+  it('现网零回归：不带 repo/worktree 的存量单一条回收账都不多', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-b3-plain-'));
+    const run = await runToCompletion(serialGraph(), cwd);
+    expect(run.state).toBe('completed');
+    expect(reclaimEventsOf(run)).toHaveLength(0);
+    expect((run.events ?? []).some((e) => e.text.includes('worktree'))).toBe(false);
   });
 });
 

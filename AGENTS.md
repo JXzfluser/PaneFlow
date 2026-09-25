@@ -147,6 +147,11 @@ curl -s $BASE/api/dispatch -d '{"task":"...","experiment":{"suite":"c4","arm":"a
 #   却撞上副作用账的落差账（归因只到**单级上界**：副作用账无逐节点分账，不指认哪一格干的），
 #   同时 events 落一条「⚠ declareViolation」warn 事件——只照不拦，收口判定零改动；
 #   没声明/无落差/旧 run → 两键整缺（缺≠「声明了零面」）
+#   v13-B3 起 /events 时间线多「worktree 回收」账（仅同仓并发用过 worktree 的单才有，存量单零新增）：
+#   目录删+已合并分支已删（git branch -d 成功）/「分支未合并，保留待人工定夺」——**这是读数不是失败**，
+#   收口判定零改动——/ -d 只跑 -d 绝不 -D 绝不 push（拒绝即诚实读数，不许绕过）；只删分支名正身
+#   paneflow/<runId>-<nodeId> 的引擎自建分支，非正身不碰；脏保留的事件带分支名+worktree 路径
+#   （旧版只有一行 console.warn 等于没账）。判据全在 server，CLI 零判据（R4，不为此改渲染）
 curl -s $BASE/api/runs
 curl -s $BASE/api/runs/<runId>
 curl -s $BASE/api/runs/<runId>/events
@@ -168,6 +173,12 @@ curl -s $BASE/api/spaces/<id>                  # 单档案；delivery 配了才�
 curl -s -X PUT $BASE/api/spaces/<id> -d '{"delivery":[{"repo":"my-repo","branchFrom":"main","branchName":"fix/issue-{issue}","prTarget":"main","gates":["PR 前"]}]}'
 #   PUT=merge 语义（漏发键保旧值，显式 [] 才清空）；脏形状 400 + 一句指路（空 branchName/未知键/gates 破烂…）
 #   v13-B1 只声明不消费：占位符 {issue}/{version} 原样存，引擎接线在 B2
+#   v13-B3 worktree 根（顶层键 worktreeRoot，非 delivery 条目——根是空间级事实，塞进 per-repo 家规是形状错误）：
+#   生产默认 <dataDir>/worktrees（即 ~/.paneflow/worktrees——证据链搬出 OS 扫荡区）；
+#   PUT '{"worktreeRoot":"/volumes/ext/pf-wt"}' 按空间覆写——只认绝对路径（相对路径不猜基准，400 指路），
+#   空串=取消覆写回落默认（gatewayProfile 取消钉同款口径）；消费在建 worktree 现场读档案，泄漏清扫的扫描面
+#   自动含默认根 + 各档案覆写根（覆写根=用户点名的目录，只清其中残留、不替人删根目录壳）。
+#   旧默认根 os.tmpdir()/paneflow-wt 自此不再被引擎清扫（OS 自己的地盘 OS 收尾），刻意不做静默迁移
 
 # 岗位能力账（v13-W4，本版唯一新增端点，纯读）：这个岗历史上干得怎么样、换装备前后差多少
 curl -s $BASE/api/roles/<roleId>/profile

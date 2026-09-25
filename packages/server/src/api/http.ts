@@ -181,8 +181,8 @@ export function isAllowedOrigin(opts: {
 
 const DEFAULT_SPACE = 'default';
 
-/** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面；maxConcurrentRuns=G3 队列上限，配置文件面；delivery=v13-B1 家规声明位，配置文件面） */
-const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'agentOverride', 'maxConcurrentRuns', 'experienceInjection', 'team', 'gatewayProfile', 'delivery'] as const;
+/** PUT /api/spaces/:id 可编辑字段白名单（与 SettingsView 表单一一对应；rules=M3 配置文件面；maxConcurrentRuns=G3 队列上限，配置文件面；delivery=v13-B1 家规声明位，配置文件面；worktreeRoot=v13-B3 worktree 根覆写，配置文件面） */
+const PROFILE_EDITABLE_KEYS = ['rootCwd', 'description', 'conventionFiles', 'rules', 'skills', 'repos', 'defaultAgentKind', 'agentOverride', 'maxConcurrentRuns', 'experienceInjection', 'team', 'gatewayProfile', 'delivery', 'worktreeRoot'] as const;
 
 function spaceStore(deps: HttpDeps, spaceQuery: unknown): Store {
   const space = typeof spaceQuery === 'string' && spaceQuery ? spaceQuery : DEFAULT_SPACE;
@@ -878,6 +878,18 @@ export async function buildHttpServer(deps: HttpDeps) {
       if (delivery !== undefined) {
         const bad = validateDelivery(delivery);
         if (bad) return reply.code(400).send({ error: bad });
+      }
+      // v13-B3：worktree 根只认绝对路径——相对路径的基准随进程 cwd 漂移（在哪起 server 不该决定
+      // 证据链落哪），形态歧义宁拒不错放；空串=取消覆写回落默认 <dataDir>/worktrees
+      // （gatewayProfile 取消钉同款口径）。消费在 engine.worktreeRootFor，判据在这一处 PUT。
+      const wtRoot = (req.body as Record<string, unknown> | undefined)?.worktreeRoot;
+      if (wtRoot !== undefined) {
+        if (typeof wtRoot !== 'string') {
+          return reply.code(400).send({ error: 'worktreeRoot 必须是字符串（绝对路径；空串=取消覆写，回落默认 <dataDir>/worktrees）' });
+        }
+        if (wtRoot && !path.isAbsolute(wtRoot)) {
+          return reply.code(400).send({ error: `worktreeRoot 必须是绝对路径（相对路径不猜基准）：${wtRoot}；空串=取消覆写，回落默认 <dataDir>/worktrees` });
+        }
       }
       // 白名单：只接受可编辑字段，id/name/createdAt 等身份字段不可经 body 注入
       const patch: Partial<SpaceProfile> = {};

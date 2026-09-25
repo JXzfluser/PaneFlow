@@ -316,6 +316,45 @@ describe('v13-B1 delivery 声明位（PUT 机检 + GET 原样带出）', () => {
   });
 });
 
+describe('v13-B3 worktreeRoot 覆写根（PUT 机检：只认绝对路径，空串=取消覆写）', () => {
+  it('绝对路径 PUT→GET 原样往返；merge 不误伤；显式空串=取消覆写（回落默认由引擎读侧判）', async () => {
+    const { app } = await buildServer(tmp());
+    try {
+      const put = await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/demo',
+        headers: { host: HOST },
+        payload: { worktreeRoot: '/volumes/ext/pf-wt' },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(put.json().worktreeRoot).toBe('/volumes/ext/pf-wt');
+      const touch = await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { description: '只改描述' } });
+      expect(touch.json().worktreeRoot).toBe('/volumes/ext/pf-wt'); // merge：漏发键保旧值
+      const cancel = await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { worktreeRoot: '' } });
+      expect(cancel.json().worktreeRoot).toBe(''); // 空串如实存=取消覆写（gatewayProfile 取消钉同款口径）
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('脏形状 400 拒写：非字符串 / 相对路径（不猜基准，指路文案说清绝对口径）；拒后档案照旧无该键', async () => {
+    const { app } = await buildServer(tmp());
+    try {
+      const bad: unknown[] = [42, { p: '/x' }, 'worktrees/pf', './wt', '../wt'];
+      for (const worktreeRoot of bad) {
+        const res = await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { worktreeRoot } });
+        expect(res.statusCode, JSON.stringify(worktreeRoot)).toBe(400);
+        expect(res.json().error).toContain('worktreeRoot');
+        expect(res.json().error).toContain('绝对路径');
+      }
+      const get = await app.inject({ method: 'GET', url: '/api/spaces/demo', headers: { host: HOST } });
+      expect('worktreeRoot' in get.json()).toBe(false); // 一次都没写进去——不静默塞半成品
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('v10-U1 GET /api/roles/usage 部署聚合', () => {
   it('按 roleId 聚合各项目班底；alias 带上；无 team 的项目不产条目；悬空 roleId 也返回', async () => {
     const { app } = await buildServer(tmp());

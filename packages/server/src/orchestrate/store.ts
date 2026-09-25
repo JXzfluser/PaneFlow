@@ -37,6 +37,13 @@ export interface SpaceProfile {
    * 声明位——引擎消费（起单/建 worktree/prompt 注入/对账）在 B2，本片刻意未接线。
    */
   delivery?: DeliveryRule[];
+  /**
+   * v13-B3 worktree 根覆写：本空间的隔离工作目录落在哪（只认绝对路径；缺省/空 =
+   * 引擎默认根 `<dataDir>/worktrees`）。消费在 engine.worktreeRootFor（建 worktree 现场读）。
+   * 需求文档字面写的是 `delivery.worktreeRoot`——刻意偏离：delivery 是 per-repo 条目数组
+   * （一仓一副），「一个文件系统根」塞进 per-repo 条目是形状错误；根是空间级事实，住档案顶层键。
+   */
+  worktreeRoot?: string;
 }
 
 /** v9-B1 班底成员（弱引用全局角色库；角色库删了 id 时下发回退旧行为并明说） */

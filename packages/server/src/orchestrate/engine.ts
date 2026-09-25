@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
@@ -134,7 +133,11 @@ export interface EngineOptions {
    * （boot 后的一次性回收不受影响）。测试注入以保确定性。
    */
   orphanSweepMs?: number;
-  /** v13-S1 worktree 根目录覆写口（仅测试注入；生产默认 os.tmpdir()/paneflow-wt，B3 再谈迁移） */
+  /**
+   * v13-B3：worktree 根目录显式覆写口（测试注入通道的既有语义一字不改，给了就赢）。
+   * 生产默认自 v13-B3 起为 `<dataDir>/worktrees`（构造现场解析，见 constructor）；
+   * 空间档案顶层键 worktreeRoot 可按空间覆写（worktreeRootFor，起单现场读档案）。
+   */
   worktreeRoot?: string;
 }
 
@@ -241,7 +244,7 @@ export class Engine {
   /** R3.1/R3.2 仓库占用登记：repoRoot → 占用者（runId + nodeId） */
   private readonly repoClaims = new Map<string, { runId: string; nodeId: string; key: string }>();
   /** R3.5 本引擎创建的 worktree（run 结束时尽力回收） */
-  private readonly liveWorktrees: { runId: string; repo: string; path: string; branch: string }[] = [];
+  private readonly liveWorktrees: { runId: string; nodeId: string; repo: string; path: string; branch: string }[] = [];
   /** G3 空间级轻队列：spaceKey → 待启 runId 的 FIFO */
   private readonly runQueues = new Map<string, string[]>();
   /** G3 排队 run 随身携带的启动参数（order/续跑黑板），出队即用；重启后从 graph 重算 */
@@ -305,7 +308,13 @@ export class Engine {
     this.gateTimeoutEnv = Math.max(0, opts.gateTimeoutMs ?? envInt('PF_GATE_TIMEOUT_MS', 0));
     // v13-S1：孤儿周期扫描（缺省 300s，<=0 关）与 worktree 根
     this.orphanSweepMs = opts.orphanSweepMs ?? envInt('PF_ORPHAN_SWEEP_MS', 300_000);
-    this.wtRoot = opts.worktreeRoot ?? path.join(os.tmpdir(), 'paneflow-wt');
+    // v13-B3：生产默认从 os.tmpdir()/paneflow-wt 迁到 <dataDir>/worktrees——worktree 是
+    // 成果证据链的现场（脏目录保留时里面就是没提交的工作），tmpdir 是 OS 扫荡区（重启/定期
+    // 清理随时蒸发，账没了证据也没了）。取舍写实：sweepWorktreeLeaks 的扫描面 = 本默认根 +
+    // 各空间档案声明的覆写根（见该函数注释），旧根 os.tmpdir()/paneflow-wt 自本片起不再被
+    // 引擎清扫——那是 OS 自己的地盘由 OS 扫；我们刻意不做静默迁移（把别人目录下的东西搬走
+    // = 动用户的证据链）。opts.worktreeRoot 显式给了仍然赢（测试注入通道）。
+    this.wtRoot = opts.worktreeRoot ?? path.join(this.store.root, 'worktrees');
     // surface past runs (from disk, across all spaces) in listings after boot.
     // Runs persisted as 'running' belong to a dead process — mark them
     // interrupted here; their workspaces are reclaimed by the orphan sweep
@@ -517,17 +526,34 @@ export class Engine {
    * v13-S1 顺手账（v5-audit:97）：worktree 目录只增不减的残留清扫。
    * 判据：目录名 `<runId8>-<nodeId>` 的 runId 无活跃 run 认领，且不在本引擎在活登记（liveWorktrees）里。
    * 干净 → `git worktree remove`；脏/认不出仓库 → 保留但明说（证据链不销毁，回收宁缺毋滥）。
+   * 扫描面（v13-B3 起多根）= 引擎默认根 + 各空间档案声明的 worktreeRoot 覆写根——覆写根里的
+   * 残留若不被扫就又是孤账。旧根 os.tmpdir()/paneflow-wt（v13-B3 前的默认）自此**不再被扫**：
+   * 那是 OS 的扫荡区，OS 自己收尾；刻意不做静默迁移（搬别人目录=动用户证据链）。
+   * 空根壳目录只在默认根删——覆写根是用户点名的目录，替人删目录越界。
    */
   private sweepWorktreeLeaks(activeRunIds: Set<string>): void {
+    const roots = new Set<string>([this.wtRoot]);
+    try {
+      for (const sp of Store.listSpaces(this.store.root)) {
+        const r = sp.worktreeRoot;
+        if (typeof r === 'string' && r && path.isAbsolute(r)) roots.add(r);
+      }
+    } catch {
+      // 档案集体读不到：扫已知的默认根，覆写根下轮再来（宁缺毋假，不猜根）
+    }
+    for (const root of roots) this.sweepWorktreeRoot(root, activeRunIds, root === this.wtRoot);
+  }
+
+  private sweepWorktreeRoot(root: string, activeRunIds: Set<string>, rmdirIfEmpty: boolean): void {
     let names: string[];
     try {
-      names = fs.readdirSync(this.wtRoot);
+      names = fs.readdirSync(root);
     } catch {
       return; // 根目录不存在=从未有过 worktree
     }
     const registered = new Set(this.liveWorktrees.map((w) => w.path));
     for (const name of names) {
-      const dir = path.join(this.wtRoot, name);
+      const dir = path.join(root, name);
       if (registered.has(dir)) continue;
       const m = /^([0-9a-f]{8})-/.exec(name);
       if (!m) continue; // 非本器命名，不认不删
@@ -550,13 +576,23 @@ export class Engine {
         }
         execFileSync('git', ['-C', repo, 'worktree', 'remove', dir], { timeout: 15_000 });
         console.log(`[engine] worktree 泄漏已回收：${dir}`);
+        // v13-B3 分支半笔的孤儿侧：目录名 `<runId>-<nodeId>` 与 createWorktree 的分支命名
+        // `paneflow/<runId>-<nodeId>` 同源，故分支名可精确推出（不靠猜、不列举全仓分支去模糊匹配）。
+        // 判据与 reclaim 侧一字：只跑 `git branch -d`，未合并即读作「保留待人工定夺」不强删。
+        try {
+          execFileSync('git', ['-C', repo, 'branch', '-d', `paneflow/${name}`], { timeout: 15_000 });
+          console.log(`[engine] 泄漏分支已删除：paneflow/${name}`);
+        } catch {
+          console.warn(`[engine] 泄漏分支未合并，保留待人工定夺：paneflow/${name}（只跑 git branch -d）`);
+        }
       } catch (err) {
         console.warn(`[engine] worktree 泄漏回收失败（保留）：${dir} — ${(err as Error).message}`);
       }
     }
+    if (!rmdirIfEmpty) return;
     try {
       // 空根目录不留壳（有残余子项则 readdir 非空，rmdir 自然失败即弃）
-      fs.rmdirSync(this.wtRoot);
+      fs.rmdirSync(root);
     } catch {
       /* not empty or gone */
     }
@@ -1434,7 +1470,9 @@ export class Engine {
         ),
       );
       // resource cleanup — never leave panes behind
-      this.reclaimWorktrees(run.runId);
+      // v13-B3：传 run 对象而非 runId——回收账（分支删除/脏保留）走 recordEvent 进 events；
+      // 收口路径的控制流与状态判定零改动（此处只记账，谁 failed/谁 completed/watch 退出码不变）
+      this.reclaimWorktrees(run);
       // v13-S1：终态转换→closeWorkspace 之间有窗口，run 已非活跃——登记收口窗防周期扫描抢关
       if (run.workspaceId) this.closingWorkspaces.add(run.workspaceId);
       try {
@@ -1910,7 +1948,7 @@ export class Engine {
         const holder = this.repoClaims.get(repo);
         if (holder && holder.key !== myKey) {
           if (holder.runId === run.runId) {
-            const wt = this.createWorktree(repo, run.runId, nodeId);
+            const wt = this.createWorktree(run, repo, nodeId);
             nodeCwd = wt.path;
             rec.worktree = wt.path;
             this.recordEvent(run, 'node', nodeId, `同仓并发：创建隔离 worktree（${wt.branch}）`);
@@ -3099,13 +3137,35 @@ export class Engine {
   }
 
   /**
-   * R3.1 同仓并发隔离：git worktree add 独立目录 + 独立分支（脏目录保留并注明）。
+   * v13-B3：本 run 的 worktree 根 = 空间档案顶层键 worktreeRoot（绝对路径才认）> 引擎默认根。
+   * 起单/建 worktree 现场读档案（与 gatewayPinFor/resolveAgentKind 同款口径——配置文件是
+   * 单一事实源，不缓存第二本账）。相对路径不猜基准（进程 cwd 起在哪不该决定证据链落哪），
+   * 脏形态读侧一律视同未配置回落默认（写侧 PUT 已在 http 层 fail-closed 拒过一遍，这里
+   * 只防手改 profile.json 的存量脏值——宁缺毋假，不拿脏值当真根）。
    */
-  private createWorktree(repo: string, runId: string, nodeId: string): { path: string; branch: string } {
-    const wtPath = path.join(this.wtRoot, `${runId}-${nodeId}`);
-    const branch = `paneflow/${runId}-${nodeId}`;
+  private worktreeRootFor(run: RunRecord): string {
+    try {
+      const raw = this.storeFor(run).readProfile().worktreeRoot;
+      if (typeof raw === 'string' && raw && path.isAbsolute(raw)) return raw;
+    } catch {
+      /* 档案读不到 = 默认根 */
+    }
+    return this.wtRoot;
+  }
+
+  /**
+   * R3.1 同仓并发隔离：git worktree add 独立目录 + 独立分支（脏目录保留并注明）。
+   * 分支名正身 `paneflow/<runId>-<nodeId>` 是 reclaim 侧「这条分支是我建的、可以 -d」的
+   * 唯一凭证（v13-B3）——将来 B2 若接交付约定让分支按家规命名，必须同步带上正身判定，
+   * 否则 reclaim 只删目录不碰分支（别人的分支不许引擎自作主张）。
+   */
+  private createWorktree(run: RunRecord, repo: string, nodeId: string): { path: string; branch: string } {
+    const root = this.worktreeRootFor(run);
+    const wtPath = path.join(root, `${run.runId}-${nodeId}`);
+    const branch = `paneflow/${run.runId}-${nodeId}`;
     fs.mkdirSync(path.dirname(wtPath), { recursive: true });
-    // 首驾-4 重试幂等：上轮尝试的 worktree/分支可能残留（回收只删目录不删分支；脏则保目录）——
+    // 首驾-4 重试幂等：上轮尝试的 worktree/分支可能残留（v13-B3 起回收也删分支——但仅限
+    // 已合并的；脏保目录、未合并保分支都可能留残留）——
     // 目录在就直接续用，仅分支在就挂分支续用，都没有才 -b 新建；旧实现无条件 -b，重试必炸「分支已经存在」
     if (fs.existsSync(wtPath)) {
       console.log(`[engine] worktree 重建：续用残留目录 ${wtPath}`);
@@ -3115,26 +3175,77 @@ export class Engine {
       if (hasBranch) console.log(`[engine] worktree 重建：续用既有分支 ${branch}`);
       execFileSync('git', ['-C', repo, ...args], { timeout: 30_000 });
     }
-    const entry = { runId, repo, path: wtPath, branch };
+    const entry = { runId: run.runId, nodeId, repo, path: wtPath, branch };
     this.liveWorktrees.push(entry);
     return entry;
   }
 
-  /** R3.5 worktree 回收：干净则 remove，脏则保留目录并在日志注明。 */
-  private reclaimWorktrees(runId: string): void {
-    for (const wt of this.liveWorktrees.filter((w) => w.runId === runId)) {
+  /**
+   * R3.5 worktree 回收：干净则 remove 目录，并自此把「分支半笔」也结清（v13-B3，结 N3 账）。
+   * 判据全落 events（走 recordEvent 既有通道：相邻同文去重 + 500 条环形上限）——旧版只有
+   * 一行 console.warn，进程日志翻过即无账。口径：
+   *  · 分支删除只跑 `git branch -d`，绝不 `-D`、绝不 push——`-d` 对未合并分支的拒绝就是
+   *    我们要的诚实读数（「分支未合并，保留待人工定夺」是**读数不是失败**），不许绕过；
+   *  · 只删分支名正身 = `paneflow/<runId>-<nodeId>` 的引擎自建分支（createWorktree 唯一命名
+   *    格式）——不是正身就不碰，将来 B2 接家规分支名后这条护栏挡住误删用户分支；
+   *  · 脏目录保留 / remove 失败 / -d 被拒：一律只披露不拦，run/节点状态判定零改动；
+   *  · 幂等：处理完的条目当场从 liveWorktrees 摘除，收口路若被重复调用则无账可再记
+   *    （recordEvent 相邻同文去重是第二层兜底）。
+   */
+  private reclaimWorktrees(run: RunRecord): void {
+    for (const wt of this.liveWorktrees.filter((w) => w.runId === run.runId)) {
       try {
         if (gitStatusPorcelain(wt.path)) {
           console.warn(`[engine] worktree 有未提交变更，保留目录：${wt.path}`);
+          this.recordEvent(
+            run,
+            'run',
+            wt.nodeId,
+            `worktree 回收：目录有未提交变更，保留待人工定夺（成果证据链，非失败）：${wt.path} · 分支 ${wt.branch}`,
+          );
           continue;
         }
         execFileSync('git', ['-C', wt.repo, 'worktree', 'remove', wt.path], { timeout: 15_000 });
       } catch (err) {
         console.warn(`[engine] worktree 回收失败（保留）：${wt.path} — ${(err as Error).message}`);
+        this.recordEvent(
+          run,
+          'run',
+          wt.nodeId,
+          `worktree 回收失败，目录与分支均保留待人工定夺：${wt.path} · 分支 ${wt.branch}（原因：${(err as Error).message}）`,
+        );
+        continue;
+      }
+      // 目录已移除——分支半笔（只碰引擎自建正身）
+      if (wt.branch !== `paneflow/${wt.runId}-${wt.nodeId}`) {
+        this.recordEvent(
+          run,
+          'run',
+          wt.nodeId,
+          `worktree 回收：目录已移除 ${wt.path}；分支 ${wt.branch} 非引擎自建正身（paneflow/${wt.runId}-${wt.nodeId}），不碰保留`,
+        );
+        continue;
+      }
+      try {
+        execFileSync('git', ['-C', wt.repo, 'branch', '-d', wt.branch], { timeout: 15_000 });
+        this.recordEvent(
+          run,
+          'run',
+          wt.nodeId,
+          `worktree 回收：目录已移除 ${wt.path} · 本地分支 ${wt.branch} 已删除（git branch -d，已合并）`,
+        );
+      } catch {
+        // -d 拒删未合并分支——不重试、不强删（-D 是人的事，PaneFlow 不代跑）
+        this.recordEvent(
+          run,
+          'run',
+          wt.nodeId,
+          `worktree 回收：目录已移除 ${wt.path} · 分支 ${wt.branch} 未合并，保留待人工定夺（只跑 git branch -d，不代跑 -D/push；此为读数非失败）`,
+        );
       }
     }
     for (let i = this.liveWorktrees.length - 1; i >= 0; i--) {
-      if (this.liveWorktrees[i]!.runId === runId) this.liveWorktrees.splice(i, 1);
+      if (this.liveWorktrees[i]!.runId === run.runId) this.liveWorktrees.splice(i, 1);
     }
   }
 
