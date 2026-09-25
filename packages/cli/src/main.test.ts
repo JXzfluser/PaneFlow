@@ -275,6 +275,86 @@ describe('runs / status / approve', () => {
     expect(legacy.lines.join('\n')).not.toContain('副作用');
   });
 
+  it('v13-B2 status 交付行+落差行：家规账逐节点照单渲染（没拉新支就不编基点），落差行只照 server 的 detail；没账整缺不显', async () => {
+    const base = {
+      runId: 'r-dlv',
+      state: 'completed',
+      dagName: 'g',
+      nodes: { b: { nodeId: 'b', state: 'done' }, c: { nodeId: 'c', state: 'done' } },
+    };
+    const { fetchImpl } = stubFetch([
+      {
+        body: {
+          ...base,
+          deliveryWorktrees: [
+            {
+              nodeId: 'b',
+              ruleIndex: 0,
+              matchedBy: 'repo',
+              pullMode: 'new-branch',
+              baseRef: 'main',
+              baseSource: 'rule',
+              expectedBranch: 'fix/issue-123',
+              prTarget: 'main',
+              actualBranch: 'fix/issue-123',
+            },
+            // 挂既有支=没有「拉」这一步：账上没 baseRef，渲染就不许出现基点字样
+            {
+              nodeId: 'c',
+              ruleIndex: 2,
+              matchedBy: 'space',
+              pullMode: 'attach-existing-branch',
+              expectedBranch: 'wt/wild-1',
+              prTarget: 'release/v1.4',
+            },
+          ],
+          deliveryViolations: [
+            {
+              kind: 'branch-name',
+              detail: '节点「c」的隔离工作目录实分支名「side/track」（游离 HEAD，detached） ≠ 家规第 3 条渲染的「wt/wild-1」',
+            },
+          ],
+        },
+      },
+      // 契约优先：baseSource=contract 要说清基点来自本单契约，不是空间家规
+      {
+        body: {
+          ...base,
+          deliveryWorktrees: [
+            {
+              nodeId: 'b',
+              ruleIndex: 0,
+              matchedBy: 'repo',
+              pullMode: 'new-branch',
+              baseRef: 'rel-9',
+              baseSource: 'contract',
+              expectedBranch: 'fix/issue-123',
+              prTarget: 'main',
+            },
+          ],
+        },
+      },
+      // 没配家规/没建 worktree 的单：两键整缺 → 两行都不显（缺≠「按家规建了零个」）
+      { body: base },
+    ]);
+    const full = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-dlv'], full.io)).toBe(0);
+    const out = full.lines.join('\n');
+    expect(out).toContain('交付: 分支 fix/issue-123 · 基点 main · PR→main · 家规第 1 条（精确仓）');
+    expect(out).toContain('交付: 分支 wt/wild-1 · 挂既有分支·未拉新支 · PR→release/v1.4 · 家规第 3 条（通配副）');
+    expect(out).toContain('⚠ deliveryViolation: 节点「c」的隔离工作目录实分支名「side/track」');
+    expect(out).toContain('（只标不拦）');
+    const contract = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-dlv'], contract.io)).toBe(0);
+    expect(contract.lines.join('\n')).toContain('交付: 分支 fix/issue-123 · 基点 rel-9（契约优先） · PR→main');
+    // 老单/没学家规：两键整缺 → 两行都不显（缺≠「按家规建了零个」）
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-dlv'], legacy.io)).toBe(0);
+    const lOut = legacy.lines.join('\n');
+    expect(lOut).not.toContain('交付:');
+    expect(lOut).not.toContain('deliveryViolation');
+  });
+
   it('v13-W3 status 授权行+对账行：只渲染 server 收口落册账——有声明一行、有落差一行、整缺不显示', async () => {
     const base = { runId: 'r-decl', state: 'completed', dagName: 'g', nodes: {} };
     const { fetchImpl } = stubFetch([

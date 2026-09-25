@@ -54,6 +54,12 @@ paneflow runs --json            # 原始 API 负载，stdout 干净可直接 | j
 #      「授权: 岗「r-x」gitPush=false …（声明非强制，锁在 agent CLI 侧）」；声明 false 却撞上
 #      副作用账 → 「⚠ 授权对账: 岗「r-x」声明 gitPush=false · 实见「已推送 <时刻>」」——只照不拦，
 #      归因是单级上界（副作用账无逐节点分账）；没声明/无落差/旧单两行整缺不显——判据全在 server，CLI 只渲染）
+#    + 交付行 + 落差行（v13-B2 家规三层消费：节点按空间 delivery 家规真建过隔离工作目录 →
+#      「    交付: 分支 fix/issue-123 · 基点 main（契约优先时带此标注）· PR→main · 家规第 1 条（精确仓）」；
+#      挂既有分支=「未拉新支」、续用残留目录=「未建支未拉基点」——没拉就没有基点，账上缺键就明说，
+#      绝不拿家规声明的 branchFrom 冒充实测基点；收口对出落差另起 run 级一行
+#      「⚠ deliveryViolation: <server 的一句人话>（只标不拦）」，判据与 detail 全在 server，CLI 不比对
+#      expected/actual 不自造判定；没配家规/没建 worktree/无落差/旧单 → 两行整缺不显）
 paneflow status <runId>
 paneflow status <runId> --json
 
@@ -172,7 +178,14 @@ curl -s $BASE/api/spaces                       # → {spaces:[档案数组]}；�
 curl -s $BASE/api/spaces/<id>                  # 单档案；delivery 配了才出现：[{repo?,branchFrom,branchName,prTarget,gates?,note?}]
 curl -s -X PUT $BASE/api/spaces/<id> -d '{"delivery":[{"repo":"my-repo","branchFrom":"main","branchName":"fix/issue-{issue}","prTarget":"main","gates":["PR 前"]}]}'
 #   PUT=merge 语义（漏发键保旧值，显式 [] 才清空）；脏形状 400 + 一句指路（空 branchName/未知键/gates 破烂…）
-#   v13-B1 只声明不消费：占位符 {issue}/{version} 原样存，引擎接线在 B2
+#   v13-B2 起三层消费全部接线（不再是只声明）：①机检层建 worktree 按家规渲染分支名、基点走
+#   branchFrom（本地 refs/heads 优先、再退 refs/remotes/origin；两路都解析不到=拒建即时红，
+#   **绝不静默从当前 HEAD 拉出**）；②注入层把渲染后的约定块进每个 agent 节点的上下文；
+#   ③对账层收口核两条落差（实分支名≠渲染结果、gates 声明了而图上一道人闸没编）——只照不拦。
+#   契约的 repo/branch 是本单级覆盖口：contract.branch 在场时基点取契约、家规仍命名。
+#   实消费账读 GET /api/runs/<runId> 的 deliveryWorktrees[]（nodeId/repo/worktreePath/ruleIndex/
+#   matchedBy/pullMode/expectedBranch/prTarget，真拉新支才有 baseRef+baseSource，读得到才有
+#   actualBranch）与 deliveryViolations[]（{kind,detail,...}）；没家规/没命中/没建过=整键缺省。
 #   v13-B3 worktree 根（顶层键 worktreeRoot，非 delivery 条目——根是空间级事实，塞进 per-repo 家规是形状错误）：
 #   生产默认 <dataDir>/worktrees（即 ~/.paneflow/worktrees——证据链搬出 OS 扫荡区）；
 #   PUT '{"worktreeRoot":"/volumes/ext/pf-wt"}' 按空间覆写——只认绝对路径（相对路径不猜基准，400 指路），

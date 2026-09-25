@@ -23,7 +23,7 @@ interface SpaceProfile {
   delivery?: DeliveryRule[];
 }
 
-/** v13-B1 交付约定（家规）条目：配置文件管理（profile.json 的 delivery 数组 / PUT 端点），本页只读展示 */
+/** v13-B1 交付约定（家规）条目：本页 DeliveryEditor 可编辑（写脏形状由 PUT 端点 400 指路，前端不造第二套判据） */
 interface DeliveryRule {
   repo?: string;
   branchFrom: string;

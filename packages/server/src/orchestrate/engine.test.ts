@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { DagGraph, RunRecord } from '@paneflow/shared';
+import type { DagGraph, DagNodeConfig, RunRecord } from '@paneflow/shared';
 import { execFileSync } from 'node:child_process';
 import { Engine, gateTimeoutMessage, NODE_NO_AGENT_KIND_ERROR, resolveGateTimeoutMs } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
@@ -12,6 +12,8 @@ import { READBACK_HEADER } from './readback.js';
 import { WIKI_ROOT, wikiCacheDir } from '../api/wiki.js';
 import { upsertGatewayProfile } from '../api/gateway.js';
 import { Store } from './store.js';
+import type { SpaceProfile } from './store.js';
+import type { DeliveryRule } from './delivery.js';
 import { saveRoles } from './roles.js';
 
 import { FakeHerdrOps } from './fake-ops.js';
@@ -4721,5 +4723,548 @@ describe('v13-W3 授权声明与收口对账（声明非强制入 prompt · 三�
       { roleId: 'r-late', face: 'gitPush', seen: '已推送 2026-09-22T01:02:03.000Z' },
     ]);
     expect(dvEvents(f)).toHaveLength(1);
+  });
+});
+
+/**
+ * v13-B2 交付约定三层消费（现场件）。判据本体（匹配/渲染/文案/纯图账）在 delivery.test.ts，
+ * 本文件校的是三层在**生产路**上真的接线：
+ *  ①机检=createWorktree（基点 fail-closed + 家规分支命名 + 占位符未解析拒建）
+ *  ②注入=resolveContext 约定通道（进 injectedBytes、不进 ctxSha）
+ *  ③对账=execute() 收口 reconcileDelivery（两条落差 + 一条聚合 warn，只照不拦）
+ * 兼容带死判据：档案没 delivery / 没命中条目 → 引擎与 B1 之前逐字同行为（零新账、零新事件、
+ * 零新 git 读、命名与基点一律现状）。
+ * fixture 同款 B3：真 git 仓 + FakeHerdrOps + 同仓并发 fanout（a 占锁 → b 走 worktree）。
+ */
+describe('v13-B2 交付约定三层消费（①机检 fail-closed · ②注入约定通道 · ③收口对账只照不拦 · 兼容带零回归）', () => {
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+
+  /** ref 存在性探针：--quiet 对不存在的 ref 让 git 退非 0，execFileSync 会抛——问「有没有」得自己兜 */
+  const refAt = (cwd: string, ref: string): string => {
+    try {
+      return git(cwd, 'rev-parse', '--verify', '--quiet', ref);
+    } catch {
+      return '';
+    }
+  };
+
+  /** 三字段齐 + 人闸声明 + 备注的样本家规：{version} 收起单实填变量、{issue} 收起单 issueId */
+  const BUG_HOUSE: DeliveryRule = {
+    repo: 'web-console',
+    branchFrom: 'main',
+    branchName: 'fix/v{version}-{issue}',
+    prTarget: 'release/v{version}',
+    gates: ['对齐先行', 'PR 前'],
+    note: 'bug 单家规：驳回开 Bug 链回主 Issue',
+  };
+  /** repo 缺省的全空间通配副 */
+  function wild(over: Partial<DeliveryRule> = {}): DeliveryRule {
+    return { branchFrom: 'main', branchName: 'wt/wild-{run_id}', prTarget: 'main', ...over };
+  }
+
+  /**
+   * macOS 的 tmpdir 是 /var→/private/var 的软链，而 `git rev-parse --show-toplevel` 返回物理路径：
+   * 不做 realpath 的话「仓相对主仓根」永远算不出相对路径（createWorktree 手里的 repo 就是 git 读回来的）。
+   */
+  function realTmp(prefix: string): string {
+    return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  }
+  function gitInit(dir: string): string {
+    git(dir, 'init', '-b', 'main');
+    git(dir, 'config', 'user.email', 'pf@test.local');
+    git(dir, 'config', 'user.name', 'pf-test');
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.herdr/\n');
+    fs.writeFileSync(path.join(dir, 'base.txt'), 'base');
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-m', 'base');
+    return dir;
+  }
+  function initRepo(prefix: string): string {
+    return gitInit(realTmp(prefix));
+  }
+  /** 主仓根 + 根下一个 git 仓（家规按「相对主仓根的仓名」命中，与 rules.matchRules 同一把尺） */
+  function spaceRepo(repoName = 'web-console'): { root: string; repo: string } {
+    const root = realTmp('pf-b2-root-');
+    const repo = path.join(root, repoName);
+    fs.mkdirSync(repo, { recursive: true });
+    gitInit(repo);
+    return { root, repo };
+  }
+  function houseProfile(root: string, delivery?: DeliveryRule[]): void {
+    const p: SpaceProfile = { ...store.readProfile(), rootCwd: root };
+    if (delivery) p.delivery = delivery;
+    else delete p.delivery;
+    store.writeProfile(p);
+  }
+  /** 同仓并发 fanout（B3 同款现场）：a 先占仓锁 → b 建隔离 worktree */
+  function siblingGraph(repo: string, name: string, bConfig: Partial<DagNodeConfig> = {}): DagGraph {
+    return {
+      version: 1,
+      name,
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'fork', type: 'fanout', label: '展开', config: {} },
+        { id: 'a', type: 'agent', label: '任务A', config: { agentKind: 'fake', prompt: '做甲活', cwd: repo } },
+        {
+          id: 'b',
+          type: 'agent',
+          label: '任务B',
+          config: { agentKind: 'fake', prompt: '做乙活', cwd: repo, ...bConfig },
+        },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'fork' },
+        { id: 'e2', source: 'fork', target: 'a' },
+        { id: 'e3', source: 'fork', target: 'b' },
+        { id: 'e4', source: 'a', target: 'end' },
+        { id: 'e5', source: 'b', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+  }
+  /** 取**最近一单**发的匹配 prompt（同测试里跑过多单时 find 会命中旧单） */
+  const lastPromptOf = (tag: string): string =>
+    [...ops.prompts].reverse().find((p) => p.text.includes(tag))!.text;
+  /** 顶层 runToCompletion 不带 variables/issueId，本组要起带单号的单故自带跑法 */
+  async function runHouse(
+    graph: DagGraph,
+    cwd: string,
+    opts?: { variables?: Record<string, string>; issueId?: string },
+  ): Promise<RunRecord> {
+    const run = await engine.startRun(graph, cwd, undefined, opts?.variables, opts?.issueId);
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    return engine.getRun(run.runId)!;
+  }
+  const reclaimEventsOf = (run: RunRecord) => (run.events ?? []).filter((e) => e.text.includes('worktree 回收'));
+  const dvEvents = (run: RunRecord) => (run.events ?? []).filter((e) => e.text.includes('deliveryViolation'));
+  const houseEvents = (run: RunRecord) => (run.events ?? []).filter((e) => e.text.includes('交付约定'));
+  /** worktree 目录名不作家规化（孤儿清扫靠目录名认单），只有分支名交给家规 */
+  const wtDirOf = (runId: string, nodeId: string) => path.join(dataDir, 'worktrees', `${runId}-${nodeId}`);
+  const worktreeDirs = () => {
+    try {
+      return fs.readdirSync(path.join(dataDir, 'worktrees'));
+    } catch {
+      return [];
+    }
+  };
+  /** 同 run 内跨两轮的兄弟占仓现场（T9 用）：a→c 链 + b 重试，c 在 b 首轮失败前接手仓锁 */
+  function chainGraph(repo: string, name: string): DagGraph {
+    return {
+      version: 1,
+      name,
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'fork', type: 'fanout', label: '展开', config: {} },
+        {
+          id: 'a',
+          type: 'agent',
+          label: '任务A',
+          config: { agentKind: 'fake', prompt: '做甲活', cwd: repo, checks: [{ type: 'manual', prompt: '看一眼甲' }] },
+        },
+        { id: 'b', type: 'agent', label: '任务B', config: { agentKind: 'fake', prompt: '做乙活', cwd: repo, retryCount: 1 } },
+        {
+          id: 'c',
+          type: 'agent',
+          label: '任务C',
+          config: { agentKind: 'fake', prompt: '做丙活', cwd: repo, checks: [{ type: 'manual', prompt: '看一眼丙' }] },
+        },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'fork' },
+        { id: 'e2', source: 'fork', target: 'a' },
+        { id: 'e3', source: 'fork', target: 'b' },
+        { id: 'e4', source: 'a', target: 'c' },
+        { id: 'e5', source: 'b', target: 'end' },
+        { id: 'e6', source: 'c', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+  }
+
+  // T1 兼容带死判据 -----------------------------------------------------------
+  it('T1 兼容带·现网零回归：没配家规 / 配了但不命中 → 命名与基点全是现状，零新账零新事件注入面零变化', async () => {
+    const { root, repo } = spaceRepo();
+    // (a) 档案根本没有 delivery 键
+    houseProfile(root);
+    const plain = await runToCompletion(siblingGraph(repo, 'b2-band-plain'), repo);
+    expect(plain.state).toBe('completed');
+    expect(plain.nodes.b!.worktree).toBe(wtDirOf(plain.runId, 'b'));
+    // 分支名仍是引擎正身 paneflow/<runId>-<nodeId>（建它时的事件在册，回收时 -d 删掉=现状）
+    const claimed = (plain.events ?? []).find((e) => e.text.includes('同仓并发'))!;
+    expect(claimed.text).toContain(`paneflow/${plain.runId}-b`);
+    const evs = reclaimEventsOf(plain);
+    expect(evs).toHaveLength(1);
+    expect(evs[0]!.text).toContain('已删除');
+    expect(evs[0]!.text).toContain(`paneflow/${plain.runId}-b`);
+    expect(plain.deliveryWorktrees).toBeUndefined();
+    expect(plain.deliveryViolations).toBeUndefined();
+    expect(houseEvents(plain)).toHaveLength(0);
+    expect(lastPromptOf('做乙活')).not.toContain('交付约定');
+    // (b) 配了家规但 repo 不匹配（仓在另一棵树里，且档案没通配副兜底）→ 三层一条都不走
+    const other = initRepo('pf-b2-band-other-');
+    houseProfile(root, [{ ...BUG_HOUSE, branchName: 'fix/never-{issue}' }]);
+    const miss = await runHouse(siblingGraph(other, 'b2-band-miss'), other, { issueId: '123' });
+    expect(miss.state).toBe('completed');
+    expect((miss.events ?? []).find((e) => e.text.includes('同仓并发'))!.text).toContain(`paneflow/${miss.runId}-b`);
+    expect(git(other, 'branch', '--list')).not.toContain('fix/never-123');
+    expect(miss.deliveryWorktrees).toBeUndefined();
+    expect(miss.deliveryViolations).toBeUndefined();
+    expect(houseEvents(miss)).toHaveLength(0);
+    expect(lastPromptOf('做乙活')).not.toContain('交付约定');
+    // 不命中=注入面零变化：两单的 ctxSha / injectedBytes 同款（V4/W2 等式不被家规噪声破）
+    expect(miss.harness!.ctxSha).toBe(plain.harness!.ctxSha);
+    expect(miss.harness!.injectedBytes).toBe(plain.harness!.injectedBytes);
+  });
+
+  // T2 三层同现场 -------------------------------------------------------------
+  it('T2 家规命中：①按家规拉分支（{version}/{issue} 双取材）②约定块进 prompt ③在册账 + B3 护栏被走到（非正身不碰保留）', async () => {
+    const { root, repo } = spaceRepo();
+    houseProfile(root, [BUG_HOUSE]);
+    const g = siblingGraph(repo, 'b2-three-layer', { checks: [{ type: 'manual', prompt: '看一眼' }] });
+    const run = await engine.startRun(g, repo, undefined, { version: '1.4' }, '123');
+    await waitFor(() => engine.isBlocked(run.runId, 'b'));
+    // ②注入层：渲染后的约定块（基点/分支名/PR 目标/gates 逐条名/note 全在里面）
+    const p = lastPromptOf('做乙活');
+    expect(p).toContain('交付约定（本项目家规，仓「web-console」（相对主仓根），档案 delivery 第 1 条）');
+    expect(p).toContain('- 拉出基点：main（来源=空间家规）');
+    expect(p).toContain('- 分支名：fix/v1.4-123（家规模板 fix/v{version}-{issue}）');
+    expect(p).toContain('- PR 目标分支：release/v1.4（家规模板 release/v{version}）'); // B4
+    expect(p).toContain('「对齐先行」、「PR 前」');
+    expect(p).toContain('- 家规备注：bug 单家规');
+    expect(p).toContain('PaneFlow 只声明与对账、不代跑 git push 也不代建 PR');
+    await engine.approve(run.runId, 'b', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    // ①机检层：分支真按家规命名并从 main 拉出，目录命名仍是 <runId>-<nodeId>
+    expect(final.nodes.b!.worktree).toBe(wtDirOf(final.runId, 'b'));
+    expect(git(repo, 'branch', '--list')).toContain('fix/v1.4-123');
+    expect(git(repo, 'branch', '--list')).not.toContain(`paneflow/${final.runId}-b`); // 绝不回退正身
+    // ①的 B3 护栏后果：家规分支非引擎自建正身 → 只删目录、分支一并不碰（需求文档要求走一遍证明护栏没死）
+    expect(fs.existsSync(wtDirOf(final.runId, 'b'))).toBe(false);
+    const evs = reclaimEventsOf(final);
+    expect(evs).toHaveLength(1);
+    expect(evs[0]!.text).toContain('非引擎自建正身');
+    expect(evs[0]!.text).toContain('不碰保留');
+    expect(evs[0]!.text).toContain('fix/v1.4-123');
+    // ③对账层在册账：命中哪条家规、怎么命中、真做了什么、期望 vs 实态
+    expect(final.deliveryWorktrees).toHaveLength(1);
+    expect(final.deliveryWorktrees![0]).toMatchObject({
+      nodeId: 'b',
+      repo,
+      worktreePath: wtDirOf(final.runId, 'b'),
+      ruleIndex: 0,
+      matchedBy: 'repo',
+      pullMode: 'new-branch',
+      baseRef: 'main',
+      baseSource: 'rule',
+      expectedBranch: 'fix/v1.4-123',
+      actualBranch: 'fix/v1.4-123',
+      // B4：prTarget 渲染结果同场落册（交付出口在场级账上可见，PaneFlow 不代跑建 PR）
+      prTarget: 'release/v1.4',
+    });
+    // 账从盘上读回同一本（不靠环形 events 推导）
+    expect(store.getRun(final.runId)!.deliveryWorktrees).toEqual(final.deliveryWorktrees);
+    // 家规声明的人闸在图上编出来了（manual 检查）→ 落差整缺、事件静默
+    expect(final.deliveryViolations).toBeUndefined();
+    expect(dvEvents(final)).toHaveLength(0);
+  });
+
+  // T3 基点 fail-closed -------------------------------------------------------
+  it('T3 基点两路都解析不到 = 拒建即时红（绝不静默从 HEAD 拉出），零 worktree 零分支零账', async () => {
+    const { root, repo } = spaceRepo();
+    houseProfile(root, [{ ...BUG_HOUSE, branchName: 'fix/issue-{issue}', prTarget: 'main', branchFrom: 'nope-branch', gates: undefined }]);
+    const run = await runHouse(siblingGraph(repo, 'b2-base-fail'), repo, { issueId: '123' });
+    expect(run.state).toBe('failed');
+    expect(run.nodes.a!.state).toBe('done'); // 占锁的那一支不碰家规建支路，照常跑完
+    expect(run.nodes.b!.state).toBe('failed');
+    expect(run.nodes.b!.error).toContain('交付约定要求基点「nope-branch」');
+    expect(run.nodes.b!.error).toContain('都解析不到');
+    expect(run.nodes.b!.error).toContain('绝不静默从当前 HEAD 拉出');
+    // 拒建就要什么都没有（旧行为会静默从 HEAD 建出来——那正是污染账）
+    expect(run.nodes.b!.worktree).toBeUndefined();
+    expect(worktreeDirs()).toEqual([]);
+    expect(git(repo, 'worktree', 'list').split('\n')).toHaveLength(1); // 只剩主检出
+    const branches = git(repo, 'branch', '--list');
+    expect(branches).not.toContain('fix/issue-123');
+    expect(branches).not.toContain(`paneflow/${run.runId}-b`);
+    expect(ops.prompts.some((x) => x.text.includes('做乙活'))).toBe(false);
+    expect(run.deliveryWorktrees).toBeUndefined();
+    // 一句人话只落节点 error 这一格结构化账（status/运行卡直读），不为失败路新造事件族
+    expect(houseEvents(run)).toHaveLength(0);
+    expect(dvEvents(run)).toHaveLength(0);
+  });
+
+  // T4 origin 第二路 ----------------------------------------------------------
+  it('T4 基点第二路：本地没有但 origin/<base> 有 → 从 origin ref 拉出（baseRef 记 origin/…，块里仍作家规原名）', async () => {
+    const { root, repo } = spaceRepo();
+    // 造一个只存在于远端跟踪 ref 的分支：本地分支删掉，refs/remotes/origin/rel-2 留着
+    git(repo, 'checkout', '-b', 'rel-2');
+    fs.writeFileSync(path.join(repo, 'origin-only.txt'), '只在 origin 上的一笔');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'only on origin');
+    git(repo, 'update-ref', 'refs/remotes/origin/rel-2', 'refs/heads/rel-2');
+    git(repo, 'checkout', 'main');
+    git(repo, 'branch', '-D', 'rel-2');
+    expect(refAt(repo, 'refs/heads/rel-2')).toBe('');
+    expect(refAt(repo, 'refs/remotes/origin/rel-2')).not.toBe('');
+    houseProfile(root, [{ ...BUG_HOUSE, branchName: 'wt/from-origin', prTarget: 'main', branchFrom: 'rel-2', gates: undefined }]);
+    const run = await runToCompletion(siblingGraph(repo, 'b2-origin'), repo);
+    const wt = run.deliveryWorktrees!.find((w) => w.nodeId === 'b')!;
+    expect(wt.pullMode).toBe('new-branch');
+    expect(wt.baseRef).toBe('origin/rel-2');
+    expect(wt.baseSource).toBe('rule');
+    expect(wt.expectedBranch).toBe('wt/from-origin');
+    // 拉出的确实是 origin 那笔（main 上没有 origin-only.txt）→ 不是 HEAD 污染账
+    expect(git(repo, 'ls-tree', '--name-only', 'wt/from-origin')).toContain('origin-only.txt');
+    // 注入块说的是家规写的基点名（不带 origin/ 前缀），解析结果只在账上
+    expect(lastPromptOf('做乙活')).toContain('- 拉出基点：rel-2（来源=空间家规）');
+  });
+
+  // T5 占位符未解析 fail-closed ----------------------------------------------
+  it('T5 占位符解析不到 = 拒建即时红，严禁静默回退 paneflow/ 命名或留字面花括号', async () => {
+    const { root, repo } = spaceRepo();
+    houseProfile(root, [{ ...BUG_HOUSE, branchName: 'fix/issue-{issue}', prTarget: 'main', gates: undefined }]);
+    // 关键：起单没带 issueId → {issue} 无处取材
+    const run = await runToCompletion(siblingGraph(repo, 'b2-tpl-fail'), repo);
+    expect(run.state).toBe('failed');
+    expect(run.nodes.b!.error).toContain('交付约定占位符解析不到');
+    expect(run.nodes.b!.error).toContain('branchName 模板「fix/issue-{issue}」缺 {issue}');
+    expect(run.nodes.b!.error).toContain('绝不静默回退成 paneflow/<runId>-<nodeId>');
+    const branches = git(repo, 'branch', '--list');
+    expect(branches).not.toContain(`paneflow/${run.runId}-b`); // 没回退成正身
+    expect(branches).not.toContain('fix/issue-{issue}'); // 也没把字面模板当分支名建出去
+    expect(worktreeDirs()).toEqual([]);
+    expect(run.deliveryWorktrees).toBeUndefined();
+  });
+
+  // T6 repo 精确条目优先 ------------------------------------------------------
+  it('T6 命中优先级：repo 精确条目赢过通配副（数组顺序不决定优先级），账上 ruleIndex/matchedBy 指认赢家', async () => {
+    const root = realTmp('pf-b2-nested-');
+    const repo = path.join(root, 'svc-app');
+    fs.mkdirSync(repo, { recursive: true });
+    gitInit(repo);
+    houseProfile(root, [
+      wild(), // 通配副故意排第一
+      { repo: 'svc-app', branchFrom: 'main', branchName: 'app/{run_id}', prTarget: 'main' },
+    ]);
+    const run = await runToCompletion(siblingGraph(repo, 'b2-priority'), repo);
+    expect(run.state).toBe('completed');
+    const wt = run.deliveryWorktrees!.find((w) => w.nodeId === 'b')!;
+    expect(wt).toMatchObject({ ruleIndex: 1, matchedBy: 'repo', expectedBranch: `app/${run.runId}` });
+    expect(git(repo, 'branch', '--list')).toContain(`app/${run.runId}`);
+    expect(git(repo, 'branch', '--list')).not.toContain('wt/wild-');
+    expect(lastPromptOf('做乙活')).toContain('仓「svc-app」（相对主仓根），档案 delivery 第 2 条');
+  });
+
+  // T7 contract.branch 压过空间 -----------------------------------------------
+  it('T7 死字段 contract.branch 点亮：本单契约基点压过空间 branchFrom（契约优先），拉出的真是契约那笔', async () => {
+    const { root, repo } = spaceRepo();
+    git(repo, 'checkout', '-b', 'release/v2');
+    fs.writeFileSync(path.join(repo, 'v2-only.txt'), '只有 v2 支上有的文件');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'v2 only');
+    git(repo, 'checkout', 'main');
+    houseProfile(root, [{ ...BUG_HOUSE, branchName: 'wt/contract', prTarget: 'main', gates: undefined }]);
+    const run = await engine.startRun(siblingGraph(repo, 'b2-contract'), repo, undefined, undefined, undefined, undefined, {
+      contract: { assertions: [], questions: [], branch: 'release/v2', source: 'generated' },
+    });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed');
+    const wt = final.deliveryWorktrees!.find((w) => w.nodeId === 'b')!;
+    expect(wt.baseRef).toBe('release/v2');
+    expect(wt.baseSource).toBe('contract');
+    expect(wt.expectedBranch).toBe('wt/contract');
+    // 契约优先是真拉了那一笔，不是账上写写
+    expect(git(repo, 'ls-tree', '--name-only', 'wt/contract')).toContain('v2-only.txt');
+    expect(lastPromptOf('做乙活')).toContain('- 拉出基点：release/v2（来源=本单契约覆盖，契约优先于空间）');
+  });
+
+  // T8 gates-without-gate 纯图账 ---------------------------------------------
+  it('T8 对账·家规有人闸图上一道没编：纯图账（没建过 worktree 也照样算），⚠ 一条聚合事件、单照常收口', async () => {
+    const dir = realTmp('pf-b2-gates-');
+    houseProfile(dir, [wild({ gates: ['对齐先行', 'PR 前'] })]);
+    const run = await runToCompletion(serialGraph(), dir);
+    expect(run.state).toBe('completed');
+    expect(run.deliveryWorktrees).toBeUndefined(); // 没撞仓锁=没建过 worktree，机检账整缺
+    expect(run.deliveryViolations).toEqual([
+      {
+        kind: 'gates-without-gate',
+        ruleIndex: 0,
+        expected: '「对齐先行」、「PR 前」',
+        actual: '图上 0 道人闸位',
+        detail: '家规第 1 条声明人闸 「对齐先行」、「PR 前」，而本单的图里一道人闸位都没编（manual 检查/契约门/分支守卫/澄清轮皆无）',
+      },
+    ]);
+    const evs = dvEvents(run);
+    expect(evs).toHaveLength(1); // 一次收口恰好一笔账，不逐条刷屏
+    expect(evs[0]!.text).toContain('deliveryViolation');
+    expect(evs[0]!.text).toContain('只照不拦');
+    expect(evs[0]!.text).toContain('家规第 1 条声明人闸');
+    expect(evs[0]!.text).toContain('本账只核「分支名」与「图上人闸」两条');
+    // 反例甲：图里编了人闸位（manual 检查）→ 零落差零事件
+    houseProfile(dir, [wild({ gates: ['PR 前'] })]);
+    const gated = serialGraph();
+    gated.nodes[1]!.config.checks = [{ type: 'manual', prompt: '确认放行' }];
+    const g = await engine.startRun(gated, dir);
+    await waitFor(() => engine.isBlocked(g.runId, 'impl'));
+    await engine.approve(g.runId, 'impl', { action: 'approve' });
+    await waitFor(() => engine.getRun(g.runId)!.state !== 'running');
+    const gf = engine.getRun(g.runId)!;
+    expect(gf.state).toBe('completed');
+    expect(gf.deliveryViolations).toBeUndefined();
+    expect(dvEvents(gf)).toHaveLength(0);
+    // 反例乙：gates 空数组=没声明（0 是正读，不是落差）
+    houseProfile(dir, [wild({ gates: [] })]);
+    const none = await runToCompletion(serialGraph(), dir);
+    expect(none.state).toBe('completed');
+    expect(none.deliveryViolations).toBeUndefined();
+    expect(dvEvents(none)).toHaveLength(0);
+  });
+
+  // T9 branch-name 落差 ------------------------------------------------------
+  /**
+   * 生产现场（首驾-4 那笔残留账的形状）：同 run 里另一支兄弟节点在 b 首轮失败之前接手了仓锁
+   * 并一直活着（这里让 c 卡在 manual 人闸上），于是 b 的第二轮仍走 worktree 路 →
+   * 目录是上一轮残留 → pullMode=reuse-directory（既不建支也不拉基点）→ 现场读回的实分支名
+   * 是首轮被 agent 切走的那条 → 与家规渲染名落差。全程真 git + 真门，无 monkeypatch。
+   */
+  it('T9 对账·实分支名≠家规渲染：重试续用残留目录时现读实态入账（只照不拦，单照常 completed）', async () => {
+    const { root, repo } = spaceRepo();
+    houseProfile(root, [{ ...BUG_HOUSE, branchName: 'fix/issue-{issue}', prTarget: 'main', gates: undefined }]);
+    let bPrompts = 0;
+    let tampered = false;
+    ops.onPrompt = (target, text) => {
+      if (!text.includes('做乙活')) return;
+      bPrompts += 1;
+      if (bPrompts > 1) return; // 第二轮照常跑完
+      // 首轮：worktree 已建好（createWorktree 先于 prompt）→ 就地换支（模拟 agent 在隔离目录里切走），
+      // 再让 agent 弹框走人工门——失败时机由本测试亲手按下，保证 c 已接手仓锁
+      const hit = worktreeDirs().find((n) => n.endsWith('-b'));
+      if (hit) {
+        git(path.join(dataDir, 'worktrees', hit), 'checkout', '-b', 'side/track');
+        tampered = true;
+      }
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'blocked'), 10);
+    };
+    const run = await engine.startRun(chainGraph(repo, 'b2-branch-gap'), repo, undefined, undefined, '123');
+    // a 跑到人闸位（其尝试仍持着仓锁的下游），b 首轮弹框等人工处置
+    await waitFor(() => engine.isBlocked(run.runId, 'a'));
+    await waitFor(() => engine.isBlocked(run.runId, 'b'));
+    expect(tampered).toBe(true);
+    // 放行 a → c 起跑：同 run 兄弟占仓 → c 也建 worktree（家规分支已由 b 首轮建出、b 目录又切走了，
+    // 于是 c 走 attach-existing-branch 续用同名支），并在 c 卡住自己的人闸期间持着仓锁
+    await engine.approve(run.runId, 'a', { action: 'approve' });
+    await waitFor(() => engine.isBlocked(run.runId, 'c'));
+    expect(fs.existsSync(wtDirOf(run.runId, 'c'))).toBe(true);
+    // 此刻拒掉 b 首轮 → 重试的第二轮仍走 worktree 路，撞上首轮残留目录。
+    // 顺序是判据而非风格：必须等第二轮真的起了 prompt（createWorktree 先于 prompt）再放行 c——
+    // c 一出闸就把仓锁撒手，第二轮看不到同 run 兄弟占仓，直接回主检出跑，worktree 路整条走不到。
+    await engine.approve(run.runId, 'b', { action: 'reject' });
+    await waitFor(() => bPrompts === 2);
+    await engine.approve(run.runId, 'c', { action: 'approve' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    expect(final.state).toBe('completed'); // 只照不拦：落差绝不让红/让绿翻转
+    expect(final.nodes.b!.attempts).toBe(2);
+    const wt = final.deliveryWorktrees!.find((w) => w.nodeId === 'b')!;
+    expect(wt).toMatchObject({
+      pullMode: 'reuse-directory',
+      expectedBranch: 'fix/issue-123',
+      actualBranch: 'side/track',
+    });
+    expect('baseRef' in wt).toBe(false); // 没拉新支就不写基点（写了就是假账）
+    const wc = final.deliveryWorktrees!.find((w) => w.nodeId === 'c')!;
+    expect(wc.pullMode).toBe('attach-existing-branch');
+    expect('baseRef' in wc).toBe(false);
+    expect(wc.actualBranch).toBe('fix/issue-123');
+    expect(final.deliveryViolations).toEqual([
+      {
+        kind: 'branch-name',
+        nodeId: 'b',
+        ruleIndex: 0,
+        expected: 'fix/issue-123',
+        actual: 'side/track',
+        detail: '节点「b」的隔离工作目录实分支名「side/track」 ≠ 家规第 1 条渲染的「fix/issue-123」',
+      },
+    ]);
+    expect(dvEvents(final)).toHaveLength(1);
+    expect(store.getRun(final.runId)!.deliveryViolations).toEqual(final.deliveryViolations);
+    // 两枚家规分支（渲染名 + 被切走的那条）都不是引擎自建正身 → 护栏一个都不碰
+    const branches = git(repo, 'branch', '--list');
+    expect(branches).toContain('fix/issue-123');
+    expect(branches).toContain('side/track');
+    expect(fs.existsSync(wtDirOf(final.runId, 'b'))).toBe(false);
+  });
+
+  // T9b 家规分支被兄弟检出 = ①的第三条拒建路 --------------------------------
+  it('T9b 同仓三支并发撞同名家规支：先建者按家规命名，后到者被 git 拒（分支已被别的 worktree 检出）→ 失败带家规指认，绝不静默改名', async () => {
+    const { root, repo } = spaceRepo();
+    houseProfile(root, [{ ...BUG_HOUSE, branchName: 'fix/issue-{issue}', prTarget: 'main', gates: undefined }]);
+    const g: DagGraph = {
+      version: 1,
+      name: 'b2-collide',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'fork', type: 'fanout', label: '展开', config: {} },
+        { id: 'a', type: 'agent', label: '任务A', config: { agentKind: 'fake', prompt: '做甲活', cwd: repo } },
+        { id: 'b', type: 'agent', label: '任务B', config: { agentKind: 'fake', prompt: '做乙活', cwd: repo } },
+        { id: 'c', type: 'agent', label: '任务C', config: { agentKind: 'fake', prompt: '做丙活', cwd: repo } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'fork' },
+        { id: 'e2', source: 'fork', target: 'a' },
+        { id: 'e3', source: 'fork', target: 'b' },
+        { id: 'e4', source: 'fork', target: 'c' },
+        { id: 'e5', source: 'a', target: 'end' },
+        { id: 'e6', source: 'b', target: 'end' },
+        { id: 'e7', source: 'c', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    const run = await runHouse(g, repo, { issueId: '123' });
+    // 家规模板没有 per-node 判别位时，同仓并发兄弟必然撞名：赢家按家规建支，输家被 git 拒
+    const failed = Object.entries(run.nodes).filter(([, rec]) => rec.state === 'failed');
+    expect(failed).toHaveLength(1);
+    const loser = failed[0]![0];
+    expect(['b', 'c']).toContain(loser);
+    expect(failed[0]![1].error).toContain('交付约定建 worktree 失败（家规第 1 条：分支 fix/issue-123');
+    expect(run.state).toBe('failed');
+    // 输家抛在建账之前 → 在册账只有赢家一条（宁缺毋假），且它没拿到 worktree
+    expect(run.deliveryWorktrees).toHaveLength(1);
+    expect(run.deliveryWorktrees![0]!.nodeId).not.toBe(loser);
+    expect(run.nodes[loser]!.worktree).toBeUndefined();
+    // 引擎不许自作主张改成 paneflow/ 正身或加后缀续跑——那是静默改名，不是按约定交付
+    expect(git(repo, 'branch', '--list')).not.toContain(`paneflow/${run.runId}-`);
+  });
+
+  // T10 注入卫生 -------------------------------------------------------------
+  it('T10 注入卫生：约定块涨 injectedBytes 但绝不进 ctxSha（运行时文本不是实读文件），没家规时零新增', async () => {
+    const dir = realTmp('pf-b2-hygiene-');
+    fs.writeFileSync(path.join(dir, 'sk-a.md'), '装备甲 正文');
+    houseProfile(dir);
+    store.writeProfile({ ...store.readProfile(), skills: ['sk-a.md'] });
+    const before = await runToCompletion(serialGraph(), dir);
+    expect(before.state).toBe('completed');
+    houseProfile(dir, [wild()]);
+    const after = await runToCompletion(serialGraph(), dir);
+    expect(after.state).toBe('completed');
+    // 块真进了 prompt（同目录同档案，家规命中靠通配副）
+    expect(lastPromptOf('实现功能')).toContain('本空间通配副（档案 delivery 未限定 repo）');
+    // 卫生红线：加家规 → injectedBytes 涨（真进了 prompt），ctxSha 纹丝不动（它不是实读文件）
+    expect(after.harness!.ctxSha).toBe(before.harness!.ctxSha);
+    expect(after.harness!.injectedBytes!).toBeGreaterThan(before.harness!.injectedBytes!);
+    // 撤掉家规 → 注入面回到现状：ctxSha 仍同一枚、injectedBytes 回到旧值
+    houseProfile(dir);
+    const plain = await runToCompletion(serialGraph(), dir);
+    expect(plain.harness!.ctxSha).toBe(before.harness!.ctxSha);
+    expect(plain.harness!.injectedBytes).toBe(before.harness!.injectedBytes);
+    expect(lastPromptOf('实现功能')).not.toContain('交付约定');
   });
 });

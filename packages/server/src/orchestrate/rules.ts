@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 /**
- * M3 规范作用域化：空间 profile.rules 条目（配置文件管理，不做编辑器）。
+ * M3 规范作用域化：空间 profile.rules 条目（编辑位在「项目」视图 RulesEditor，机器改走 PUT /api/spaces/:id）。
  * 无 repo 且无 pathsGlob = 全空间规则（旧 conventionFiles 的等价形）。
  */
 export interface SpaceRule {

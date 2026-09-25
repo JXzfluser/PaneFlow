@@ -61,6 +61,23 @@ export interface RunView {
   sideEffects?: { issuesCreated?: number[]; issuePatched?: number[]; prUrl?: string; pushedAt?: string };
   /** v12-V2 人介入账（验证税）：放门结算好的等待时长 + 决策计数；无=本单没批过门，整缺不显示 */
   attention?: { waitMs?: number; gates?: { approve?: number; reject?: number; input?: number } };
+  /**
+   * v13-B2 ①机检层在册账（server 建 worktree 现场落册，CLI 零判据只渲染）：家规命中且真建过
+   * 隔离工作目录才有键——整缺=本单没按家规建过支（含「没配家规」），不是「建了零个」。
+   */
+  deliveryWorktrees?: {
+    nodeId: string;
+    ruleIndex: number;
+    matchedBy: string;
+    pullMode: string;
+    baseRef?: string;
+    baseSource?: string;
+    expectedBranch: string;
+    prTarget: string;
+    actualBranch?: string;
+  }[];
+  /** v13-B2 ③对账层落差账：一句人话由 server 算好（detail），只照不拦；整缺=无落差 */
+  deliveryViolations?: { kind: string; detail: string }[];
 }
 
 export interface NodeRunView {

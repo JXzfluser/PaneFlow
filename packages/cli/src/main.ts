@@ -258,6 +258,17 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
     ].filter(Boolean);
     if (bits.length) io.out(`  ${paint(io, '33', `副作用: ${bits.join(' · ')}`)}`);
   }
+  // v13-B2 ③对账层的落差行：detail 是 server 收口时算好的一句人话，这里零判据只照读——
+  // 整缺=无落差（含「没学家规」），绝不在 CLI 侧比 expected/actual 自造判定（铁律 R4）
+  if (run.deliveryViolations?.length) {
+    for (const v of run.deliveryViolations) {
+      io.out(`  ${paint(io, '33', `⚠ deliveryViolation: ${v.detail}（只标不拦）`)}`);
+    }
+  }
+  // v13-B2 ①机检层的场级账：家规命中且真建过隔离工作目录才有键（整缺≠建了零个）。
+  // 「基点」位只在真拉新支时有值——挂既有支/续用残留目录都没有「拉」这一步，server 就不写，
+  // 这里照单缺省成「未拉新支」，不拿家规声明的 branchFrom 冒充实测基点。
+  const deliveryByNode = new Map((run.deliveryWorktrees ?? []).map((w) => [w.nodeId, w]));
   // v13-W3 授权行 + 授权对账行：declares/declareViolations 都是 server 收口时算好落册的账
   // （岗库 × 实绑 × 副作用账），这里零判据只渲染——没声明/无落差/旧单整缺不显示（不拿空账冒充）
   if (run.declares?.length) {
@@ -305,6 +316,19 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
           `    ${paint(io, '33', `⚠ 装备引用不在登记清单，已跳过：${eq.unknownSkills.join('、')}`)}`,
         );
       }
+    }
+    const dw = deliveryByNode.get(n.nodeId);
+    if (dw) {
+      const pull =
+        dw.pullMode === 'new-branch'
+          ? `基点 ${dw.baseRef ?? '未记'}${dw.baseSource === 'contract' ? '（契约优先）' : ''}`
+          : dw.pullMode === 'attach-existing-branch'
+            ? '挂既有分支·未拉新支'
+            : '续用残留目录·未建支未拉基点';
+      io.out(
+        `    交付: 分支 ${dw.expectedBranch} · ${pull} · PR→${dw.prTarget} · ` +
+          `家规第 ${dw.ruleIndex + 1} 条（${dw.matchedBy === 'repo' ? '精确仓' : '通配副'}）`,
+      );
     }
   }
   if (run.cost?.totalMs !== undefined) io.out(`  用时 ${humanMs(run.cost.totalMs)}${run.prUrl ? ` · ${run.prUrl}` : ''}`);

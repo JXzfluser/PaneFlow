@@ -21,6 +21,8 @@ import type {
   RunSideEffects,
   NodeAbandonmentTrigger,
   NodeEquip,
+  RunDeliveryViolation,
+  RunDeliveryWorktree,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT, DECLARE_FACES } from '@paneflow/shared';
 import type { DeclareFace, RunDeclareViolation } from '@paneflow/shared';
@@ -30,6 +32,17 @@ import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
 import { buildConventionBlock, buildDeclareBlock, loadRoles, normalizeDeclares, roleEquipConfigured, type Role } from './roles.js';
 import { effectiveRules, matchRules } from './rules.js';
+import {
+  buildDeliveryBlock,
+  declaredGateNames,
+  hasHumanGate,
+  matchDeliveryRule,
+  normalizeDeliveryRules,
+  planDelivery,
+  repoRelOf,
+  type DeliveryPlan,
+  type DeliveryRule,
+} from './delivery.js';
 import { buildSkillBlock, resolveSkillRefs } from './skills.js';
 import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
@@ -1491,6 +1504,9 @@ export class Engine {
       // v13-W3 ②③ 授权声明收口对账（先记账再广播，与 cost 同一趟 persistAndNotify 落盘）：
       // 声明与副作用账的落差落 warn 事件 + run.declareViolations——只照不拦，零状态判定改动。
       this.reconcileDeclarations(run);
+      // v13-B2 ③交付约定收口对账（同款只加不改）：家规 vs 实态的两条可算落差落册 + 一条聚合 warn，
+      // 收口判定/状态/watch 退出码零改动——没命中家规的单一条事件都不多。
+      this.reconcileDelivery(run);
       run.cost = this.computeRunCost(run); // R6a：先记账再广播（持久化含 cost）
       this.persistAndNotify(run);
       this.pumpQueue(run.spaceId ?? 'default'); // G3：终态腾出额度，队列放行
@@ -2965,6 +2981,80 @@ export class Engine {
   }
 
   /**
+   * v13-B2 ③收口对账（每单终态恰好一次，跑在收口 persistAndNotify 之前；W3 reconcileDeclarations 同族）：
+   * 家规声明与实态**只有两条永远可算**的落差进账——
+   *  · branch-name：家规命中建的隔离工作目录里，git 读回的实分支名 ≠ 模板渲染结果
+   *    （生产可达路：上一轮尝试把分支切走后重试续用残留目录——建它当场落的在册账比，不猜）；
+   *  · gates-without-gate：家规声明了人闸（gates 非空）而本单的图里一道人闸位都没编——
+   *    纯图账、永远可算（判据 hasHumanGate），本层最有读者的一条。
+   * 只照不拦（评审 R5）：账结构化落 run.deliveryViolations + 一条聚合 warn 事件，
+   * 收口判定/节点状态/watch 退出码零改动。拿不到就整键省略：没条目/没命中/档案不可读/
+   * 该格没读到实分支名 → 静默（宁缺毋假，「不知道」不是 0）。
+   * 刻意不核的两条（不是漏，是假账）：PR 目标分支落点与 push 目标——PaneFlow 不代跑 push/建 PR，
+   * 引擎对「推到了哪条分支」没有任何在册证据（sideEffects.pushedAt 还是自报口径的留键位），
+   * 造一条永远抓不到落差的核对项就是给家规发假绿；PR 目标分支的核验在人闸位（那是人的事）。
+   */
+  private reconcileDelivery(run: RunRecord): void {
+    const violations: RunDeliveryViolation[] = [];
+    for (const wt of Array.isArray(run.deliveryWorktrees) ? run.deliveryWorktrees : []) {
+      if (!wt.actualBranch || wt.actualBranch === wt.expectedBranch) continue;
+      const detached = wt.actualBranch === 'HEAD' ? '（游离 HEAD，detached）' : '';
+      violations.push({
+        kind: 'branch-name',
+        nodeId: wt.nodeId,
+        ruleIndex: wt.ruleIndex,
+        expected: wt.expectedBranch,
+        actual: wt.actualBranch,
+        detail:
+          `节点「${wt.nodeId}」的隔离工作目录实分支名「${wt.actualBranch}」${detached} ≠ ` +
+          `家规第 ${wt.ruleIndex + 1} 条渲染的「${wt.expectedBranch}」`,
+      });
+    }
+    try {
+      const profile = this.storeFor(run).readProfile();
+      const rules = normalizeDeliveryRules(profile.delivery);
+      // 纯图账：家规声明了人闸而图上零道——本单有没有真建过 worktree 都照样算
+      if (rules.length && !hasHumanGate(run.graph)) {
+        const rels = new Set<string>([repoRelOf(profile.rootCwd, run.cwd)]);
+        for (const n of Array.isArray(run.graph?.nodes) ? run.graph.nodes : []) {
+          if (n?.type !== 'agent') continue;
+          rels.add(repoRelOf(profile.rootCwd, n.config?.cwd ? path.resolve(run.cwd, n.config.cwd) : run.cwd));
+        }
+        const hit = new Map<number, DeliveryRule>();
+        for (const rel of rels) {
+          const m = matchDeliveryRule(rules, rel);
+          if (m) hit.set(m.index, m.rule);
+        }
+        for (const [index, rule] of hit) {
+          const gates = declaredGateNames(rule);
+          if (!gates.length) continue;
+          violations.push({
+            kind: 'gates-without-gate',
+            ruleIndex: index,
+            expected: gates.map((g) => `「${g}」`).join('、'),
+            actual: '图上 0 道人闸位',
+            detail:
+              `家规第 ${index + 1} 条声明人闸 ${gates.map((g) => `「${g}」`).join('、')}，` +
+              `而本单的图里一道人闸位都没编（manual 检查/契约门/分支守卫/澄清轮皆无）`,
+          });
+        }
+      }
+    } catch {
+      // 档案不可读 = 拿不到家规，②这条路不判（①已按在册账算完，不连带作废）
+    }
+    if (!violations.length) return;
+    run.deliveryViolations = violations;
+    const detail = violations.map((v) => v.detail).join('；');
+    this.recordEvent(
+      run,
+      'run',
+      undefined,
+      `⚠ deliveryViolation（B2 收口对账，只照不拦，单照常收口）：${detail}——明细已结构化落 run.deliveryViolations；` +
+        `本账只核「分支名」与「图上人闸」两条：PaneFlow 不代跑 push/建 PR，PR 目标分支的核验在人闸位`,
+    );
+  }
+
+  /**
    * v13-W2 本空间的班底名册（roleId 集，判据消费方是 shared.validateRoleRefs）。
    * 读法与 findGreenPredecessor 同款（跨空间即用即弃的 Store，不缓存）。
    * 档案不可读 → undefined（= 拿不到名册，一条不报，宁缺毋假）；team 缺省/空数组 →
@@ -3052,6 +3142,12 @@ export class Engine {
         (f) => injectedSkills.push(f),
       );
       if (skillBlock) parts.push(skillBlock);
+      // v13-B2 ②注入层：本节点所在仓的家规（渲染后）进约定通道，agent 每次提交/开 PR 都看得见。
+      // 卫生红线：这枚块是**运行时渲染的文本、不是实读文件**——所以不进 ctxFiles（ctxSha 只算
+      // 注入现场实读的文件集，V4 口径），它只涨 injectedBytes（实注字节合计）。
+      // 兼容带：档案没 delivery/没命中条目 → planDelivery 返回 undefined，注入块零新增（现状一字不变）。
+      const deliveryPlan = this.deliveryPlanFrom(profile, run, nodeCwd ?? run.cwd);
+      if (deliveryPlan) parts.push(buildDeliveryBlock(deliveryPlan));
       equip = {
         scope: slotted ? 'role' : 'space',
         ...(role?.id ? { role: role.id } : {}),
@@ -3154,29 +3250,141 @@ export class Engine {
   }
 
   /**
+   * v13-B2 家规取材（①机检/②注入/③对账三层共用同一份判据，绝不允许两处算出两个值）：
+   * 档案 delivery 条目 × 目标路径相对主仓根的仓名 → 渲染好的 DeliveryPlan；档案没条目 /
+   * 读不到 / 没命中条目 → undefined = **兼容带**（调用方按 B1 之前的今日语义走，零新账零新事件）。
+   * 取材姿势照抄 worktreeRootFor：现场读档案、不缓存第二本账（配置是单一事实源）。
+   */
+  private deliveryPlanFrom(
+    profile: { rootCwd?: string; delivery?: unknown },
+    run: RunRecord,
+    absPath: string,
+  ): DeliveryPlan | undefined {
+    const rules = normalizeDeliveryRules(profile.delivery);
+    if (!rules.length) return undefined;
+    return planDelivery({
+      rules,
+      repoRel: repoRelOf(profile.rootCwd, absPath),
+      // contract.branch：H1 起被解析、全仓此前零消费者的死字段，v13-B2 起是家规基点的
+      // per-run 覆盖口（契约优先于空间，需求文档「按 contract 开分支」的正身）
+      contractBranch: run.contract?.branch,
+      ctx: { issueId: run.issueId, runId: run.runId, variables: run.variables },
+    });
+  }
+
+  private deliveryPlanFor(run: RunRecord, absPath: string): DeliveryPlan | undefined {
+    try {
+      return this.deliveryPlanFrom(this.storeFor(run).readProfile(), run, absPath);
+    } catch {
+      // 档案读不到 = 拿不到家规 = 不消费（宁缺毋假，绝不猜一副家规出来拦人的单）
+      return undefined;
+    }
+  }
+
+  /**
+   * 家规基点解析（①机检层的 fail-closed 唯一判据点）：本地 `refs/heads/<base>` 优先，
+   * 再退 `refs/remotes/origin/<base>`（fetch 出来的远端跟踪 ref）；两路皆空 → 抛人话错误。
+   * 需求文档字面写「branchFrom 显式指定，缺省探 origin/HEAD」——按现实落：B1 已把
+   * branchFrom/branchName/prTarget 校成必填非空串（delivery.ts validateDelivery），
+   * 「字段缺省」在数据上不存在，故这里只处理「有声明但 ref 解析不到」，**绝不回落 HEAD**
+   * （HEAD 静默继承就是需求文档点名的污染账）。抛出的 Error 走 doAttemptNode 既有失败路
+   * （同 #106 NODE_NO_AGENT_KIND_ERROR 姿态：节点即时红 + 一句指路），不新造失败路。
+   */
+  private resolveDeliveryBase(repo: string, base: string): string {
+    const has = (ref: string): boolean => {
+      try {
+        return execFileSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', ref], { timeout: 10_000 })
+          .toString()
+          .trim() !== '';
+      } catch {
+        return false; // ref 不存在（git 退非 0）——这一路没有，试下一路
+      }
+    };
+    if (has(`refs/heads/${base}`)) return base;
+    if (has(`refs/remotes/origin/${base}`)) return `origin/${base}`;
+    throw new Error(
+      `交付约定要求基点「${base}」，但该仓本地（refs/heads/${base}）与 origin（refs/remotes/origin/${base}）` +
+        `都解析不到——拒绝按家规建隔离工作目录（绝不静默从当前 HEAD 拉出，那是污染账）。仓：${repo}。` +
+        `处理三选一：在该仓 git fetch origin；建出这个分支；或改空间档案 delivery 的 branchFrom` +
+        `（家规写分支名本身，不带 origin/ 前缀）。`,
+    );
+  }
+
+  /**
    * R3.1 同仓并发隔离：git worktree add 独立目录 + 独立分支（脏目录保留并注明）。
    * 分支名正身 `paneflow/<runId>-<nodeId>` 是 reclaim 侧「这条分支是我建的、可以 -d」的
-   * 唯一凭证（v13-B3）——将来 B2 若接交付约定让分支按家规命名，必须同步带上正身判定，
-   * 否则 reclaim 只删目录不碰分支（别人的分支不许引擎自作主张）。
+   * 唯一凭证（v13-B3）——v13-B2 起空间档案 delivery 命中时分支按**家规**命名（非正身），
+   * 于是 reclaim/清扫只删目录不碰分支：家规分支的删除与推送都是人的事，护栏不许松。
+   * 目录命名仍是 `<runId>-<nodeId>`（需求文档只改分支命名；孤儿清扫按目录名认单，动不得）。
+   * fail-closed 两处（都不许静默回落，走既有失败路即时收红）：
+   *  · branchName/branchFrom/prTarget 的占位符解析不到 → 拒建；
+   *  · 基点两路都解析不到 → 拒建（resolveDeliveryBase）。
+   * 无家规命中 = 本函数与 B1 之前逐字同行为（HEAD 拉出、正身命名、零新 git 读、零新账）。
    */
   private createWorktree(run: RunRecord, repo: string, nodeId: string): { path: string; branch: string } {
     const root = this.worktreeRootFor(run);
     const wtPath = path.join(root, `${run.runId}-${nodeId}`);
-    const branch = `paneflow/${run.runId}-${nodeId}`;
+    const canonicalBranch = `paneflow/${run.runId}-${nodeId}`;
+    const plan = this.deliveryPlanFor(run, repo);
+    let branch = canonicalBranch;
+    if (plan) {
+      if (plan.unresolved.length) throw new Error(deliveryUnresolvedMessage(plan));
+      branch = plan.branchName;
+    }
     fs.mkdirSync(path.dirname(wtPath), { recursive: true });
     // 首驾-4 重试幂等：上轮尝试的 worktree/分支可能残留（v13-B3 起回收也删分支——但仅限
     // 已合并的；脏保目录、未合并保分支都可能留残留）——
     // 目录在就直接续用，仅分支在就挂分支续用，都没有才 -b 新建；旧实现无条件 -b，重试必炸「分支已经存在」
+    let pullMode: RunDeliveryWorktree['pullMode'] = 'reuse-directory';
+    let baseRef: string | undefined;
     if (fs.existsSync(wtPath)) {
       console.log(`[engine] worktree 重建：续用残留目录 ${wtPath}`);
     } else {
       const hasBranch = execFileSync('git', ['-C', repo, 'branch', '--list', branch], { timeout: 10_000 }).toString().trim() !== '';
       const args = hasBranch ? ['worktree', 'add', wtPath, branch] : ['worktree', 'add', wtPath, '-b', branch];
       if (hasBranch) console.log(`[engine] worktree 重建：续用既有分支 ${branch}`);
-      execFileSync('git', ['-C', repo, ...args], { timeout: 30_000 });
+      pullMode = hasBranch ? 'attach-existing-branch' : 'new-branch';
+      if (!hasBranch && plan) {
+        // 只有真拉新支才需要基点：挂既有分支/续用残留目录都没有「拉」这一步，baseRef 据此不写
+        baseRef = this.resolveDeliveryBase(repo, plan.baseRef);
+        args.push(baseRef);
+      }
+      try {
+        execFileSync('git', ['-C', repo, ...args], { timeout: 30_000 });
+      } catch (err) {
+        // 家规路要把「是哪一副家规把建 worktree 挡下了」说全（裸 git 文案读不出家规）
+        if (plan) {
+          throw new Error(
+            `交付约定建 worktree 失败（家规第 ${plan.match.index + 1} 条：分支 ${branch}` +
+              `${baseRef ? ` · 基点 ${baseRef}` : ' · 未拉新支'}）：${(err as Error).message}`,
+          );
+        }
+        throw err;
+      }
     }
     const entry = { runId: run.runId, nodeId, repo, path: wtPath, branch };
     this.liveWorktrees.push(entry);
+    // ③对账层的取材现场：家规命中才记（无家规=零新账），且逐节点只留最后一轮（重试不双计，
+    // 与 injectedBytes/roleSha 同款口径）。实分支名从 git 现读——读不到就不写该键（宁缺毋假）。
+    if (plan) {
+      const actual = readWorktreeHead(wtPath);
+      const record: RunDeliveryWorktree = {
+        nodeId,
+        repo,
+        worktreePath: wtPath,
+        ruleIndex: plan.match.index,
+        matchedBy: plan.match.matchedBy,
+        pullMode,
+        expectedBranch: plan.branchName,
+        prTarget: plan.prTarget,
+        ...(baseRef ? { baseRef, baseSource: plan.baseSource } : {}),
+        ...(actual ? { actualBranch: actual } : {}),
+      };
+      const ledger = (run.deliveryWorktrees ??= []);
+      const prev = ledger.findIndex((w) => w.nodeId === nodeId);
+      if (prev === -1) ledger.push(record);
+      else ledger[prev] = record;
+    }
     return entry;
   }
 
@@ -3186,8 +3394,9 @@ export class Engine {
    * 一行 console.warn，进程日志翻过即无账。口径：
    *  · 分支删除只跑 `git branch -d`，绝不 `-D`、绝不 push——`-d` 对未合并分支的拒绝就是
    *    我们要的诚实读数（「分支未合并，保留待人工定夺」是**读数不是失败**），不许绕过；
-   *  · 只删分支名正身 = `paneflow/<runId>-<nodeId>` 的引擎自建分支（createWorktree 唯一命名
-   *    格式）——不是正身就不碰，将来 B2 接家规分支名后这条护栏挡住误删用户分支；
+   *  · 只删分支名正身 = `paneflow/<runId>-<nodeId>` 的引擎自建分支（无家规时 createWorktree
+   *    的唯一命名格式）——不是正身就不碰：v13-B2 接上家规后分支名按家规渲染（非正身），
+   *    这条护栏正是「引擎不许自作主张删用户的家规分支」的那道（事件如实写「不碰保留」）；
    *  · 脏目录保留 / remove 失败 / -d 被拒：一律只披露不拦，run/节点状态判定零改动；
    *  · 幂等：处理完的条目当场从 liveWorktrees 摘除，收口路若被重复调用则无账可再记
    *    （recordEvent 相邻同文去重是第二层兜底）。
@@ -3543,6 +3752,37 @@ export class Engine {
 
 function paneIdOf(rec: NodeRunRecord): string {
   return rec.paneId ?? '';
+}
+
+/**
+ * v13-B2 ①机检层对账取材：worktree 里 git 读回的实分支名（游离 HEAD 读作字面 "HEAD"）。
+ * 读不到（命令失败/超时/不是 worktree）返回 null——调用方据此**整键省略** actualBranch，
+ * 该格不参与落差比对（宁缺毋假：绝不拿期望值冒充实态，也绝不把「不知道」算成落差）。
+ */
+function readWorktreeHead(wtPath: string): string | null {
+  try {
+    const out = execFileSync('git', ['-C', wtPath, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 10_000 })
+      .toString()
+      .trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * v13-B2 占位符解析不到时的人话（①机检层 fail-closed 的文案，②注入层的警示行同款取材）：
+ * 严禁静默回退成 paneflow/<runId>-<nodeId> 命名——需求文档点名 dag.ts「未解析引用字面输出」
+ * 那笔假绿账的教训：家规没渲染开却说成按约定交付了。
+ */
+function deliveryUnresolvedMessage(plan: DeliveryPlan): string {
+  const detail = plan.unresolved.map((u) => `${u.field} 模板「${u.raw}」缺 {${u.names.join('},{')}}`).join('；');
+  return (
+    `交付约定占位符解析不到（${detail}）——拒绝建隔离工作目录，绝不静默回退成 paneflow/<runId>-<nodeId> ` +
+    `命名（那是把「家规没渲染开」念成「按约定建了分支」的假绿）。取材口径：{issue} 取本单 issueId、` +
+    `{run_id} 取 runId、其余取起单实填变量（如 {version}）。处理：起单时补齐这些变量/带上 issueId，` +
+    `或改空间档案 delivery 的模板。`
+  );
 }
 
 /**

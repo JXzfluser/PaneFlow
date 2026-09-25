@@ -13,7 +13,7 @@ export interface SpaceProfile {
   description?: string;
   /** 约定文档（相对主仓根，运行时注入 Agent 上下文）；M3 起被 rules 兼容吸收（迁移为无作用域条目） */
   conventionFiles?: string[];
-  /** M3 作用域规范条目（配置文件管理，无编辑器）：{repo?, pathsGlob?, file, note?} */
+  /** M3 作用域规范条目：{repo?, pathsGlob?, file, note?}；编辑位在「项目」视图（RulesEditor），机器改走 PUT /api/spaces/:id */
   rules?: SpaceRule[];
   /** 技能清单（相对主仓根）；I1 起有运行期消费：约定同款通道注入节点 prompt + Planner 技能索引 */
   skills?: string[];
@@ -33,8 +33,13 @@ export interface SpaceProfile {
   gatewayProfile?: string;
   /**
    * v13-B1 交付约定（家规）：{repo?, branchFrom, branchName, prTarget, gates?, note?} 条目数组，
-   * 按仓匹配一仓一副（repo 语义同 rules）。配置文件管理、无编辑器；只增不改不 bump schema。
-   * 声明位——引擎消费（起单/建 worktree/prompt 注入/对账）在 B2，本片刻意未接线。
+   * 按仓匹配一仓一副（repo 语义同 rules）。编辑位在「项目」视图（DeliveryEditor），机器改走 PUT；
+   * 只增不改不 bump schema。
+   * v13-B2 起三层消费全部接线（判据住 orchestrate/delivery.ts，现场住 engine.ts）：
+   * ①机检层 createWorktree 按家规拉基点/渲染分支名（基点与占位符两处 fail-closed）；
+   * ②注入层 resolveContext 把渲染后的约定块进节点上下文（只涨 injectedBytes，不进 ctxSha）；
+   * ③对账层收口核「实分支名 vs 渲染结果」「gates vs 图上人闸」两条落差，只照不拦。
+   * 兼容带：没条目或没命中条目 = 引擎不消费，行为与 B1 之前一字不变（零新账零新事件）。
    */
   delivery?: DeliveryRule[];
   /**

@@ -824,7 +824,8 @@ export async function buildHttpServer(deps: HttpDeps) {
     async (req, reply) => {
       const store = spaceStore(deps, req.params.id);
       const profile = store.readProfile();
-      // M3：rules 无编辑器（配置文件为主），但经 API 写脏形状会让作用域匹配静默失效——机检一把
+      // M3：脏形状（file 非串）会让作用域匹配静默失效——PUT 侧机检一把。
+      // 「项目」视图有 rules 编辑器（f93df09）不改变这里的必要性：机器/agent 直接走 API 照样写得脏。
       const rules = (req.body as Record<string, unknown> | undefined)?.rules;
       if (
         rules !== undefined &&

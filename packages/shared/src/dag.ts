@@ -457,6 +457,69 @@ export interface RunDeclareViolation {
 }
 
 /**
+ * v13-B2 ①机检层的实消费账：本单按空间家规（delivery）真实建出来的隔离工作目录。
+ * 只在「家规命中且建了 worktree」时才有键——没家规/没建 worktree 的单整键缺省（兼容带：
+ * 零新账），与「空数组」分家（空数组理论上不出现，有账至少一条）。
+ * 取材时点=createWorktree 现场（与 v13-W2 两枚账同款「取值时点=发生的那一刻」口径）：
+ * expectedBranch 是家规模板渲染结果，actualBranch 是 git 在该 worktree 里读回的实分支名
+ * （读不到整键省略——宁缺毋假，绝不拿期望值冒充实态）。
+ */
+export interface RunDeliveryWorktree {
+  nodeId: string;
+  /** 建它时手里的那个仓（绝对路径——同仓并发锁的键就是它，不另猜） */
+  repo: string;
+  worktreePath: string;
+  /** 命中的家规条目在档案 delivery 数组里的下标（指认「是哪一副家规」） */
+  ruleIndex: number;
+  /** 命中方式：repo=精确仓条目优先；space=repo 缺省的通配副 */
+  matchedBy: 'repo' | 'space';
+  /**
+   * 这一步真做了什么（建 worktree 现场的事实，决定 baseRef 有没有资格写）：
+   *  · new-branch：git worktree add -b <家规分支> <基点>——真从某个 ref 拉出新支；
+   *  · attach-existing-branch：分支已存在（上一轮尝试残留）→ 只挂不拉；
+   *  · reuse-directory：目录还在（上一轮尝试残留）→ 既不建分支也不拉基点。
+   */
+  pullMode: 'new-branch' | 'attach-existing-branch' | 'reuse-directory';
+  /** 实际用作基点的 ref（渲染并套上契约覆盖后的最终值）——**只有真拉新支时才有**，没拉就不写 */
+  baseRef?: string;
+  /** baseRef 的来源：contract=本单契约覆盖（契约优先于空间）；rule=空间家规 */
+  baseSource?: 'contract' | 'rule';
+  /** 家规 branchName 模板的渲染结果=期望分支名（落差比对基准） */
+  expectedBranch: string;
+  /**
+   * 家规 prTarget 模板的渲染结果（B4：交付出口自此在场级账上可见——PaneFlow 不代跑建 PR，
+   * 这一格只声明「该提到哪条分支」，落不落地由人在闸位定夺）。取值时点同 expectedBranch。
+   */
+  prTarget: string;
+  /**
+   * git 现场读回的实分支名（`rev-parse --abbrev-ref HEAD`，游离 HEAD 时读作字面 "HEAD"）；
+   * 读不到（命令失败/不是 worktree）整键省略，该格不比——宁缺毋假，绝不拿期望值冒充实态。
+   */
+  actualBranch?: string;
+}
+
+/**
+ * v13-B2 ③对账层落差：家规声明与实态的查得落差。**只照不拦**——warn 级事件 + 本结构化账
+ * （评审 R4：算账不靠 500 条环形事件推导），run/节点状态与 watch 退出码零改动（W3 同族）。
+ * 只有两条永远可算的落差进账，PR 目标分支不一致不在这里硬拦（那是人闸位的事）：
+ *  · branch-name：家规命中建的 worktree 里实分支名 ≠ 模板渲染结果；
+ *  · gates-without-gate：家规声明了人闸（gates 非空）而本单的图里一道人闸位都没编。
+ * 缺省=无落差（含「没学家规=不对账」=静默，与现状一字不变）。
+ */
+export interface RunDeliveryViolation {
+  kind: 'branch-name' | 'gates-without-gate';
+  /** 一句人话（events 聚合文案的组成部分） */
+  detail: string;
+  nodeId?: string;
+  /** 落差所依据的家规条目在档案 delivery 数组里的下标 */
+  ruleIndex?: number;
+  /** 期望值（branch-name=渲染出的分支名；gates-without-gate=声明的人闸名） */
+  expected?: string;
+  /** 实态值（gates-without-gate=图上编了几道人闸） */
+  actual?: string;
+}
+
+/**
  * v13-W1 岗位装备解析账（三轴划界的可见面）：节点组 prompt 时「这一岗到底吃了什么文档」
  * 结构化落在节点记录上——与 v13-S2 掐断账同款卫生：不靠环形 events 字符串推导。
  * 三轴分工：空间级=事实与家规（无作用域 rules/conventionFiles + skills **登记清单**）、
@@ -612,6 +675,18 @@ export interface RunRecord {
    * 缺省=无落差（或没声明/无副作用账=静默，与现状一字不变）。归因边界：单级上界（见事件文案）。
    */
   declareViolations?: RunDeclareViolation[];
+  /**
+   * v13-B2 ①机检层实消费账：本单按空间家规（delivery）真建出的隔离工作目录逐条在册
+   * （命中判据/取材口径见 RunDeliveryWorktree）。缺省=本单没有家规命中的 worktree——
+   * 没学家规的单零新账（兼容带），有账即家规真被消费过。
+   */
+  deliveryWorktrees?: RunDeliveryWorktree[];
+  /**
+   * v13-B2 ③对账层落差：家规声明 vs 实态的查得落差（两条可核对项见 RunDeliveryViolation），
+   * **只照不拦**（W3 declareViolations 同族：收口判定/节点状态/watch 退出码零改动）。
+   * 缺省=无落差（或本单没命中家规=压根不对账，与现状一字不变）。
+   */
+  deliveryViolations?: RunDeliveryViolation[];
 }
 
 /**

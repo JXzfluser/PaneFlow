@@ -32,6 +32,8 @@ export type {
   DeclareFace,
   RoleDeclaredFaces,
   RunDeclareViolation,
+  RunDeliveryWorktree,
+  RunDeliveryViolation,
   TemplateVariable,
   CheckSpec,
 } from './dag.js';
