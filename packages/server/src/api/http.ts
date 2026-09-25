@@ -71,6 +71,7 @@ interface UpdateIssueBody {
   runId?: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
+import { buildRoleProfile } from './role-profile.js';
 import { buildDispatchGraph, candidateRepos, DISPATCH_NO_AGENT_ERROR, extractAcceptance, INTAKE_TEMPLATE_PATH, intakeTemplateMarkdown, parseIssueRef, teamEquipView, type IssueView } from './dispatch.js';
 import { readSkillIndex } from '../orchestrate/skills.js';
 import fs from 'node:fs';
@@ -330,6 +331,18 @@ export async function buildHttpServer(deps: HttpDeps) {
       }
     }
     return { usage };
+  });
+
+  // v13-W4 角色能力账（本版唯一新增端点，纯读）：按 roleSha 分组的通过率/attention/token/机检覆盖，
+  // 全部从 RunRecord 既有落册字段读时算（判据在 api/role-profile.ts，先例 V1 machineCheckTally）——
+  // 零新字段零写路径零引擎改动。数据源与 GET /api/runs 同源（engine.listRuns，归档单不在账内）。
+  // 有岗无单 → 200 空账（runs:0 是正读数「这岗一次没上过」），不是 404；岗不存在才 404。
+  app.get<{ Params: { id: string } }>('/api/roles/:id/profile', async (req, reply) => {
+    const role = loadRoles(deps.dataDir).find((r) => r.id === req.params.id);
+    if (!role) {
+      return reply.code(404).send({ error: `没有 id 为「${req.params.id || '（空）'}」的角色，先 GET /api/roles 看库里的 id` });
+    }
+    return { role: { id: role.id, name: role.name }, ...buildRoleProfile(role.id, deps.engine.listRuns()) };
   });
 
   // -- model gateway ----------------------------------------------------------

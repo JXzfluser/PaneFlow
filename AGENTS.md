@@ -159,6 +159,17 @@ curl -s -X PUT $BASE/api/spaces/<id> -d '{"delivery":[{"repo":"my-repo","branchF
 #   PUT=merge 语义（漏发键保旧值，显式 [] 才清空）；脏形状 400 + 一句指路（空 branchName/未知键/gates 破烂…）
 #   v13-B1 只声明不消费：占位符 {issue}/{version} 原样存，引擎接线在 B2
 
+# 岗位能力账（v13-W4，本版唯一新增端点，纯读）：这个岗历史上干得怎么样、换装备前后差多少
+curl -s $BASE/api/roles/<roleId>/profile
+#   → {role:{id,name}, overall:{runs, passRate?:{n,passed}, nodePassRate?:{n,done,failed},
+#      attention?:{n,waitMs,gates:{approve,reject,input}}, tokens?:{n,input,output},
+#      machineCheck?:{n,items,verified,runsAllPassed}}, byRoleSha?:[{roleSha, …同形状}]}
+#   口径三则：①每个指标自带分母 n，没有支持样本就整键省略（0 是正断言「一条都没过」，
+#   「不知道」不是 0）；②分组吃 roleSha（v13-W2 换装备=换指纹），没落指纹的旧单只进总账
+#   不进组，故「总账 runs ≥ Σ各组 runs」是口径事实；③返工（rework）本版**如实不报**——
+#   没有任何按岗可归因的落册字段忠实度量「这岗的活被打回重做」，造一个 proxy 就是假账。
+#   有岗无单 → 200 且 overall.runs:0（「这岗一次没上过」是读数），岗不存在才 404
+
 # GitHub 写端点（v12-S1a 副作用归因）：体新增可选 runId——建单/覆写成功且有活跃 runId 时
 # 落进该 run 的 sideEffects 账 + 一条「副作用」事件；不带 runId 行为与今天完全一致
 curl -s $BASE/api/github/create-issue -d '{"title":"...","runId":"<活跃runId>"}'
