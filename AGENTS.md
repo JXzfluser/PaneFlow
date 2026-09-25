@@ -96,6 +96,8 @@ BASE=http://127.0.0.1:4310
 
 # 派活（体：task 必填；issueId/cwd/preview/experiment 可选；?space= 选项目）
 #   v13-E2 fail-closed：档案 defaultAgentKind 与本机实探两路全空 → 400 一句指路（不再猜 claude 起必红单）
+#   同族 #106 在节点侧：四级（统一覆盖/节点/角色/空间）皆空且实探全空 → 节点秒败带二选一指路，
+#   不再硬猜一枚 kind 走「启动超时 30 分钟」慢红路（`paneflow status` 直接看到那句人话）
 curl -s $BASE/api/dispatch -d '{"task":"...","issueId":"123"}'
 #   实验标（v13-V2 勘误后开闸，体键形状=RunExperimentMeta，与 replay 体的 suite/arm/flag 对齐）：
 #   带标单固化进 RunRecord.experiment，到终态自动落收数表一行，GET /api/runs?suite=&arm= 可命中；

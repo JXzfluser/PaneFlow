@@ -64,9 +64,11 @@ import {
   loadReadbackPages,
   makeWikiCacheRefresher,
   rankReadbackPages,
+  READBACK_K,
   readbackEnabled,
   readbackQuery,
   resolveRunRepo,
+  weightByConfidence,
 } from './readback.js';
 
 /**
@@ -158,6 +160,15 @@ export type GateResult =
 function legitGateTimeout(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0;
 }
+
+/**
+ * v13-#106 节点侧 agent 类型全链落空的人话（与 E2 在 Planner 侧的 fail-closed 同族）：
+ * 覆盖/节点/角色/空间四级都没指定且推荐链实探全空 = 这台机器没法派单。
+ */
+export const NODE_NO_AGENT_KIND_ERROR =
+  '无法起节点：本机没探到可派单的 agent CLI（统一覆盖/节点指定/角色默认/空间默认四级皆空，' +
+  '推荐链 pi/opencode/codex/claude 实探也全空）——处理二选一：装任一推荐链 agent CLI；' +
+  '或在空间档案（项目 → 编辑档案）配 defaultAgentKind。探测结论见 GET /api/health。';
 
 /**
  * v13-S4 门到期上限解析（纯函数，口径逐字照 resolveTokenCap）：
@@ -1040,7 +1051,10 @@ export class Engine {
       const traceNodes: WikiReadbackTrace['nodes'] = [];
       for (const n of graph.nodes) {
         if (!isReadbackTarget(n)) continue;
-        const ranked = rankReadbackPages(pages, readbackQuery(n));
+        // v13-V5①：注入路排序接降权（反面教材页词面得分 ×LOW_CONFIDENCE_PENALTY）——
+        // 钩子是 v11-C2 预留的，此前一直空挂（默认恒权 1）。同词面撞 k 位时低置信页
+        // 自此让位给正页；置信身份仍逐行透传进注入块（只降排序权，不隐去反面教材）
+        const ranked = rankReadbackPages(pages, readbackQuery(n), READBACK_K, weightByConfidence);
         if (!ranked.length) continue;
         const { block, used } = buildReadbackBlock(ranked);
         if (!block) continue;
@@ -2744,7 +2758,10 @@ export class Engine {
 
   /**
    * Resolve which agent CLI to launch（AE 链）：
-   * 统一覆盖(space) > 节点指定 > 角色默认 > 空间默认 > 自动推荐（已装优先 pi）> opencode 兜底。
+   * 统一覆盖(space) > 节点指定 > 角色默认 > 空间默认 > 自动推荐（已装优先 pi）。
+   * v13-#106：末端不再硬猜一枚 kind 兜底——推荐链实探全空就是「这台机器没法派单」，
+   * 猜出来的 kind 只会走「启动超时（节点缺省 30 分钟硬顶）」那条慢红路，与 E2 在 Planner
+   * 侧的 fail-closed 同族漏洞；这里改判即时人话报错（走既有节点失败路收 failed，watch 照按红）。
    */
   private async resolveAgentKind(run: RunRecord, cfg: DagNodeConfig): Promise<string> {
     const profile = this.storeFor(run).readProfile();
@@ -2755,7 +2772,9 @@ export class Engine {
     if (role?.agentKind) return role.agentKind;
     if (spaceDefault) return spaceDefault;
     const recommend = this.opts.recommendAgentKind ?? probeRecommendAgentKind;
-    return (await recommend()) ?? 'opencode';
+    const kind = await recommend();
+    if (!kind) throw new Error(NODE_NO_AGENT_KIND_ERROR);
+    return kind;
   }
 
   /**

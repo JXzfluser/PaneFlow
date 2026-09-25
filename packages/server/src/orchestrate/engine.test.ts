@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { DagGraph, RunRecord } from '@paneflow/shared';
 import { execFileSync } from 'node:child_process';
-import { Engine, gateTimeoutMessage, resolveGateTimeoutMs } from './engine.js';
+import { Engine, gateTimeoutMessage, NODE_NO_AGENT_KIND_ERROR, resolveGateTimeoutMs } from './engine.js';
 import type { ApprovalAction, EngineOptions } from './engine.js';
 import { BUILTIN_TEMPLATES } from './builtin-templates.js';
 import { computeCtxSha, computeRoleSha, contentSha } from './harness.js';
@@ -2180,6 +2180,63 @@ describe('v8-AE Agent 选择链与网关统一', () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-ae4-'));
     await runToCompletion(aeGraph('ae4', 'pi'), cwd);
     expect(ops.starts.at(-1)!.args).toEqual([]);
+  });
+});
+
+/**
+ * v13-#106：resolveAgentKind 末端从「硬猜 opencode」改成人话报错。
+ * 猜出来的 kind 在这台机器上必起不来，只会走「启动超时（节点缺省 30 分钟硬顶）」的慢红路；
+ * 现在 fail-closed 即时收 failed（与 E2 在 Planner 侧同款族），watch 照按红。
+ */
+describe('v13-#106 节点侧 agent 类型四级皆空 = 即时报错', () => {
+  function noKindGraph(name: string): DagGraph {
+    return {
+      version: 1,
+      name,
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'w', type: 'agent', label: '甲', config: { prompt: '做A' } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'w' },
+        { id: 'e2', source: 'w', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+  }
+  /** 顶层 runToCompletion 吃的是 beforeEach 里的共享 engine，本组要自带 opts 故自带跑法 */
+  async function selfRun(e2: Engine, graph: DagGraph, cwd: string): Promise<RunRecord> {
+    const run = await e2.startRun(graph, cwd);
+    await waitFor(() => e2.getRun(run.runId)!.state !== 'running');
+    return e2.getRun(run.runId)!;
+  }
+
+  it('四级皆空 + 推荐实探空：节点秒败带二选一指路、一个 agent 都没起、harness 宁缺毋假', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-106-'));
+    const e2 = new Engine(ops, store, { ...OPTS, recommendAgentKind: async () => null });
+    const t0 = Date.now();
+    const run = await selfRun(e2, noKindGraph('n106'), cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['w']!.state).toBe('failed');
+    expect(run.nodes['w']!.error).toContain(NODE_NO_AGENT_KIND_ERROR);
+    // 秒败而非等启动超时（OPTS 里 agentStartTimeoutMs=5s，慢红路会吃满它）
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    // 没有派单能力就不该碰终端
+    expect(ops.starts).toHaveLength(0);
+    // harness 是旁账：算不出就整键缺（宁缺毋假），但不许把起跑挡下来——run 记录照样在册
+    expect(run.harness).toBeUndefined();
+    expect(store.getRun(run.runId)?.state).toBe('failed');
+  });
+
+  it('四级里任何一级有值就不报错：空间默认落地即照绿（报错只留给真没法派单的机器）', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-106b-'));
+    store.writeProfile({ id: 'default', name: 'default', createdAt: '', defaultAgentKind: 'pi' });
+    const e2 = new Engine(ops, store, { ...OPTS, recommendAgentKind: async () => null });
+    const run = await selfRun(e2, noKindGraph('n106b'), cwd);
+    expect(run.state).toBe('completed');
+    expect(ops.starts.at(-1)!.kind).toBe('pi');
+    expect(run.harness?.agentKind).toBe('pi');
   });
 });
 

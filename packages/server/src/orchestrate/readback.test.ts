@@ -12,10 +12,12 @@ import { writeGithubSettings } from '../api/github-cred.js';
 import {
   buildReadbackBlock,
   loadReadbackPages,
+  LOW_CONFIDENCE_PENALTY,
   makeWikiCacheRefresher,
   rankReadbackPages,
   READBACK_BLOCK_BUDGET,
   resolveRunRepo,
+  weightByConfidence,
   type ReadbackPage,
 } from './readback.js';
 
@@ -146,7 +148,7 @@ describe('readback 纯函数', () => {
     expect(rankReadbackPages(pages, '')).toEqual([]);
   });
 
-  it('rankReadbackPages：weightOf 钩子——入参吃到 frontmatter 全量且影响排序（C2 降权接入形状），本模块不做 low 判定', () => {
+  it('rankReadbackPages：weightOf 钩子——入参吃到 frontmatter 全量且影响排序（降权接入形状），排序器自身不判 low', () => {
     const pages: ReadbackPage[] = [
       { file: 'hi.md', title: 'login 经验', text: 'login login 更多命中', frontmatter: { confidence: 'high' } },
       { file: 'low.md', title: 'login 教训', text: 'login 相关正文', frontmatter: { confidence: 'low' } },
@@ -162,6 +164,38 @@ describe('readback 纯函数', () => {
     expect(seen.length).toBe(pages.length);
     expect(seen.every((fm) => 'confidence' in fm)).toBe(true);
     expect(weighted[0]!.file).toBe('low.md');
+  });
+
+  it('weightByConfidence（V5① 降权单源）：只罚 low，high/medium/无字段一律恒权 1', () => {
+    expect(LOW_CONFIDENCE_PENALTY).toBe(0.4);
+    expect(weightByConfidence({ confidence: 'low' })).toBe(LOW_CONFIDENCE_PENALTY);
+    // 大小写/空白宽容：手写 frontmatter 的 ' Low ' 也是反面教材，不该因笔误漏罚
+    expect(weightByConfidence({ confidence: 'LOW' })).toBe(LOW_CONFIDENCE_PENALTY);
+    expect(weightByConfidence({ confidence: ' Low ' })).toBe(LOW_CONFIDENCE_PENALTY);
+    // 有值但非 low = 恒权；旧页整缺 confidence 也是恒权（「不知道」≠「不可信」）
+    const notLow: Record<string, string>[] = [
+      { confidence: 'high' },
+      { confidence: 'medium' },
+      { confidence: 'medium-high' },
+      {},
+      { type: 'summary' },
+    ];
+    for (const fm of notLow) expect(weightByConfidence(fm)).toBe(1);
+  });
+
+  it('rankReadbackPages + weightByConfidence：词面最强的 low 页被降权挤出 top-3（k 截断真吃权重）', () => {
+    const hit = 'login login';
+    const pages: ReadbackPage[] = [
+      { file: 'low.md', title: 'login outbox 重试逻辑', text: 'login outbox 重试逻辑 login outbox 重试逻辑', frontmatter: { confidence: 'low' } },
+      { file: 'a.md', title: 'login outbox 笔记', text: hit, frontmatter: { confidence: 'high' } },
+      { file: 'b.md', title: 'login outbox 笔记', text: hit, frontmatter: {} },
+      { file: 'c.md', title: 'login outbox 笔记', text: hit, frontmatter: { confidence: 'medium' } },
+    ];
+    const q = '实现 login outbox 重试逻辑';
+    // 对照：不降权时 low.md 命中最多、稳居第一并占掉一个名额
+    expect(rankReadbackPages(pages, q, 3).map((p) => p.file)).toEqual(['low.md', 'a.md', 'b.md']);
+    // 降权后 low.md 掉出名额，三张正页全进
+    expect(rankReadbackPages(pages, q, 3, weightByConfidence).map((p) => p.file)).toEqual(['a.md', 'b.md', 'c.md']);
   });
 
   it('buildReadbackBlock：confidence 透传、剥 {{}}、总预算封顶', () => {
@@ -343,5 +377,43 @@ describe('Engine v11-C3a wiki 读回注入', () => {
     expect(trace.nodes.map((n) => n.nodeId).sort()).toEqual(['impl', 'plan']);
     expect(trace.nodes.find((n) => n.nodeId === 'plan')!.pages[0]!.file).toBe('summaries/schema-mig.md');
     expect(trace.nodes.find((n) => n.nodeId === 'impl')!.pages[0]!.file).toBe('summaries/login-fix.md');
+  });
+
+  it('V5① 降权在注入现场生效：同一语料只改 confidence，low 页从榜首让位给正页', async () => {
+    writeGithubSettings(dataDir, { defaultRepo: REPO });
+    const hit = (times: number) => 'login outbox 重试逻辑 实现 参见 '.repeat(times).trim();
+    // 种子刻意让 low 页词面命中更多（3 遍 vs 2 遍）：不降权时它必占榜首
+    const seed = (lowConfidence: boolean) => {
+      seedPage(dataDir, 'summaries/lesson-low.md', {
+        title: '登录 outbox 重试逻辑',
+        ...(lowConfidence ? { confidence: 'low' } : {}),
+        body: hit(3),
+      });
+      seedPage(dataDir, 'summaries/lesson-good.md', {
+        title: '登录 outbox 重试实践',
+        confidence: 'high',
+        body: hit(2),
+      });
+    };
+    const firstOf = async (lowConfidence: boolean): Promise<string[]> => {
+      seed(lowConfidence);
+      const engine = makeEngine({ wikiCacheRefresh: async () => undefined });
+      const run = await runToCompletion(engine, readbackGraph());
+      expect(run.state).toBe('completed');
+      return run.wikiReadback!.nodes.find((n) => n.nodeId === 'impl')!.pages.map((p) => p.file);
+    };
+
+    // 降权前（页面没打 confidence）：词面强者居首
+    expect(await firstOf(false)).toEqual(['summaries/lesson-low.md', 'summaries/lesson-good.md']);
+    // 只把 low 标记加上——两页正文一字未动，次序即翻转：降权吃进了真实注入路
+    const marked = await firstOf(true);
+    expect(marked).toEqual(['summaries/lesson-good.md', 'summaries/lesson-low.md']);
+    // 只降排序权、不隐去反面教材：low 页仍在块内且置信身份照旧透传
+    // （ops 跨两轮累计，取最后一次实发的 impl prompt）
+    const implPrompt = ops.prompts.filter((p) => p.text.includes('实现 login outbox')).at(-1)!;
+    expect(implPrompt.text).toContain('登录 outbox 重试逻辑');
+    expect(implPrompt.text).toContain('confidence=low');
+    // 实发次序与留痕同源：good 在前、low 在后
+    expect(implPrompt.text.indexOf('登录 outbox 重试实践')).toBeLessThan(implPrompt.text.indexOf('登录 outbox 重试逻辑'));
   });
 });

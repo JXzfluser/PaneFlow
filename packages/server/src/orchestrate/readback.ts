@@ -148,8 +148,23 @@ export function readbackQuery(n: DagNode): string {
 }
 
 /**
+ * v13-V5① 反面教材页降权单源：`confidence: low` 页（v11-C1 起带失败 run 显式沉淀的教训页）
+ * 词面得分 ×此值。只罚 low——high/medium/无 confidence 一律恒权 1：旧页没这字段是**兼容读**
+ * 不是低置信证据（wiki.ts WikiPage.confidence 同款口径），拿「不知道」当「不可信」会把
+ * 存量沉淀整片压出注入路。
+ */
+export const LOW_CONFIDENCE_PENALTY = 0.4;
+
+/** confidence → 排序权重（判据只看 frontmatter 原文，读不到即恒权） */
+export function weightByConfidence(frontmatter: Record<string, string>): number {
+  const c = (frontmatter.confidence ?? '').trim().toLowerCase();
+  return c === 'low' ? LOW_CONFIDENCE_PENALTY : 1;
+}
+
+/**
  * 词面相关度 top-k。weightOf 是 C2（反面教材页降权）预留钩子：入参含页 frontmatter
- * 全量，默认恒权 1——本模块不实现任何 low/confidence 判定，只透传。
+ * 全量，默认恒权 1——排序器自身不判定 low（判定单源在本文件的 weightByConfidence，
+ * 由调用方显式接入，注入路与其它调用方各自决定吃不吃这权）。
  */
 export function rankReadbackPages(
   pages: ReadbackPage[],
