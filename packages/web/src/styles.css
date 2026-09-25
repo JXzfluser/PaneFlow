@@ -841,7 +841,23 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .settings-card .bot-edit > input, .settings-card .bot-edit > textarea, .settings-card .bot-edit > select { width: 100%; margin-top: 8px; }
 .settings-card .bot-edit textarea { min-height: 72px; }
 .settings-card .bot-edit > label { display: block; margin-top: 8px; }
-.bot-card-foot { display: flex; justify-content: flex-end; margin-top: 6px; }
+.bot-card-foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.bot-card-foot button { width: auto; margin: 0; padding: 4px 10px; font-size: 12px; }
+/* v13-W1 装备槽勾选器（角色卡背）：登记清单能勾、来源看得见，不再逼人手打路径 */
+.equip-slot { margin-top: 8px; }
+.equip-slot > label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.settings-listbox label.settings-check { display: flex; width: 100%; margin: 0 0 4px; }
+.settings-listbox label.settings-check code { font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.equip-src { margin-left: auto; padding-left: 8px; font-size: 11px; color: var(--text-dim); opacity: .8; flex: 0 0 auto; }
+.equip-unknown { margin: 6px 0 0; font-size: 11px; color: var(--warn, #b8860b); display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.equip-manual { margin-top: 6px; }
+.equip-manual span { display: flex; gap: 6px; margin-top: 6px; }
+.equip-manual input { flex: 1 1 auto; min-width: 0; }
+.equip-manual button, .equip-unknown button { width: auto; margin: 0; padding: 3px 10px; font-size: 12px; }
+.declares { margin-top: 6px; }
+.declares .settings-check { color: var(--text-dim); }
+/* 未保存标：卡背编辑只有本地态、刷新即蒸发的那段历史，自此界面上摊开写 */
+.bot-meta.dirty { color: var(--warn, #b8860b); font-weight: 600; }
 .bot-ghosts { font-size: 12px; color: var(--warn, #b8860b); margin: 0 0 8px; display: flex; gap: 5px; align-items: baseline; }
 
 /* icon-only buttons */

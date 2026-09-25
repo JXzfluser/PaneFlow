@@ -753,14 +753,135 @@ interface Role {
   skills?: string[];
   /** v13-W1 岗位装备·岗位文档槽（评审清单类家规，与项目规则按路径去重） */
   rules?: string[];
+  /** v13-W3 授权声明三面（声明非强制：只入 prompt + 收口对账，拦不了真动作） */
+  declares?: Record<string, boolean>;
 }
 
-/** 每行一项的文本框 → 路径数组（空行/首尾空白丢掉） */
-const parseLineList = (text: string): string[] =>
-  text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
+/** v13-W3 授权面：与 shared 的 DECLARE_FACES 同集，界面上只这三格 */
+const DECLARE_FACES: { key: string; label: string; hint: string }[] = [
+  { key: 'gitPush', label: 'git push', hint: '向远程仓库推提交' },
+  { key: 'prOpen', label: '开 PR', hint: '在远端创建 Pull Request' },
+  { key: 'issueWrite', label: '写 Issue', hint: '建单或回写 Issue 正文' },
+];
+
+/**
+ * v13-W1 岗位装备·可选项：从各项目的登记清单汇出来（技能=profile.skills，
+ * 岗位文档=profile.rules[].file），界面上只让人**勾选**、不让人打字编路径。
+ * 角色是全局库、项目是多个，故一条路径带「哪些项目登记了它」——
+ * 没登记的那个项目注入时会跳过不注（落 equip.unknownSkills 只披露），界面把这话明说。
+ */
+interface EquipOption {
+  path: string;
+  spaces: string[];
+  note?: string;
+}
+
+interface SpaceEquipSource {
+  id: string;
+  name: string;
+  skills?: string[];
+  rules?: ({ file?: string; note?: string } | string)[];
+}
+
+function buildEquipCatalog(spaces: SpaceEquipSource[]): { skills: EquipOption[]; docs: EquipOption[] } {
+  const skillMap = new Map<string, EquipOption>();
+  const docMap = new Map<string, EquipOption>();
+  for (const sp of spaces) {
+    for (const p of sp.skills ?? []) {
+      if (typeof p !== 'string' || !p) continue;
+      const cur = skillMap.get(p) ?? { path: p, spaces: [] };
+      cur.spaces.push(sp.name);
+      skillMap.set(p, cur);
+    }
+    for (const item of sp.rules ?? []) {
+      const rule = typeof item === 'string' ? { file: item } : item;
+      const p = typeof rule.file === 'string' ? rule.file : '';
+      if (!p) continue;
+      const cur = docMap.get(p) ?? { path: p, spaces: [] };
+      cur.spaces.push(sp.name);
+      if (rule.note && !cur.note) cur.note = rule.note;
+      docMap.set(p, cur);
+    }
+  }
+  const sort = (a: EquipOption, b: EquipOption) => a.path.localeCompare(b.path);
+  return {
+    skills: [...skillMap.values()].sort(sort),
+    docs: [...docMap.values()].sort(sort),
+  };
+}
+
+/** 装备槽勾选器：登记清单里有的画成勾项，清单外（手加或历史遗留）另列一行如实标出 */
+function EquipPicker(props: {
+  label: string;
+  hint: string;
+  options: EquipOption[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const { label, hint, options, selected, onChange } = props;
+  const [manual, setManual] = useState('');
+  const [open, setOpen] = useState(false);
+  const toggle = (path: string, on: boolean) =>
+    onChange(on ? [...selected, path] : selected.filter((x) => x !== path));
+  // 清单外的存量项不藏：它今天确实会被「跳过不注」，画出来才是诚实账
+  const unknown = selected.filter((p) => !options.some((o) => o.path === p));
+  return (
+    <div className="equip-slot">
+      <label>{label}</label>
+      <div className="settings-listbox">
+        {options.map((o) => (
+          <label key={o.path} className="settings-check" title={o.note ?? o.path}>
+            <input
+              type="checkbox"
+              checked={selected.includes(o.path)}
+              onChange={(e) => toggle(o.path, e.target.checked)}
+            />
+            <code>{o.path}</code>
+            <span className="equip-src">{o.spaces.join('、')}</span>
+          </label>
+        ))}
+        {options.length === 0 && <span className="settings-hint">各项目还没登记可选文档</span>}
+      </div>
+      {unknown.length > 0 && (
+        <p className="equip-unknown">
+          <Icon name="alert" size={12} /> 清单外（该项目注入时跳过不注）：
+          {unknown.map((p) => ` ${p}`).join('；')}
+          <button
+            className="ghost tiny"
+            onClick={() => onChange(selected.filter((x) => options.some((o) => o.path === x)))}
+          >
+            清掉
+          </button>
+        </p>
+      )}
+      <div className={open ? 'equip-manual open' : 'equip-manual'}>
+        <button className="ghost tiny" onClick={() => setOpen((v) => !v)}>
+          {open ? '收起' : '登记清单里没有这篇？手填一条'}
+        </button>
+        {open && (
+          <span>
+            <input
+              value={manual}
+              onChange={(e) => setManual(e.target.value)}
+              placeholder="相对项目根的文档路径，如 docs/skills/x.md"
+            />
+            <button
+              className="ghost tiny"
+              disabled={!manual.trim() || selected.includes(manual.trim())}
+              onClick={() => {
+                onChange([...selected, manual.trim()]);
+                setManual('');
+              }}
+            >
+              加入
+            </button>
+          </span>
+        )}
+      </div>
+      <p className="settings-hint">{hint}</p>
+    </div>
+  );
+}
 
 /** v10-U1 首发阵容链：标准五连打头，按规划→实现→评审→验收→沉淀排 */
 const BOT_ORDER = ['std-planner', 'std-implementer', 'std-reviewer', 'std-verifier', 'std-curator'];
@@ -775,27 +896,49 @@ type RoleUsage = { spaceId: string; name: string; alias?: string }[];
 
 function RolesEditor() {
   const log = useStore((s) => s.log);
+  /** 草稿：卡背上正在编辑的样子 */
   const [roles, setRoles] = useState<Role[]>([]);
+  /** 在册：最后一次 PUT /api/roles 成功后服务端认下的样子——两者不等即「未保存」 */
+  const [committed, setCommitted] = useState<Role[]>([]);
+  const [catalog, setCatalog] = useState<{ skills: EquipOption[]; docs: EquipOption[] }>({ skills: [], docs: [] });
   const [usage, setUsage] = useState<Record<string, RoleUsage>>({});
   const [agentKinds, setAgentKinds] = useState<string[]>([]);
   useEffect(() => {
     void fetchJson<{ roles?: Role[] }>('GET', '/api/roles')
-      .then((d) => setRoles(d.roles ?? []))
+      .then((d) => {
+        const rs = d.roles ?? [];
+        setRoles(rs);
+        setCommitted(rs);
+      })
       .catch((e: Error) => log('error', `读取角色库失败：${e.message}`));
     // 部署数只是角标信息：拉不到不报错，阵容照画
     void fetchJson<{ usage?: Record<string, RoleUsage> }>('GET', '/api/roles/usage')
       .then((d) => setUsage(d.usage ?? {}))
       .catch(() => undefined);
+    // 装备勾选清单=各项目登记清单的并集（数据面走 GET /api/spaces，界面上不新造判据）
+    void fetchJson<{ spaces?: SpaceEquipSource[] }>('GET', '/api/spaces')
+      .then((d) => setCatalog(buildEquipCatalog(d.spaces ?? [])))
+      .catch(() => undefined); // 拉不到清单=只剩手填路，不拦角色编辑
     void api.health().then((h) => setAgentKinds(h.agentKinds));
   }, []);
-  const save = (next: Role[]) => {
+  /** 整库 PUT（/api/roles 是全量替换语义）；成功才把草稿升格为在册，失败留在未保存态 */
+  const save = (next: Role[], note: string) => {
     setRoles(next);
     void fetchJson<unknown>('PUT', '/api/roles', { roles: next })
-      .then(() => log('info', '角色库已保存'))
-      .catch((e: Error) => log('error', e.message));
+      .then(() => {
+        setCommitted(next);
+        log('info', note);
+      })
+      .catch((e: Error) => log('error', `保存失败，改动还在草稿里：${e.message}`));
   };
+  const saveCard = (role: Role) =>
+    save(roles, `角色「${role.name}」已保存（装备槽改了要重跑单才生效——roleSha 在注入现场取值）`);
+  const discardCard = (id: string) =>
+    setRoles((rs) => rs.map((r) => (r.id === id ? (committed.find((c) => c.id === id) ?? r) : r)));
   const patch = (id: string, part: Partial<Role>) =>
     setRoles((rs) => rs.map((r) => (r.id === id ? { ...r, ...part } : r)));
+  const isDirty = (role: Role) =>
+    JSON.stringify(committed.find((c) => c.id === role.id) ?? null) !== JSON.stringify(role);
   // 稳定排序：标准五连按链序打头，其余按入库顺序
   const sorted = [...roles].sort((a, b) => {
     const ia = BOT_ORDER.indexOf(a.id);
@@ -813,6 +956,8 @@ function RolesEditor() {
       <div className="role-roster">
         {sorted.map((r) => {
           const on = usage[r.id] ?? [];
+          const dirty = isDirty(r);
+          const equipped = r.skills !== undefined || r.rules !== undefined;
           const persona = (r.prePrompt ?? '')
             .split('\n')
             .map((l) => l.trim())
@@ -832,6 +977,17 @@ function RolesEditor() {
                       ? '未配装备 · 吃项目全量'
                       : `装备 · 技能 ${r.skills?.length ?? 0} · 岗位文档 ${r.rules?.length ?? 0}`}
                   </span>
+                  {/* 改了没落盘必须看得见：以前卡背编辑只改本地状态，刷新即蒸发（无人发现的静默丢改动） */}
+                  {r.declares !== undefined && (
+                    <span className="bot-meta" title="授权声明只入指令与收口对账，不拦真动作">
+                      授权 · 已勾 {Object.values(r.declares).filter(Boolean).length}/{DECLARE_FACES.length} 面
+                    </span>
+                  )}
+                  {dirty && (
+                    <span className="bot-meta dirty" title="还没保存到服务端">
+                      ● 未保存
+                    </span>
+                  )}
                 </div>
                 <span
                   className={on.length ? `bot-duty${BOT_ORDER.includes(r.id) ? ' starter' : ''}` : 'bot-duty idle'}
@@ -881,24 +1037,88 @@ function RolesEditor() {
                   }}
                   placeholder="ANTHROPIC_BASE_URL=http://127.0.0.1:4000"
                 />
-                {/* v13-W1 岗位装备槽：整个区块空着=没配过 → 该岗照旧吃项目全量；
-                    配过又清空（[]）=明确要它一口文档都不吃，两者语义不同 */}
-                <label>岗位装备·技能（每行一项，路径需在该项目的 skills 登记清单内；全空=未配槽，吃项目全量）</label>
-                <textarea
-                  value={(r.skills ?? []).join('\n')}
-                  onChange={(e) => patch(r.id, { skills: parseLineList(e.target.value) })}
-                  placeholder={'docs/skills/branch-flow.md\ndocs/skills/test-first.md'}
-                />
-                <label>岗位装备·岗位文档（每行一项，评审清单类家规；与项目规则同路径只注一份）</label>
-                <textarea
-                  value={(r.rules ?? []).join('\n')}
-                  onChange={(e) => patch(r.id, { rules: parseLineList(e.target.value) })}
-                  placeholder={'docs/review/checklist.md'}
-                />
+                {/* v13-W1 岗位装备槽的三态：没配（吃项目全量）/ 配了吃勾选 / 配了且清空（一口都不吃）。
+                    旧界面把「模式」藏进「两个文本框空不空」，于是永远解释不清 [] 与未配的差别——
+                    现在模式是一等控件，勾选清单来自各项目登记（不再要求手打路径）。 */}
+                <label>岗位装备</label>
+                <select
+                  value={equipped ? 'own' : 'space'}
+                  onChange={(e) =>
+                    patch(
+                      r.id,
+                      e.target.value === 'own'
+                        ? { skills: r.skills ?? [], rules: r.rules ?? [] }
+                        : { skills: undefined, rules: undefined },
+                    )
+                  }
+                  title="没配装备的岗吃该项目登记的全部文档；配了槽就只吃勾中的这几篇"
+                >
+                  <option value="space">吃项目全量（默认，不配槽）</option>
+                  <option value="own">自带装备（按项目登记清单勾选）</option>
+                </select>
+                {equipped && (
+                  <>
+                    <EquipPicker
+                      label="技能（来自各项目的 skills 登记）"
+                      hint="显式清空=这个岗一口技能文档都不吃（与「吃项目全量」是两回事）"
+                      options={catalog.skills}
+                      selected={r.skills ?? []}
+                      onChange={(next) => patch(r.id, { skills: next })}
+                    />
+                    <EquipPicker
+                      label="岗位文档（来自各项目的规则登记）"
+                      hint="与项目规则同路径只注一份；评审清单类家规挂这里"
+                      options={catalog.docs}
+                      selected={r.rules ?? []}
+                      onChange={(next) => patch(r.id, { rules: next })}
+                    />
+                  </>
+                )}
+                {/* v13-W3 授权声明：PaneFlow 不造沙箱，声明只入 prompt + 收口对账（落差只照不拦）。
+                    三态同装备槽：不声明=今日静默；声明即逐面给布尔（false 才有对账资格）。 */}
+                <label>岗位授权声明（非强制：只写进指令与收口对账，拦不了真动作）</label>
+                <select
+                  value={r.declares === undefined ? 'off' : 'on'}
+                  onChange={(e) =>
+                    patch(
+                      r.id,
+                      e.target.value === 'on'
+                        ? { declares: r.declares ?? { gitPush: false, prOpen: false, issueWrite: false } }
+                        : { declares: undefined },
+                    )
+                  }
+                  title="真正的能力锁配在你自己的 agent CLI 侧；这里声明的是「本岗该不该干这三件事」，落差会进账"
+                >
+                  <option value="off">不声明（默认，与今天一致）</option>
+                  <option value="on">声明本岗授权面</option>
+                </select>
+                {r.declares !== undefined && (
+                  <div className="settings-listbox declares">
+                    {DECLARE_FACES.map((f) => (
+                      <label key={f.key} className="settings-check" title={f.hint}>
+                        <input
+                          type="checkbox"
+                          checked={r.declares?.[f.key] === true}
+                          onChange={(e) =>
+                            patch(r.id, { declares: { ...(r.declares ?? {}), [f.key]: e.target.checked } })
+                          }
+                        />
+                        {f.label}
+                        <span className="equip-src">{f.hint}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
                 <div className="bot-card-foot">
+                  <button className="primary" disabled={!dirty} onClick={() => saveCard(r)}>
+                    <Icon name="save" size={12} /> 保存这张卡
+                  </button>
+                  <button className="ghost" disabled={!dirty} onClick={() => discardCard(r.id)}>
+                    放弃修改
+                  </button>
                   <button
                     className="ghost"
-                    onClick={() => save(roles.filter((x) => x.id !== r.id))}
+                    onClick={() => save(roles.filter((x) => x.id !== r.id), `角色「${r.name}」已删除`)}
                     title="从角色库删除（各项目班底里的引用会悬空，界面会标出）"
                   >
                     <Icon name="trash" size={12} /> 删除角色
@@ -917,7 +1137,10 @@ function RolesEditor() {
       )}
       <button
         className="ghost"
-        onClick={() => save([...roles, { id: `role-${Date.now().toString(36)}`, name: `角色 ${roles.length + 1}` }])}
+        onClick={() => {
+          const next = [...roles, { id: `role-${Date.now().toString(36)}`, name: `角色 ${roles.length + 1}` }];
+          save(next, '已新增角色（名字与人设在卡背上补，补完记得「保存这张卡」）');
+        }}
       >
         + 新增角色
       </button>
