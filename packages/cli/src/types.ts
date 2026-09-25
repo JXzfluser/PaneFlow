@@ -72,6 +72,17 @@ export interface NodeRunView {
     agentStatus: string;
     agentName: string;
   }[];
+  /**
+   * v13-W1 岗位装备账（server 在注入现场算好落册，这里零判据只渲染）：
+   * scope=space 即「这个岗其实在吃空间全量」——警告行的唯一依据；整缺=注入现场没走到，不猜。
+   */
+  equip?: {
+    scope: string;
+    role?: string;
+    skills?: string[];
+    rules?: string[];
+    unknownSkills?: string[];
+  };
 }
 
 /** POST /api/dispatch 的响应（nodes 为 v11-A1 新增节点清单摘要） */

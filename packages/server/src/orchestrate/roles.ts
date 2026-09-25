@@ -11,6 +11,26 @@ export interface Role {
   prePrompt?: string;
   /** 角色级环境变量（如模型网关地址；节点 env 覆盖此处） */
   env?: Record<string, string>;
+  /**
+   * v13-W1 岗位装备·技能槽。**引用**语义：只列本空间 skills 登记清单里的路径
+   * （清单外的引用跳过不注、落进节点 equip.unknownSkills 只披露）。
+   * 键缺省=未配槽 → 沿用「空间全量注入」的现状一字不变（兼容带，不强迁）；
+   * 显式 []=配过槽且该岗不吃技能文档（评审/验收岗常见的正是这个）。
+   */
+  skills?: string[];
+  /**
+   * v13-W1 岗位装备·岗位文档槽（评审清单类家规）。注入 = matchRules 命中的空间规则
+   * ∪ 本槽（按 file 去重，空间侧优先）。路径同 rules.file，相对主仓根，含 `..` 的一律不取。
+   */
+  rules?: string[];
+}
+
+/**
+ * v13-W1 兼容带判据：这一格配过没有——**只看键在不在**（[] 是「配了且清空」，不是没配）。
+ * 未配装备的角色/未绑角色的节点照旧吃空间全量，status 因此要显出来「正在吃全量」。
+ */
+export function roleEquipConfigured(role: Role | undefined): boolean {
+  return !!role && (role.skills !== undefined || role.rules !== undefined);
 }
 
 const PER_FILE_CAP = 100 * 1024;
@@ -84,11 +104,14 @@ export function ensureStandardRoles(dataDir: string): Role[] {
  * space: entries resolved relative to profile.rootCwd, capped per-file and in
  * total. M3: entries are scoped rules (file + optional note) or plain paths
  * (legacy). Returns '' when nothing configured or nothing matched.
+ * v13-W1：`onInject` 把「哪几篇真的进了 prompt」报回给调用方落装备账——
+ * 读失败与超总预算被跳过的都不报（报了就是假账）。
  */
 export function buildConventionBlock(
   rootCwd: string | undefined,
   entries: (string | SpaceRule)[] | undefined,
   readFile: (p: string) => string | null,
+  onInject?: (file: string) => void,
 ): string {
   if (!rootCwd || !entries?.length) return '';
   const parts: string[] = [];
@@ -105,6 +128,7 @@ export function buildConventionBlock(
       break;
     }
     total += clipped.length;
+    onInject?.(rel);
     const note = rule.note ? ` note="${rule.note}"` : '';
     parts.push(`<约定文档 name="${rel}"${note}>\n${clipped}\n</约定文档>`);
   }

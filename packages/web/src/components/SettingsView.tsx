@@ -722,7 +722,18 @@ interface Role {
   agentKind?: string;
   prePrompt?: string;
   env?: Record<string, string>;
+  /** v13-W1 岗位装备·技能槽（引用项目 skills 登记清单；键缺省=未配槽，吃项目全量） */
+  skills?: string[];
+  /** v13-W1 岗位装备·岗位文档槽（评审清单类家规，与项目规则按路径去重） */
+  rules?: string[];
 }
+
+/** 每行一项的文本框 → 路径数组（空行/首尾空白丢掉） */
+const parseLineList = (text: string): string[] =>
+  text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
 
 /** v10-U1 首发阵容链：标准五连打头，按规划→实现→评审→验收→沉淀排 */
 const BOT_ORDER = ['std-planner', 'std-implementer', 'std-reviewer', 'std-verifier', 'std-curator'];
@@ -788,6 +799,12 @@ function RolesEditor() {
                 <div className="bot-id">
                   <strong>{r.name}</strong>
                   <span className="bot-meta">{r.agentKind ? `⚡ ${r.agentKind}` : '⚡ 默认 Agent'}</span>
+                  {/* v13-W1 三轴划界的可见面：没配装备槽的岗其实在吃项目全量，这事实摊开在卡面上 */}
+                  <span className="bot-meta">
+                    {r.skills === undefined && r.rules === undefined
+                      ? '未配装备 · 吃项目全量'
+                      : `装备 · 技能 ${r.skills?.length ?? 0} · 岗位文档 ${r.rules?.length ?? 0}`}
+                  </span>
                 </div>
                 <span
                   className={on.length ? `bot-duty${BOT_ORDER.includes(r.id) ? ' starter' : ''}` : 'bot-duty idle'}
@@ -836,6 +853,20 @@ function RolesEditor() {
                     patch(r.id, { env: Object.keys(env).length ? env : undefined });
                   }}
                   placeholder="ANTHROPIC_BASE_URL=http://127.0.0.1:4000"
+                />
+                {/* v13-W1 岗位装备槽：整个区块空着=没配过 → 该岗照旧吃项目全量；
+                    配过又清空（[]）=明确要它一口文档都不吃，两者语义不同 */}
+                <label>岗位装备·技能（每行一项，路径需在该项目的 skills 登记清单内；全空=未配槽，吃项目全量）</label>
+                <textarea
+                  value={(r.skills ?? []).join('\n')}
+                  onChange={(e) => patch(r.id, { skills: parseLineList(e.target.value) })}
+                  placeholder={'docs/skills/branch-flow.md\ndocs/skills/test-first.md'}
+                />
+                <label>岗位装备·岗位文档（每行一项，评审清单类家规；与项目规则同路径只注一份）</label>
+                <textarea
+                  value={(r.rules ?? []).join('\n')}
+                  onChange={(e) => patch(r.id, { rules: parseLineList(e.target.value) })}
+                  placeholder={'docs/review/checklist.md'}
                 />
                 <div className="bot-card-foot">
                   <button

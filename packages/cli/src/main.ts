@@ -259,6 +259,22 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
     // 只呈 server 字段不自造判据——夜跑后看清「哪一轮、为什么、掐时它正干什么」
     const ab = (n.abandonments ?? []).at(-1);
     if (ab) io.out(`    ⚡ 第 ${ab.attempt} 轮尝试已掐断（${ab.trigger} · 掐时状态 ${ab.agentStatus}）`);
+    // v13-W1 装备行：这一岗实发吃进 prompt 的文档数（计数与 scope 都是 server 注入现场
+    // 落册的账，这里零判据）；scope=space 且绑了角色=「未配装备正吃空间全量」，按红黄警示显出来
+    const eq = n.equip;
+    if (eq) {
+      const bits = `技能 ${eq.skills?.length ?? 0} · 岗位文档 ${eq.rules?.length ?? 0}`;
+      io.out(
+        eq.scope === 'space' && eq.role
+          ? `    ${paint(io, '33', `⚠ 装备: ${bits} —— 该角色未配装备，正吃空间全量`)}`
+          : `    装备: ${bits}${eq.role ? ` · 岗 ${eq.role}` : ''}`,
+      );
+      if (eq.unknownSkills?.length) {
+        io.out(
+          `    ${paint(io, '33', `⚠ 装备引用不在登记清单，已跳过：${eq.unknownSkills.join('、')}`)}`,
+        );
+      }
+    }
   }
   if (run.cost?.totalMs !== undefined) io.out(`  用时 ${humanMs(run.cost.totalMs)}${run.prUrl ? ` · ${run.prUrl}` : ''}`);
   return EXIT_OK;

@@ -21,15 +21,16 @@ import type {
   ReadbackOutcome,
   RunSideEffects,
   NodeAbandonmentTrigger,
+  NodeEquip,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
-import { buildConventionBlock, loadRoles, type Role } from './roles.js';
+import { buildConventionBlock, loadRoles, roleEquipConfigured, type Role } from './roles.js';
 import { effectiveRules, matchRules } from './rules.js';
-import { buildSkillBlock } from './skills.js';
+import { buildSkillBlock, resolveSkillRefs } from './skills.js';
 import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
 import {
@@ -2019,10 +2020,14 @@ export class Engine {
       );
       const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
       const artifactRel = cfg.artifactFile ?? defaultArtifactFile(nodeId);
-      const { block, agentKind, ctxFiles } = this.resolveContext(run, cfg, nodeCwd);
+      const { block, agentKind, ctxFiles, equip } = this.resolveContext(run, cfg, nodeCwd);
+      // v13-W1 岗位装备账：解析过就结构化落在节点记录上（重试=后一次覆盖前一次，
+      // 记的是这一轮实发取材）；status/前端只读这一格，不从环形 events 反推
+      if (equip) rec.equip = equip;
       // v13-V4：ctxSha 就地在注入发生的这一刻取值落册（实读集=resolveContext 返回值，
       // 不在起单时取——那是本片命门，取错点=假账）
       this.noteContextInjection(run, ctxFiles);
+      this.persistAndNotify(run);
       const prompt = this.withArtifactConvention(
         `${block}${rendered}`,
         path.join(nodeCwd, artifactRel),
@@ -2816,16 +2821,25 @@ export class Engine {
     return loadRoles(this.store.root).find((r) => r.id === roleId);
   }
 
-  /** Convention block from the space profile + role prePrompt, prepended to prompts. M3: 规则按节点工作目录做作用域匹配。 */
+  /**
+   * 组装节点 prompt 前置的上下文块。三轴划界（v13-W1）各守本分：
+   *  · 空间轴=事实与家规（无作用域 rules/conventionFiles + skills **登记清单**）；
+   *  · 目录轴=M3 作用域规则（matchRules 按节点 cwd 命中，本片不动）；
+   *  · 角色轴=岗位装备（Role.skills 引用登记清单 / Role.rules 岗位文档，注入=命中规则 ∪ 本槽去重）。
+   * 兼容带：角色未配装备槽 → 技能照旧吃空间全量（与 I1 至今一字不差），但装备账会记
+   * scope='space'，把「这个岗其实在吃全量」显出来（可见是收口前提，不强迁）。
+   * equip 只在注入现场真的解析过才造；档案不可读时整键缺省（宁缺毋假，不拿空账冒充「吃了零」）。
+   */
   private resolveContext(
     run: RunRecord,
     cfg: DagNodeConfig,
     nodeCwd?: string,
-  ): { block: string; agentKind?: string; ctxFiles: Record<string, string> } {
+  ): { block: string; agentKind?: string; ctxFiles: Record<string, string>; equip?: NodeEquip } {
     const parts: string[] = [];
     const ctxFiles: Record<string, string> = {};
     const role = this.roleById(run, cfg.role);
     if (role?.prePrompt) parts.push(`${role.prePrompt}\n`);
+    let equip: NodeEquip | undefined;
     try {
       const profile = this.storeFor(run).readProfile();
       // v13-V4：实读现场逐文件记指纹——只登记实读成功（非 null）的那份；指纹取读到的
@@ -2841,16 +2855,47 @@ export class Engine {
         }
       };
       const hit = matchRules(effectiveRules(profile), profile.rootCwd, nodeCwd);
-      const block = buildConventionBlock(profile.rootCwd, hit, read);
+      // 岗位文档槽：与命中规则按 file 去重（空间/目录轴优先，同一篇不注两遍）；脏形一律不取
+      const roleRules = (Array.isArray(role?.rules) ? (role!.rules as unknown[]) : []).filter(
+        (f): f is string => typeof f === 'string' && !!f && !f.includes('..') && !hit.some((r) => r.file === f),
+      );
+      const ruleFiles = new Set([...hit.map((r) => r.file), ...roleRules]);
+      const injectedRules: string[] = [];
+      const block = buildConventionBlock(
+        profile.rootCwd,
+        [...hit, ...roleRules],
+        read,
+        (f) => injectedRules.push(f),
+      );
       if (block) parts.push(block);
-      // I1：技能库走约定同款通道（整篇注入、大小上限复用），与命中规则同文件去重避免双份
-      const skillFiles = (profile.skills ?? []).filter((f) => !hit.some((r) => r.file === f));
-      const skillBlock = buildSkillBlock(profile.rootCwd, skillFiles, read);
+      // I1：技能库走约定同款通道（整篇注入、大小上限复用）；v13-W1 起「注哪些」上移角色装备槽
+      const registry = (Array.isArray(profile.skills) ? profile.skills : []).filter(
+        (f): f is string => typeof f === 'string' && !!f,
+      );
+      const slotted = roleEquipConfigured(role);
+      const resolved =
+        role?.skills === undefined
+          ? { files: registry, unknown: [] as string[] }
+          : resolveSkillRefs(registry, role.skills as string[]);
+      const injectedSkills: string[] = [];
+      const skillBlock = buildSkillBlock(
+        profile.rootCwd,
+        resolved.files.filter((f) => !ruleFiles.has(f)),
+        read,
+        (f) => injectedSkills.push(f),
+      );
       if (skillBlock) parts.push(skillBlock);
+      equip = {
+        scope: slotted ? 'role' : 'space',
+        ...(role?.id ? { role: role.id } : {}),
+        skills: injectedSkills,
+        rules: injectedRules,
+        ...(resolved.unknown.length ? { unknownSkills: resolved.unknown } : {}),
+      };
     } catch {
       // profile unreadable — proceed without conventions
     }
-    return { block: parts.join('\n'), agentKind: role?.agentKind, ctxFiles };
+    return { block: parts.join('\n'), agentKind: role?.agentKind, ctxFiles, ...(equip ? { equip } : {}) };
   }
 
   /**

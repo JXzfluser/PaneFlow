@@ -12,6 +12,7 @@ import { READBACK_HEADER } from './readback.js';
 import { WIKI_ROOT, wikiCacheDir } from '../api/wiki.js';
 import { upsertGatewayProfile } from '../api/gateway.js';
 import { Store } from './store.js';
+import { saveRoles } from './roles.js';
 
 import { FakeHerdrOps } from './fake-ops.js';
 
@@ -3965,5 +3966,141 @@ describe('v13-V4 engine ctxSha 注入留痕（注入现场实读集成指纹，r
     const back4 = engine.getRun(r4.runId)!;
     expect(driftEvents(back4)).toHaveLength(0);
     expect(back4.harness!.ctxSha).toBeDefined(); // 比对跳过≠不留痕：本单指纹照常落册
+  });
+});
+
+// -- v13-W1 角色装备槽与三轴划界：兼容带逐字节不变 + 降重量得出 + 坏引用只披露 ----------
+describe('v13-W1 岗位装备槽（空间登记 / 目录作用域 / 角色装备三轴划界）', () => {
+  const REGISTRY = ['sk-a.md', 'sk-b.md', 'sk-c.md'];
+  const bodyOf = (f: string) => `${f} 正文开始\n${'填'.repeat(2000)}\n${f} 正文结束`;
+
+  /** 一台项目的文档面：3 篇登记技能 + 1 篇空间家规 + 1 篇岗位专属清单 */
+  function w1Root(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-w1-'));
+    for (const f of REGISTRY) fs.writeFileSync(path.join(root, f), bodyOf(f));
+    fs.writeFileSync(path.join(root, 'space-rule.md'), '空间家规：分支必须 pf/ 前缀');
+    fs.writeFileSync(path.join(root, 'role-only.md'), '评审岗专属清单：逐条核对 AC');
+    return root;
+  }
+
+  function w1Profile(root: string): void {
+    store.writeProfile({
+      id: 'default',
+      name: 'default',
+      createdAt: '',
+      rootCwd: root,
+      rules: [{ file: 'space-rule.md' }],
+      skills: REGISTRY,
+    });
+  }
+
+  /** 单 agent 节点图；tag 让多次 run 的 prompt 在 ops.prompts 里可分 */
+  function w1Graph(roleId: string | undefined, tag: string): DagGraph {
+    return {
+      version: 1,
+      name: `w1-${roleId ?? 'none'}-${tag}`,
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        {
+          id: 'a',
+          type: 'agent',
+          label: '甲',
+          config: { agentKind: 'fake', prompt: `做 ${tag}`, ...(roleId ? { role: roleId } : {}) },
+        },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'a' },
+        { id: 'e2', source: 'a', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+  }
+
+  const promptOf = (tag: string): string => ops.prompts.find((p) => p.text.includes(`做 ${tag}`))!.text;
+
+  it('①兼容带：未配装备槽的角色与不绑角色的节点，注入块逐字节相同（全量现状一字不变）；装备账把「在吃全量」显出来', async () => {
+    const root = w1Root();
+    w1Profile(root);
+    saveRoles(dataDir, [{ id: 'r-plain', name: '普通岗' }]);
+    const bound = await runToCompletion(w1Graph('r-plain', '甲'), root);
+    const unbound = await runToCompletion(w1Graph(undefined, '乙'), root);
+    expect(bound.state).toBe('completed');
+    // 唯一差异是节点自己的指令文本：上下文块本身一字不差
+    expect(promptOf('甲').replace('做 甲', '@')).toBe(promptOf('乙').replace('做 乙', '@'));
+    for (const f of REGISTRY) expect(promptOf('甲')).toContain(`${f} 正文开始`);
+    // scope=space 是「这个岗其实在吃空间全量」的结构化落册（status 那行警告的唯一依据）
+    expect(bound.nodes.a!.equip).toMatchObject({ scope: 'space', role: 'r-plain', skills: REGISTRY });
+    const unEq = unbound.nodes.a!.equip!;
+    expect(unEq.scope).toBe('space');
+    expect(unEq.role).toBeUndefined(); // 没绑角色=没有「岗位未配装备」这回事，整键省略
+  });
+
+  it('②登记 3 篇、岗上挂 2 篇：只注这两篇且注入块按一篇文档的量降下来（G1 降重账量得出），装备账 scope=role', async () => {
+    const root = w1Root();
+    w1Profile(root);
+    saveRoles(dataDir, [
+      { id: 'r-plain', name: '普通岗' },
+      { id: 'r-eq', name: '装备岗', skills: ['sk-a.md', 'sk-b.md'] },
+    ]);
+    const full = await runToCompletion(w1Graph('r-plain', '甲'), root);
+    const armed = await runToCompletion(w1Graph('r-eq', '乙'), root);
+    expect(full.state).toBe('completed');
+    expect(armed.state).toBe('completed');
+    const pFull = promptOf('甲');
+    const pEq = promptOf('乙');
+    expect(pEq).toContain('sk-a.md 正文开始');
+    expect(pEq).toContain('sk-b.md 正文开始');
+    expect(pEq).not.toContain('sk-c.md 正文开始');
+    // 降重不是口号：少注一篇 2KB 文档，块体就得少这么多（含标签与分隔）
+    expect(pFull.length - pEq.length).toBeGreaterThan(2000);
+    expect(armed.nodes.a!.equip).toMatchObject({ scope: 'role', role: 'r-eq', skills: ['sk-a.md', 'sk-b.md'] });
+  });
+
+  it('③装备引用登记清单外的技能：跳过不注、unknownSkills 只披露、单照常跑完；显式 [] = 该岗一篇技能都不吃', async () => {
+    const root = w1Root();
+    w1Profile(root);
+    saveRoles(dataDir, [
+      { id: 'r-bad', name: '坏引用岗', skills: ['sk-a.md', 'ghost.md', 'gone/deep.md'] },
+      { id: 'r-zero', name: '零装备岗', skills: [] },
+    ]);
+    const bad = await runToCompletion(w1Graph('r-bad', '甲'), root);
+    expect(bad.state).toBe('completed'); // 一格坏引用不许把跑单弄红（评审 R5：只披露不拦）
+    const eqBad = bad.nodes.a!.equip!;
+    expect(eqBad.scope).toBe('role');
+    expect(eqBad.skills).toEqual(['sk-a.md']);
+    expect(eqBad.unknownSkills).toEqual(['ghost.md', 'gone/deep.md']);
+    expect(promptOf('甲')).toContain('sk-a.md 正文开始');
+    expect(promptOf('甲')).not.toContain('ghost.md');
+    expect(promptOf('甲')).not.toContain('gone/deep.md');
+    const zero = await runToCompletion(w1Graph('r-zero', '乙'), root);
+    const eqZero = zero.nodes.a!.equip!;
+    expect(eqZero).toMatchObject({ scope: 'role', role: 'r-zero' });
+    expect(eqZero.skills).toEqual([]); // 空数组是正读数：确实一篇都没注
+    expect(promptOf('乙')).not.toContain('技能库');
+    expect(promptOf('乙')).toContain('空间家规：'); // 空间轴家规照守——降的是技能面，不是家规
+  });
+
+  it('④岗位文档槽=命中规则 ∪ 角色 rules（同路径只注一份）；换装备必换 ctxSha（V4 注入面自此可证）', async () => {
+    const root = w1Root();
+    w1Profile(root);
+    saveRoles(dataDir, [
+      { id: 'r-plain', name: '普通岗' },
+      { id: 'r-rev', name: '评审岗', skills: ['sk-a.md'], rules: ['space-rule.md', 'role-only.md'] },
+    ]);
+    const plain = await runToCompletion(w1Graph('r-plain', '甲'), root);
+    const rev = await runToCompletion(w1Graph('r-rev', '乙'), root);
+    const pRev = promptOf('乙');
+    expect(pRev.match(/空间家规：/g)).toHaveLength(1); // 空间轴已有的一篇不注第二遍
+    expect(pRev).toContain('评审岗专属清单：');
+    expect(rev.nodes.a!.equip).toMatchObject({
+      scope: 'role',
+      role: 'r-rev',
+      skills: ['sk-a.md'],
+      rules: ['space-rule.md', 'role-only.md'],
+    });
+    // 换装备=换注入面：ctxSha 不等（改装备不再是查不出的暗改）
+    expect(rev.harness!.ctxSha).toBeDefined();
+    expect(rev.harness!.ctxSha).not.toBe(plain.harness!.ctxSha);
   });
 });

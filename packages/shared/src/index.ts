@@ -18,6 +18,7 @@ export type {
   RunTokenLedger,
   NodeCost,
   NodeRunRecord,
+  NodeEquip,
   NodeAbandonment,
   NodeAbandonmentTrigger,
   AssertionDiff,

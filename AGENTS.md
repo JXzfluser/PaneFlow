@@ -38,6 +38,10 @@ paneflow runs --json            # 原始 API 负载，stdout 干净可直接 | j
 #    + 人等分行（v12-V2 人介入账：人等分: 等待 4.2 分 · 批 2/驳 0/补料 1——审批门
 #      拦→放的累计等待时长与决策计数，放门即结算落册；没批过门/旧 run 整缺不显示）
 #    + 每个节点状态 + 审批门提示
+#    + 装备行（v13-W1 三轴划界：该节点实发吃进 prompt 的「技能 N · 岗位文档 M」计数，绑了岗还标岗名；
+#      scope=space 且绑了角色 → 整行升级为「⚠ 该角色未配装备，正吃空间全量」；
+#      装备槽引用了项目登记清单外的技能 → 另起一行「⚠ 装备引用不在登记清单，已跳过：…」（只披露不拦）；
+#      注入现场没走到（非 agent 节点/档案不可读）整缺不显——判据全在 server，CLI 只渲染）
 #    + 掐断账行（v13-S2：节点尝试被引擎中途掐断过时出「⚡ 第 N 轮尝试已掐断（触发点 · 掐时状态）」，
 #      触发点取值 settle-timeout/retry/stop/shutdown/agent-gone；一次都没掐过整行不显示）
 paneflow status <runId>
@@ -112,6 +116,11 @@ curl -s $BASE/api/dispatch -d '{"task":"...","experiment":{"suite":"c4","arm":"a
 #   从 graph 各节点 checks[]（file-exists/command/regex/contract/delivery-branch；manual 引擎实跑不了不进账）
 #   × 节点 state 纯读时推导（done⇒该节点机检全过），零新写路径：机检成功历史上没落过册，
 #   写端方案对旧 run 永远缺账。图与账对不上/拿不到 state 时**整键省略**——0 是正断言，「不知道」不是 0）
+#   v13-W1 起 agent 节点的运行记录多 equip:{scope:'role'|'space',role?,skills[],rules[],unknownSkills?}——
+#   注入现场解析好的岗位装备账：三轴=空间家规/目录作用域规则/角色装备槽；skills/rules 是**实注入**
+#   （读失败或超总预算被跳过的不记），所以 scope=space（角色未配装备槽或没绑角色）时数组就是空间全量；
+#   unknownSkills=装备槽引用了本空间登记清单外、已跳过不注的项（只披露不拦）；
+#   注入现场没走到/档案不可读 → 整键省略（宁缺毋假，不拿空账冒充「吃了零」）；旧 run 无此键
 curl -s $BASE/api/runs
 curl -s $BASE/api/runs/<runId>
 curl -s $BASE/api/runs/<runId>/events

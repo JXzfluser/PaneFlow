@@ -436,6 +436,26 @@ export interface NodeAbandonment {
   agentName: string;
 }
 
+/**
+ * v13-W1 岗位装备解析账（三轴划界的可见面）：节点组 prompt 时「这一岗到底吃了什么文档」
+ * 结构化落在节点记录上——与 v13-S2 掐断账同款卫生：不靠环形 events 字符串推导。
+ * 三轴分工：空间级=事实与家规（无作用域 rules/conventionFiles + skills **登记清单**）、
+ * 目录级=M3 作用域规则（按节点 cwd 命中）、角色级=岗位装备（Role.skills 引用 / Role.rules）。
+ * 空数组是正读数（「确实一个都没注」），与「整键缺失」（注入现场没走到/档案读不了）分家。
+ */
+export interface NodeEquip {
+  /** 吃了哪一轴：role=岗位装备集生效；space=角色未配装备槽或未绑角色，正吃空间全量 */
+  scope: 'role' | 'space';
+  /** 本节点绑定的角色 id；未绑角色整键省略（没有角色就没有「岗位未配装备」这回事） */
+  role?: string;
+  /** 实注入的技能文档（相对主仓根，按注入顺序） */
+  skills: string[];
+  /** 实注入的约定/岗位文档（matchRules 命中 ∪ 角色 rules，按 file 去重后） */
+  rules: string[];
+  /** 装备槽引用了空间登记清单外的技能=跳过不注、只披露（评审 R5：只披露不拦） */
+  unknownSkills?: string[];
+}
+
 export interface NodeRunRecord {
   nodeId: string;
   state: NodeRunState;
@@ -469,6 +489,11 @@ export interface NodeRunRecord {
    * 缺省=从未掐断（旧记录同款 JSON 向后兼容，只增不改）。
    */
   abandonments?: NodeAbandonment[];
+  /**
+   * v13-W1 岗位装备账：本节点实发 prompt 的文档取材（见 NodeEquip）。
+   * 缺省=注入现场没走到（非 agent 节点/起单前失败/档案不可读）——不拿空账冒充「吃了零」。
+   */
+  equip?: NodeEquip;
 }
 
 export type RunState =

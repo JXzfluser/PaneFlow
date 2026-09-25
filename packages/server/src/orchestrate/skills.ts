@@ -6,6 +6,9 @@ import path from 'node:path';
  * 自此有两个运行期消费者——
  *  1) 节点 prompt：约定同款通道整篇注入（buildSkillBlock，大小上限复用）；
  *  2) 下发 Planner：技能索引一行一项（readSkillIndex，只读首行不整篇）。
+ * v13-W1 语义迁移：`profile.skills` 自此是**登记清单**（这台机器上可被注入的池子），
+ * 「注不给这个岗」由角色装备槽（Role.skills，引用本清单）决定；兼容带=角色未配槽时
+ * 仍注入清单全量，与 I1 至今的行为一字不差。
  */
 export interface SkillIndexEntry {
   name: string;
@@ -26,6 +29,7 @@ export function buildSkillBlock(
   rootCwd: string | undefined,
   skills: string[] | undefined,
   readFile: (p: string) => string | null,
+  onInject?: (file: string) => void,
 ): string {
   if (!rootCwd || !skills?.length) return '';
   const parts: string[] = [];
@@ -41,10 +45,35 @@ export function buildSkillBlock(
       break;
     }
     total += clipped.length;
+    onInject?.(rel);
     parts.push(`<技能文档 name="${rel}">\n${clipped}\n</技能文档>`);
   }
   if (!parts.length) return '';
   return `以下是本空间的技能库（沉淀过的可复用做法，与本单匹配就参考执行）：\n\n${parts.join('\n\n')}\n\n---\n`;
+}
+
+/**
+ * v13-W1 技能槽解析：角色的 `skills` 是**引用**，只认空间登记清单（profile.skills）里的路径。
+ * 清单外的引用（改名/删登记的残留）跳过不注、原样报回给装备账——
+ * 只披露不拦（评审 R5），跑单不许因为一格坏引用而红。
+ * 未配槽（undefined）由调用方按兼容带处理（吃空间全量），这里不掺判策。
+ */
+export function resolveSkillRefs(
+  registry: string[] | undefined,
+  refs: string[] | undefined,
+): { files: string[]; unknown: string[] } {
+  const known = new Set((registry ?? []).filter((f) => typeof f === 'string'));
+  const files: string[] = [];
+  const unknown: string[] = [];
+  for (const ref of refs ?? []) {
+    if (typeof ref !== 'string' || !ref) continue;
+    if (known.has(ref)) {
+      if (!files.includes(ref)) files.push(ref);
+    } else if (!unknown.includes(ref)) {
+      unknown.push(ref);
+    }
+  }
+  return { files, unknown };
 }
 
 /** Planner 用技能索引：名字+首行描述（不读整篇），控制注入体积。 */

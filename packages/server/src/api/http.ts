@@ -301,6 +301,20 @@ export async function buildHttpServer(deps: HttpDeps) {
         return reply.code(400).send({ error: `角色 ID 非法：${r.id}` });
       }
       if (ids.has(r.id)) return reply.code(400).send({ error: `角色 ID 重复：${r.id}` });
+      // v13-W1 装备槽脏形状：格子里塞非字符串/空串/带 .. 的路径，到注入现场只会静默失效
+      // （装备没换上却以为换上了）——入库前就拒，一句指路（B1 delivery 同款姿态）
+      for (const k of ['skills', 'rules'] as const) {
+        const v = (r as unknown as Record<string, unknown>)[k];
+        if (v === undefined) continue;
+        if (
+          !Array.isArray(v) ||
+          v.some((x) => typeof x !== 'string' || !x.trim() || x.includes('..'))
+        ) {
+          return reply.code(400).send({
+            error: `角色 ${r.id} 的 ${k} 必须是文档路径字符串数组（相对项目主仓根；${k === 'skills' ? '且需是该项目 skills 登记清单里的路径' : '不需要就不给这个键'}）`,
+          });
+        }
+      }
       ids.add(r.id);
     }
     saveRoles(deps.dataDir, roles);
