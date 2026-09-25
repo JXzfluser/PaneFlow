@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { DECLARE_FACES, type DeclareFace, type RoleDeclaredFaces } from '@paneflow/shared';
 import type { SpaceRule } from './rules.js';
 
 export interface Role {
@@ -23,6 +24,16 @@ export interface Role {
    * ∪ 本槽（按 file 去重，空间侧优先）。路径同 rules.file，相对主仓根，含 `..` 的一律不取。
    */
   rules?: string[];
+  /**
+   * v13-W3 授权声明三面（gitPush / prOpen / issueWrite，皆布尔）。**PaneFlow 不造沙箱**：
+   * 17 动词协议面无切钩子，能力锁归 agent CLI 侧——本槽只做三事：①诚实措辞注进 prompt
+   * （「声明非强制」）；②收口时与副作用账对账落落差（只照不拦）；③status 可见。
+   * 为什么只有三面：引擎唯一的副作用账是 run 级 RunSideEffects（issuesCreated/issuePatched/
+   * prUrl/pushedAt），三面与它恰一对一可核对；需求文档省略号里的 writeScope **刻意不进**——
+   * 路径维在账上没有可核对的键，登进来就是一张永远抓不到落差的脸，「声明了却对不了账」
+   * 正是本片要防的静默失效。键缺省=没声明=今天的行为一字不变；显式 true 也是正断言（只是永不违例）。
+   */
+  declares?: RoleDeclaredFaces;
 }
 
 /**
@@ -31,6 +42,45 @@ export interface Role {
  */
 export function roleEquipConfigured(role: Role | undefined): boolean {
   return !!role && (role.skills !== undefined || role.rules !== undefined);
+}
+
+/**
+ * v13-W3 声明的读端清洗：只认三面布尔。roles.json 是手编库，脏面值/脏面一律不取
+ * （入库面 PUT /api/roles 已 fail-closed 拒过——这枚是兜住手改盘面的降级，不是第二道校验）；
+ * 全缺 → undefined（宁缺毋假：不拿空声明冒充「声明过」）。
+ */
+export function normalizeDeclares(declares: unknown): RoleDeclaredFaces | undefined {
+  if (!declares || typeof declares !== 'object' || Array.isArray(declares)) return undefined;
+  const out: RoleDeclaredFaces = {};
+  for (const face of DECLARE_FACES) {
+    const v = (declares as Record<string, unknown>)[face];
+    if (typeof v === 'boolean') out[face] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** 三面的人话（注入 prompt 与收口事件共用同一取材；true/false 两向措辞） */
+const DECLARE_FACE_TEXT: Record<DeclareFace, { yes: string; no: string }> = {
+  gitPush: { yes: '可向远程仓库推送提交（git push）', no: '不向远程仓库推送提交（git push）' },
+  prOpen: { yes: '可创建 Pull Request', no: '不创建 Pull Request' },
+  issueWrite: { yes: '可建 Issue、可覆写其正文', no: '不建 Issue、不覆写 Issue 正文' },
+};
+
+/**
+ * v13-W3 ①声明注入：把本岗声明渲染进 prompt——**措辞诚实**（这是声明不是强制：PaneFlow
+ * 不造沙箱、不在协议面拦能力，真能力锁配在 agent CLI 侧）。没声明 → ''（注入块与现状
+ * 逐字节相同，兼容带零成本）。
+ */
+export function buildDeclareBlock(role: Role | undefined): string {
+  const faces = normalizeDeclares(role?.declares);
+  if (!faces) return '';
+  const lines = DECLARE_FACES.filter((f) => faces[f] !== undefined).map(
+    (f) => `- ${f}=${faces[f] ? 'true' : 'false'}：本岗声明${faces[f] ? DECLARE_FACE_TEXT[f].yes : DECLARE_FACE_TEXT[f].no}`,
+  );
+  return (
+    `岗位授权声明（声明非强制——PaneFlow 不造沙箱，也不在协议面拦能力，真正的能力锁配在你自己的 agent CLI 侧；` +
+    `请按下列本岗自报的授权边界行事，收口时会与本单副作用账对账、落差只照不拦）：\n${lines.join('\n')}\n---\n`
+  );
 }
 
 const PER_FILE_CAP = 100 * 1024;

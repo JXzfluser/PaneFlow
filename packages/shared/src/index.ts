@@ -29,11 +29,15 @@ export type {
   ReadbackOutcome,
   RunSideEffects,
   RunAttention,
+  DeclareFace,
+  RoleDeclaredFaces,
+  RunDeclareViolation,
   TemplateVariable,
   CheckSpec,
 } from './dag.js';
 export {
   DAG_NODE_TYPES,
+  DECLARE_FACES,
   CHECK_SPEC_TYPES,
   FANOUT_MAX_ITEMS_LIMIT,
   validateDag,

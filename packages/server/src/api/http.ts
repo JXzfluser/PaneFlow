@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
-import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag } from '@paneflow/shared';
+import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag, DECLARE_FACES } from '@paneflow/shared';
 import type { DagGraph, RunExperimentMeta, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
@@ -313,6 +313,29 @@ export async function buildHttpServer(deps: HttpDeps) {
         ) {
           return reply.code(400).send({
             error: `角色 ${r.id} 的 ${k} 必须是文档路径字符串数组（相对项目主仓根；${k === 'skills' ? '且需是该项目 skills 登记清单里的路径' : '不需要就不给这个键'}）`,
+          });
+        }
+      }
+      // v13-W3 授权声明脏形状：拼错的面（gitpush=）到对账现场只会静默失效——声明了却
+      // 永远对不上账，正是本片要防的事故；非布尔同理。入库前就拒，宁拒不错放（W1 同款姿态）。
+      const declares = (r as unknown as { declares?: unknown }).declares;
+      if (declares !== undefined) {
+        if (!declares || typeof declares !== 'object' || Array.isArray(declares)) {
+          return reply.code(400).send({
+            error: `角色 ${r.id} 的 declares 必须是对象（三面布尔：${DECLARE_FACES.join('/')}；不声明就不给这个键）`,
+          });
+        }
+        const faces = declares as Record<string, unknown>;
+        const unknown = Object.keys(faces).filter((k) => !(DECLARE_FACES as readonly string[]).includes(k));
+        if (unknown.length) {
+          return reply.code(400).send({
+            error: `角色 ${r.id} 的 declares 有未知面：${unknown.join('、')}（可用面只有 ${DECLARE_FACES.join('/')}——拼错的面会静默失效，宁拒不错放）`,
+          });
+        }
+        const dirty = Object.entries(faces).filter(([, v]) => typeof v !== 'boolean');
+        if (dirty.length) {
+          return reply.code(400).send({
+            error: `角色 ${r.id} 的 declares 面值必须是布尔 true/false（${dirty.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('、')} 不是）`,
           });
         }
       }

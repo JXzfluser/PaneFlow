@@ -212,7 +212,13 @@ async function cmdRuns(io: CliIo, baseUrl: string, args: Args): Promise<number> 
 async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number> {
   requirePos(args, 1, 'paneflow status <runId>');
   const runId = args.positional[0]!;
-  const { body: run } = await request<RunView>(io, baseUrl, 'GET', `/api/runs/${encodeURIComponent(runId)}`);
+  // RunView 之外的两枚 v13-W3 新键就地声明（types.ts 不在本片所有权内；形状即 server 落册形状，零判据）
+  const { body: run } = await request<
+    RunView & {
+      declares?: { roleId: string; faces?: Record<string, boolean> }[];
+      declareViolations?: { roleId: string; face: string; seen: string }[];
+    }
+  >(io, baseUrl, 'GET', `/api/runs/${encodeURIComponent(runId)}`);
   if (jsonOr(args)) {
     dump(io, run);
     return EXIT_OK;
@@ -251,6 +257,21 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
       se.pushedAt ? `已推送 ${se.pushedAt}` : '',
     ].filter(Boolean);
     if (bits.length) io.out(`  ${paint(io, '33', `副作用: ${bits.join(' · ')}`)}`);
+  }
+  // v13-W3 授权行 + 授权对账行：declares/declareViolations 都是 server 收口时算好落册的账
+  // （岗库 × 实绑 × 副作用账），这里零判据只渲染——没声明/无落差/旧单整缺不显示（不拿空账冒充）
+  if (run.declares?.length) {
+    const detail = run.declares
+      .map((d) => `岗「${d.roleId}」${Object.entries(d.faces ?? {}).map(([f, v]) => `${f}=${v}`).join(' · ')}`)
+      .join('；');
+    io.out(`  授权: ${detail}（声明非强制，锁在 agent CLI 侧）`);
+  }
+  if (run.declareViolations?.length) {
+    io.out(
+      `  ${paint(io, '33', `⚠ 授权对账: ${run.declareViolations
+        .map((v) => `岗「${v.roleId}」声明 ${v.face}=false · 实见「${v.seen}」`)
+        .join('；')}`)}`,
+    );
   }
   // v12-V2 人等分行：验证税入账同样零判据——waitMs/计数都是放门时 server 结算落册的账
   const attn = run.attention;

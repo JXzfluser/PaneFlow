@@ -275,6 +275,40 @@ describe('runs / status / approve', () => {
     expect(legacy.lines.join('\n')).not.toContain('副作用');
   });
 
+  it('v13-W3 status 授权行+对账行：只渲染 server 收口落册账——有声明一行、有落差一行、整缺不显示', async () => {
+    const base = { runId: 'r-decl', state: 'completed', dagName: 'g', nodes: {} };
+    const { fetchImpl } = stubFetch([
+      {
+        body: {
+          ...base,
+          declares: [{ roleId: 'r-deliver', faces: { gitPush: false, prOpen: true } }],
+          declareViolations: [
+            { roleId: 'r-deliver', face: 'gitPush', seen: '已推送 2026-09-22T02:03:04.000Z' },
+          ],
+        },
+      },
+      // 只声明无落差：对账行整缺
+      { body: { ...base, declares: [{ roleId: 'r-clean', faces: { gitPush: false } }] } },
+      // 老单/没声明：两键都缺 → 两行都不显（不拿空账冒充「声明了零面」）
+      { body: base },
+    ]);
+    const both = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-decl'], both.io)).toBe(0);
+    const out = both.lines.join('\n');
+    expect(out).toContain('授权: 岗「r-deliver」gitPush=false · prOpen=true（声明非强制，锁在 agent CLI 侧）');
+    expect(out).toContain('⚠ 授权对账: 岗「r-deliver」声明 gitPush=false · 实见「已推送 2026-09-22T02:03:04.000Z」');
+    const quiet = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-decl'], quiet.io)).toBe(0);
+    const qOut = quiet.lines.join('\n');
+    expect(qOut).toContain('授权: 岗「r-clean」gitPush=false');
+    expect(qOut).not.toContain('授权对账');
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-decl'], legacy.io)).toBe(0);
+    const lOut = legacy.lines.join('\n');
+    expect(lOut).not.toContain('授权');
+    expect(lOut).not.toContain('declareViolation');
+  });
+
   it('v12-V2 status 人等分行：server 落册账照单渲染——全量一行、怪账补零、无 attention 整缺不显示', async () => {
     const base = { runId: 'r-at', state: 'completed', dagName: 'g', nodes: {} };
     const { fetchImpl } = stubFetch([

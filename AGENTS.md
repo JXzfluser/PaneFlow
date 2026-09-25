@@ -50,6 +50,10 @@ paneflow runs --json            # 原始 API 负载，stdout 干净可直接 | j
 #      注入现场没走到（非 agent 节点/档案不可读）整缺不显——判据全在 server，CLI 只渲染）
 #    + 掐断账行（v13-S2：节点尝试被引擎中途掐断过时出「⚡ 第 N 轮尝试已掐断（触发点 · 掐时状态）」，
 #      触发点取值 settle-timeout/retry/stop/shutdown/agent-gone；一次都没掐过整行不显示）
+#    + 授权行 + 授权对账行（v13-W3：岗 declares 三面（gitPush/prOpen/issueWrite）收口落册 →
+#      「授权: 岗「r-x」gitPush=false …（声明非强制，锁在 agent CLI 侧）」；声明 false 却撞上
+#      副作用账 → 「⚠ 授权对账: 岗「r-x」声明 gitPush=false · 实见「已推送 <时刻>」」——只照不拦，
+#      归因是单级上界（副作用账无逐节点分账）；没声明/无落差/旧单两行整缺不显——判据全在 server，CLI 只渲染）
 paneflow status <runId>
 paneflow status <runId> --json
 
@@ -136,7 +140,13 @@ curl -s $BASE/api/dispatch -d '{"task":"...","experiment":{"suite":"c4","arm":"a
 #   注入现场解析好的岗位装备账：三轴=空间家规/目录作用域规则/角色装备槽；skills/rules 是**实注入**
 #   （读失败或超总预算被跳过的不记），所以 scope=space（角色未配装备槽或没绑角色）时数组就是空间全量；
 #   unknownSkills=装备槽引用了本空间登记清单外、已跳过不注的项（只披露不拦）；
-#   注入现场没走到/档案不可读 → 整键省略（宁缺毋假，不拿空账冒充「吃了零」）；旧 run 无此键
+#   注入现场没走到/档案不可读 → 整键省略（宁缺毋假，不拿空账冒充「吃了零」）；旧 run 无此键；
+#   v13-W3 起收口对账落两枚可选键：declares:[{roleId,faces:{gitPush?,prOpen?,issueWrite?}}]——本单
+#   实绑岗的授权声明账（三面布尔，绑定 precedence 同 W4 能力账），声明入 prompt 但**不进
+#   ctxSha/roleSha 两枚指纹**（声明不是装备）；declareViolations:[{roleId,face,seen}]——声明 false
+#   却撞上副作用账的落差账（归因只到**单级上界**：副作用账无逐节点分账，不指认哪一格干的），
+#   同时 events 落一条「⚠ declareViolation」warn 事件——只照不拦，收口判定零改动；
+#   没声明/无落差/旧 run → 两键整缺（缺≠「声明了零面」）
 curl -s $BASE/api/runs
 curl -s $BASE/api/runs/<runId>
 curl -s $BASE/api/runs/<runId>/events
@@ -169,6 +179,12 @@ curl -s $BASE/api/roles/<roleId>/profile
 #   不进组，故「总账 runs ≥ Σ各组 runs」是口径事实；③返工（rework）本版**如实不报**——
 #   没有任何按岗可归因的落册字段忠实度量「这岗的活被打回重做」，造一个 proxy 就是假账。
 #   有岗无单 → 200 且 overall.runs:0（「这岗一次没上过」是读数），岗不存在才 404
+
+# 岗位授权声明（v13-W3）：roles PUT 体的可选 declares——三面布尔声明，入库 fail-closed；
+#   PaneFlow 不造沙箱：声明只入 prompt（措辞诚实「声明非强制」）+ 收口对账，拦不了任何真动作
+curl -s -X PUT $BASE/api/roles -d '{"roles":[{"id":"r-deliver","name":"交付岗","declares":{"gitPush":false,"prOpen":true}}]}'
+#   脏形状 400 一句指路：declares 非对象 / 未知面（拼错的面会静默失效，宁拒不错放）/ 面值非布尔都拒；
+#   键缺省=没声明（今天行为一字不变）；显式 {} 合法=声明零面
 
 # GitHub 写端点（v12-S1a 副作用归因）：体新增可选 runId——建单/覆写成功且有活跃 runId 时
 # 落进该 run 的 sideEffects 账 + 一条「副作用」事件；不带 runId 行为与今天完全一致

@@ -4355,3 +4355,215 @@ describe('v13-W2 角色指纹与上岗（roleSha 换装备必变/同装备必等
     expect(unbound.state).toBe('completed');
   });
 });
+
+// -- v13-W3 授权声明+归因+事拦：声明入 prompt（措辞诚实）· 收口对账只照不拦 · 落差结构化落册 ----------
+describe('v13-W3 授权声明与收口对账（声明非强制入 prompt · 三面×副作用账落差落 declareViolations+warn 事件 · 只照不拦）', () => {
+  function w3Root(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-w3-'));
+    fs.writeFileSync(path.join(root, 'sk-a.md'), '装备甲 正文');
+    return root;
+  }
+  function w3Profile(root: string): void {
+    store.writeProfile({ id: 'default', name: 'default', createdAt: '', rootCwd: root, skills: ['sk-a.md'] });
+  }
+  /** start → N 个串行 agent 节点 → end；节点带 tag（ops.prompts 里认人）与 role，可给 timeoutMs */
+  function w3Graph(
+    name: string,
+    nodes: { tag: string; role?: string; timeoutMs?: number }[],
+  ): DagGraph {
+    const list: DagGraph['nodes'] = [{ id: 'start', type: 'start', label: '开始', config: {} }];
+    const edges: DagGraph['edges'] = [];
+    nodes.forEach((n, i) => {
+      const id = `a${i + 1}`;
+      list.push({
+        id,
+        type: 'agent' as const,
+        label: id,
+        config: {
+          agentKind: 'fake',
+          prompt: `做 ${n.tag}`,
+          ...(n.role ? { role: n.role } : {}),
+          ...(n.timeoutMs ? { timeoutMs: n.timeoutMs } : {}),
+        },
+      });
+      edges.push({ id: `e${i}`, source: i ? `a${i}` : 'start', target: id });
+    });
+    list.push({ id: 'end', type: 'end', label: '结束', config: {} });
+    edges.push({ id: 'ez', source: `a${nodes.length}`, target: 'end' });
+    return { version: 1, name, nodes: list, edges, metadata: { createdAt: '', updatedAt: '' } };
+  }
+  const promptOf = (tag: string): string => ops.prompts.find((p) => p.text.includes(`做 ${tag}`))!.text;
+  const dvEvents = (r: RunRecord) => (r.events ?? []).filter((e) => e.text.includes('declareViolation'));
+
+  it('①声明进 prompt 且措辞诚实（声明非强制/锁在 agent CLI 侧）；没声明=注入块零新增；声明不挪 ctxSha/roleSha 指纹、只涨 injectedBytes', async () => {
+    const root = w3Root();
+    w3Profile(root);
+    saveRoles(dataDir, [
+      { id: 'r-decl', name: '交付岗', declares: { gitPush: false, prOpen: true } },
+      { id: 'r-quiet', name: '安静岗' },
+    ]);
+    const decl = await runToCompletion(w3Graph('w3-decl', [{ tag: '甲', role: 'r-decl' }]), root);
+    expect(decl.state).toBe('completed');
+    const p = promptOf('甲');
+    expect(p).toContain('岗位授权声明（声明非强制——PaneFlow 不造沙箱');
+    expect(p).toContain('真正的能力锁配在你自己的 agent CLI 侧');
+    expect(p).toContain('- gitPush=false：本岗声明不向远程仓库推送提交（git push）');
+    expect(p).toContain('- prOpen=true：本岗声明可创建 Pull Request');
+    // 收口声明账：status 授权行的唯一依据（三面按值域序稳定）
+    expect(decl.declares).toEqual([{ roleId: 'r-decl', faces: { gitPush: false, prOpen: true } }]);
+    // 没声明的岗：注入块与现状逐字节相同（兼容带），声明账/落差账/事件三路静默
+    const quiet = await runToCompletion(w3Graph('w3-quiet', [{ tag: '乙', role: 'r-quiet' }]), root);
+    expect(quiet.state).toBe('completed');
+    expect(promptOf('乙')).not.toContain('岗位授权声明');
+    expect(quiet.declares).toBeUndefined();
+    expect(quiet.declareViolations).toBeUndefined();
+    expect(dvEvents(quiet)).toHaveLength(0);
+    // 声明刻意不入两枚指纹：同岗同装备只加声明 → roleSha/ctxSha 纹丝不动，injectedBytes 涨（块真进了 prompt）
+    saveRoles(dataDir, [{ id: 'r-arm', name: '装备岗', skills: ['sk-a.md'] }]);
+    const before = await runToCompletion(w3Graph('w3-fp1', [{ tag: '丙', role: 'r-arm' }]), root);
+    saveRoles(dataDir, [{ id: 'r-arm', name: '装备岗', skills: ['sk-a.md'], declares: { gitPush: false } }]);
+    const after = await runToCompletion(w3Graph('w3-fp2', [{ tag: '丁', role: 'r-arm' }]), root);
+    expect(after.harness!.roleSha).toBe(before.harness!.roleSha);
+    expect(after.harness!.ctxSha).toBe(before.harness!.ctxSha);
+    expect(after.harness!.injectedBytes!).toBeGreaterThan(before.harness!.injectedBytes!);
+    expect(before.declares).toBeUndefined();
+    expect(after.declares).toEqual([{ roleId: 'r-arm', faces: { gitPush: false } }]);
+  });
+
+  it('②三面各落一条落差（同岗多节点去重=一条账）；warn 事件含单级上界归因；单照常全绿、账真落盘', async () => {
+    const root = w3Root();
+    w3Profile(root);
+    saveRoles(dataDir, [
+      { id: 'r-deliver', name: '交付岗', declares: { gitPush: false, prOpen: false, issueWrite: false } },
+    ]);
+    let release = (): void => {};
+    const held = new Promise<void>((res) => (release = res));
+    ops.onPrompt = (target, text) => {
+      if (text.includes('做 甲')) {
+        fs.mkdirSync(path.join(root, '.herdr/artifacts'), { recursive: true });
+        fs.writeFileSync(
+          path.join(root, '.herdr/artifacts/a1.json'),
+          JSON.stringify({ summary: 'x', extra: { pr_url: 'https://github.com/acme/app/pull/9' } }),
+        );
+        ops.setStatus(target, 'working');
+        void held.then(() => ops.setStatus(target, 'idle'));
+      }
+    };
+    const run = await engine.startRun(w3Graph('w3-dv', [{ tag: '甲', role: 'r-deliver', timeoutMs: 60_000 }, { tag: '乙', role: 'r-deliver' }]), root);
+    await waitFor(() => ops.prompts.length >= 1);
+    // 收口前把两枚引擎侧证据记进账（pushedAt：S1a 留键位至今无写路径，按 S1b seedSE 同款直接落账）
+    engine.getRun(run.runId)!.sideEffects = { pushedAt: '2026-09-22T02:03:04.000Z' };
+    expect(engine.recordIssueSideEffect(run.runId, 'created', 12)).toBe(true);
+    release();
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const final = engine.getRun(run.runId)!;
+    // 只照不拦（评审 R5）：三面全违也照常 completed、节点全 done
+    expect(final.state).toBe('completed');
+    expect(final.nodes.a1!.state).toBe('done');
+    expect(final.nodes.a2!.state).toBe('done');
+    // 两节点同岗=一条声明账、三面各一条落差（面按 DECLARE_FACES 序）
+    expect(final.declares).toEqual([
+      { roleId: 'r-deliver', faces: { gitPush: false, prOpen: false, issueWrite: false } },
+    ]);
+    expect(final.declareViolations).toEqual([
+      { roleId: 'r-deliver', face: 'gitPush', seen: '已推送 2026-09-22T02:03:04.000Z' },
+      { roleId: 'r-deliver', face: 'prOpen', seen: 'PR https://github.com/acme/app/pull/9' },
+      { roleId: 'r-deliver', face: 'issueWrite', seen: '建单#12' },
+    ]);
+    const ev = dvEvents(final);
+    expect(ev).toHaveLength(1); // 一次收口恰好一笔账，不逐条刷屏
+    expect(ev[0]!.text).toContain('declareViolation');
+    expect(ev[0]!.text).toContain('只照不拦');
+    expect(ev[0]!.text).toContain('归因为单级上界');
+    expect(ev[0]!.text).toContain('岗「r-deliver」声明 gitPush=false，副作用账却见「已推送 2026-09-22T02:03:04.000Z」');
+    // 事实结构化落盘（不靠环形 events 推导）：从盘上读回同一本账
+    expect(store.getRun(run.runId)!.declareViolations).toEqual(final.declareViolations);
+  });
+
+  it('③true 是正断言永不违例；声明了但没副作用账=只落声明账零事件；没声明=带账也整缺静默', async () => {
+    saveRoles(dataDir, [{ id: 'r-yes', name: '坦荡岗', declares: { prOpen: true } }]);
+    // 坦荡岗声明 prOpen=true，agent 真开了 PR（产物自报 → 引擎 capturePrUrl 在册）：不违例
+    const yesRoot = w3Root();
+    w3Profile(yesRoot);
+    ops.onPrompt = (_t, text) => {
+      if (!text.includes('做 甲')) return;
+      fs.mkdirSync(path.join(yesRoot, '.herdr/artifacts'), { recursive: true });
+      fs.writeFileSync(
+        path.join(yesRoot, '.herdr/artifacts/a1.json'),
+        JSON.stringify({ summary: 'x', extra: { pr_url: 'https://github.com/acme/app/pull/9' } }),
+      );
+    };
+    const yes = await runToCompletion(w3Graph('w3-yes', [{ tag: '甲', role: 'r-yes' }]), yesRoot);
+    expect(yes.state).toBe('completed');
+    expect(yes.sideEffects?.prUrl).toBe('https://github.com/acme/app/pull/9');
+    expect(yes.declares).toEqual([{ roleId: 'r-yes', faces: { prOpen: true } }]);
+    expect(yes.declareViolations).toBeUndefined();
+    expect(dvEvents(yes)).toHaveLength(0);
+    // 声明 false 但整单没有副作用账：只落声明账，零落差零事件
+    saveRoles(dataDir, [{ id: 'r-clean', name: '克制岗', declares: { gitPush: false } }]);
+    const cleanRoot = w3Root();
+    w3Profile(cleanRoot);
+    const clean = await runToCompletion(w3Graph('w3-clean', [{ tag: '乙', role: 'r-clean' }]), cleanRoot);
+    expect(clean.state).toBe('completed');
+    expect(clean.declares).toEqual([{ roleId: 'r-clean', faces: { gitPush: false } }]);
+    expect(clean.declareViolations).toBeUndefined();
+    expect(dvEvents(clean)).toHaveLength(0);
+    // 没声明的岗哪怕带副作用账：三本账整缺（宁缺毋假——不是「声明了零面」）
+    saveRoles(dataDir, [{ id: 'r-none', name: '无名岗' }]);
+    const anon = await runToCompletion(w3Graph('w3-anon', [{ tag: '丙', role: 'r-none' }]), yesRoot);
+    expect(anon.state).toBe('completed');
+    expect(anon.sideEffects?.prUrl).toBeDefined(); // 复用 yesRoot 的在册产物：账是真有，但没声明可对
+    expect(anon.declares).toBeUndefined();
+    expect(anon.declareViolations).toBeUndefined();
+    expect(dvEvents(anon)).toHaveLength(0);
+  });
+
+  it('④绑定 precedence 照抄 W4：equip 落了册只认实绑（图里名义岗有声明也排除）；没落册回落名义（红单同样对账，状态不改）', async () => {
+    const root = w3Root();
+    w3Profile(root);
+    // 实绑优先：注入现场图里没有这个岗（equip 不落 role），收口时岗库才补上 → 实态没吃过这岗，不对账
+    saveRoles(dataDir, []);
+    let release = (): void => {};
+    const held = new Promise<void>((res) => (release = res));
+    ops.onPrompt = (target, text) => {
+      if (!text.includes('做 甲')) return;
+      ops.setStatus(target, 'working');
+      void held.then(() => ops.setStatus(target, 'idle'));
+    };
+    const ghostRun = await engine.startRun(w3Graph('w3-ghost', [{ tag: '甲', role: 'r-ghost', timeoutMs: 60_000 }]), root);
+    await waitFor(() => ops.prompts.length >= 1);
+    saveRoles(dataDir, [{ id: 'r-ghost', name: '幽灵岗', declares: { gitPush: false } }]);
+    engine.getRun(ghostRun.runId)!.sideEffects = { pushedAt: '2026-09-22T00:00:00.000Z' };
+    release();
+    await waitFor(() => engine.getRun(ghostRun.runId)!.state !== 'running');
+    const g = engine.getRun(ghostRun.runId)!;
+    expect(g.state).toBe('completed');
+    expect(g.nodes.a1!.equip).toBeDefined(); // equip 落了册且没有 role：实绑说「这节点没吃上岗」
+    expect(g.nodes.a1!.equip!.role).toBeUndefined();
+    expect(g.declares).toBeUndefined();
+    expect(g.declareViolations).toBeUndefined();
+    expect(dvEvents(g)).toHaveLength(0);
+    // 回落名义：a1 被人工拒掉（有 equip、无声明岗），a2 没起跑（无 equip）→ 名义 config.role 进账；红单照对账
+    saveRoles(dataDir, [
+      { id: 'r-quiet', name: '安静岗' },
+      { id: 'r-late', name: '迟到岗', declares: { gitPush: false } },
+    ]);
+    ops.onPrompt = (target) => {
+      ops.setStatus(target, 'working');
+      setTimeout(() => ops.setStatus(target, 'blocked'), 10);
+    };
+    const run = await engine.startRun(w3Graph('w3-nominal', [{ tag: '甲', role: 'r-quiet' }, { tag: '乙', role: 'r-late' }]), root);
+    await waitFor(() => engine.isBlocked(run.runId, 'a1'));
+    engine.getRun(run.runId)!.sideEffects = { pushedAt: '2026-09-22T01:02:03.000Z' };
+    await engine.approve(run.runId, 'a1', { action: 'reject' });
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+    const f = engine.getRun(run.runId)!;
+    expect(f.state).toBe('failed'); // 对账不改收口判定：这单该红还是红
+    expect(f.nodes.a2!.equip).toBeUndefined(); // 没跑到的节点没实绑账 → 回落名义
+    expect(f.declares).toEqual([{ roleId: 'r-late', faces: { gitPush: false } }]);
+    expect(f.declareViolations).toEqual([
+      { roleId: 'r-late', face: 'gitPush', seen: '已推送 2026-09-22T01:02:03.000Z' },
+    ]);
+    expect(dvEvents(f)).toHaveLength(1);
+  });
+});

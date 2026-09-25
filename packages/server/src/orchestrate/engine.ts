@@ -23,12 +23,13 @@ import type {
   NodeAbandonmentTrigger,
   NodeEquip,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT, DECLARE_FACES } from '@paneflow/shared';
+import type { DeclareFace, RunDeclareViolation } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
-import { buildConventionBlock, loadRoles, roleEquipConfigured, type Role } from './roles.js';
+import { buildConventionBlock, buildDeclareBlock, loadRoles, normalizeDeclares, roleEquipConfigured, type Role } from './roles.js';
 import { effectiveRules, matchRules } from './rules.js';
 import { buildSkillBlock, resolveSkillRefs } from './skills.js';
 import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
@@ -1449,6 +1450,9 @@ export class Engine {
       for (const k of [...this.interruptedAttempts]) {
         if (k.startsWith(`${run.runId}:`)) this.interruptedAttempts.delete(k);
       }
+      // v13-W3 ②③ 授权声明收口对账（先记账再广播，与 cost 同一趟 persistAndNotify 落盘）：
+      // 声明与副作用账的落差落 warn 事件 + run.declareViolations——只照不拦，零状态判定改动。
+      this.reconcileDeclarations(run);
       run.cost = this.computeRunCost(run); // R6a：先记账再广播（持久化含 cost）
       this.persistAndNotify(run);
       this.pumpQueue(run.spaceId ?? 'default'); // G3：终态腾出额度，队列放行
@@ -2871,6 +2875,58 @@ export class Engine {
   }
 
   /**
+   * v13-W3 ②归因 + ③收口对账（每单终态恰好一次，跑在收口 persistAndNotify 之前）。
+   * 三面与 run 级副作用账恰一对一（gitPush↔pushedAt、prOpen↔prUrl、issueWrite↔
+   * issuesCreated/issuePatched，取材口径同 sideEffectsSummary）：声明 false 的面在账上
+   * 见到实态 → 落 run.declareViolations + 一条 warn 事件，**只照不拦**（评审 R5：名册外
+   * 引用同款姿态）——run/节点状态、退出码一律不碰。
+   * 节点→岗的绑定判据与 api/role-profile.ts sampleRunsForRole 完全同 precedence：
+   * W1 equip 落了册只认实绑 equip.role（实态>名义），没落册回落名义 config.role。
+   * 没声明、或没有副作用账 → 静默（与现状一字不变，绝不落事件）。
+   */
+  private reconcileDeclarations(run: RunRecord): void {
+    // 实绑岗集（去重：同岗多节点=一条账），读法照抄 sampleRunsForRole 的防御姿势
+    const bound: string[] = [];
+    const seenRoles = new Set<string>();
+    for (const gn of Array.isArray(run.graph?.nodes) ? run.graph.nodes : []) {
+      const rec = gn?.id ? run.nodes?.[gn.id] : undefined;
+      const nominalRole = typeof gn?.config?.role === 'string' ? gn.config.role : undefined;
+      const roleId = rec?.equip ? rec.equip.role : nominalRole; // equip 落了册只认实绑，回落名义仅给没落册的
+      if (!roleId || seenRoles.has(roleId)) continue;
+      seenRoles.add(roleId);
+      bound.push(roleId);
+    }
+    if (!bound.length) return;
+    const roles = loadRoles(this.store.root);
+    const declared: NonNullable<RunRecord['declares']> = [];
+    for (const roleId of bound) {
+      const faces = normalizeDeclares(roles.find((r) => r.id === roleId)?.declares);
+      if (faces) declared.push({ roleId, faces });
+    }
+    if (!declared.length) return;
+    run.declares = declared; // 声明账先落：无落差也要让 status 看得见「这岗声明过什么」
+    const se = run.sideEffects;
+    const violations: RunDeclareViolation[] = [];
+    for (const d of declared) {
+      for (const face of DECLARE_FACES) {
+        if (d.faces[face] !== false) continue; // true 是正断言永不违例；键缺=没声明，不对账
+        const seen = declaredFaceEvidence(se, face);
+        if (seen) violations.push({ roleId: d.roleId, face, seen });
+      }
+    }
+    if (!violations.length) return;
+    run.declareViolations = violations;
+    const detail = violations.map((v) => `岗「${v.roleId}」声明 ${v.face}=false，副作用账却见「${v.seen}」`).join('；');
+    this.recordEvent(
+      run,
+      'run',
+      undefined,
+      `⚠ declareViolation（W3 收口对账，只照不拦，单照常收口）：${detail}——归因为单级上界：` +
+        `副作用账没有逐节点分账，该岗上过本单任一节点即整单入账，不指认是哪一格干的；明细已结构化落 run.declareViolations`,
+    );
+  }
+
+  /**
    * v13-W2 本空间的班底名册（roleId 集，判据消费方是 shared.validateRoleRefs）。
    * 读法与 findGreenPredecessor 同款（跨空间即用即弃的 Store，不缓存）。
    * 档案不可读 → undefined（= 拿不到名册，一条不报，宁缺毋假）；team 缺省/空数组 →
@@ -2906,6 +2962,12 @@ export class Engine {
     const ctxFiles: Record<string, string> = {};
     const role = this.roleById(run, cfg.role);
     if (role?.prePrompt) parts.push(`${role.prePrompt}\n`);
+    // v13-W3 ①授权声明进 prompt（措辞诚实：声明非强制，见 buildDeclareBlock）。
+    // 声明块不进任何指纹：ctxSha 只按实读文件集算、roleSha 只按角色 id+装备路径集算——
+    // declares 是角色身份级配置，本版刻意不入两枚指纹（等臂/岗位 A/B 的等式不被声明噪声破，
+    // 声明与实态的落差自有收口对账落 declareViolations；要把声明做成机器证是指纹下一版的事）。
+    const declareBlock = buildDeclareBlock(role);
+    if (declareBlock) parts.push(declareBlock);
     let equip: NodeEquip | undefined;
     try {
       const profile = this.storeFor(run).readProfile();
@@ -3370,6 +3432,30 @@ export class Engine {
 
 function paneIdOf(rec: NodeRunRecord): string {
   return rec.paneId ?? '';
+}
+
+/**
+ * v13-W3 对账取材：一面在副作用账上的在册实态（人话一句，口径同 sideEffectsSummary 的
+ * 分项——建单/回写合并给 issueWrite 面）。没记到账 = ''（不可见 ≠ 没干，宁缺毋假：
+ * pushedAt 至今没有引擎写路径〔S1a 留键位不填〕，其落差要等账被填的那天才可能出）。
+ */
+function declaredFaceEvidence(se: RunRecord['sideEffects'], face: DeclareFace): string {
+  if (!se) return '';
+  switch (face) {
+    case 'gitPush':
+      return se.pushedAt ? `已推送 ${se.pushedAt}` : '';
+    case 'prOpen':
+      return se.prUrl ? `PR ${se.prUrl}` : '';
+    case 'issueWrite': {
+      const nums = (list?: number[]) => (list ?? []).map((n) => `#${n}`).join('、');
+      return [
+        se.issuesCreated?.length ? `建单${nums(se.issuesCreated)}` : '',
+        se.issuePatched?.length ? `回写${nums(se.issuePatched)}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+    }
+  }
 }
 
 function sleep(ms: number): Promise<void> {

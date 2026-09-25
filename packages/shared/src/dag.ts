@@ -437,6 +437,26 @@ export interface NodeAbandonment {
 }
 
 /**
+ * v13-W3 授权声明三面（`Role.declares?` 的合法面值；类型定义在 server roles.ts，这里放正身）。
+ * 三面与引擎唯一的副作用账 RunSideEffects 恰一对一可对账：gitPush↔pushedAt、
+ * prOpen↔prUrl、issueWrite↔issuesCreated/issuePatched。需求文档省略号里的 **writeScope 刻意不进**：
+ * 账上没有按路径可核对的写键，入库等于登一张永远抓不到落差的脸——「声明了却对不了账」
+ * 正是本片要防的静默失效，等有可核对的账再开面。
+ */
+export const DECLARE_FACES = ['gitPush', 'prOpen', 'issueWrite'] as const;
+export type DeclareFace = (typeof DECLARE_FACES)[number];
+/** Role.declares 的读端形状：三面全可选——键缺省=没声明（今天的行为一字不变），true 也是正断言（只是永不违例） */
+export type RoleDeclaredFaces = Partial<Record<DeclareFace, boolean>>;
+
+/** v13-W3 收口对账的一条声明与实态落差（如声明 gitPush=false 却现 pushedAt；只照不拦） */
+export interface RunDeclareViolation {
+  roleId: string;
+  face: DeclareFace;
+  /** 实见的在册证据（人话一句，与 sideEffects 账同源：「已推送 <时刻>」「PR <url>」「建单#12、回写#7」） */
+  seen: string;
+}
+
+/**
  * v13-W1 岗位装备解析账（三轴划界的可见面）：节点组 prompt 时「这一岗到底吃了什么文档」
  * 结构化落在节点记录上——与 v13-S2 掐断账同款卫生：不靠环形 events 字符串推导。
  * 三轴分工：空间级=事实与家规（无作用域 rules/conventionFiles + skills **登记清单**）、
@@ -580,6 +600,18 @@ export interface RunRecord {
    * 缺省=本单没有外解唤醒（旧记录向后兼容）。
    */
   externalReleases?: number;
+  /**
+   * v13-W3 授权声明账：本单实绑各岗（绑定判据与 W4 sampleRunsForRole 同源：equip.role 实绑优先、
+   * 回落名义 config.role）在岗库里声明的授权面，收口时落册（取值时点=收口时刻的岗库；同岗多节点只一条）。
+   * 缺省=本单没有任何岗声明过（旧记录同款整缺，宁缺毋假不造空账）。status 的授权行唯一依据。
+   */
+  declares?: { roleId: string; faces: RoleDeclaredFaces }[];
+  /**
+   * v13-W3 收口对账落差：声明 false 的面却在副作用账上见到实态（如 declare gitPush=false 却现 pushedAt）。
+   * **只照不拦**——warn 级事件 + 本结构化账（评审 R4：不靠环形 events 推导），不改 run/节点状态与退出码。
+   * 缺省=无落差（或没声明/无副作用账=静默，与现状一字不变）。归因边界：单级上界（见事件文案）。
+   */
+  declareViolations?: RunDeclareViolation[];
 }
 
 /**
