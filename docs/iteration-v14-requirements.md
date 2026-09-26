@@ -279,7 +279,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 
 ## 八、与 v13 的接续（账面清点，2026-09-26 更新：硬前置已还清）
 
-- 已完成：v13 的 S/V/E/W/B/K 系 **22 片**，最后一笔 **K1 `a745c50`**（产物台账与硬引用）；18 笔未推 origin/main（推需明示）。
+- 已完成：v13 的 S/V/E/W/B/K 系 **22 片**，最后一笔 **K1 `a745c50`**（产物台账与硬引用）；未推 origin/main 见本仓 `git log origin/main..HEAD`（推需明示）。
 - **前置-0 还清实录（原判据「server 落地或退文档」，处置=落地，不退文档）**：server 侧新增 `orchestrate/products.ts`
   （声明清洗/实读算 sha/上架/取用同一处判据）+ 引擎收口采集点 `collectNodeProducts` + 硬引用替换
   （`{{artifact:节点/名}}` 解析不到=本节点即时失败）；`/api/runs/:id/artifacts` 实返已含
