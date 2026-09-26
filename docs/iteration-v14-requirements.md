@@ -123,8 +123,19 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 - **R4 探测单通道**：一个 probe 调度（缓存 / 超时 / 强刷一份实现），复用既有件：`env-check.ts:27-101` 60s 缓存 +
   `:103 clearAgentProbeCache` 失效钩子、`herdr-ops.ts:120-128 probeAgent` 三态。
   **超时＝未知，绝不并入 `gone`**（探针通道自己造假缺就是造第二个 684 绿假账）。
-  可感面：`paneflow registry probe agent-kind:pi` → `ok · /opt/homebrew/bin/pi`；
+  可感面（立项原文）：`paneflow registry probe agent-kind:pi` → `ok · /opt/homebrew/bin/pi`；
   `paneflow registry probe model:gpt-x --timeout 10s` → `未知 · 探测超时 10s（未探得，不等于不可用）`。
+  **实跑到的可感面（1323bf5 + 本片，两条改判都记在这里，不留原文措辞冒充已交付）**：
+  - `paneflow registry probe <id> [--refresh]` → `● model:u1appnuf  glmcn/glm-4.7 · 档=default · 免费位 … 被 1 处用  ·· 在「默认档」的实探清单里（528 枚中第 512 枚 · 它正挂在免费位）` + 一行 `读数时刻 …（缓存）`；
+    落点 `GET /api/registry/:id/health`（与批量面 `/api/registry/health`、`/api/gateway/catalog` **同一份缓存**，
+    `registry-health.test.ts` 用命中计数器证：换消费者/换粒度零重探，`?refresh=1` 才 +1）。
+  - 改判一：**输出用 `●/○/?` 三枚点，不是原文的 `ok ·`**——批量面（首屏那张表）先落了三态画法，
+    单枚面再自创一套「ok/not」就是同一读数两个口径（§一「一份判据」）。三态各画各的、未知绝不并入「不在」。
+  - 改判二：**`--timeout` 不做**。原文那句 `探测超时 10s` 想证的性质（超时＝未知）已经由共享通道保证：
+    `probeGatewayModels` 自带 6s AbortSignal，掐表一律落 `error`→`unknown`（不是空清单→`missing`）。
+    给人一根可调秒针=在探针通道上再开一个入口，且改的是**别人**那一档的耗时预算，不是这条命令的判据。
+    于是 `paneflow registry probe agent-kind:pi` 那枚样张**仍挂在 A3-2**：今天 `REGISTRY_KINDS` 只有 `model`
+    （`shared/registry.ts:44`），表里没有 agent-kind 条目可探——那是 kind 进表的波次问题，不是探针缺件。
 - **R5 逐单能力快照账（v0.1 `regSha=活行内容指纹` 判死，重设计）**：run 记录存
   `capabilityRefs: [{kind, id, specSha, spec}]`——解析现场**快照整份 spec 副本**，`specSha=contentSha(规范化 spec)`，
   用 `harness.ts:16-33` 现成 canonical 内容指纹；比对与分组用**整单不可变集**的指纹，不引用活行。
@@ -391,10 +402,10 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 |---|---|---|---|---|
 | 前置-0 | K1 收口（server 落地或退文档；单测去 stub 假 payload） | **已完成 `a745c50`** | `a745c50` | CLI `产物:` 行 + 架侧 `src=shelf` 取证已复验（server 721 绿） |
 | 前置-1 | agent-kind 两枚白名单合一 | **已完成** | `4d91ae8` | 无新增用户可见面（合一片）；机证=6 条判据（两表键集相等／唯一改名项 `antigravity-cli→antigravity`／清单外按原名探／`isAgentKind` 破烂拒）+ 真路由两条（`/api/health` 的 `agentKinds` 与 `PUT /api/spaces` 值域同源）；现网实测：合一前起的实例仍在跑，其 `agentKinds` 18 枚与新表**逐项相等**（兼容带）；server 全量 **727/727**（51 文件）· typecheck 净 |
-| R1 | 统一信封 + Descriptor + 四动词（表单主路） | 未开工 | — | — |
-| R2 | 引用索引 + 写端拒悬挂/拒删被引用 | 未开工 | — | — |
+| R1 | 统一信封 + Descriptor + 四动词（表单主路） | **已完成 `9b2a7ae`** | `9b2a7ae` | `paneflow registry list/get/refs/add`（`3de8ef4`）+ 网页表单（`10bc315`）现网实跑：`注册表 schema v1（由 0.2.0 写）· 这版认识：model`；版本戳「遇更高版本拒启」有真路由断言 |
+| R2 | 引用索引 + 写端拒悬挂/拒删被引用 | **已完成 `b2f3d29`** | `b2f3d29` | `paneflow registry list` 尾行现网实跑：`引用账：扫过 116 处跨面裸串引用 · 指向已迁类型却查不到条目 0 处 · 指向未迁类型 115 处（未迁的不判死活）`；写端两条 400（拒删被引用/禁用被引用）带逐处出处 |
 | R3 | 只读聚合视图（逐 kind 亮分组；不搬数据） | 未开工 | — | — |
-| R4 | 探测单通道（复用缓存与三态） | 未开工 | — | — |
+| R4 | 探测单通道（复用缓存与三态） | **已完成 `1323bf5` + 单枚探针补齐（本片）** | `1323bf5` | 批量：`paneflow registry health` 现网实跑（`实探 1 项：●1 ○0 ?0 · 悬挂 0 · 没人用 0`）；单枚：`paneflow registry probe model:u1appnuf` → `● … ·· 在「默认档」的实探清单里（528 枚中第 512 枚 · 它正挂在免费位）` + `读数时刻`。**同一份缓存=命中计数器机证**（list 0 探／health 1／再 health 1／catalog 1／`?refresh=1` 2）。两条改判（`●/○/?` 替 `ok ·`、`--timeout` 不做）见 §二 R4 |
 | R5 | 能力快照账（capabilityRefs + specSha + cap#） | 未开工 | — | — |
 | T1 | 节点类型清单 + driver 只读数契约 | 未开工 | — | — |
 | T2 | 旧流程留引擎（判决表已改判） | 判决完成 | — | — |
@@ -402,8 +413,11 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | T4 | 插件 / MCP 承载 | 待裁决 §七 Q4 | — | — |
 | W5 | 全站手填面清点 | 未开工 | — | — |
 | W6 | `roleShaV: 2` | 待裁决 §七 Q3 | — | — |
-| E1 | 环境发现器（只读） | 未开工 | — | — |
+| E1 | 环境发现器（只读） | **已完成 `e37d7b3`** | `e37d7b3` | `paneflow env probe <目录> [--json]` 七类草案逐项带依据（发现自哪个相对路径）；探测失败落 `missing`+一句为什么，不是 400 |
 | E2 | 一次事务登记 + 向导四步 | 未开工·门控 | — | — |
-| X1 | 注册中心视图（现役控件对照） | 待裁决 §七 Q5 | — | — |
+| X1 | 注册中心视图（现役控件对照） | **首屏已完成 `10bc315`**（全量仍待 §七 Q5） | `10bc315` | 网页「注册中心」= 一张表（分组/label/来源/启停/删除）+ 健康点 ●/○/? + 被引用数 + 表单登记（不写 JSON）；**机证=真浏览器 DOM 断言**（innerText + `.dot` class/title），截图未取到（应用内视口不可用），M0 样张③ 的「肉眼看到」这条仍欠 |
 | X2 | CLI 三处必动 + AGENTS/README + 发行 v0.3.0 | 未开工 | — | — |
 | X3 | 实机首驾（零手填路径全程） | 未开工 | — | — |
+
+**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（本片起算 56 文件 / **801** 绿，web 11/71、cli 3/62 同步绿，`pnpm typecheck` 净）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉未证**（同上 X1 行）。
+

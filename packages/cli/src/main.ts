@@ -16,6 +16,7 @@ import {
   type RegistryEntryView,
   type RegistryHealthView,
   type RegistryListView,
+  type RegistryProbeView,
   type RunView,
 } from './types.js';
 
@@ -80,6 +81,7 @@ const USAGE = [
   '  paneflow registry refs <id> [--json]                       「谁在用这一项」纯读反查（缺 refs 键＝引用账没读出来，不等于没人用）',
   '  paneflow registry health [--refresh] [--json]              v14-R4 健康读数：逐条目实探（●在 / ○不在 / ?未知，探不通绝不并成○）＋被引用数＋悬挂清单；',
   '                                                              与 /api/gateway/catalog 共用同一份缓存（--refresh 绕开），探测慢不拖读表；恒退 0（这是读数不是判定）',
+  '  paneflow registry probe <id> [--refresh] [--json]          v14-R4 单枚探针：只探这一条，吃同一份缓存（三态同上；这一类没探针通道时明说「不判死活」）',
   '  paneflow registry add --from <草案.json> [--json]          脚本/agent 专用的登记通道（日常登记走网页「注册中心」表单；脏形状由 server 400 一句人话指路）',
   '',
   '地址解析：--url > $PANEFLOW_URL > ~/.paneflow/cli.json 的 url > http://127.0.0.1:4310',
@@ -635,8 +637,35 @@ async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<numb
       }
       return EXIT_OK;
     }
+    case 'probe': {
+      // 单枚探针：只探这一条。TTL/强刷/密钥的判据全在 server 那一侧那份缓存里（R4 单通道），
+      // 这里只透传 --refresh；自己算「该不该重探」就是抄第二份实现。
+      requirePos(args, 2, 'paneflow registry probe <id>');
+      const id = args.positional[1]!;
+      const { body } = await request<RegistryProbeView>(
+        io,
+        baseUrl,
+        'GET',
+        `/api/registry/${encodeURIComponent(id)}/health${args.bools.has('refresh') ? '?refresh=1' : ''}`,
+      );
+      // --json 直吐 server 的 `{at, entry, health?}`：没有通道时 `health` 整键不在，不替它造 null
+      if (jsonOr(args)) {
+        dump(io, body);
+        return EXIT_OK;
+      }
+      if (!body.health) {
+        io.out(`${paint(io, '90', '—')} ${entryLine(io, body.entry).trim()}${paint(io, '90', '  ·· 这一类没有探针通道（不判死活）')}`);
+        return EXIT_OK;
+      }
+      const m = HEALTH_MARK[body.health.status] ?? { mark: body.health.status, color: '90' };
+      io.out(
+        `${paint(io, m.color, m.mark)} ${entryLine(io, body.entry).trim()}${body.health.cached ? paint(io, '90', `  ·· ${body.health.detail}（缓存）`) : `  ·· ${body.health.detail}`}`,
+      );
+      if (body.health.at) io.out(`  读数时刻 ${body.health.at}${body.health.cached ? '（吃的缓存，不是这次现探的）' : ''}`);
+      return EXIT_OK;
+    }
     default:
-      throw new Error('paneflow registry 目前只有 list / get / refs / add / health 五枚（改和删走网页「注册中心」，写端守卫的中文解释由 server 给出）');
+      throw new Error('paneflow registry 目前只有 list / get / refs / add / health / probe 六枚（改和删走网页「注册中心」，写端守卫的中文解释由 server 给出）');
   }
 }
 

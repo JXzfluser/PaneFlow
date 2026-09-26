@@ -26,9 +26,16 @@ const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'pf-reg-health-'
 const HOST = '127.0.0.1:4310';
 const BASE = 'http://127.0.0.1:19099';
 
-async function build() {
+async function build(stubEntries?: RegistryEntry[]) {
   const dataDir = tmp();
-  const registry = new RegistryStore(dataDir, '0.3.0-test');
+  /**
+   * 桩盘面**只在测「这一类没有探针通道」时用**：今天只有 `model` 进了表（`REGISTRY_KINDS`），
+   * 走真 store 写不进第二枚 kind（会被 400 拒），而路由那格的「整键不给」必须在 HTTP 面证到
+   * ——只测 `entryHealth` 返回 undefined，等于没证路由不把 undefined 写成 `null`。
+   */
+  const registry = stubEntries
+    ? ({ load: () => ({ entries: stubEntries, rejected: [] }), readSchema: () => null } as unknown as RegistryStore)
+    : new RegistryStore(dataDir, '0.3.0-test');
   const { app } = await buildHttpServer({
     engine: { onChange: () => {} } as unknown as Engine,
     store: {} as unknown as Store,
@@ -193,8 +200,99 @@ describe('v14-R4 单通道：缓存只有一份实现', () => {
   });
 });
 
-describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {
-  it('freeModel 没人登记＝悬挂裸串（E2 的登记输入）；登记同值后引用账改口，悬挂归零', async () => {
+describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow registry probe <id>` 的落点）', () => {
+  /** id 里的 `:` 按 CLI 的写法编码：路由要能把 `model%3Agpt-4o-mini` 还原成盘上那枚 id */
+  const probeUrl = (id: string, q = '') => `/api/registry/${encodeURIComponent(id)}/health${q}`;
+
+  it('只探这一条：detail 是 server 那句人话，且与批量面/catalog 吃同一份缓存（不重探）', async () => {
+    const { app, dataDir } = await build();
+    try {
+      gatewayDoc(dataDir, [{ id: 'p-free', name: '免费档', freeModel: 'gpt-4o-mini' }], 'p-free');
+      const probe = stubModels([{ models: ['gpt-4o-mini'] }]);
+      await app.inject({ method: 'POST', url: '/api/registry', headers: { host: HOST }, payload: MODEL('gpt-4o-mini') });
+
+      const res = await get(app, probeUrl('model:gpt-4o-mini'));
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.entry.id).toBe('model:gpt-4o-mini');
+      expect(body.entry.label).toBe('gpt-4o-mini'); // 单枚面也带 label/refs，CLI 不必二次请求
+      expect(body.entry.refs).toEqual([{ face: 'gateway', id: 'p-free', name: '免费档', via: 'freeModel' }]);
+      expect(body.health.status).toBe('live');
+      expect(body.health.detail).toContain('在「免费档」的实探清单里');
+      expect(probe.hits()).toBe(1);
+
+      await get(app, probeUrl('model:gpt-4o-mini'));
+      expect(probe.hits()).toBe(1); // 自家缓存
+
+      const catalog = await get(app, '/api/gateway/catalog');
+      expect(catalog.json().profiles[0].models).toEqual(['gpt-4o-mini']);
+      expect(probe.hits()).toBe(1); // 与 catalog 同一份实现：换了消费者不重探
+
+      const batch = await get(app, '/api/registry/health');
+      expect(batch.json().entries[0].health.status).toBe('live');
+      expect(probe.hits()).toBe(1); // 批量面与单枚面也是同一份：换粒度不重探
+
+      await get(app, probeUrl('model:gpt-4o-mini', '?refresh=1'));
+      expect(probe.hits()).toBe(2); // 强刷仍走同一道闸
+      const again = await get(app, probeUrl('model:gpt-4o-mini'));
+      expect(probe.hits()).toBe(2); // 强刷那一探也落进同一份缓存，下一次照吃
+      expect(JSON.stringify(again.json())).not.toContain('sk-secret');
+    } finally {
+      vi.unstubAllGlobals();
+      await app.close();
+    }
+  });
+
+  it('id 不在表上＝404 一句指路，不是空读数也不是 unknown（「没这条」与「探不通」分家）', async () => {
+    const { app, dataDir } = await build();
+    try {
+      gatewayDoc(dataDir, [{ id: 'p-free', name: '免费档' }], 'p-free');
+      const probe = stubModels([{ models: ['gpt-4o'] }]);
+      const res = await get(app, probeUrl('model:gpt-nope'));
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toContain('model:gpt-nope');
+      expect(body.error).toContain('先 GET /api/registry');
+      expect(body.health).toBeUndefined();
+      expect(probe.hits()).toBe(0); // 不存在的条目不配打网络
+    } finally {
+      vi.unstubAllGlobals();
+      await app.close();
+    }
+  });
+
+  it('这一类没有探针通道＝`health` 整键不给（路由不把它写成 null）；同一条盘上 `/api/registry/health` 仍落批量那一刀', async () => {
+    const role = {
+      id: 'role:r-x',
+      kind: 'role',
+      name: '交付岗',
+      source: 'user',
+      enabled: true,
+      createdAt: '2026-09-26T10:00:00.000Z',
+      updatedAt: '2026-09-26T10:00:00.000Z',
+      spec: {},
+    } as unknown as RegistryEntry;
+    const { app } = await build([role]);
+    try {
+      stubModels([{ models: [] }]);
+      const body = (await get(app, probeUrl('role:r-x'))).json();
+      expect(body.entry.id).toBe('role:r-x');
+      // descriptor 没挂号时 label 兜 name（不返空串冒充标签）
+      expect(body.entry.label).toBe('交付岗');
+      expect('health' in body).toBe(false);
+      // 静态段 vs 参数段的优先级：`/api/registry/health` 不能被 `:id` 吞成「探 id 叫 health 的条目」
+      const batch = (await get(app, '/api/registry/health')).json();
+      expect(batch.entries).toHaveLength(1);
+      expect(batch.summary).toMatchObject({ scanned: 0, probed: 0 });
+      expect('health' in batch.entries[0]).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      await app.close();
+    }
+  });
+});
+
+describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {  it('freeModel 没人登记＝悬挂裸串（E2 的登记输入）；登记同值后引用账改口，悬挂归零', async () => {
     const { app, dataDir } = await build();
     try {
       gatewayDoc(dataDir, [{ id: 'p-free', name: '免费档', freeModel: 'gpt-9' }], 'p-free');

@@ -182,6 +182,34 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     return { entry: view(entry, idx.index) };
   });
 
+  /**
+   * v14 R4 单枚探针（`paneflow registry probe <id>` 的落点）：只探这一条，吃**同一份**实探缓存。
+   *
+   * 为什么不并进上面的 `:id`：那一刀是纯读盘（详情抽屉每开合一次都跑它），把网络实探塞进去就等于
+   * 网关慢起来时连「这条登记了什么」都读不出——和 `/api/registry` 与 `/api/registry/health` 同一把分刀。
+   *
+   * `health` 整键不给＝这一类没有探针通道（与批量那一刀的 宁缺毋假 同形，不是 `null` 不是 unknown）。
+   */
+  app.get<{ Params: { id: string }; Querystring: { refresh?: string } }>(
+    '/api/registry/:id/health',
+    async (req, reply) => {
+      let snapshot;
+      try {
+        snapshot = deps.registry.load();
+      } catch (err) {
+        return reply.code(500).send({ error: `注册表读不出：${(err as Error).message}` });
+      }
+      const entry = snapshot.entries.find((e) => e.id === req.params.id);
+      if (!entry) {
+        return reply.code(404).send({ error: `注册表里没有「${req.params.id || '（空）'}」，先 GET /api/registry 看现有 id` });
+      }
+      const idx = indexOf(deps, snapshot.entries);
+      if ('why' in idx) return reply.code(500).send({ error: idx.why });
+      const health = await entryHealth(deps.dataDir, entry, { refresh: req.query.refresh === '1' });
+      return { at: new Date().toISOString(), entry: view(entry, idx.index), ...(health ? { health } : {}) };
+    },
+  );
+
   app.post<{ Body: unknown }>('/api/registry', async (req, reply) => {
     const r = deps.registry.add(req.body);
     if (!r.ok) return reply.code(codeOf(r)).send({ error: r.why });

@@ -196,8 +196,26 @@ export interface RegistryListView {
  * `status` 按 string 读（日后加枚举不许把薄壳炸红）；`health` **缺键＝这一类没有探针通道**，
  * 与 `unknown`（探了没探通）、`missing`（探通了清单里没有）是三件事，各画各的。
  */
+/**
+ * R4 的一条实探读数（批量面与单枚面同形）。`status` 按 string 读（日后加枚举不许把薄壳炸红）；
+ * `detail` 是 server 的一句人话，为什么这么判全在里面。
+ */
+export interface RegistryHealthReadout {
+  status: string;
+  detail: string;
+  at?: string;
+  cached?: boolean;
+}
+
 export interface RegistryHealthRow extends RegistryEntryView {
-  health?: { status: string; detail: string; at?: string; cached?: boolean };
+  health?: RegistryHealthReadout;
+}
+
+/** `GET /api/registry/:id/health`（单枚探针 `paneflow registry probe <id>`） */
+export interface RegistryProbeView {
+  at?: string;
+  entry: RegistryEntryView;
+  health?: RegistryHealthReadout;
 }
 
 export interface RegistryHealthView {

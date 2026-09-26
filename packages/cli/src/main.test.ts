@@ -743,16 +743,17 @@ describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全�
     expect(bad.errLines.join('\n')).toContain('spec 含未知键 frimo'); // 文案原样透传，CLI 不自造判据
   });
 
-  it('add 的参数缺口当场报错（不静默发空体）；未知子动词列出现役五枚', async () => {
+  it('add 的参数缺口当场报错（不静默发空体）；未知子动词列出现役六枚', async () => {
     const { io, errLines } = makeIo({ readFile: () => null });
     expect(await main(['registry', 'add'], io)).toBe(1);
     expect(errLines.join('\n')).toContain('--from');
     const noFile = makeIo({ readFile: () => null });
     expect(await main(['registry', 'add', '--from', './gone.json'], noFile.io)).toBe(1);
     expect(noFile.errLines.join('\n')).toContain('草案读不出：./gone.json');
+    // 这里必须用真没挂号的动词：`probe` 自 R4 起是现役命令，拿它当「未知动词」样本会测错方向
     const verb = makeIo();
-    expect(await main(['registry', 'probe', 'x'], verb.io)).toBe(1);
-    expect(verb.errLines.join('\n')).toContain('只有 list / get / refs / add / health');
+    expect(await main(['registry', 'drop', 'x'], verb.io)).toBe(1);
+    expect(verb.errLines.join('\n')).toContain('只有 list / get / refs / add / health / probe');
     // USAGE 里点不到就等于命令不存在（v14 §X2 三处必动之一）
     const h = makeIo();
     expect(await main(['--help'], h.io)).toBe(0);
@@ -847,6 +848,90 @@ describe('registry health（v14-R4：三态各画各的，探通不通是两回�
     const h = makeIo();
     expect(await main(['--help'], h.io)).toBe(0);
     expect(h.lines.join('\n')).toContain('paneflow registry health');
+  });
+});
+
+describe('registry probe（v14-R4 单枚探针：只探一条，三态与批量面同一套画法）', () => {
+  const entry = {
+    id: 'model:gpt-4o-mini',
+    kind: 'model',
+    name: 'gpt-4o-mini',
+    source: 'user',
+    enabled: true,
+    createdAt: '2026-09-26T10:00:00.000Z',
+    label: 'gpt-4o-mini · 档=free',
+    refs: [{ face: 'gateway', id: 'free', name: '免费档', via: 'freeModel' }],
+  };
+
+  it('●/○/? 各画各的 + server 的 detail 整句照读；读数时刻单独一行（缓存不藏）', async () => {
+    const { fetchImpl, calls } = stubFetch([
+      { body: { at: '2026-09-26T12:00:00.000Z', entry, health: { status: 'live', detail: '在「免费档」的实探清单里（12 枚中第 3 枚）', at: '2026-09-26T11:59:00.000Z', cached: true } } },
+      { body: { entry, health: { status: 'missing', detail: '「免费档」的实探清单（共 12 枚）里都没有「gpt-9」', at: '2026-09-26T11:59:00.000Z', cached: false } } },
+      { body: { entry, health: { status: 'unknown', detail: '未探得：「免费档」HTTP 503（没探通不等于不可用）', at: '2026-09-26T11:59:00.000Z', cached: false } } },
+    ]);
+    const a = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'probe', 'model:gpt-4o-mini'], a.io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/registry/model%3Agpt-4o-mini/health');
+    const first = a.lines.join('\n');
+    expect(first).toContain('● model:gpt-4o-mini');
+    expect(first).toContain('在「免费档」的实探清单里（12 枚中第 3 枚）（缓存）');
+    expect(first).toContain('读数时刻 2026-09-26T11:59:00.000Z（吃的缓存，不是这次现探的）');
+
+    const b = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'probe', 'model:gpt-9'], b.io)).toBe(0);
+    expect(b.lines.join('\n')).toContain('○');
+
+    const c = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'probe', 'model:other'], c.io)).toBe(0);
+    const out = c.lines.join('\n');
+    expect(out).toContain('? model:gpt-4o-mini');
+    expect(out).toContain('没探通不等于不可用');
+    // 探不通这一行绝不许出现「不在」那枚点——与批量面同一条纪律
+    expect(out).not.toContain('○');
+  });
+
+  it('没有探针通道的 kind：明说「不判死活」，不画点也不画 unknown；三态之外的新读数原样落灰', async () => {
+    const { fetchImpl } = stubFetch([
+      { body: { entry: { ...entry, id: 'role:r-x', kind: 'role', refs: [] } } },
+      { body: { entry, health: { status: 'sick', detail: '这版 CLI 没见过的读数', at: 'x', cached: false } } },
+    ]);
+    const a = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'probe', 'role:r-x'], a.io)).toBe(0);
+    const bare = a.lines.join('\n');
+    expect(bare).toContain('这一类没有探针通道（不判死活）');
+    expect(bare).not.toMatch(/[●○?]/);
+    expect(bare).not.toContain('null'); // health 整键不给时不替它造读数
+
+    const b = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'probe', 'model:gpt-4o-mini'], b.io)).toBe(0);
+    expect(b.lines.join('\n')).toContain('sick');
+  });
+
+  it('--refresh 透传成 query；--json 原样负载（health 缺键就是缺键，不写 null）；server 404 的一句指路照带出退 1', async () => {
+    const { fetchImpl, calls } = stubFetch([
+      { body: { at: 'x', entry, health: { status: 'live', detail: '在', at: 'y', cached: false } } },
+      { body: { at: 'x', entry, health: { status: 'live', detail: '在', at: 'y', cached: false } } },
+      { status: 404, body: { error: '注册表里没有「model:gpt-nope」，先 GET /api/registry 看现有 id' } },
+    ]);
+    const r = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'probe', 'model:gpt-4o-mini', '--refresh'], r.io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/registry/model%3Agpt-4o-mini/health?refresh=1');
+
+    const j = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'probe', 'model:gpt-4o-mini', '--json'], j.io)).toBe(0);
+    expect(JSON.parse(j.lines.join('\n'))).toEqual({ at: 'x', entry, health: { status: 'live', detail: '在', at: 'y', cached: false } });
+
+    const bad = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'probe', 'model:gpt-nope'], bad.io)).toBe(1);
+    expect(bad.errLines.join('\n')).toContain('先 GET /api/registry');
+
+    // 缺 id 与 USAGE：命令面点不到就等于不存在
+    const none = makeIo();
+    expect(await main(['registry', 'probe'], none.io)).toBe(1);
+    expect(none.errLines.join('\n')).toContain('paneflow registry probe <id>');
+    const h = makeIo();
+    expect(await main(['--help'], h.io)).toBe(0);
+    expect(h.lines.join('\n')).toContain('paneflow registry probe <id>');
   });
 });
 
