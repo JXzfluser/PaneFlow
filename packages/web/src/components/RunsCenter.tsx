@@ -30,6 +30,10 @@ type ArtifactFile = {
   name: string;
   size: number;
   mtime: string;
+  /** v13-K1 一处清单两个来源：workspace=工作区直写（随 worktree 回收蒸发）、shelf=引擎上架副本 */
+  source?: 'workspace' | 'shelf';
+  /** 架侧条目挂台账指纹（引擎读原文实算）；对不上账的内容端点直接拒读 */
+  sha?: string;
   nodeId?: string;
   nodeLabel?: string;
   nodeState?: string;
@@ -111,7 +115,7 @@ function ArchivedPanel() {
   const purge = async (runId: string) => {
     if (!window.confirm(`真删除 ${runId}？\n\n记录文件将从磁盘移除，不可恢复。`)) return;
     const alsoArtifacts = window.confirm(
-      '一并清理该 run 的产物文件？\n\n只删工作区 .herdr/artifacts 下与本 run 节点同名的结果文件，其它文件不动。\n点「取消」= 保留产物（默认）。',
+      '一并清理该 run 的产物文件？\n\n只删工作区 .herdr/artifacts 下与本 run 节点同名的结果文件，加上引擎上架到产物架的整份副本（架上那些是 worktree 回收后唯一还在的原文）；其它文件不动。\n点「取消」= 保留产物（默认）。',
     );
     try {
       await fetchJson<{ deleted: boolean; purgedArtifacts: number }>(
@@ -290,8 +294,8 @@ export function RunsCenter() {
     }
   };
 
-  const viewArtifact = async (runId: string, name: string) => {
-    const key = `${runId}:${name}`;
+  const viewArtifact = async (runId: string, f: ArtifactFile) => {
+    const key = `${runId}:${f.name}`;
     if (artView[key]) {
       setArtView((c) => {
         const next = { ...c };
@@ -303,7 +307,8 @@ export function RunsCenter() {
     try {
       const d = await fetchJson<{ content: string; truncated: boolean }>(
         'GET',
-        `/api/runs/${encodeURIComponent(runId)}/artifacts/file?path=${encodeURIComponent(name)}`,
+        // v13-K1：架上条目必须带 src=shelf 才读得到（工作区侧同格路径没有这份东西），两侧不混为一谈
+        `/api/runs/${encodeURIComponent(runId)}/artifacts/file?path=${encodeURIComponent(f.name)}&src=${f.source ?? 'workspace'}`,
       );
       setArtView((c) => ({ ...c, [key]: d.content + (d.truncated ? '\n…（内容过大，已截断——用「下载」看全文）' : '') }));
     } catch (e) {
@@ -592,13 +597,18 @@ export function RunsCenter() {
                             <Icon name="alert" size={10} /> 未验证
                           </span>
                         )}
+                        {f.source === 'shelf' && (
+                          <span className="artifact-chip" title={`引擎上架的副本，工作区被回收后仍可取证${f.sha ? ` · 台账指纹 ${f.sha}` : ''}`}>
+                            <Icon name="shelf" size={10} /> 架上{f.sha ? `·${f.sha}` : ''}
+                          </span>
+                        )}
                         <span className="dim">
                           {(f.size / 1024).toFixed(1)} KB · {f.mtime.slice(0, 19).replace('T', ' ')}
                         </span>
-                        <button onClick={() => void viewArtifact(r.runId, f.name)}>{artView[viewKey] ? '收起' : '查看'}</button>
+                        <button onClick={() => void viewArtifact(r.runId, f)}>{artView[viewKey] ? '收起' : '查看'}</button>
                         <a
                           className="artifact-dl"
-                          href={`/api/runs/${encodeURIComponent(r.runId)}/artifacts/file?path=${encodeURIComponent(f.name)}&raw=1`}
+                          href={`/api/runs/${encodeURIComponent(r.runId)}/artifacts/file?path=${encodeURIComponent(f.name)}&src=${f.source ?? 'workspace'}&raw=1`}
                           download={f.name}
                           title="下载原文件"
                         >

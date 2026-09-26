@@ -189,9 +189,47 @@ export interface Artifact {
   aligned?: string;
   /** Raw terminal output snapshot at completion (fallback when file missing) */
   outputTail?: string;
+  /**
+   * v13-K1 命名产物声明位（见 ProductDecl 的「声明/实算分两家」理由）。缺省=本节点没声明产物
+   * （与「声明了零件」分家：破烂条目整条不记并落一条 warn，宁缺毋假）。
+   */
+  products?: ProductDecl[];
   /** Whether this artifact came from the result file or the output fallback */
   source: 'file' | 'output-fallback' | 'empty';
   finishedAt: string;
+}
+
+/**
+ * v13-K1 命名产物的**声明位**（artifact.json 的 `products` 数组条目）。
+ * 需求文档把台账形状写成 `{name,kind,sha,bytes}`——这里刻意分两家：agent 只声明
+ * 「我产出了什么、文件在哪」（name + 相对节点工作目录的 file），sha/bytes **由引擎读原文实算**。
+ * 理由不是洁癖：自报哈希等于没有哈希（v13-V1「机检/自报双口径」同族），而 K1 的立论正是
+ * 「下游引用自此可证审的就是这份」——证的东西必须出自引擎实读的那一版。
+ * kind 也不由声明决定：声明了 file 的=doc；`diff` 由引擎零约定自动采（agent 不用会写）。
+ */
+export interface ProductDecl {
+  name: string;
+  /** 相对该节点工作目录的文件路径；缺省=拿 name 当路径 */
+  file?: string;
+}
+
+/**
+ * v13-K1 命名产物台账（引擎在尝试收口现场实读实算，与 v13-W2 两枚 bit 同款「取值时点=发生的那一刻」）：
+ * 落 `NodeRunRecord.products`，重试=后一轮覆盖前一轮（记的是这一轮实发的东西）。
+ * `shelved` 说的是「这一份有没有真复制进 dataDir 产物架」——worktree 回收、agent 机器重启都卷不走架上一份，
+ * 这笔账的全部意义在此：`shelved:false` **也是读数**（超限被拒/读不到），不是失败也不是没产。
+ */
+export interface RunProduct {
+  /** 节点内唯一名（同名声明后面的整条不取，见 products.normalizeProductDecls）；上架时只取 basename 作文件名 */
+  name: string;
+  kind: 'doc' | 'diff';
+  /** 原文（文件内容或 patch 文本）的 sha256 前 8 位——bytesSha 口径，见 harness.ts */
+  sha: string;
+  /** UTF-8 字节数（不是字符数） */
+  bytes: number;
+  shelved: boolean;
+  /** shelved=false 时的一句人话（over-run-cap（…）/ write-failed:<原因>）；shelved=true 不写这个键 */
+  shelfError?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +604,11 @@ export interface NodeRunRecord {
    */
   blockedAt?: string;
   artifact?: Artifact;
+  /**
+   * v13-K1 命名产物台账（见 RunProduct）：尝试收口现场引擎实读实算，重试=后一轮覆盖前一轮。
+   * 缺省=本节点既没声明产物也不是 git 仓（「产了零件」与「没产」是两回事，不拿空数组冒充）。
+   */
+  products?: RunProduct[];
   error?: string;
   /**
    * v13-S2 掐断账：本节点每次被中途掐断的尝试各落一条（见 NodeAbandonment）。
@@ -968,6 +1011,26 @@ export function validateDag(graph: DagGraph): DagIssue[] {
       if (!n.config.prompt || !n.config.prompt.trim()) {
         issues.push({ level: 'error', message: `Agent 节点缺少任务指令（prompt）：${n.label}`, nodeId: n.id });
       }
+      // v13-K1 硬引用机检（写入面 fail-closed，与 v13-V0 同款姿势）：引用了图里没有的节点=配置打错，
+      // 宁可当场拒也不放行——放行了就是「下游引用一份永不存在的产物」，收口时红得莫名其妙
+      for (const ref of productRefsOf(n.config.prompt ?? '')) {
+        // 克隆前缀（fanout 展开态 design__2）模板期不存在、运行期才有账——按基名认，不误杀
+        const base = ref.nodeId.split('__')[0]!;
+        const known = nodes.some((m) => m.id === ref.nodeId || m.id === base);
+        if (!known) {
+          issues.push({
+            level: 'error',
+            message: `产物引用指向图外节点：{{artifact:${ref.nodeId}/${ref.name}}}（本图无节点「${ref.nodeId}」）：${n.label}`,
+            nodeId: n.id,
+          });
+        } else if (ref.nodeId === n.id) {
+          issues.push({
+            level: 'error',
+            message: `产物引用指向本节点自己（产物在收口才落册，取不到）：${n.label}`,
+            nodeId: n.id,
+          });
+        }
+      }
     }
     if ((n.type === 'start' || n.type === 'end') && (n.config.prompt || n.config.agentKind)) {
       issues.push({
@@ -1044,6 +1107,50 @@ export function renderPromptTemplate(
     const value = resolve(nodeId, path);
     return value === undefined ? whole : value;
   });
+}
+
+/**
+ * v13-K1 命名产物硬引用：`{{artifact:<nodeId>/<产物名>}}`。
+ * 与 `{{nodeId.field}}` 分家用冒号形态（TEMPLATE_REF 与 ANY_REF 都不认冒号，于是两族引用互不撞、
+ * 存量模板一字不变）。语义也不同，这一字之差就是本片的立论：
+ *  · `{{nodeId.field}}` 解析不到=字面放行（G2 只报告不拦，黑盒摘要本就可有可无）；
+ *  · 硬引用解析不到=**下游节点即时失败**——「审的就是那份」不许在没那份的时候照样成立。
+ */
+const PRODUCT_REF = /\{\{\s*artifact:\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*\/\s*([^\s{}]+?)\s*\}\}/g;
+
+export interface ProductRef {
+  nodeId: string;
+  name: string;
+  /** 引用原文（含花括号），报错文案与替换前定位用 */
+  raw: string;
+}
+
+/** 扫一段文本里的产物硬引用（形状非法的也返回，由调用方判名） */
+export function productRefsOf(text: string): ProductRef[] {
+  const out: ProductRef[] = [];
+  for (const m of text.matchAll(PRODUCT_REF)) out.push({ nodeId: m[1]!, name: m[2]!, raw: m[0] });
+  return out;
+}
+
+/**
+ * 渲染产物硬引用：resolve 返 undefined 的引用**不替换**，原样留在 text 里并进 missing
+ * ——引擎据 missing 判节点失败，绝不把没解析掉的 `{{artifact:...}}` 交给 agent 当指令读。
+ */
+export function renderProductRefs(
+  text: string,
+  resolve: (ref: ProductRef) => string | undefined,
+): { text: string; missing: ProductRef[] } {
+  const missing: ProductRef[] = [];
+  const rendered = text.replace(PRODUCT_REF, (whole, _nodeId: string, _name: string) => {
+    const ref: ProductRef = { nodeId: _nodeId, name: _name, raw: whole };
+    const value = resolve(ref);
+    if (value === undefined) {
+      if (!missing.some((m) => m.raw === whole)) missing.push(ref);
+      return whole;
+    }
+    return value;
+  });
+  return { text: rendered, missing };
 }
 
 // ---------------------------------------------------------------------------

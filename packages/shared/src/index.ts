@@ -34,6 +34,8 @@ export type {
   RunDeclareViolation,
   RunDeliveryWorktree,
   RunDeliveryViolation,
+  ProductDecl,
+  RunProduct,
   TemplateVariable,
   CheckSpec,
 } from './dag.js';
@@ -56,6 +58,9 @@ export {
   topoSort,
   upstreamOf,
   renderPromptTemplate,
+  productRefsOf,
+  renderProductRefs,
+  type ProductRef,
   applyVariables,
   lintUnresolvedRefs,
   type UnresolvedRef,

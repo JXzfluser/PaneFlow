@@ -10,6 +10,7 @@ import { Store } from '../orchestrate/store.js';
 import { experimentWriteStats, listExperimentRows, reconcileExperimentTables } from '../orchestrate/experiment.js';
 import type { SpaceProfile, TeamMember } from '../orchestrate/store.js';
 import { validateDelivery } from '../orchestrate/delivery.js';
+import { productShelfFile, purgeShelf, shelfRunDir } from '../orchestrate/products.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { loadContractLibrary, matchContractTemplate, renderContractTemplateBlock } from '../orchestrate/contract-templates.js';
 import { detectInstalledAgents, recommendAgentKind } from './env-check.js';
@@ -1767,6 +1768,8 @@ export async function buildHttpServer(deps: HttpDeps) {
         } catch {
           // 无产物目录 = 无可清理
         }
+        // v13-K1：purge 一并清本 run 的产物架——架是工作区蒸发后的第二现场，只清一侧=留痕删一半
+        purgedArtifacts += purgeShelf(deps.dataDir, req.params.id);
       }
       return { deleted: true, purgedArtifacts };
     }
@@ -1794,6 +1797,10 @@ export async function buildHttpServer(deps: HttpDeps) {
   });
 
   // v8-H2 产物货架：列 <run.cwd>/.herdr/artifacts 下的产物文件（文件名能对上节点 ID 的挂上节点信息）
+  // v13-K1：一处清单两个来源，各带 source——workspace 侧（agent 直接写进工作区的，随 worktree 回收蒸发）
+  // 与 shelf 侧（引擎上架到 dataDir 的，蒸发后仍可读）。两侧同列不是拼接展示：这条清单就是「这个 run 留下过
+  // 哪些东西」的唯一答案，少一侧=那一侧的账看不见。shelf 条目尽量挂上台账指纹（sha/bytes/shelved），
+  // 对不上台账只给 size/mtime（架上有文件是事实，台账里没有是另一件事实，不混着编）。
   app.get<{ Params: { id: string } }>('/api/runs/:id/artifacts', async (req, reply) => {
     const run = findRunRecord(req.params.id);
     if (!run) return reply.code(404).send({ error: 'not found' });
@@ -1802,10 +1809,14 @@ export async function buildHttpServer(deps: HttpDeps) {
       name: string;
       size: number;
       mtime: string;
+      source: 'workspace' | 'shelf';
       nodeId?: string;
       nodeLabel?: string;
       nodeState?: string;
       unverified?: boolean;
+      sha?: string;
+      bytes?: number;
+      shelved?: boolean;
     };
     const files: Entry[] = [];
     const walk = (d: string, rel: string) => {
@@ -1823,7 +1834,12 @@ export async function buildHttpServer(deps: HttpDeps) {
         } else if (ent.isFile()) {
           try {
             const st = fs.statSync(path.join(d, ent.name));
-            const e: Entry = { name: relName, size: st.size, mtime: st.mtime.toISOString() };
+            const e: Entry = {
+              name: relName,
+              size: st.size,
+              mtime: st.mtime.toISOString(),
+              source: 'workspace',
+            };
             const m = relName.match(/^([^/]+)\.json$/);
             const nodeId = m ? run.graph?.nodes.find((n) => n.id === m[1])?.id : undefined;
             if (nodeId) {
@@ -1841,45 +1857,105 @@ export async function buildHttpServer(deps: HttpDeps) {
       }
     };
     walk(dir, '');
+    const shelfDir = shelfRunDir(deps.dataDir, run.runId);
+    const shelfExists = fs.existsSync(shelfDir);
+    if (shelfExists) {
+      outer: for (const [nodeId, rec] of Object.entries(run.nodes)) {
+        let ents: fs.Dirent[];
+        try {
+          ents = fs.readdirSync(path.join(shelfDir, nodeId), { withFileTypes: true });
+        } catch {
+          continue; // 该节点没格子
+        }
+        for (const ent of ents) {
+          if (!ent.isFile()) continue;
+          if (files.length >= 300) break outer;
+          try {
+            const st = fs.statSync(path.join(shelfDir, nodeId, ent.name));
+            const e: Entry = {
+              name: `${nodeId}/${ent.name}`,
+              size: st.size,
+              mtime: st.mtime.toISOString(),
+              source: 'shelf',
+              nodeId,
+              nodeLabel: run.graph?.nodes.find((n) => n.id === nodeId)?.label,
+              nodeState: rec.state,
+            };
+            const p = rec.products?.find((x) => x.name === ent.name);
+            if (p) {
+              e.sha = p.sha;
+              e.bytes = p.bytes;
+              e.shelved = p.shelved;
+            }
+            files.push(e);
+          } catch {
+            // 竞态删除等：跳过
+          }
+        }
+      }
+    }
     files.sort((a, b) => a.mtime < b.mtime ? -1 : 1);
-    return { runId: run.runId, dir, exists: fs.existsSync(dir), files };
+    // exists=「这单有可看的产物（任一侧）」：工作区被回收而架上还有原件时，两侧答案不能只报「没有」
+    return { runId: run.runId, dir, exists: fs.existsSync(dir) || shelfExists, files };
   });
 
   // v8-H2 产物单文件读取：路径严格锁在产物目录内（防穿越）；raw=1 作下载
-  app.get<{ Params: { id: string }; Querystring: { path?: string; raw?: string } }>(
+  // v13-K1：?src=shelf 切到引擎上架侧（缺省 workspace=既有语义一字不变）。架侧的准入比工作区侧更严：
+  // 只认「台账里登记过且 shelved」的件，并且原文要与台账指纹对得上——这一格是「审的就是这份」的取证口，
+  // 拿得动一个没账的文件或对不上账的内容，就等于把整面架变成了任意文件读。
+  app.get<{ Params: { id: string }; Querystring: { path?: string; raw?: string; src?: string } }>(
     '/api/runs/:id/artifacts/file',
     async (req, reply) => {
       const run = findRunRecord(req.params.id);
       if (!run) return reply.code(404).send({ error: 'not found' });
-      const dir = path.join(run.cwd, '.herdr', 'artifacts');
       const rel = req.query.path ?? '';
       if (!rel) return reply.code(400).send({ error: '缺少 path 参数' });
-      const full = path.resolve(dir, rel);
-      if (full !== dir && !full.startsWith(dir + path.sep)) {
-        return reply.code(400).send({ error: '路径非法（只允许读取产物目录内文件）' });
+      const src = req.query.src ?? 'workspace';
+      if (src !== 'workspace' && src !== 'shelf') {
+        return reply.code(400).send({ error: 'src 只认 workspace / shelf' });
       }
-      let st: fs.Stats;
-      try {
-        st = fs.statSync(full);
-      } catch {
-        return reply.code(404).send({ error: '文件不存在' });
+      const dir = src === 'shelf' ? shelfRunDir(deps.dataDir, req.params.id) : path.join(run.cwd, '.herdr', 'artifacts');
+      let buf: Buffer;
+      if (src === 'shelf') {
+        const m = rel.match(/^([^/]+)\/(.+)$/);
+        const rec = m ? run.nodes[m[1]!] : undefined;
+        const p = m ? rec?.products?.find((x) => x.name === m[2]!) : undefined;
+        if (!m || !rec || !p) {
+          return reply.code(404).send({
+            error: '架侧只读台账登记过的件：path=<nodeId>/<产物名>（可读物见 /api/runs/:id/artifacts 的 source=shelf 条目）',
+          });
+        }
+        const got = productShelfFile(dir, m[1]!, p);
+        if ('why' in got) return reply.code(404).send({ error: `架上取不到：${got.why}` });
+        buf = Buffer.from(got.content, 'utf8');
+      } else {
+        const full = path.resolve(dir, rel);
+        if (full !== dir && !full.startsWith(dir + path.sep)) {
+          return reply.code(400).send({ error: '路径非法（只允许读取产物目录内文件）' });
+        }
+        let st: fs.Stats;
+        try {
+          st = fs.statSync(full);
+        } catch {
+          return reply.code(404).send({ error: '文件不存在' });
+        }
+        if (!st.isFile()) return reply.code(400).send({ error: '不是文件' });
+        buf = fs.readFileSync(full);
       }
-      if (!st.isFile()) return reply.code(400).send({ error: '不是文件' });
-      if (st.size > 5_000_000) return reply.code(413).send({ error: '产物文件过大（>5MB），请走导出或磁盘直读' });
+      if (buf.byteLength > 5_000_000) return reply.code(413).send({ error: '产物文件过大（>5MB），请走导出或磁盘直读' });
       if (req.query.raw === '1') {
-        const ext = path.extname(full).toLowerCase();
+        const ext = path.extname(rel).toLowerCase();
         const type = ext === '.json' ? 'application/json' : ext === '.md' ? 'text/markdown' : 'text/plain';
-        reply.header('Content-Disposition', `attachment; filename="${path.basename(full)}"`);
-        return reply.type(`${type}; charset=utf-8`).send(fs.readFileSync(full));
+        reply.header('Content-Disposition', `attachment; filename="${path.basename(rel)}"`);
+        return reply.type(`${type}; charset=utf-8`).send(buf);
       }
-      const buf = fs.readFileSync(full);
       const head = buf.subarray(0, 1024);
       if (head.includes(0)) return reply.code(415).send({ error: '二进制文件，不内联预览（可下载）' });
       const cap = 1_000_000;
       return {
         path: rel,
-        size: st.size,
-        truncated: st.size > cap,
+        size: buf.byteLength,
+        truncated: buf.byteLength > cap,
         content: buf.subarray(0, cap).toString('utf8'),
       };
     },

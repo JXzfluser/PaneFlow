@@ -330,6 +330,16 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
           `家规第 ${dw.ruleIndex + 1} 条（${dw.matchedBy === 'repo' ? '精确仓' : '通配副'}）`,
       );
     }
+    // v13-K1 产物行：命名产物清单（sha/bytes 是 server 读原文实算的机检口径，不是 agent 自报值）。
+    // shelved=false 是正读数（被 run 级字节上限拒了），照实标出来——下游引用这份之前得知道它在不在架上
+    if (n.products?.length) {
+      const bits = n.products.map((p) => {
+        const tag = `${p.name}(${p.sha}·${kBytes(p.bytes)})`;
+        return p.shelved ? tag : `${tag}⚠未上架${p.shelfError ? `：${p.shelfError}` : ''}`;
+      });
+      const line = `产物: ${bits.join(' · ')}`;
+      io.out(`    ${n.products.some((p) => !p.shelved) ? paint(io, '33', line) : line}`);
+    }
   }
   if (run.cost?.totalMs !== undefined) io.out(`  用时 ${humanMs(run.cost.totalMs)}${run.prUrl ? ` · ${run.prUrl}` : ''}`);
   return EXIT_OK;

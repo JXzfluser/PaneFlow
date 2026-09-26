@@ -104,6 +104,19 @@ export interface NodeRunView {
     rules?: string[];
     unknownSkills?: string[];
   };
+  /**
+   * v13-K1 命名产物台账（server 在尝试收口现场实读算好，这里零判据只渲染）：
+   * sha/bytes 是引擎读原文算的，不是 agent 自报值；shelved=false 也是正读数（被上限拒了/读不到），
+   * 整缺=这一轮压根没有产物（与「声明了但零件」分家）。
+   */
+  products?: {
+    name: string;
+    kind: string;
+    sha: string;
+    bytes: number;
+    shelved: boolean;
+    shelfError?: string;
+  }[];
 }
 
 /** POST /api/dispatch 的响应（nodes 为 v11-A1 新增节点清单摘要） */

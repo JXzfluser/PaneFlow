@@ -177,7 +177,12 @@ function NodePropertyPanel() {
             value={cfg.prompt ?? ''}
             onChange={(e) => set({ prompt: e.target.value })}
           />
-          <div className="hint">系统会自动附加「结果写入 .herdr/artifact.json」的交接约定。</div>
+          <div className="hint">
+            系统会自动附加「结果写入 .herdr/artifact.json」的交接约定。
+            <br />
+            要上游整份原文用硬引用 <code>{'{{artifact:节点ID/产物名}}'}</code>（产物名 = 上游在 artifact.json 的 products
+            里声明的命名产物，引擎读原文上架）；解析不到本节点直接失败，不会拿空串充数。点引用 <code>{'{{nodeId.artifact.x}}'}</code> 解析不到只留字面量。
+          </div>
 
           <button
             className="adv-toggle"

@@ -76,3 +76,40 @@ describe('v13-V0 校验器值域白名单与扇出上限', () => {
     }
   });
 });
+
+/**
+ * v13-K1 命名产物硬引用的静态判据（V0 同款姿态：结「引用没解析也照样绿」的假绿，不是造新绿）。
+ * 运行时解析不到=节点即时失败；这一层把「一眼看得出引错了」的场合提前到起单/存模板。
+ */
+describe('v13-K1 硬引用图校验', () => {
+  const chain = (implPrompt: string): DagGraph => ({
+    version: 1,
+    name: 'k1-refs',
+    nodes: [
+      { id: 'start', type: 'start', label: '开始', config: {} },
+      { id: 'design', type: 'agent', label: '设计', config: { prompt: '出方案' } },
+      { id: 'impl', type: 'agent', label: '实现', config: { prompt: implPrompt } },
+      { id: 'end', type: 'end', label: '结束', config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'design' },
+      { id: 'e2', source: 'design', target: 'impl' },
+      { id: 'e3', source: 'impl', target: 'end' },
+    ],
+    metadata: { createdAt: '', updatedAt: '' },
+  });
+
+  it('引用图外节点=拒（旧语义：裸花括号原样进 prompt、节点照 done）', () => {
+    const msgs = errors(chain('按 {{artifact:ghost/plan.md}} 实现'));
+    expect(msgs.some((m) => m.includes('本图无节点「ghost」') && m.includes('artifact:'))).toBe(true);
+  });
+
+  it('引用本节点自己的产物=拒（同一轮收口前台账必空，放开=引用必失败）', () => {
+    expect(errors(chain('按 {{artifact:impl/plan.md}} 实现')).some((m) => m.includes('指向本节点自己'))).toBe(true);
+  });
+
+  it('引用上游节点=过；克隆前缀 design__2（fanout 展开后的运行期节点）也认，不误杀', () => {
+    expect(errors(chain('按 {{artifact:design/plan.md}} 实现'))).toEqual([]);
+    expect(errors(chain('按 {{artifact:design__2/plan.md}} 实现'))).toEqual([]);
+  });
+});

@@ -60,6 +60,15 @@ paneflow runs --json            # 原始 API 负载，stdout 干净可直接 | j
 #      绝不拿家规声明的 branchFrom 冒充实测基点；收口对出落差另起 run 级一行
 #      「⚠ deliveryViolation: <server 的一句人话>（只标不拦）」，判据与 detail 全在 server，CLI 不比对
 #      expected/actual 不自造判定；没配家规/没建 worktree/无落差/旧单 → 两行整缺不显）
+#    + 产物行（v13-K1 命名产物台账：尝试收口现场引擎实读算好落册，渲染成
+#      「产物: plan.md(a1b2c3·4.2KB) · changes.diff(9f8e7d·1.0KB)」——sha/bytes 是机检口径
+#      （读原文算的，不信 agent 自报）；kind=doc 由 artifact.json 声明、kind=diff 零约定自动采；
+#      被 run 级字节上限拒的件标「⚠未上架：<原因>」（只披露不拦，节点照 done）；
+#      消费面在模板里：下游 prompt 写 `{{artifact:节点ID/产物名}}` 是**硬引用**——引擎把架上原文整篇
+#      替换进去（过指纹比对），解析不到=该节点即时失败，不留裸花括号喂 agent；同一格的软引用
+#      `{{nodeId.artifact.summary}}` 解析不到只字面放行+起单时一句 ⚠ 事件。直接上游产过命名产物时，
+#      每个 agent 节点的注入块尾部多一段「【上游命名产物】…（引用写法）」——没产过零新增（不占 token）
+#      没声明产物又不是 git 仓=整缺不显（缺≠「产了零件」）——判据全在 server，CLI 只渲染）
 paneflow status <runId>
 paneflow status <runId> --json
 
@@ -161,6 +170,12 @@ curl -s $BASE/api/dispatch -d '{"task":"...","experiment":{"suite":"c4","arm":"a
 curl -s $BASE/api/runs
 curl -s $BASE/api/runs/<runId>
 curl -s $BASE/api/runs/<runId>/events
+
+# 产物架（v13-K1：一处清单两个来源，各带 source）——worktree 回收后 workspace 侧蒸发的东西，架侧仍可读
+curl -s $BASE/api/runs/<runId>/artifacts           # → {runId,dir,exists,files:[{name,size,mtime,source,nodeId?,sha?,bytes?,shelved?}]}
+curl -s "$BASE/api/runs/<runId>/artifacts/file?path=b/plan.md&src=shelf"  # 读原文；src 缺省=workspace 侧（旧语义一字不变）
+#   架根 `<dataDir>/shelves/<runId>/<nodeId>/<名>`（名只取 basename，穿越=400）；per-run 字节上限
+#   `PF_SHELF_MAX_BYTES`（缺省 32 MiB），超限的件 `shelved:false` + 一句 shelfError——只披露不拦
 
 # 审批（体 {action:"approve"|"reject"|"input", text?, keys?}；节点不在门上返回 409 + 指路 error）
 curl -s -X POST $BASE/api/runs/<runId>/nodes/<nodeId>/approve -d '{"action":"approve"}'

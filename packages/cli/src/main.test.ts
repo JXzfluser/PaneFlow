@@ -355,6 +355,41 @@ describe('runs / status / approve', () => {
     expect(lOut).not.toContain('deliveryViolation');
   });
 
+  it('v13-K1 status 产物行：命名产物清单照单渲染（sha·KB 都是 server 实算），未上架的件照实标注；没产物整缺不显', async () => {
+    const base = {
+      runId: 'r-k1',
+      state: 'completed',
+      dagName: 'g',
+      nodes: {
+        b: {
+          nodeId: 'b',
+          state: 'done',
+          products: [
+            { name: 'plan.md', kind: 'doc', sha: 'a1b2c3', bytes: 4300, shelved: true },
+            {
+              name: 'test-report.md',
+              kind: 'doc',
+              sha: 'd4e5f6',
+              bytes: 9000,
+              shelved: false,
+              shelfError: 'over-run-cap（已用 32 MiB / 上限 32 MiB）',
+            },
+          ],
+        },
+      },
+    };
+    // 没声明/不是 git 仓的单：products 整缺 → 产物行不显（缺≠「产了零件」）
+    const { fetchImpl } = stubFetch([{ body: base }, { body: { ...base, nodes: { b: { nodeId: 'b', state: 'done' } } } }]);
+    const full = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-k1'], full.io)).toBe(0);
+    expect(full.lines.join('\n')).toContain(
+      '产物: plan.md(a1b2c3·4.2KB) · test-report.md(d4e5f6·8.8KB)⚠未上架：over-run-cap（已用 32 MiB / 上限 32 MiB）',
+    );
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-k1'], legacy.io)).toBe(0);
+    expect(legacy.lines.join('\n')).not.toContain('产物:');
+  });
+
   it('v13-W3 status 授权行+对账行：只渲染 server 收口落册账——有声明一行、有落差一行、整缺不显示', async () => {
     const base = { runId: 'r-decl', state: 'completed', dagName: 'g', nodes: {} };
     const { fetchImpl } = stubFetch([

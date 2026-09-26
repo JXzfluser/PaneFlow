@@ -95,7 +95,7 @@ export class Store {
    * 失败：console.error 带目标路径实账 + persistFailures 累计；tmp 残留不删——
    * 它是写崩痕迹，health 的 corruptRuns 扫描会把残留 .tmp 计进损坏信号。最后照抛，由调用方定夺。
    */
-  private static atomicWriteSync(target: string, content: string): void {
+  static atomicWriteSync(target: string, content: string): void {
     const tmp = `${target}.${process.pid}.${++Store.tmpSeq}.tmp`;
     let fd: number | undefined;
     try {

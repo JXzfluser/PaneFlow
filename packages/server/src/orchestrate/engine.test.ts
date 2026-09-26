@@ -12,6 +12,7 @@ import { READBACK_HEADER } from './readback.js';
 import { WIKI_ROOT, wikiCacheDir } from '../api/wiki.js';
 import { upsertGatewayProfile } from '../api/gateway.js';
 import { Store } from './store.js';
+import { productSha } from './products.js';
 import type { SpaceProfile } from './store.js';
 import type { DeliveryRule } from './delivery.js';
 import { saveRoles } from './roles.js';
@@ -5266,5 +5267,253 @@ describe('v13-B2 交付约定三层消费（①机检 fail-closed · ②注入�
     expect(plain.harness!.ctxSha).toBe(before.harness!.ctxSha);
     expect(plain.harness!.injectedBytes).toBe(before.harness!.injectedBytes);
     expect(lastPromptOf('实现功能')).not.toContain('交付约定');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v13-K1 命名产物台账与硬引用（真 Engine + FakeHerdrOps；台账值取自引擎实读，非自报）
+// ---------------------------------------------------------------------------
+describe('v13-K1 产物台账与硬引用', () => {
+  const k1Tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'pf-k1-'));
+
+  /** design 节点按交接约定写 artifact.json（可带 products 声明）+ 可选写产物文件本体 */
+  const writeDesignArtifact = (
+    cwd: string,
+    obj: Record<string, unknown>,
+    files: Record<string, string> = {},
+  ): void => {
+    fs.mkdirSync(path.join(cwd, '.herdr/artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.herdr/artifacts/design.json'), JSON.stringify(obj));
+    for (const [rel, content] of Object.entries(files)) {
+      const full = path.join(cwd, rel);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content);
+    }
+  };
+
+  const chain = (implPrompt: string): DagGraph => ({
+    version: 1,
+    name: 'k1-chain',
+    nodes: [
+      { id: 'start', type: 'start', label: '开始', config: {} },
+      { id: 'design', type: 'agent', label: '设计', config: { agentKind: 'fake', prompt: '出方案' } },
+      { id: 'impl', type: 'agent', label: '实现', config: { agentKind: 'fake', prompt: implPrompt } },
+      { id: 'end', type: 'end', label: '结束', config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'design' },
+      { id: 'e2', source: 'design', target: 'impl' },
+      { id: 'e3', source: 'impl', target: 'end' },
+    ],
+    metadata: { createdAt: '', updatedAt: '' },
+  });
+
+  it('声明位被引擎实读算指纹并上架：台账落册、架上有原文、事件有一行', async () => {
+    const cwd = k1Tmp();
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) {
+        writeDesignArtifact(cwd, { summary: '方案已定', products: [{ name: 'plan.md' }] }, {
+          'plan.md': '# 计划\n第一步',
+        });
+      }
+    };
+    const run = await runToCompletion(chain('按 {{design.artifact.summary}} 实现'), cwd);
+    expect(run.state).toBe('completed');
+    const products = run.nodes['design']!.products;
+    expect(products).toHaveLength(1);
+    expect(products![0]!.name).toBe('plan.md');
+    expect(products![0]!.kind).toBe('doc');
+    expect(products![0]!.shelved).toBe(true);
+    expect(products![0]!.bytes).toBe(Buffer.byteLength('# 计划\n第一步', 'utf8'));
+    expect(products![0]!.sha).toMatch(/^[0-9a-f]{8}$/);
+    // 架在 dataDir 下（worktree/工作区蒸发也带不走），且路径按 <runId>/<nodeId>/<名> 分格
+    const shelved = path.join(dataDir, 'shelves', run.runId, 'design', 'plan.md');
+    expect(fs.readFileSync(shelved, 'utf8')).toBe('# 计划\n第一步');
+    expect((run.events ?? []).some((e) => e.text.includes(`产物台账：plan.md(${products![0]!.sha}`))).toBe(true);
+  });
+
+  it('硬引用把架上原文注进下游 prompt（不是摘要）——「审的就是那份」的兑现点', async () => {
+    const cwd = k1Tmp();
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) {
+        writeDesignArtifact(
+          cwd,
+          { summary: '一句摘要', products: [{ name: 'plan.md' }] },
+          { 'plan.md': '# 计划\n逐条可审的正文 42' },
+        );
+      }
+    };
+    const run = await runToCompletion(chain('据这份计划实现：{{artifact:design/plan.md}}'), cwd);
+    expect(run.state).toBe('completed');
+    const implPrompt = ops.prompts.find((p) => p.target.includes('impl'))!;
+    expect(implPrompt.text).toContain('逐条可审的正文 42');
+    // 替换发生在指令原位（不是把原文单贴一段）；裸花括号只剩上游产物清单里那句「引用写法」示例
+    expect(implPrompt.text).toContain('据这份计划实现：# 计划');
+    // 裸花括号只剩一处=上游产物清单里那句「引用写法」示例（指令原位那份已被原文替换）
+    expect(implPrompt.text.split('{{artifact:design/plan.md}}').length).toBe(2);
+  });
+
+  it('硬引用解析不到=下游节点即时失败，且不把裸花括号交给 agent（与软引用只报告分家）', async () => {
+    const cwd = k1Tmp();
+    ops.onPrompt = (target) => {
+      // design 什么都没声明：台账整键缺省，下游那份「计划」根本不存在
+      if (target.includes('design')) writeDesignArtifact(cwd, { summary: '方案已定' });
+    };
+    const run = await runToCompletion(chain('据这份计划实现：{{artifact:design/plan.md}}'), cwd);
+    expect(run.state).toBe('failed');
+    expect(run.nodes['design']!.products).toBeUndefined();
+    expect(run.nodes['impl']!.state).toBe('failed');
+    expect(run.nodes['impl']!.error).toContain('产物引用未解析');
+    expect(run.nodes['impl']!.error).toContain('台账里没有名为「plan.md」的产物');
+    // 失败发生在提交之前：impl 一个字都没进 agent
+    expect(ops.prompts.some((p) => p.target.includes('impl'))).toBe(false);
+  });
+
+  it('消费面（结 N1）：下游 prompt 带上游命名产物清单+引用写法，交接约定教 agent 怎么声明', async () => {
+    const cwd = k1Tmp();
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) {
+        writeDesignArtifact(
+          cwd,
+          { summary: '方案已定', products: [{ name: 'plan.md' }, { name: 'big.md' }] },
+          { 'plan.md': '# 计划\n正文', 'big.md': 'x'.repeat(2048) },
+        );
+      }
+    };
+    // impl 一个硬引用都没写——清单照样得让它看见有得引
+    const run = await runToCompletion(chain('按 {{design.artifact.summary}} 实现'), cwd);
+    expect(run.state).toBe('completed');
+    const ledger = run.nodes['design']!.products!;
+    const plan = ledger.find((p) => p.name === 'plan.md')!;
+    const implPrompt = ops.prompts.find((p) => p.target.includes('impl'))!.text;
+    expect(implPrompt).toContain('【上游命名产物】');
+    expect(implPrompt).toContain(`节点「design」：{{artifact:design/plan.md}}（${plan.sha}·`);
+    expect(implPrompt).toContain('{{artifact:design/big.md}}');
+    expect(implPrompt).toContain('只要结论用 {{节点ID.artifact.summary}} 软引用');
+    // 声明位不是暗约定：交接约定文本里就写着 products 怎么填、引擎拿它干什么
+    expect(ops.prompts[0]!.text).toContain('products');
+  });
+
+  it('上游没产生命名产物=清单零新增，不拿空清单占 token', async () => {
+    const cwd = k1Tmp();
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) writeDesignArtifact(cwd, { summary: '方案已定' });
+    };
+    const run = await runToCompletion(chain('按 {{design.artifact.summary}} 实现'), cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['design']!.products).toBeUndefined();
+    expect(ops.prompts.some((p) => p.text.includes('【上游命名产物】'))).toBe(false);
+  });
+
+  it('破烂声明只披露不拦：节点照 done，未取的件落一句事件，好件照常入台账', async () => {
+    const cwd = k1Tmp();
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) {
+        writeDesignArtifact(
+          cwd,
+          {
+            summary: '方案已定',
+            products: [{ name: 'plan.md' }, { name: 'ghost.md' }, { name: 'esc', file: '/etc/passwd' }],
+          },
+          { 'plan.md': '正文' },
+        );
+      }
+    };
+    const run = await runToCompletion(chain('按 {{design.artifact.summary}} 实现'), cwd);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['design']!.state).toBe('done');
+    expect(run.nodes['design']!.products).toHaveLength(1);
+    const events = (run.events ?? []).map((e) => e.text);
+    expect(events.some((t) => t.includes('产物未读到：ghost.md'))).toBe(true);
+    expect(events.some((t) => t.includes('产物声明未取：esc'))).toBe(true);
+  });
+
+  it('run 级字节上限只拒上架不判节点：超限件 shelved:false + 原因，节点照 done', async () => {
+    const smallStore = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'pf-k1-cap-')));
+    const smallOps = new FakeHerdrOps();
+    const capEngine = new Engine(smallOps, smallStore, { ...OPTS, shelfMaxBytes: 4 });
+    const cwd = k1Tmp();
+    smallOps.onPrompt = (target) => {
+      if (target.includes('design')) {
+        writeDesignArtifact(
+          cwd,
+          { summary: '方案已定', products: [{ name: 'plan.md' }] },
+          { 'plan.md': 'x'.repeat(64) },
+        );
+      }
+    };
+    const run = await capEngine.startRun(chain('按 {{design.artifact.summary}} 实现'), cwd);
+    await waitFor(() => capEngine.getRun(run.runId)!.state !== 'running');
+    const final = capEngine.getRun(run.runId)!;
+    expect(final.nodes['design']!.state).toBe('done');
+    expect(final.nodes['design']!.products![0]!.shelved).toBe(false);
+    expect(final.nodes['design']!.products![0]!.shelfError).toContain('over-run-cap');
+    expect(fs.existsSync(path.join(smallStore.root, 'shelves', final.runId, 'design', 'plan.md'))).toBe(false);
+  });
+
+  it('零约定自动采 diff：git 仓里改了已跟踪文件就有 changes.diff（agent 不用会写声明）', async () => {
+    const repo = k1Tmp();
+    execFileSync('git', ['-C', repo, 'init']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 't@t']);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'base');
+    execFileSync('git', ['-C', repo, 'add', '-A']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'base']);
+    ops.onPrompt = (target) => {
+      if (target.includes('design')) writeDesignArtifact(repo, { summary: '改完了' }, { 'base.txt': 'base changed' });
+    };
+    const run = await runToCompletion(chain('按 {{design.artifact.summary}} 实现'), repo);
+    expect(run.state).toBe('completed');
+    const products = run.nodes['design']!.products!;
+    expect(products.map((p) => p.name)).toEqual(['changes.diff']);
+    expect(products[0]!.kind).toBe('diff');
+    const shelved = fs.readFileSync(path.join(dataDir, 'shelves', run.runId, 'design', 'changes.diff'), 'utf8');
+    expect(shelved).toContain('base changed');
+    // 同仓的下一节点没声明产物，但工作区那份未提交改动仍在 → 它收口时同样实读到同一 patch：
+    // 两枚 sha 相等是「同一份东西被读了两次」的机检口径，不是引擎把账抄了一遍
+    expect(run.nodes['impl']!.products).toHaveLength(1);
+    expect(run.nodes['impl']!.products![0]!.sha).toBe(products[0]!.sha);
+  });
+
+  it('未跟踪新文件不进 diff：台账不拿引擎自造的 patch 冒充账', async () => {
+    const repo = k1Tmp();
+    execFileSync('git', ['-C', repo, 'init']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 't@t']);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'base');
+    execFileSync('git', ['-C', repo, 'add', '-A']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'base']);
+    ops.onPrompt = (target) => {
+      // 只产新文件（未跟踪），且没声明 products：既没有 patch 也没有声明 → 台账整键缺省
+      if (target.includes('design')) writeDesignArtifact(repo, { summary: '只产了新文件' }, { 'new-only.txt': 'x' });
+    };
+    const run = await runToCompletion(chain('按 {{design.artifact.summary}} 实现'), repo);
+    expect(run.state).toBe('completed');
+    expect(run.nodes['design']!.products).toBeUndefined();
+  });
+
+  it('重试=后一轮覆盖前一轮：台账记的是这一轮实发的那份', async () => {
+    const cwd = k1Tmp();
+    let round = 0;
+    ops.onPrompt = (target) => {
+      if (!target.includes('design')) return;
+      round += 1;
+      if (round === 1) {
+        // 第一轮崩在提交途中：盘上留下产物文件但没有 artifact.json（没声明可谈）
+        fs.writeFileSync(path.join(cwd, 'plan.md'), '第一轮');
+        throw new Error('模拟首轮崩窗');
+      }
+      writeDesignArtifact(cwd, { summary: '方案已定', products: [{ name: 'plan.md' }] }, { 'plan.md': '第二轮' });
+    };
+    const g = chain('按 {{design.artifact.summary}} 实现');
+    g.nodes[1]!.config.retryCount = 1;
+    const run = await runToCompletion(g, cwd);
+    expect(run.nodes['design']!.state).toBe('done');
+    expect(run.nodes['design']!.attempts).toBe(2);
+    expect(run.nodes['design']!.products).toHaveLength(1);
+    const shelved = path.join(dataDir, 'shelves', run.runId, 'design', 'plan.md');
+    expect(fs.readFileSync(shelved, 'utf8')).toBe('第二轮');
+    // 指纹跟着内容走：覆盖后台账记的 sha 属于第二轮那份，不是第一轮
+    expect(run.nodes['design']!.products![0]!.sha).toBe(productSha('第二轮'));
   });
 });

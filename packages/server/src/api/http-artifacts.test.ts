@@ -4,9 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildHttpServer } from './http.js';
 import { Store } from '../orchestrate/store.js';
-import type { RunRecord } from '@paneflow/shared';
+import type { RunProduct, RunRecord } from '@paneflow/shared';
 import type { Engine } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
+import { productSha, shelfRunDir } from '../orchestrate/products.js';
 
 /** v8-H2 产物货架：列表/单文件读取（防穿越）/下载/真删除可选联动清理产物 */
 
@@ -150,6 +151,141 @@ describe('v8-H2 产物货架', () => {
       expect(fs.existsSync(path.join(ws2.cwd, '.herdr', 'artifacts', 'notes.txt'))).toBe(true);
     } finally {
       await app2.close();
+    }
+  });
+});
+
+/**
+ * v13-K1 产物架侧接线：一处清单两个来源 + ?src=shelf 的取证读取。
+ * 台账条目一律用 shared 的 RunProduct 类型标注——端点返回形状若与类型分叉，编译期就红，
+ * 不在测试里自造 payload 充数。
+ */
+describe('v13-K1 产物架侧读取', () => {
+  /** 在架上手放一份产物原文，并给出与之内洽的台账条目（sha 从同一串内容实算） */
+  function seedShelf(dataDir: string, runId: string, nodeId: string, name: string, content: string): RunProduct {
+    const dir = path.join(shelfRunDir(dataDir, runId), nodeId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, name), content);
+    return {
+      name,
+      kind: 'doc',
+      sha: productSha(content),
+      bytes: Buffer.byteLength(content, 'utf8'),
+      shelved: true,
+    };
+  }
+
+  it('一处清单两个来源：workspace 与 shelf 各带 source，架侧条目挂台账指纹', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-shelf-data-'));
+    const { run } = makeWorkspace();
+    const plan = seedShelf(dataDir, run.runId, 'impl', 'plan.md', '# 计划\n上架原文');
+    new Store(dataDir).saveRun({
+      ...run,
+      nodes: { impl: { ...run.nodes.impl!, products: [plan, { ...plan, name: 'big.md', shelved: false, shelfError: 'over-run-cap（…）' }] } },
+    });
+    const { app } = await buildServer(dataDir);
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/runs/r-shelf/artifacts', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as {
+        files: { name: string; source: string; nodeId?: string; sha?: string; bytes?: number; shelved?: boolean }[];
+      };
+      const ws = body.files.find((f) => f.name === 'impl.json');
+      expect(ws?.source).toBe('workspace');
+      const shelf = body.files.find((f) => f.name === 'impl/plan.md');
+      expect(shelf?.source).toBe('shelf');
+      expect(shelf?.nodeId).toBe('impl');
+      expect(shelf?.sha).toBe(plan.sha);
+      expect(shelf?.bytes).toBe(plan.bytes);
+      expect(shelf?.shelved).toBe(true);
+      // 被上限拒的件没上盘：清单以盘上实然为准，绝不替台账把「未上架」列成一个可读条目
+      expect(body.files.some((f) => f.name === 'impl/big.md')).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('?src=shelf 读上架原文；未登记/未上架/指纹不符/脏 src 各得一句指路', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-shelf-data-'));
+    const { run } = makeWorkspace();
+    const plan = seedShelf(dataDir, run.runId, 'impl', 'plan.md', '架上原文');
+    new Store(dataDir).saveRun({ ...run, nodes: { impl: { ...run.nodes.impl!, products: [plan] } } });
+    const { app } = await buildServer(dataDir);
+    const file = (q: string) =>
+      app.inject({ method: 'GET', url: `/api/runs/r-shelf/artifacts/file?${q}`, headers: { host: HOST } });
+    try {
+      const ok = await file(`path=${encodeURIComponent('impl/plan.md')}&src=shelf`);
+      expect(ok.statusCode).toBe(200);
+      expect((ok.json() as { content: string }).content).toBe('架上原文');
+
+      // 缺 src=shelf 时同一格路径仍在 workspace 侧找不到（两侧不混为一谈）
+      const wsMiss = await file(`path=${encodeURIComponent('impl/plan.md')}`);
+      expect(wsMiss.statusCode).toBe(404);
+
+      const noLedger = await file(`path=${encodeURIComponent('impl/ghost.md')}&src=shelf`);
+      expect(noLedger.statusCode).toBe(404);
+      expect((noLedger.json() as { error: string }).error).toContain('只读台账登记过的件');
+
+      const badSrc = await file(`path=${encodeURIComponent('impl/plan.md')}&src=everywhere`);
+      expect(badSrc.statusCode).toBe(400);
+      expect((badSrc.json() as { error: string }).error).toContain('workspace / shelf');
+
+      // 未上架：台账说没上架，架上的文件就不算数
+      new Store(dataDir).saveRun({
+        ...run,
+        nodes: { impl: { ...run.nodes.impl!, products: [{ ...plan, shelved: false, shelfError: 'write-failed:磁盘满了' }] } },
+      });
+      const notShelved = await file(`path=${encodeURIComponent('impl/plan.md')}&src=shelf`);
+      expect(notShelved.statusCode).toBe(404);
+      expect((notShelved.json() as { error: string }).error).toContain('未上架（write-failed:磁盘满了）');
+
+      // 台账回到「已上架」，架上内容却被人换过=指纹不符：宁可说取不到，也不交出一份对不上账的原文
+      new Store(dataDir).saveRun({ ...run, nodes: { impl: { ...run.nodes.impl!, products: [plan] } } });
+      fs.writeFileSync(path.join(shelfRunDir(dataDir, run.runId), 'impl', 'plan.md'), '被人改过的一份');
+      const tampered = await file(`path=${encodeURIComponent('impl/plan.md')}&src=shelf`);
+      expect(tampered.statusCode).toBe(404);
+      expect((tampered.json() as { error: string }).error).toContain('指纹不符');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('工作区蒸发也不瞎：cwd 侧无产物目录、架上有原件 → exists=true 且清单给架侧条目', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-shelf-data-'));
+    const { run } = makeWorkspace();
+    // 模拟 worktree/工作区已被回收：run.cwd 存在但 .herdr/artifacts 不在
+    fs.rmSync(path.join(run.cwd, '.herdr', 'artifacts'), { recursive: true, force: true });
+    const plan = seedShelf(dataDir, run.runId, 'impl', 'plan.md', '回收后只剩这份');
+    new Store(dataDir).saveRun({ ...run, nodes: { impl: { ...run.nodes.impl!, products: [plan] } } });
+    const { app } = await buildServer(dataDir);
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/runs/r-shelf/artifacts', headers: { host: HOST } });
+      const body = res.json() as { exists: boolean; files: { name: string; source: string }[] };
+      expect(body.exists).toBe(true);
+      expect(body.files.map((f) => `${f.source}:${f.name}`)).toEqual(['shelf:impl/plan.md']);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('真删除 purgeArtifacts=1：工作区侧与架侧一起清，计数含两侧', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-shelf-data-'));
+    const { cwd, run } = makeWorkspace();
+    seedShelf(dataDir, run.runId, 'impl', 'plan.md', '上架原文');
+    new Store(dataDir).saveRun({ ...run, archived: true });
+    const { app } = await buildServer(dataDir);
+    try {
+      const del = await app.inject({
+        method: 'DELETE',
+        url: '/api/runs/r-shelf/archive?purgeArtifacts=1',
+        headers: { host: HOST },
+      });
+      expect(del.statusCode).toBe(200);
+      expect((del.json() as { purgedArtifacts: number }).purgedArtifacts).toBe(2);
+      expect(fs.existsSync(path.join(cwd, '.herdr', 'artifacts', 'impl.json'))).toBe(false);
+      expect(fs.existsSync(shelfRunDir(dataDir, run.runId))).toBe(false);
+    } finally {
+      await app.close();
     }
   });
 });

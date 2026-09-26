@@ -24,8 +24,8 @@ import type {
   RunDeliveryViolation,
   RunDeliveryWorktree,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT, DECLARE_FACES } from '@paneflow/shared';
-import type { DeclareFace, RunDeclareViolation } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, renderProductRefs, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT, DECLARE_FACES } from '@paneflow/shared';
+import type { DeclareFace, ProductRef, RunDeclareViolation } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
 import type { HerdrOps } from './herdr-ops.js';
 import { makeAgentName } from './herdr-ops.js';
@@ -44,6 +44,17 @@ import {
   type DeliveryRule,
 } from './delivery.js';
 import { buildSkillBlock, resolveSkillRefs } from './skills.js';
+import {
+  PRODUCT_READ_CAP,
+  diffProduct,
+  normalizeProductDecls,
+  productShelfFile,
+  readDeclaredProducts,
+  shelfCapFromEnv,
+  shelfRunDir,
+  shelveProducts,
+  type ProductDraft,
+} from './products.js';
 import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
 import {
@@ -152,6 +163,11 @@ export interface EngineOptions {
    * 空间档案顶层键 worktreeRoot 可按空间覆写（worktreeRootFor，起单现场读档案）。
    */
   worktreeRoot?: string;
+  /**
+   * v13-K1 run 级产物架字节上限（env PF_SHELF_MAX_BYTES 的显式覆写口，测试注入以保确定性）。
+   * 缺省回落 shelfCapFromEnv；0=不限量、破烂=回落缺省 32 MiB（同 budget.maxTokens 的读法）。
+   */
+  shelfMaxBytes?: number;
 }
 
 export interface ApprovalAction {
@@ -270,6 +286,8 @@ export class Engine {
   private readonly runMaxTokensEnv: number;
   /** v13-S4：env PF_GATE_TIMEOUT_MS 解析后的门到期上限（0=关闭）；契约上限在进门现场再解析 */
   private readonly gateTimeoutEnv: number;
+  /** v13-K1：run 级产物架字节上限（0=不限量）；构造时读一次，env 不热改 */
+  private readonly shelfMaxBytes: number;
   /**
    * v13-S4 外解唤醒计数（key=runId:nodeId）：armed（有超时）的门到期前被人工放行、
    * 且非经 sendKeys 模拟——单独记账，不混进 attention（那是人的决策账）、不是新协议。
@@ -321,6 +339,8 @@ export class Engine {
     this.gateTimeoutEnv = Math.max(0, opts.gateTimeoutMs ?? envInt('PF_GATE_TIMEOUT_MS', 0));
     // v13-S1：孤儿周期扫描（缺省 300s，<=0 关）与 worktree 根
     this.orphanSweepMs = opts.orphanSweepMs ?? envInt('PF_ORPHAN_SWEEP_MS', 300_000);
+    // v13-K1：产物架上限同款口径（opts 显式给=测试注入通道，缺省读 env PF_SHELF_MAX_BYTES）
+    this.shelfMaxBytes = opts.shelfMaxBytes ?? shelfCapFromEnv(process.env.PF_SHELF_MAX_BYTES);
     // v13-B3：生产默认从 os.tmpdir()/paneflow-wt 迁到 <dataDir>/worktrees——worktree 是
     // 成果证据链的现场（脏目录保留时里面就是没提交的工作），tmpdir 是 OS 扫荡区（重启/定期
     // 清理随时蒸发，账没了证据也没了）。取舍写实：sweepWorktreeLeaks 的扫描面 = 本默认根 +
@@ -2114,9 +2134,27 @@ export class Engine {
       const rendered = renderPromptTemplate(cfg.prompt ?? '', (refId, refPath) =>
         this.resolveBlackboardRef(blackboard, refId, refPath),
       );
+      // v13-K1 命名产物硬引用：与 `{{nodeId.field}}` 的软引用分家——软引用解析不到=字面放行（G2 只报告），
+      // 硬引用解析不到=**本节点即时失败**：「审的就是那份」不许在那份不存在的时候照样成立。
+      // 取材=上架原文，且过一遍指纹比对（台账 sha 与架上的字节不符=不再证「审的就是这份」）。
+      const refReasons = new Map<string, string>();
+      const { text: promptRendered, missing } = renderProductRefs(rendered, (ref) => {
+        const got = this.resolveProductRef(run, ref);
+        if ('content' in got) return got.content;
+        refReasons.set(ref.raw, got.why);
+        return undefined;
+      });
+      if (missing.length) {
+        return `产物引用未解析：${missing
+          .map((m) => `${m.raw}——${refReasons.get(m.raw) ?? '未知'}`)
+          .join('；')}`;
+      }
       const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
       const artifactRel = cfg.artifactFile ?? defaultArtifactFile(nodeId);
-      const { block, agentKind, ctxFiles, equip } = this.resolveContext(run, cfg, nodeCwd);
+      const { block: ctxBlock, agentKind, ctxFiles, equip } = this.resolveContext(run, cfg, nodeCwd);
+      // v13-K1 消费面（结 N1）：上游命名产物清单随注入块进 prompt——硬引用要作者知道有得引、怎么引，
+      // 光有机制没有目录等于没有。追加在 ctxBlock 之后：涨 injectedBytes，不进 ctxSha（运行时文本非实读文件）
+      const block = ctxBlock + this.upstreamProductBlock(run, nodeId);
       // v13-W1 岗位装备账：解析过就结构化落在节点记录上（重试=后一次覆盖前一次，
       // 记的是这一轮实发取材）；status/前端只读这一格，不从环形 events 反推
       if (equip) rec.equip = equip;
@@ -2131,7 +2169,7 @@ export class Engine {
       });
       this.persistAndNotify(run);
       const prompt = this.withArtifactConvention(
-        `${block}${rendered}`,
+        `${block}${promptRendered}`,
         path.join(nodeCwd, artifactRel),
       );
       let status = await this.promptAndSettle(run, rec, agentName, prompt, timeoutMs);
@@ -2228,6 +2266,8 @@ export class Engine {
       this.captureContract(run, rec);
       // H1 交付出口：任一节点产物写了合法 pr_url → 落册到 run（先到先得）
       this.capturePrUrl(run, rec);
+      // K1 产物台账：声明位实读算指纹 + 零约定采 diff → 上架落册（同样在收口现场取值）
+      this.collectNodeProducts(run, rec, nodeCwd);
 
       // F1 验收机器门：产物写了 assertionResults 且有未通过项时不许静默 done
       const gateFail = await this.assertionGate(run, rec, nodeId, agentName, timeoutMs, artifactRel, blackboard);
@@ -2369,6 +2409,97 @@ export class Engine {
     (run.sideEffects ??= {}).prUrl = url;
     this.recordEvent(run, 'run', rec.nodeId, `交付出口：PR 已开出 ${url}`);
     this.persistAndNotify(run);
+  }
+
+  /** v13-K1 本 run 的产物架根（`<dataDir>/shelves/<runId>`，下面按 nodeId 分格）；读端在 api/http.ts 的 artifacts 端点 */
+  private shelfDirOf(run: RunRecord): string {
+    return shelfRunDir(this.store.root, run.runId);
+  }
+
+  /**
+   * v13-K1 产物台账采集点（尝试收口现场，取值时点与 ctxSha/roleSha 同款「发生的那一刻」）：
+   * ①声明位（artifact.json 的 products，agent 写的）先过读端清洗，再由引擎实读原文——候选目录 worktree 优先于
+   *   cfg.cwd（这两处对同一节点可能分裂，账 #108，两处都没有才算没读到）；
+   * ②零约定自动采 diff（已跟踪相对 HEAD）：agent 不用会写声明就有「审的就是这份 patch」；
+   * ③sha/bytes 一律从实读原文算（自报哈希等于没有哈希），再按 run 级字节上限上架到 dataDir。
+   * 只披露不拦：破烂声明/读不到/超上限各落一句事件，节点照 done。台账非空才写 `rec.products`
+   * （缺省=既没声明产物也不是 git 仓，不拿空数组冒充「产了零件」）。
+   */
+  private collectNodeProducts(run: RunRecord, rec: NodeRunRecord, nodeCwd: string): void {
+    const drafts: ProductDraft[] = [];
+    const { decls, skipped } = normalizeProductDecls(rec.artifact?.products);
+    for (const s of skipped) this.recordEvent(run, 'node', rec.nodeId, `产物声明未取：${s.name}（${s.why}）`);
+    if (decls.length) {
+      const read = readDeclaredProducts(decls, [rec.worktree ?? '', nodeCwd]);
+      drafts.push(...read.products);
+      for (const s of read.skipped) this.recordEvent(run, 'node', rec.nodeId, `产物未读到：${s.name}（${s.why}）`);
+    }
+    const diffDir = rec.worktree ?? nodeCwd;
+    const patch = gitDiffHead(diffDir);
+    if (patch) {
+      const diff = diffProduct(patch, diffDir);
+      if (diff) drafts.push(diff);
+      else
+        this.recordEvent(
+          run,
+          'node',
+          rec.nodeId,
+          `产物未采：changes.diff 超过单件读取上限 ${(PRODUCT_READ_CAP / 1024 / 1024).toFixed(1)}MB`,
+        );
+    }
+    if (!drafts.length) return;
+    const products = shelveProducts(this.shelfDirOf(run), rec.nodeId, drafts, this.shelfMaxBytes, (target, content) => {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      Store.atomicWriteSync(target, content);
+    });
+    if (!products.length) return;
+    rec.products = products;
+    this.recordEvent(
+      run,
+      'node',
+      rec.nodeId,
+      `产物台账：${products
+        .map((p) => `${p.name}(${p.sha}·${(p.bytes / 1024).toFixed(1)}KB${p.shelved ? '' : '·未上架'})`)
+        .join(' · ')}`,
+    );
+    this.persistAndNotify(run);
+  }
+
+  /**
+   * v13-K1 消费面（结 N1）：直接上游的命名产物台账 + 引用写法，拼进注入块。
+   * 上游没产过命名产物=空串零新增（不拿空清单占 token）；未上架的件照样列出并标出来——
+   * 让下游知道「有这份但取不到」比静默消失诚实（引了会在本节点即时失败，那句 error 就是台账）。
+   */
+  private upstreamProductBlock(run: RunRecord, nodeId: string): string {
+    const lines: string[] = [];
+    for (const e of run.graph.edges) {
+      if (e.target !== nodeId) continue;
+      const products = run.nodes[e.source]?.products;
+      if (!products?.length) continue;
+      const items = products
+        .map((p) => `{{artifact:${e.source}/${p.name}}}（${p.sha}·${(p.bytes / 1024).toFixed(1)}KB${p.shelved ? '' : '·未上架'}）`)
+        .join(' · ');
+      lines.push(`- 节点「${e.source}」：${items}`);
+    }
+    if (!lines.length) return '';
+    return (
+      `\n\n【上游命名产物】以下产物引擎已实读落册，写硬引用即把整篇原文替换进你的指令` +
+      `（解析不到=本节点直接失败，不会拿空串充数）：\n${lines.join('\n')}\n` +
+      `只要结论用 {{节点ID.artifact.summary}} 软引用；要「审的就是这份」的原文才用硬引用。`
+    );
+  }
+
+  /**
+   * v13-K1 硬引用取材：只有「台账里有这个名字 **且** shelved」的产物才可能解析成功——
+   * 没上架的那份随 worktree 回收蒸发，今天取不到、以后也取不到，绝不拿摘要冒充原文。
+   * 指纹比对与路径拼装都在 products.productShelfFile（与 artifacts 端点同一处取材，两读不分叉）。
+   */
+  private resolveProductRef(run: RunRecord, ref: ProductRef): { content: string } | { why: string } {
+    const rec = run.nodes[ref.nodeId];
+    if (!rec) return { why: `本图无节点「${ref.nodeId}」` };
+    const p = rec.products?.find((x) => x.name === ref.name);
+    if (!p) return { why: `节点「${ref.nodeId}」的台账里没有名为「${ref.name}」的产物（该节点没声明过它）` };
+    return productShelfFile(this.shelfDirOf(run), ref.nodeId, p);
   }
 
   /**
@@ -3582,7 +3713,11 @@ export class Engine {
       `【结果交接约定】完成任务后，请务必用绝对路径创建结果文件 ${artifactFile}` +
       `（目录不存在则先创建，可直接用 shell 命令写入），内容为 JSON 对象，字段：` +
       `summary（本次工作结论，必填，简洁准确）、files（创建/修改的文件路径数组，无则省略）、` +
-      `errors（遇到的错误列表，无则省略）。写完后在终端回复一行确认即可，不要粘贴整个 JSON。`
+      `errors（遇到的错误列表，无则省略）。` +
+      `若本任务产出了整篇文档（方案/报告/清单），另加 products 字段：` +
+      `[{"name":"给人看的文档名.md","file":"文档相对路径"}]` +
+      `——引擎会读到原文、算指纹并上架，下游按 artifact:本节点ID/文档名 硬引用取用的就是这一份。` +
+      `写完后在终端回复一行确认即可，不要粘贴整个 JSON。`
     );
   }
 
@@ -3834,6 +3969,28 @@ function gitStatusPorcelain(repo: string): string | null {
 
 function nodeCwdOf(run: RunRecord, cfg: DagNodeConfig): string {
   return cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
+}
+
+/**
+ * v13-K1 零约定 diff 取材：`git diff HEAD` 只含**已跟踪文件相对 HEAD 的改动**（未跟踪新文件天然不在里面，
+ * 见 products.diffProduct 的口径说明——不把未跟踪文件硬塞成 patch，那等于引擎自造 diff 格式=假账）。
+ * 非 git 仓/无 git 命令/无改动 → undefined（不记空 diff）。maxBuffer 刻意大于读取上限：
+ * 超限的那一档要能读回来交给 diffProduct 判，并落一句「未采」事件，而不是静默当成「没有 diff」。
+ */
+function gitDiffHead(dir: string): string | undefined {
+  try {
+    const out = execFileSync('git', ['-C', dir, 'diff', 'HEAD', '--no-color'], {
+      timeout: 10_000,
+      maxBuffer: PRODUCT_READ_CAP * 2,
+      // 非 git 目录里 git 会把「用 --no-index」的警告连同整页用法打到 stderr：每个节点收口都喊一遍，
+      // 日志会被这叠噪音淹没。这一路的结论只有「有 patch / 没有」两格，stderr 不参与判据，直接吞掉。
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const text = String(out);
+    return text.trim() ? text : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function execFileAsync(

@@ -73,6 +73,8 @@ export function Guide({ onClose }: { onClose: () => void }) {
             <p>
               每个 Agent 节点的指令会自动附加结果约定：完成后把结构化结论写入
               <kbd>.herdr/artifacts/&lt;节点id&gt;.json</kbd>（summary / files / errors）。
+              产出了整篇文档就在里面加 <kbd>products: [{'{'}name, file{'}'}]</kbd>：引擎读原文、算指纹、上架到产物架，
+              下游节点用硬引用 <kbd>{'{{artifact:节点id/文档名}}'}</kbd> 取整篇原文（解析不到 = 该节点直接失败，不会把裸花括号喂给 Agent）。
               编排器读取后存入黑板，下游节点用 <kbd>{'{{节点id.artifact.summary}}'}</kbd>（结论）、
               <kbd>{'{{节点id.artifact.files}}'}</kbd>（文件清单）、<kbd>{'{{节点id.output}}'}</kbd>（终端输出尾部）引用。
               若 Agent 没写结果文件，自动回退用终端输出尾部，产物汇总页会标注来源。
