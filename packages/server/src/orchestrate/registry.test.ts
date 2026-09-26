@@ -4,12 +4,19 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   normalizeRegistryEntry,
+  DAG_NODE_TYPES,
+  NODE_TYPE_CATALOG,
+  NODE_TYPE_GROUPS,
+  parseNodeTypeSpec,
+  REGISTRY_KINDS,
   REGISTRY_SCHEMA_VERSION,
+  REGISTRY_VIEW_KINDS,
   registryId,
   splitRegistryId,
   parseAgentKindSpec,
   parseModelSpec,
   parseRegistrySpec,
+  type RegistryEntry,
 } from '@paneflow/shared';
 import { AGENT_KINDS } from '../api/agent-kinds.js';
 import { detectAppVersion, RegistryStore } from './registry.js';
@@ -194,6 +201,7 @@ describe('RegistryStore 落盘姿态（§十.1/§十.2）', () => {
 
 /**
  * v14 A3-2（R3）视图 kind：`agent-kind` 的条目由出厂清单**现算**，盘上永远没有它们。
+ * （T1 起了第二枚视图 kind `node-type`，同一套姿态在下一格里对节点清单再钉一遍。）
  *
  * 三条最容易在实施时被洗掉的姿态，各有专测：
  *  1. **只读**——`readView()` 合进来的条目一个字节都不落盘（落了就是台账里多一份「本机有哪些 agent」，
@@ -203,6 +211,9 @@ describe('RegistryStore 落盘姿态（§十.1/§十.2）', () => {
  *  3. **写入面拒**——`add`/`update`/`remove` 三动词对视图 kind 全关（不拒就等于给用户造一个不生效的假开关）。
  */
 describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', () => {
+  /** 按 kind 取格：视图 kind 会一批批加进来（T1 加了 node-type），拿 `view.entries` 总数下断言的账每迁一类都要改一次 */
+  const ofKind = (entries: RegistryEntry[], kind: string): RegistryEntry[] => entries.filter((e) => e.kind === kind);
+
   it('agent-kind 的 spec 形状：只认 binary 一键，且必须非空', () => {
     expect(parseAgentKindSpec({ binary: 'pi' })).toEqual({ ok: true, value: { binary: 'pi' } });
     // 拼错的键会静默失效（读端永远读不到它）——宁拒不错放
@@ -217,22 +228,26 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
     const dir = tmp();
     const store = storeAt(dir);
     const view = store.readView();
-    expect(view.entries).toHaveLength(AGENT_KINDS.length);
-    expect(view.entries.every((e) => e.kind === 'agent-kind' && e.source === 'builtin' && e.enabled)).toBe(true);
-    expect(new Set(view.entries.map((e) => e.name))).toEqual(new Set(AGENT_KINDS));
+    const agents = ofKind(view.entries, 'agent-kind');
+    expect(agents).toHaveLength(AGENT_KINDS.length);
+    expect(agents.every((e) => e.source === 'builtin' && e.enabled)).toBe(true);
+    expect(new Set(agents.map((e) => e.name))).toEqual(new Set(AGENT_KINDS));
     // spec 由 `agentBinaryName` 现算：异名那几枚（antigravity）与 kind 不同，别拿 kind 冒充探测名
-    expect(view.entries.find((e) => e.name === 'antigravity-cli')?.spec).toEqual({ binary: 'antigravity' });
+    expect(agents.find((e) => e.name === 'antigravity-cli')?.spec).toEqual({ binary: 'antigravity' });
+    // 表上除出厂 agent 外只有出厂节点清单——视图项只可能来自 `REGISTRY_VIEW_KINDS`，不认的 kind 一条不许冒出来
+    expect([...new Set(view.entries.map((e) => e.kind))].sort()).toEqual([...REGISTRY_VIEW_KINDS].sort());
     expect(fs.existsSync(path.join(dir, 'registry', 'entries.json'))).toBe(false);
     // 而写路径吃的仍是 `load()`：盘上就是零条
     expect(store.list()).toEqual([]);
   });
 
-  it('用户登记的 model 排在前屏（compareEntries 吃 REGISTRY_KINDS 顺序，出厂那 18 行不糊住自己的账）', () => {
+  it('用户登记的 model 排在前屏（compareEntries 吃 REGISTRY_KINDS 顺序，出厂那几十行不糊住自己的账）', () => {
     const store = storeAt(tmp());
     store.add(MODEL);
-    const ids = store.readView().entries.map((e) => e.id);
-    expect(ids[0]).toBe('model:gpt-4o-mini');
-    expect(ids).toHaveLength(AGENT_KINDS.length + 1);
+    const entries = store.readView().entries;
+    expect(entries[0]!.id).toBe('model:gpt-4o-mini');
+    // 分组序＝挂号序：写死总数的断言在这类里没意义（迁一类加一批），序才是这一格要钉的东西
+    expect([...new Set(entries.map((e) => e.kind))]).toEqual([...REGISTRY_KINDS]);
   });
 
   it('盘上手写的 agent-kind 那条：视图赢、进 rejected 说清怎么清，且 DELETE 清得掉', () => {
@@ -246,7 +261,7 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
     );
     const view = store.readView();
     expect(view.entries.some((e) => e.id === 'agent-kind:myth')).toBe(false);
-    expect(view.entries).toHaveLength(AGENT_KINDS.length); // 出厂项一枚不少，手写那枚一枚不掺
+    expect(ofKind(view.entries, 'agent-kind')).toHaveLength(AGENT_KINDS.length); // 出厂项一枚不少，手写那枚一枚不掺
     expect(view.rejected.map((r) => r.id)).toEqual(['agent-kind:myth']);
     expect(view.rejected[0]!.why).toContain('读端只看出厂项');
     expect(view.rejected[0]!.why).toContain('DELETE');
@@ -254,7 +269,7 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
     const removed = store.remove('agent-kind:myth');
     expect(removed.ok).toBe(true);
     expect(store.readView().rejected).toEqual([]);
-    expect(store.readView().entries).toHaveLength(AGENT_KINDS.length);
+    expect(ofKind(store.readView().entries, 'agent-kind')).toHaveLength(AGENT_KINDS.length);
   });
 
   it('三动词对视图 kind 全拒，且拒得没落盘（登记不了的类不在这里开第二条写路）', () => {
@@ -267,5 +282,82 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
     expect(store.remove('agent-kind:pi').ok).toBe(false);
     expect(fs.existsSync(path.join(dir, 'registry'))).toBe(false);
     expect(store.list('agent-kind')).toEqual([]);
+  });
+});
+
+/**
+ * v14 T1：`node-type` 是第二枚视图 kind——画布值域那张清单（`shared/dag.ts: NODE_TYPE_CATALOG`）套上
+ * 注册表信封。这一格钉三件事，缺一不可：
+ *  1. **清单与值域一枚不多一枚不少**（两枚名单各长各的＝注册中心亮着一型、画布拖不出来，或反过来）；
+ *  2. **条目只是信封**，画法字段原样取自清单（这里现算第二套措辞，就是 web 硬编码那份的老错）；
+ *  3. 视图 kind 的老三条（不落盘 / 三动词拒 / 手写那条进 rejected）对这一类同样成立——
+ *     注册表对「用户能不能自己加一型节点」的回答必须是**不能**，而界面上每一处都得读得到这个「不能」。
+ */
+describe('v14 T1 节点类型清单进表（node-type 视图条目）', () => {
+  const nodeRows = (entries: RegistryEntry[]): RegistryEntry[] => entries.filter((e) => e.kind === 'node-type');
+
+  it('清单锁住值域：每一型一枚、机器值不重名、中文措辞不重名', () => {
+    expect(NODE_TYPE_CATALOG.map((r) => r.type).sort()).toEqual([...DAG_NODE_TYPES].sort());
+    expect(new Set(NODE_TYPE_CATALOG.map((r) => r.type)).size).toBe(NODE_TYPE_CATALOG.length);
+    expect(new Set(NODE_TYPE_CATALOG.map((r) => r.label)).size).toBe(NODE_TYPE_CATALOG.length);
+    for (const row of NODE_TYPE_CATALOG) {
+      expect(NODE_TYPE_GROUPS).toContain(row.group);
+      expect(Number.isFinite(row.order)).toBe(true);
+      expect(row.label.trim()).toBe(row.label);
+      expect(row.label).not.toBe('');
+    }
+  });
+
+  it('node-type 的 spec 形状：五键白名单，画法字段少一个都不放行', () => {
+    const good = { label: '开始', icon: '▶', group: 'basic', order: 3 };
+    // 清洗结果只从 ok 分支取：判据脏了就直接抛，别让断言对着 union 类型打马虎
+    const value = (raw: unknown) => {
+      const r = parseNodeTypeSpec(raw);
+      if (!r.ok) throw new Error(r.why);
+      return r.value;
+    };
+    expect(parseNodeTypeSpec(good)).toEqual({ ok: true, value: good });
+    expect(value({ ...good, hint: '  ' })).toEqual(good); // 空 hint 整键不发，不占「有解释」的读数
+    expect(value({ ...good, hint: '一句人话' })).toEqual({ ...good, hint: '一句人话' });
+    for (const [bad, why] of [
+      [{ ...good, oder: 1 }, 'oder'],
+      [{ icon: '▶', group: 'basic', order: 3 }, 'label'],
+      [{ label: '开始', group: 'basic', order: 3 }, 'icon'],
+      [{ label: '开始', icon: '▶', group: 'c0re', order: 3 }, 'group'],
+      [{ label: '开始', icon: '▶', group: 'basic', order: '3' }, 'order'],
+      [{ label: '开始', icon: '▶', group: 'basic', order: Number.NaN }, 'order'],
+    ] as const) {
+      const r = parseNodeTypeSpec(bad);
+      if (r.ok) throw new Error(`脏形状被认下了：${JSON.stringify(bad)}`);
+      expect(r.why).toContain(why);
+    }
+  });
+
+  it('一条没登记：出厂六型全在表上、画法原样取自清单、盘上无文件', () => {
+    const dir = tmp();
+    const store = storeAt(dir);
+    const rows = nodeRows(store.readView().entries);
+    expect(rows).toHaveLength(NODE_TYPE_CATALOG.length);
+    expect(rows.every((e) => e.source === 'builtin' && e.enabled && e.name === e.id.split(':')[1])).toBe(true);
+    // 逐字段对回清单：条目不许在这里发明措辞（画布与注册中心说同一句话，靠的是同一份数据）
+    for (const row of NODE_TYPE_CATALOG) {
+      const entry = rows.find((e) => e.name === row.type);
+      expect(entry?.spec).toEqual({ label: row.label, icon: row.icon, group: row.group, order: row.order, ...('hint' in row ? { hint: row.hint } : {}) });
+    }
+    expect(store.list('node-type')).toEqual([]);
+    expect(fs.existsSync(path.join(dir, 'registry', 'entries.json'))).toBe(false);
+  });
+
+  it('三动词对 node-type 全拒：这一类的成员由版本决定，注册表不代造引擎跑不了的节点', () => {
+    const dir = tmp();
+    const store = storeAt(dir);
+    const add = store.add({ kind: 'node-type', name: 'my-type', spec: { label: '我的节点', icon: '★', group: 'core', order: 1 } });
+    expect(add.ok).toBe(false);
+    expect(add.why).toContain('内置能力清单');
+    expect(store.update('node-type:agent', { enabled: false }).ok).toBe(false);
+    expect(store.remove('node-type:agent').ok).toBe(false);
+    // 拒得干净：一个字节没落盘，出厂项一枚不少（假开关一个也不给）
+    expect(nodeRows(store.readView().entries)).toHaveLength(NODE_TYPE_CATALOG.length);
+    expect(fs.existsSync(path.join(dir, 'registry'))).toBe(false);
   });
 });

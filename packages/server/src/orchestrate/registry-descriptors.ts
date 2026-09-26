@@ -1,4 +1,10 @@
-import { splitRegistryId, type RegistryDescriptor, type RegistryEntry, type RegistryKind } from '@paneflow/shared';
+import {
+  NODE_TYPE_GROUP_LABELS,
+  splitRegistryId,
+  type RegistryDescriptor,
+  type RegistryEntry,
+  type RegistryKind,
+} from '@paneflow/shared';
 
 /**
  * v14 A1（R1）Descriptor 表：**一 kind 一模块**的落地处（决议 §十.5）。
@@ -54,9 +60,30 @@ export const agentKindDescriptor: RegistryDescriptor<'agent-kind'> = {
   },
 };
 
+/**
+ * `node-type`（v14 T1）：引擎认识哪些节点类型——出厂清单（`shared/dag.ts: NODE_TYPE_CATALOG`）的视图条目。
+ * `name` 就是 graph 里 `node.type` 写的那枚裸串，所以 label 说的是**画布上长成什么样**（中文名 + 归哪组），
+ * 不重复 name（那是「探测名同 kind」那条同一个道理：一屏六行里六行重名是噪音）。
+ */
+export const nodeTypeDescriptor: RegistryDescriptor<'node-type'> = {
+  kind: 'node-type',
+  label(entry) {
+    return `「${entry.spec.label}」· ${NODE_TYPE_GROUP_LABELS[entry.spec.group]}`;
+  },
+  /**
+   * 引用写法只有两种：整枚 id 或 `node.type` 原值（清单里的 `label` 是给人看的中文措辞，
+   * 拿它当匹配键就会把「模板里写错的那句中文」读成「正在用某一型」——与 model/agent-kind 同一把尺）。
+   */
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return slug ? [entry.id, slug] : [entry.id];
+  },
+};
+
 export const REGISTRY_DESCRIPTORS: { [K in RegistryEntry['kind']]: RegistryDescriptor<K> } = {
   model: modelDescriptor,
   'agent-kind': agentKindDescriptor,
+  'node-type': nodeTypeDescriptor,
 };
 
 /** 按条目 kind 查人话标签（读端每条都过这里，所以 `label` 只可能有一份口径） */

@@ -2,6 +2,7 @@ import {
   normalizeRegistryEntry,
   registryId,
   REGISTRY_VIEW_KINDS,
+  NODE_TYPE_CATALOG,
   type RegistryEntry,
 } from '@paneflow/shared';
 import { AGENT_KINDS, agentBinaryName } from '../api/agent-kinds.js';
@@ -44,11 +45,42 @@ function agentKindEntries(): RegistryEntry[] {
 }
 
 /**
+ * `node-type`（v14 T1）：画布值域那张清单的渲版。这里**不新增事实**——`type/label/icon/group/hint`
+ * 全部原样取自 `NODE_TYPE_CATALOG`，条目只是给它套上注册表信封（id、来源、引用账才因此接得上）。
+ * 清单本身脏（少一枚类型、组名拼错）在这里会以 `normalizeRegistryEntry` 不合法的形式炸出来：
+ * 那是编程错，不是用户数据错，抛出去比渲半张表诚实。
+ */
+function nodeTypeEntries(): RegistryEntry[] {
+  return NODE_TYPE_CATALOG.map((row) => {
+    const raw = {
+      id: registryId('node-type', row.type),
+      kind: 'node-type' as const,
+      name: row.type,
+      source: 'builtin' as const,
+      enabled: true,
+      createdAt: BOOT_AT,
+      updatedAt: BOOT_AT,
+      spec: {
+        label: row.label,
+        icon: row.icon,
+        group: row.group,
+        order: row.order,
+        ...(row.hint ? { hint: row.hint } : {}),
+      },
+    };
+    const norm = normalizeRegistryEntry(raw);
+    if (!norm.ok) throw new Error(`出厂节点类型清单算出了不合法的条目（${row.type}）：${norm.why}`);
+    return norm.value;
+  });
+}
+
+/**
  * kind → 现算函数。表本身 mapped over `REGISTRY_VIEW_KINDS`：**挂号了却没 builders = 编译期红，
  * 反之多写了没挂号的 builder 也是**（shared 的 `SPEC_PARSERS`/`REGISTRY_DESCRIPTORS` 同一招）。
  */
 const VIEW_BUILDERS: { [K in (typeof REGISTRY_VIEW_KINDS)[number]]: ViewBuilder } = {
   'agent-kind': agentKindEntries,
+  'node-type': nodeTypeEntries,
 };
 
 /** 全部视图条目（本次调用现算，不缓存：出厂清单是编译期常量，重算一次 18 个对象比缓存判据便宜） */

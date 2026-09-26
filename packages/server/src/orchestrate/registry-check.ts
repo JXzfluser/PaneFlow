@@ -14,8 +14,8 @@ import { matchesTarget } from './registry-refs.js';
  * 这一条是有教训的：预检与起单若是两把尺，就会出现「预检说全绿、起单当场红」，那比没预检更糟。
  *
  * 三条姿态，与 R2 引用索引同形：
- *  1. **只有已迁进注册表的 kind 才判死活**（今天＝`REGISTRY_KINDS`：`model` 与 A3-2 起的 `agent-kind`）。
- *     指向 `skill`/`check-type`/… 的槽落 `unjudged` 只披露：表里压根没有这一类，判「不存在」＝拿空白冒充断言。
+ *  1. **只有已迁进注册表的 kind 才判死活**（今天＝`REGISTRY_KINDS`：`model` 与两枚视图 kind `agent-kind`（A3-2）、
+ *     `node-type`（T1））。指向 `skill`/`check-type`/… 的槽落 `unjudged` 只披露：表里压根没有这一类，判「不存在」＝拿空白冒充断言。
  *  2. **形状不认的槽落 `malformed` 且 `ok=false`**——判不了就不放行。脏形状正常走不到这里
  *     （`validateDag` 在写入面就拒），但盘面手改得动，读端不能因为脏项而假绿。
  *  3. 匹配用 R2 那把尺（`matchesTarget` → Descriptor 的 `refKeys`）：声明写整枚 id、id 的 slug 段、

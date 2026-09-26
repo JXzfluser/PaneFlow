@@ -182,6 +182,12 @@ const SPEC_FIELD_LABELS: Record<string, string> = {
   freeModel: '免费位',
   note: '备注',
   binary: '探测名',
+  // node-type（v14 T1，出厂清单的视图项）：画布画法，不是配置——这里只披露读到的，不补默认值
+  label: '显示名',
+  icon: '图标',
+  group: '分组',
+  order: '组内次序',
+  hint: '说明',
 };
 
 export interface SpecRow {

@@ -12,6 +12,8 @@
  * shared 里不放任何 IO：落盘/版本戳在 server 的 `orchestrate/registry.ts`。
  */
 
+import { NODE_TYPE_GROUPS, type NodeTypeGroup } from './dag.js';
+
 /** 本文件认识的 dataDir 注册表 schema 版本；读到更高版本＝拒启（server 侧 enforce，见 §十.2） */
 export const REGISTRY_SCHEMA_VERSION = 1;
 
@@ -40,12 +42,33 @@ export interface AgentKindRegistrySpec {
 }
 
 /**
+ * `node-type`（v14 T1）——「引擎认识哪些节点类型」这张**出厂清单**。数据原地住在 `dag.ts: NODE_TYPE_CATALOG`
+ * （画布值域那张表就是它，`DAG_NODE_TYPES` 由它派生），注册表这一侧只把它渲成条目：
+ *  - 视图 kind：**不落盘、不可写**（删掉一枚节点类型=画布上一型跑不了的假开关）；
+ *  - 机器值就是条目的 `name`（`agent`/`fanout`…，graph 里 `node.type` 写的正是这枚裸串），所以 spec 里**不再存一遍 type**；
+ *  - spec 存的是**画法**（中文名/图标/分组/一句解释）——「登记形状，不登记执行体」这条边界（红线七）在这里的形状：
+ *    怎么跑住在引擎分派段，今天没有任何外部执行体，所以这里连 `run` 的形状都不预留。
+ */
+export interface NodeTypeRegistrySpec {
+  /** 人话名（画布按钮文字，也是清单里唯一一处这一型的中文措辞） */
+  label: string;
+  icon: string;
+  /** 画布分组：核心 / 基础 / 高级（值域见 `dag.ts: NODE_TYPE_GROUPS`） */
+  group: NodeTypeGroup;
+  /** 组内次序（小的在前）；见 `dag.ts: NodeTypeCatalogEntry.order` 那段「台账序≠画法序」 */
+  order: number;
+  /** 一句解释（hover 用；start/end 这类自明的可以不给） */
+  hint?: string;
+}
+
+/**
  * kind → spec 形状。**A1 落 `model` 当样板，A3-2 加 `agent-kind`（视图 kind）**；
  * 其余 kind 由 A3-x 逐片加成员，每片各带一条「等臂不破」断言。
  */
 export interface RegistrySpecMap {
   model: ModelRegistrySpec;
   'agent-kind': AgentKindRegistrySpec;
+  'node-type': NodeTypeRegistrySpec;
 }
 
 export type RegistryKind = keyof RegistrySpecMap;
@@ -54,14 +77,14 @@ export type RegistryKind = keyof RegistrySpecMap;
  * 认识的 kind 清单（与 `RegistrySpecMap` 双向锁死，见下方 `_checkKindsCovered`）：
  * 加了 spec 成员忘了在这里挂号 = 编译期红，不是运行面「静默不认」。
  */
-export const REGISTRY_KINDS = ['model', 'agent-kind'] as const;
+export const REGISTRY_KINDS = ['model', 'agent-kind', 'node-type'] as const;
 
 /**
  * **视图 kind**：条目由别处（代码里的出厂清单）现算出来，`entries.json` 里永远没有它们。
  * 单列一枚清单而不写死在某个 if 里：写入面拒、UI 收控件、文案说「出厂登记不可删」三处都要用同一个答案
  * ——三份 if 迟早对不上，那就是第二份判据。
  */
-export const REGISTRY_VIEW_KINDS = ['agent-kind'] as const;
+export const REGISTRY_VIEW_KINDS = ['agent-kind', 'node-type'] as const;
 
 export function isRegistryViewKind(kind: unknown): boolean {
   return typeof kind === 'string' && (REGISTRY_VIEW_KINDS as readonly string[]).includes(kind);
@@ -126,6 +149,7 @@ export interface RegistryDescriptor<K extends RegistryKind = RegistryKind> {
 
 const MODEL_SPEC_KEYS = ['model', 'gatewayProfile', 'freeModel', 'note'] as const;
 const AGENT_KIND_SPEC_KEYS = ['binary'] as const;
+const NODE_TYPE_SPEC_KEYS = ['label', 'icon', 'group', 'order', 'hint'] as const;
 
 export type RegistryParse<T> = { ok: true; value: T } | { ok: false; why: string };
 
@@ -143,6 +167,7 @@ export function unknownKindWhy(kind: string): string {
 const SPEC_PARSERS: { [K in RegistryKind]: (raw: unknown) => RegistryParse<RegistrySpecMap[K]> } = {
   model: parseModelSpec,
   'agent-kind': parseAgentKindSpec,
+  'node-type': parseNodeTypeSpec,
 };
 
 export function parseRegistrySpec(kind: unknown, raw: unknown): RegistryParse<RegistryEntry['spec']> {
@@ -193,6 +218,37 @@ export function parseAgentKindSpec(raw: unknown): RegistryParse<AgentKindRegistr
   const binary = typeof o.binary === 'string' ? o.binary.trim() : '';
   if (!binary) return { ok: false, why: `${SHAPE}；binary 必须是非空字符串` };
   return { ok: true, value: { binary } };
+}
+
+/**
+ * `node-type` 的 spec 机检（v14 T1）。与 `agent-kind` 同理：**只有出厂清单会造这一形状**（视图 kind，
+ * 写入面一律拒），但仍走同一张分派表清洗。`group` 吃 `dag.ts` 那枚值域而不是本地重列——
+ * 画布按组分桶，组名在这里再列一遍就是两处存。
+ */
+export function parseNodeTypeSpec(raw: unknown): RegistryParse<NodeTypeRegistrySpec> {
+  const SHAPE = 'node-type 的配置详情必须是 {label, icon, group, order, hint?}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(NODE_TYPE_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  const label = typeof o.label === 'string' ? o.label.trim() : '';
+  if (!label) return { ok: false, why: `${SHAPE}；label 必须是非空字符串（这一型在界面上叫什么，没有默认名可猜）` };
+  const icon = typeof o.icon === 'string' ? o.icon.trim() : '';
+  if (!icon) return { ok: false, why: `${SHAPE}；icon 必须是非空字符串` };
+  if (typeof o.group !== 'string' || !(NODE_TYPE_GROUPS as readonly string[]).includes(o.group)) {
+    return { ok: false, why: `${SHAPE}；group 只认 ${NODE_TYPE_GROUPS.join('/')}，收到「${String(o.group)}」` };
+  }
+  // 只要求「有限数」：次序是相对量，负数与小数都不影响排序，把它拒了只是让清单薄一点改动就 400
+  if (typeof o.order !== 'number' || !Number.isFinite(o.order)) {
+    return { ok: false, why: `${SHAPE}；order 必须是有限数（画布上的组内次序，没有默认次序可猜）` };
+  }
+  const spec: NodeTypeRegistrySpec = { label, icon, group: o.group as NodeTypeGroup, order: o.order };
+  if (o.hint !== undefined) {
+    if (typeof o.hint !== 'string') return { ok: false, why: 'hint 必须是字符串' };
+    const hint = o.hint.trim();
+    if (hint) spec.hint = hint;
+  }
+  return { ok: true, value: spec };
 }
 
 /**

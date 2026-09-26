@@ -132,9 +132,9 @@ describe('引用索引（buildReferenceIndex）', () => {
   it('未迁进表的 kind 只披露计数、绝不判死活（表里没有这一类，判「不存在」就是拿空白冒充断言）', () => {
     const raw = scanRawReferences(fixtureDataDir());
     const index = buildReferenceIndex([], raw);
-    // A3-2 改口入账：`agent-kind` 自此不在这份名单里（它进了表，成员由出厂清单现算）
+    // 改口入账：`agent-kind`（A3-2）与 `node-type`（T1）自此不在这份名单里——它们进了表，成员由出厂清单现算
     expect(index.unmigrated.map((u) => u.kind).sort()).toEqual(
-      ['check-type', 'gateway-profile', 'node-type', 'repo', 'role', 'rule', 'skill', 'template'].sort(),
+      ['check-type', 'gateway-profile', 'repo', 'role', 'rule', 'skill', 'template'].sort(),
     );
     const role = index.unmigrated.find((u) => u.kind === 'role');
     expect(role).toEqual({ kind: 'role', targets: ['r-deliver'], refs: 2 }); // 班底名册 + 模板节点绑岗
@@ -237,8 +237,11 @@ describe('agent-kind 承接后的引用账（v14 A3-2）', () => {
       'agent-kind:codex←template.nodes[0].config.agentKind',
       'agent-kind:pi←space.defaultAgentKind',
     ]);
-    // 出厂清单里没人用的那 15 枚：refs=[] 是正读数（与「读不出」分家，消费面据此画「没人用」）
-    expect(index.byEntry.filter((b) => b.kind === 'agent-kind' && !b.refs.length)).toHaveLength(view.length - 3);
+    // 出厂清单里没人用的那几枚：refs=[] 是正读数（与「读不出」分家，消费面据此画「没人用」）
+    // 按 kind 取格而不是拿 `view.length` 减：视图 kind 会一批批加进来（T1 就加了 node-type），
+    // 写死总数的断言每迁一类都要改一次，而且错了也不会指认是哪一类。
+    const agentRows = index.byEntry.filter((b) => b.kind === 'agent-kind');
+    expect(agentRows.filter((b) => !b.refs.length)).toHaveLength(agentRows.length - 3);
   });
 
   it('清单外的 kind 裸串判得出死活＝dangling（这正是迁入表换来的能力：以前只数不判）', () => {
@@ -261,5 +264,49 @@ describe('agent-kind 承接后的引用账（v14 A3-2）', () => {
     expect(index.dangling).toEqual([
       { kind: 'agent-kind', target: 'antigravity', by: [{ face: 'space', id: 'demo', name: '演示项目', via: 'defaultAgentKind' }] },
     ]);
+  });
+});
+
+/**
+ * v14 T1 的入账：`node-type` 迁入表（第二枚视图 kind）之后，模板里每一枚 `nodes[].type` 裸串第一次
+ * 有了反查。上面那几格喂的是「只迁了 model」的旧形状，这一格喂 `registryViewEntries()`（读面装配的真实形状）。
+ *
+ * 这一格为什么值得单列（不是照抄 agent-kind 那三行）：节点类型是**每张模板每一节都写**的那一类引用，
+ * 于是它第一次把「被 N 处使用」变成注册中心上的常态读数，也第一次让「模板里写了引擎不认识的一型」
+ * 从 `unmigrated` 的一句计数变成点名到格的悬挂账——那正是迁入表换来的能力。
+ */
+describe('node-type 承接后的引用账（v14 T1）', () => {
+  const view = registryViewEntries();
+  const raw = () => scanRawReferences(fixtureDataDir());
+
+  it('每一枚 `nodes[].type` 都挂到出厂条目：出处指得到第几个节点', () => {
+    const index = buildReferenceIndex(view, raw());
+    expect(index.unmigrated.find((u) => u.kind === 'node-type')).toBeUndefined();
+    expect(index.dangling.filter((d) => d.kind === 'node-type')).toEqual([]);
+    const slot = (type: string) => index.byEntry.find((b) => b.entryId === `node-type:${type}`);
+    expect(slot('agent')!.refs).toEqual([{ face: 'template', id: 'flow', name: 'flow', via: 'nodes[0].type' }]);
+    expect(slot('pipeline')!.refs).toEqual([{ face: 'template', id: 'flow', name: 'flow', via: 'nodes[1].type' }]);
+    // 清单里没被任何模板用过的型：refs=[] 是正读数（「这型今天没人画」），与「扫不出」分家
+    expect(slot('fanin')!.refs).toEqual([]);
+  });
+
+  it('清单外的型判得出死活＝dangling（以前只数不判）：改错一个字母的 `agenta` 点名到第几格', () => {
+    const index = buildReferenceIndex(view, [
+      ...raw(),
+      { face: 'template', id: 'flow', name: 'flow', via: 'nodes[2].type', kind: 'node-type', target: 'agenta' },
+    ]);
+    expect(index.dangling.find((d) => d.target === 'agenta')).toMatchObject({
+      kind: 'node-type',
+      by: [{ face: 'template', id: 'flow', via: 'nodes[2].type' }],
+    });
+  });
+
+  it('中文名不是引用写法：模板里写「Agent 节点」（画布上的措辞）不指向 `agent` 这一型', () => {
+    const index = buildReferenceIndex(view, [
+      { face: 'template', id: 'flow', name: 'flow', via: 'nodes[0].type', kind: 'node-type', target: 'Agent 节点' },
+    ]);
+    // 拿措辞当匹配键会把「写错成界面文案的那一格」读成「正在用某一型」——与 agent-kind 不收 binary 同一把尺
+    expect(index.byEntry.some((b) => b.kind === 'node-type' && b.refs.length)).toBe(false);
+    expect(index.dangling.map((d) => d.target)).toEqual(['Agent 节点']);
   });
 });

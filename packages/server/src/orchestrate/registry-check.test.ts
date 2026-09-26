@@ -177,3 +177,36 @@ describe('v14 A3-2 agent-kind 槽已判死活（不再落 unjudged）', () => {
     expect(requirementKindLabel('agent-kind')).toBe('Agent 引擎');
   });
 });
+
+/**
+ * v14 T1：`node-type` 是第二枚视图 kind，于是模板可以声明「我这单要 fan-out 这一型」。
+ * 判据一行都没为这一类新写（`isJudged` 吃 `REGISTRY_KINDS`、匹配吃 Descriptor 的 `refKeys`）——
+ * 这一格钉的就是「零特例」这个事实：节点类型与 agent 类型在预检眼里走同一条路。
+ */
+describe('v14 T1 node-type 槽已判死活', () => {
+  const views = registryViewEntries();
+
+  it('清单里的型命中即过；写错一型＝missing 且拒单（以前整类落 unjudged 一律放行）', () => {
+    for (const id of ['node-type:fanout', 'fanout']) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'node-type', id }]), views);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: 'node-type:fanout' });
+      expect(r.ok).toBe(true);
+    }
+    // 引擎不认识的一型（比如把 `agent` 多打一个 a）：预检就红，不等起单后节点炸
+    const typo = checkGraphRequirements(graphWith([{ kind: 'node-type', id: 'agenta' }]), views);
+    expect(typo.slots[0]!.verdict).toBe('missing');
+    expect(typo.ok).toBe(false);
+    expect(requirementGapWhy(typo)).toContain('node-type → agenta');
+  });
+
+  it('画法的中文措辞不是引用写法：`{kind:node-type, id:"同时做几件事"}` 指不到 fanout', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'node-type', id: '同时做几件事' }]), views);
+    expect(r.slots[0]!.verdict).toBe('missing');
+  });
+
+  it('宽槽（不点名）在表上就过；分组记的是中文组名「节点类型」', () => {
+    expect(checkGraphRequirements(graphWith([{ kind: 'node-type', hint: '要能并行' }]), views).slots[0]!.verdict).toBe('ok');
+    const r = checkGraphRequirements(graphWith([{ kind: 'node-type', id: 'agent' }]), views);
+    expect(r.need).toEqual([{ kind: 'node-type', label: '节点类型', declared: 1, judged: 1, gaps: 0 }]);
+  });
+});

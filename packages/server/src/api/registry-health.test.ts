@@ -9,6 +9,7 @@ import type { Store } from '../orchestrate/store.js';
 import { RegistryStore } from '../orchestrate/registry.js';
 import { registryViewEntries } from '../orchestrate/registry-view.js';
 import type { RegistryEntry } from '@paneflow/shared';
+import { NODE_TYPE_CATALOG, REGISTRY_VIEW_KINDS } from '@paneflow/shared';
 import { AGENT_KINDS } from './agent-kinds.js';
 import { clearAgentProbeCache } from './env-check.js';
 import { buildHttpServer } from './http.js';
@@ -292,10 +293,14 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
       // 静态段 vs 参数段的优先级：`/api/registry/health` 不能被 `:id` 吞成「探 id 叫 health 的条目」
       const batch = (await get(app, '/api/registry/health')).json();
       const roleRow = batch.entries.find((e: { id: string }) => e.id === 'role:r-x');
-      expect(batch.entries).toHaveLength(1 + AGENT_KINDS.length); // 桩的那条 + 出厂视图项（并进去了才算生产形状）
+      expect(batch.entries).toHaveLength(1 + AGENT_KINDS.length + NODE_TYPE_CATALOG.length); // 桩的那条 + 出厂视图项（并进去了才算生产形状）
       expect('health' in roleRow).toBe(false);
       // 视图 kind 有通道：probed 只数出厂项（桩那条 role 仍算「没通道」）
       expect(batch.summary).toMatchObject({ scanned: 0, probed: AGENT_KINDS.length });
+      // T1 的 `node-type` 同样没有通道，而且是**刻意不开**：出厂清单不会「不在本机」，给它画红点是替人判死一堆好型。
+      // 界面上据此天然没有那个点（缺键 ≠ 灰点 ≠ 红点，三件事各画各的）。
+      const nodeRow = batch.entries.find((e: { kind: string }) => e.kind === 'node-type');
+      expect('health' in nodeRow).toBe(false);
     } finally {
       vi.unstubAllGlobals();
       await app.close();
@@ -313,12 +318,14 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {  
         { kind: 'model', target: 'gpt-9', by: [{ face: 'gateway', id: 'p-free', name: '免费档', via: 'freeModel' }] },
       ]);
       // 一条用户登记项都没有：被探到的只有出厂视图项（A3-2 起 agent 通道有货，probed 不再恒 0）
+      // `unused` 是「出厂视图项全数没人用」（agent 18 + 节点类型 6）：T1 起了第二枚视图 kind，这里加一行而不是数死。
+      const factoryRows = AGENT_KINDS.length + NODE_TYPE_CATALOG.length;
       expect(before.summary).toMatchObject({
         scanned: 2,
         dangling: 1,
         unmigrated: 1,
         probed: AGENT_KINDS.length,
-        unused: AGENT_KINDS.length,
+        unused: factoryRows,
       });
       // live/missing 的分配**本机装了谁**决定，测试不写死；三态之和=探到的条数才是这里的账
       expect(before.summary.live + before.summary.missing + before.summary.unknown).toBe(before.summary.probed);
@@ -329,7 +336,7 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {  
       expect(after.dangling).toEqual([]);
       expect(after.entries[0].refs).toHaveLength(1);
       expect(after.entries[0].health.status).toBe('live'); // model 通道自己那句 live（summary 里混着 agent 的读数，不按它断言）
-      expect(after.summary).toMatchObject({ dangling: 0, probed: AGENT_KINDS.length + 1, unused: AGENT_KINDS.length });
+      expect(after.summary).toMatchObject({ dangling: 0, probed: AGENT_KINDS.length + 1, unused: factoryRows });
     } finally {
       vi.unstubAllGlobals();
       await app.close();
@@ -347,7 +354,9 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {  
       expect(body.dangling).toEqual([]);
       // 「一条都没登记」的正读数现在要说清是哪一半：用户登记项为空，出厂视图项照在表上
       expect(body.entries.filter((e: { view: boolean }) => !e.view)).toEqual([]);
-      expect(body.entries.every((e: { kind: string }) => e.kind === 'agent-kind')).toBe(true);
+      // 出厂视图项不止一枚 kind（A3-2 的 agent 清单 + T1 的节点清单）——按「整表都是视图项」断言，别数 kind
+      expect(body.entries.every((e: { view: boolean }) => e.view)).toBe(true);
+      expect(new Set(body.entries.map((e: { kind: string }) => e.kind))).toEqual(new Set(REGISTRY_VIEW_KINDS));
       expect(body.summary.probed).toBe(AGENT_KINDS.length);
     } finally {
       vi.unstubAllGlobals();

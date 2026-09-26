@@ -220,7 +220,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     return {
       space: String(req.query.space ?? '').trim() || 'default',
       spaceNote:
-        '本版命中的判定只看注册表（已迁的 model 与内置清单 agent-kind 都是全局表），项目名只影响指路文案；等带作用域的 kind（技能/规则/仓库）迁入，这一枚才真参与判定',
+        '本版命中的判定只看注册表（已迁的 model 与内置清单 agent-kind / node-type 都是全局表），项目名只影响指路文案；等带作用域的 kind（技能/规则/仓库）迁入，这一枚才真参与判定',
       at: new Date().toISOString(),
       templates: targets.map((g) => checkGraphRequirements(g, entries)),
     };

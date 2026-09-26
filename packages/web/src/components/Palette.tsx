@@ -4,7 +4,8 @@ import { useStore } from '../store.js';
 import type { DagGraph, DagNodeType } from '@paneflow/shared';
 import { PromptModal, type ModalRequest } from './PromptModal.jsx';
 import { isBuiltinTemplate, templateLabel } from '../template-labels.js';
-import { requirementBadge, requirementDetail, type RegistryCheckRow } from '../registry-view.js';
+import { requirementBadge, requirementDetail, type RegistryCheckRow, type RegistryEntryView } from '../registry-view.js';
+import { paletteGroups } from '../node-types.js';
 
 /** 模板名前端校验：只挡空名与路径分隔符，字符集仍由用户自由决定。 */
 const validateTplName = (v: string): string | null => {
@@ -30,6 +31,29 @@ export function Palette() {
    * 那时带槽的卡画「预检没读出」灰字，**绝不画 ✓**：缺口最坏的样子就是看着没事。
    */
   const [checks, setChecks] = useState<Map<string, RegistryCheckRow> | null>(null);
+  /**
+   * v14 T1 节点类型清单（`GET /api/registry?kind=node-type`）。`null` = 还没读到/读失败——
+   * 那时这一节画一句「没读到」而**不画任何按钮**：这里绝不拿本 bundle 的硬编码清单兜底，
+   * 那份第二事实源正是本片要拆掉的东西（旧 server 连这一刀都没有，见下方指路文案）。
+   */
+  const [nodeTypes, setNodeTypes] = useState<RegistryEntryView[] | null>(null);
+  const [nodeTypesError, setNodeTypesError] = useState<string | null>(null);
+
+  const loadNodeTypes = () => {
+    setNodeTypes(null);
+    setNodeTypesError(null);
+    api
+      .registryList('node-type')
+      .then((r) => setNodeTypes(r.entries))
+      .catch((e: Error) => {
+        setNodeTypes(null);
+        setNodeTypesError(e.message || '服务端没答上');
+      });
+  };
+
+  useEffect(() => {
+    loadNodeTypes();
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -178,42 +202,63 @@ export function Palette() {
         <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>还没有模板——点上方「导入」，或到「⋯ 更多」从 GitHub 拉取</div>
       )}
 
-      <h4>核心</h4>
-      <button className="pal-item" onClick={() => add('agent')} title="一个 Agent 节点 = 一个独立终端 Pane，在这里写任务指令">
-        ⚙ Agent 节点
-      </button>
-      <button className="pal-item" onClick={() => add('pipeline')} title="调用另一条模板作为子流水线">
-        ⇢ 子流水线
-      </button>
-
-      <h4>基础节点</h4>
-      <button className="pal-item" onClick={() => add('start')}>▶ 开始</button>
-      <button className="pal-item" onClick={() => add('end')}>■ 结束</button>
-
-      <h4>
-        高级节点
-        <button className="pal-collapse" onClick={() => setAdvOpen((v) => !v)} title="扇出 / 扇入：需要并行时才用">
-          {advOpen ? '▾' : '▸'}
-        </button>
-      </h4>
-      {advOpen && (
-        <>
-          <button
-            className="pal-item"
-            onClick={() => add('fanout')}
-            title="Fan-out：一个节点分出多条线，下游真实并行"
-          >
-            ⑂ 同时做几件事
-          </button>
-          <button
-            className="pal-item"
-            onClick={() => add('fanin')}
-            title="Fan-in：多条线汇入，等上游全部完成再往下走"
-          >
-            ⑀ 等全部做完
-          </button>
-        </>
-      )}
+      <h4>节点类型</h4>
+      {(() => {
+        if (nodeTypes === null) {
+          return (
+            <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>
+              节点类型清单没读到{nodeTypesError ? `：${nodeTypesError}` : ''}。
+              <br />
+              这一版面板只画服务端注册表里的类型，不在这里留一份兜底清单。
+              <br />
+              <button className="pal-item" onClick={loadNodeTypes}>重新读取清单</button>
+            </div>
+          );
+        }
+        const { groups, unusable } = paletteGroups(nodeTypes);
+        return (
+          <>
+            {groups.map(({ group, label, nodes }) => {
+              // 「高级」默认收起是本页的排版习惯（不是清单里的字段），组名来自 shared 的词表
+              const collapsible = group === 'advanced';
+              const open = !collapsible || advOpen;
+              return (
+                <div key={group}>
+                  <h4>
+                    {label}
+                    {collapsible && (
+                      <button className="pal-collapse" onClick={() => setAdvOpen((v) => !v)} title="扇出 / 扇入：需要并行时才用">
+                        {advOpen ? '▾' : '▸'}
+                      </button>
+                    )}
+                  </h4>
+                  {open &&
+                    nodes.map((n) => (
+                      <button key={n.type} className="pal-item" onClick={() => add(n.type)} title={n.hint}>
+                        {n.icon} {n.label}
+                      </button>
+                    ))}
+                </div>
+              );
+            })}
+            {unusable.length > 0 && (
+              <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>
+                {unusable.length} 项读不出画法，不给拖：
+                {unusable.map((u) => (
+                  <div key={u.name} title={u.why}>
+                    · {u.name}：{u.why}
+                  </div>
+                ))}
+              </div>
+            )}
+            {groups.length === 0 && unusable.length === 0 && (
+              <div className="hint" style={{ color: 'var(--text-dim)', fontSize: 11 }}>
+                服务端这一版没交出节点类型（清单是空的）——不是你这里坏了，去注册中心那一页看读数。
+              </div>
+            )}
+          </>
+        );
+      })()}
       {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </div>
   );

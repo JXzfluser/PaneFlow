@@ -5,8 +5,90 @@ import type { RegistryEntry } from './registry.js';
 // DAG model — the single source of truth for both canvas (web) and orchestrator
 // ---------------------------------------------------------------------------
 
+/**
+ * v14 T1：节点类型的**清单**。在此之前这里只有一枚裸串数组，而「这一型叫什么、画成哪个按钮、
+ * 归哪一组、给人看哪句」散在 web 的 Palette 里硬编码——于是「一切能力均可注册」这句话在节点类型这一类上
+ * 连一张可登记的表都没有。清单立在这里，画布与注册表都读它：值域与画法从此同源。
+ *
+ * 边界（红线七「driver 不得写账」在这张表上的落点）：**登记的是形状与画法，不是执行体**。
+ * 每一型怎么跑仍住在 server 引擎的节点分派段（`orchestrate/engine.ts`）——要外移行为，前置是一份
+ * 只读数契约（driver 只返回读数，写账留给引擎）。那份契约今天没有任何实现者，所以这里**不预留空形状**：
+ * 预留一个没人吃的 `run(ctx)` 就是第二份判据的温床，等真出现第二个执行体再立。
+ */
 export const DAG_NODE_TYPES = ['start', 'agent', 'fanout', 'fanin', 'pipeline', 'end'] as const;
 export type DagNodeType = (typeof DAG_NODE_TYPES)[number];
+
+export const NODE_TYPE_GROUPS = ['core', 'basic', 'advanced'] as const;
+export type NodeTypeGroup = (typeof NODE_TYPE_GROUPS)[number];
+
+/**
+ * 分组的人话名（画布侧栏那三个小标题）。跟着清单住在 shared 而不是让 web 自带一份：
+ * web 早就抄过一份 kind→中文组名，两份措辞实际分叉过（一处「代理」一处「Agent 引擎」）——
+ * 同一种错不犯第二次。键序=分组在画布上的出现顺序。
+ */
+export const NODE_TYPE_GROUP_LABELS: Record<NodeTypeGroup, string> = {
+  core: '核心',
+  basic: '基础节点',
+  advanced: '高级节点',
+};
+
+export interface NodeTypeCatalogEntry {
+  type: DagNodeType;
+  /** 中文名：画布按钮与属性面板共用这一句（措辞只有一处） */
+  label: string;
+  icon: string;
+  group: NodeTypeGroup;
+  /**
+   * 组内出现顺序（小的在前）。为什么要一枚显式的数而不是让注册表按清单顺序发出来：
+   * 条目一进注册表就按 id 排（台账要稳定序），「开始」会排到「结束」后面——
+   * 台账序和画法序是两件事，硬共用一枚判据就得有一边别扭。
+   */
+  order: number;
+  /** 一句话讲清这一型干什么（hover 才显示，所以可以不给——start/end 不需要解释自己） */
+  hint?: string;
+}
+
+/**
+ * 清单本体，按 `DagNodeType` 全键声明：漏一枚=编译期红，多一枚也红（与 `SPEC_PARSERS`、
+ * `_checkSpecTypesCovered` 同一招，不靠单测兜住「忘了挂号」）。
+ * 数组顺序由 `DAG_NODE_TYPES` 给出（值域序，稳定）；画布上的出现顺序另吃 `group`+`order`
+ * （分组名读 `NODE_TYPE_GROUP_LABELS`，组内次序读 `order`）——台账按 id 排会把「结束」排在「开始」前，
+ * 所以画法顺序必须单独存一份，不能让机器值序冒充人看的序。
+ */
+const NODE_TYPE_CATALOG_BY_TYPE: Record<DagNodeType, NodeTypeCatalogEntry> = {
+  start: { type: 'start', label: '开始', icon: '▶', group: 'basic', order: 3 },
+  agent: {
+    type: 'agent',
+    label: 'Agent 节点',
+    icon: '⚙',
+    group: 'core',
+    order: 1,
+    hint: '一个 Agent 节点 = 一个独立终端 Pane，在这里写任务指令',
+  },
+  fanout: {
+    type: 'fanout',
+    label: '同时做几件事',
+    icon: '⑂',
+    group: 'advanced',
+    order: 5,
+    hint: 'Fan-out：一个节点分出多条线，下游真实并行',
+  },
+  fanin: {
+    type: 'fanin',
+    label: '等全部做完',
+    icon: '⑀',
+    group: 'advanced',
+    order: 6,
+    hint: 'Fan-in：多条线汇入，等上游全部完成再往下走',
+  },
+  pipeline: { type: 'pipeline', label: '子流水线', icon: '⇢', group: 'core', order: 2, hint: '调用另一条模板作为子流水线' },
+  end: { type: 'end', label: '结束', icon: '■', group: 'basic', order: 4 },
+};
+
+/** 按值域顺序展开的清单（注册表视图条目与画布分组都吃这一枚，不再各排一次） */
+export const NODE_TYPE_CATALOG: readonly NodeTypeCatalogEntry[] = DAG_NODE_TYPES.map(
+  (type) => NODE_TYPE_CATALOG_BY_TYPE[type],
+);
 
 /** 动态扇出一律有顶：无上限 = 上游产物里 N 条数组无声放大成 N 个并发 agent（烧配额 + 挤爆 pane） */
 export const FANOUT_MAX_ITEMS_LIMIT = 64;
