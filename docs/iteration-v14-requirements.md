@@ -265,7 +265,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 
 ## 七、裁决问题（要用户点头，不代答）
 
-> **2026-09-26 状态刷新**：用户令「按需求走」＝按本文件推荐取值推进。Q2 已单独结掉（前置-1，见 §十）；
+> **2026-09-26 状态刷新**：用户令「按需求走」＝按本文件推荐取值推进。Q2 已单独结掉（前置-1，见 §十二）；
 > Q1/Q5/Q7 按推荐落地（只读聚合先行、只准**一个**新视图=注册中心、K1 已收口故 A 系可开）；
 > Q3（`roleShaV:2` 破历史可比）与 Q4（MCP/插件进 v14＝明示改判 v13:285）**仍不动**——
 > 这两条各自要推翻一笔既有裁决或毁掉既有可比性，推荐值也不是免费的，等点名再改。
@@ -295,7 +295,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   `RunProduct` 类型并**在架上手放同一串原文实算 sha**，端点返回形状若与 shared 类型分叉则编译期即红。
 - v13-Z 收口（全量复验 + 状态表 + AGENTS.md + 记忆）已办；**唯一余项=一次去临时 env 的重启仪式**
   （撤 `PF_DIRTY_CHECK=0` / `PF_PROMPT_CONFIRM_MS=180000`，需队列空 + 用户令，属共享状态变更不代做）。
-- 未开工：v14 R/T/W/E/X 系（前置-1 已单独结掉，见 §十；开工范围按 §七 状态刷新——Q3/Q4 两条改判仍等点名）。
+- 未开工：v14 R/T/W/E/X 系（前置-1 已单独结掉，见 §十二；开工范围按 §七 状态刷新——Q3/Q4 两条改判仍等点名）。
 - 基线读数（2026-09-26 实跑）：server **721/721**（50 文件）、cli **43/43**、web **57/57**、`pnpm typecheck` 四包净
   + `tsc -b packages/web` 净。
 
@@ -335,7 +335,57 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 改判入册待点头 3 · 撤回并自纠 1（X2）。**推翻 v0.1 设计的是 4 条，全部采纳**——与 v13 那轮「18/18 全被修正、0 被推翻」
 相比，本轮对抗质量更高，因为确有 4 处被推到重写。
 
-## 十、实施状态表（v14 开工前全空；K1 未收口则 A 系不开）
+## 十、A1（R1）落盘形状决议——写码前定死，防实施时自创
+
+这一节是**开工令的附件**：A1 的每个开放点在下面都给了取值与理由，实施时不许再临场发明第二套；
+若实测推翻其中某条，改这一节并留证据，别悄悄改码。
+
+1. **表的位置与文件形状**：`<dataDir>/registry/entries.json` 单文件（**不做 per-kind 一文件**）。
+   理由三条，都是硬的：id 全局唯一这道守卫不能跨文件核；R2 的反查要把全表一次读进内存扫 graphs/roles/spaces；
+   条目量级是「几十」不是「几万」。写入走 v13-S5 现成的 `Store.atomicWriteSync`，不新造写盘路。
+2. **版本戳（顺带还 R7 的债，且这是 A3 任何一片的硬前置）**：`<dataDir>/registry/schema.json` =
+   `{version: 1, writtenBy: '<package version>'}`。读到 `version` **高于**代码内已知值 → **拒启**并一句指路
+   （「这份 dataDir 由更新的 PaneFlow 写过，先升级再跑，别用旧二进制覆写」）。§九 那条「boot 迁移 + `.bak`
+   在无版本戳 dataDir＝假绿」到此清偿；回滚单位=整目录快照，**永不**拿 `.bak` 改名当回滚。
+3. **信封字段**（放 shared，键名即账名）：
+   `RegistryEntry = { id, kind, name, source: 'builtin'|'user'|'discovered', enabled: boolean, createdAt, updatedAt, spec }`——
+   `source` 三态语义定死：`builtin`=代码出厂、`user`=表单/CLI 登记、`discovered`=E1/E2 环境探得；
+   `enabled:false` 是「留着但不再被选」，**不是删除**，被引用项 disable 只在运行面披露（R2 的写入面才拦）。
+4. **spec 的类型纪律**：`RegistrySpecMap`（kind→spec 形状）逐 kind 追加，`RegistryKind = keyof RegistrySpecMap`。
+   读取面遇到 map 里没有的 kind → **整条不认**（不猜形状、不渲成空卡），写入面 400。
+   这样才守住 §五「不统一 spec」：统一的是信封，判别联合仍住在 shared，编译期双向锁（`dag.ts:119`）不许降级。
+5. **Descriptor 与动词**：一 kind 一模块，`{kind, parse(spec)→一句人话|null, probe(entry)→读数|undefined, resolve(entry)}`。
+   动词条数=四个写动词（`add`/`update`/`delete` + 纯读 `list`/`get`），`probe` 是**只读第五动词**（永不写盘，写盘=造第二份事实源）。
+   A1 只落 **`model` 一枚 kind** 当形状样板（它今天确实没有家：只作为网关档的 `freeModel` 字段 + catalog 探针读数，
+   见 §一 第 13 行），其余 kind 一律走 A3-x 逐片迁。
+6. **id 与冲突**：`<kind>:<slug>`，slug 取自 name 的 ASCII 化结果；非 ASCII（中文名很常见）回落 `e<8位随机>`——
+   **不把中文名当文件名**，那会把 id 变成 URL 编码地狱。`add` 撞已有 id → 400 一句（改=显式 `update`，id 不可变＝R1 边界③）。
+7. **兼容带（A1 的零回归判据）**：本片**不动任何消费点**——表落了、动词通了，但 engine/角色/节点取值路径一字不改。
+   机证=既有测试零改动零红（含 `evidence` 里那些 v13 断言）。换取值从 A3-x 才开始，逐 kind、每片各带一条「等臂不破」断言。
+8. **A1 的可见面如实入账**：本片可见面=**API + CLI 只读面**（`GET /api/registry`、`paneflow registry list [--kind model] [--json]`）。
+   「表单主路」在 X1（注册中心视图）兑现，不塞进 A1——A1+X1 合成一片会是 2000 行的提交，
+   且 X1 的家产对照表（网关「保存并测试」/key 掩码/切档/角色「● 未保存」）需要独立一轮实机核对。这是对 §三 R1
+   可感面的一句**分片勘误**，不是砍需求。
+
+## 十一、E1 落盘形状决议（同上，写码前定死）
+
+1. **E1 纯只读**：只产「草案」，不落 dataDir、不写注册表、不在被探目录留任何字节。登记是 E2 的事。
+   落点：`packages/server/src/api/env-probe.ts`（判据层，读现场与下判断分开、可注入文件视图锁三态，
+   样板 `env-check.ts:57 probeWin32Binary`）+ `POST /api/env/probe` 一条路由 + CLI `paneflow env probe`（零判据，三处必动）。
+2. **「探测失败」是读数不是客户端错误**：路径不存在/不是目录/`git` 不可用 → **200** 带 `error` 一句人话与空 `items`；
+   只有请求体形状脏（缺 `path`、非串）才 400。混错这两类会让无人值守脚本把「这台机器没装 git」当成「参数写错了」。
+3. **每项发现必带 `evidence`**（发现自哪个相对路径文件）——没依据的发现不入草案，这是 E1 定义里那句「每项带依据」的硬版。
+4. **不回显文件内容**：约定文档只报「存在 + 字节数」。远程暴露模式带令牌，内容回显＝新开一个信息泄露面，
+   而 E1 的判据根本不需要内容。
+5. **`missing` 是必填读端**：探不到的类目要有一句为什么（宁缺毋假——缺席要有解释，而不是画一条空项占位）。
+6. **机检候选**由 lockfile 判包管理器（`pnpm`>`yarn`>`npm`）、由 `package.json` 的 `scripts.test`/`scripts.typecheck` 判命令；
+   多套 lockfile 并存**另起一条披露项**（这是真读数，不是错误，也不静默择一）。非 node 项目拿不到 scripts → 进 `missing`，不硬造。
+7. **本机可用 agent** 复用既有实探（`agent-kinds.ts` 清单 + `detectInstalledAgents` 的 60s 缓存），
+   **E1 不另造一份清单**——前置-1 刚把两枚白名单合一，这里再抄一份就是当场破家规。
+8. **规则候选设上限 20 篇**（只取仓根与 `docs/` 一层）：不设上限时一个大仓会把草案刷成垃圾，
+   超过只报计数不逐项列——被探目录的规模不是我们的账，但把人的注意力刷没是。
+
+## 十二、实施状态表（v14 开工前全空；K1 未收口则 A 系不开）
 
 | 片 | 名称 | 状态 | 提交 | 可感面已实跑 |
 |---|---|---|---|---|
