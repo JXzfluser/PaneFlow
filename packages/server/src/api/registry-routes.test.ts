@@ -7,6 +7,7 @@ import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import type { Store } from '../orchestrate/store.js';
 import { RegistryStore } from '../orchestrate/registry.js';
 import { requirementKindLabel } from '../orchestrate/registry-check.js';
+import { DAG_NODE_TYPES, NODE_TYPE_CATALOG } from '@paneflow/shared';
 import { AGENT_KINDS } from './agent-kinds.js';
 import { buildHttpServer } from './http.js';
 import { registerRegistryRoutes } from './registry-routes.js';
@@ -66,18 +67,20 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(body.entries.filter((e) => !e.view)).toEqual([]); // 盘上真的一条没登记——这格还是正读数零
       expect(body.rejected).toEqual([]);
       expect(body.schema).toBeNull();
-      expect(body.knownKinds).toEqual(['model', 'agent-kind']);
-      expect(body.viewKinds).toEqual(['agent-kind']);
+      expect(body.knownKinds).toEqual(['model', 'agent-kind', 'node-type']);
+      expect(body.viewKinds).toEqual(['agent-kind', 'node-type']);
       // 组名只有一处措辞表（`registry-check.ts` 的 `KIND_CN`）：网页拿这张外发表的标签画分组，
       // 前端不再自己抄一份——抄了迟早分叉，而分叉的代价是「同一个 kind 两处两个名字」。
       expect(Object.keys(body.kindLabels).sort()).toEqual([...body.knownKinds].sort());
-      expect(body.kindLabels).toMatchObject({ model: '模型', 'agent-kind': 'Agent 引擎' });
+      expect(body.kindLabels).toMatchObject({ model: '模型', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型' });
       expect(requirementKindLabel('agent-kind')).toBe(body.kindLabels['agent-kind']);
       expect(body.refSummary).toEqual({ scanned: 0, dangling: [], unmigrated: [] });
       // 视图项=出厂清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
-      expect(body.entries).toHaveLength(AGENT_KINDS.length);
-      expect(new Set(body.entries.map((e) => e.name))).toEqual(new Set(AGENT_KINDS));
-      expect(body.entries.every((e) => e.view && e.kind === 'agent-kind' && e.source === 'builtin')).toBe(true);
+      const agents = body.entries.filter((e) => e.kind === 'agent-kind');
+      expect(agents).toHaveLength(AGENT_KINDS.length);
+      expect(new Set(agents.map((e) => e.name))).toEqual(new Set(AGENT_KINDS));
+      expect(body.entries.every((e) => e.view && e.source === 'builtin')).toBe(true);
+      expect(new Set(body.entries.map((e) => e.kind))).toEqual(new Set(body.viewKinds));
       // label 由 Descriptor 算：异名才说话，同名不重复一遍
       const agy = body.entries.find((e) => e.name === 'antigravity-cli');
       expect(agy).toMatchObject({ id: 'agent-kind:antigravity-cli', label: '探测名 antigravity', spec: { binary: 'antigravity' } });
@@ -154,7 +157,7 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(del.json().deleted).toMatchObject({ id: 'agent-kind:pi', view: true });
       const after = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
       expect(after.json().rejected).toEqual([]);
-      expect(after.json().entries).toHaveLength(AGENT_KINDS.length); // 清的是盘上残条，出厂项一条没少
+      expect(after.json().entries).toHaveLength(AGENT_KINDS.length + NODE_TYPE_CATALOG.length); // 清的是盘上残条，出厂项一条没少
     } finally {
       await app.close();
     }
@@ -199,6 +202,79 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(dirty.json().error).toContain('不认的能力类型「plugin」');
       const ok = await app.inject({ method: 'GET', url: '/api/registry?kind=model', headers: { host: HOST } });
       expect(ok.json().entries).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * v14 T1 的对外读数：画布节点面板从此只问这一刀（`Palette.tsx` 那份硬编码按钮列表已拆掉）。
+   * 这里钉「表里有什么」，画法怎么排成组是 web 的纯函数判据（`node-types.test.ts`）。
+   */
+  it('GET ?kind=node-type：出厂六型上架，画法字段齐（label/icon/group/order），写入面照拒', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/registry?kind=node-type', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { entries: { id: string; name: string; view: boolean; label: string; spec: Record<string, unknown> }[] };
+      expect(body.entries.map((e) => e.name).sort()).toEqual([...DAG_NODE_TYPES].sort());
+      expect(body.entries.every((e) => e.view && e.spec.label && e.spec.icon && typeof e.spec.order === 'number')).toBe(true);
+      // 人话标签说「画布上长成什么样」，不把机器值重念一遍
+      expect(body.entries.find((e) => e.name === 'agent')).toMatchObject({
+        id: 'node-type:agent',
+        label: '「Agent 节点」· 核心',
+        spec: { icon: '⚙', group: 'core', order: 1, hint: '一个 Agent 节点 = 一个独立终端 Pane，在这里写任务指令' },
+      });
+      // `order` 存在是因为台账序≠画法序：条目按 id 稳定排，那样「结束」会排在「开始」前面
+      expect(body.entries.map((e) => e.id)).toEqual([...body.entries.map((e) => e.id)].sort());
+      // 线上传的 order 得是真数（web 侧拿它排序；是字符串就一路静默回落成 id 序，画法序白做）
+      const orderOf = (name: string) => {
+        const raw = body.entries.find((e) => e.name === name)!.spec.order;
+        if (typeof raw !== 'number') throw new Error(`${name} 的 order 不是数：${JSON.stringify(raw)}`);
+        return raw;
+      };
+      expect(orderOf('start')).toBeLessThan(orderOf('end'));
+      // 写入面对这一类同样全关：表单据此收起（`registrableKinds` 吃 viewKinds），不给「点开却登记不了」的假可点
+      const add = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'node-type', name: 'my-node', spec: { label: '我的节点', icon: '★', group: 'core', order: 1 } },
+      });
+      expect(add.statusCode).toBe(400);
+      expect(add.json().error).toContain('内置能力清单');
+      expect(registry.list('node-type')).toEqual([]);
+      expect(fs.existsSync(path.join(dataDir, 'registry', 'entries.json'))).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * v14 T1 的 HTTP 面：画布节点面板从此读这一刀（`Palette.tsx` 里那份硬编码按钮列表已拆）。
+   * 这里钉的是「server 交出去的那张表长什么样」，画法怎么排是 web 的纯函数（`node-types.test.ts`）。
+   */
+  it('GET /api/registry?kind=node-type：出厂六型带画法字段上架（画布面板的数据源）', async () => {
+    const { app } = await build();
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/registry?kind=node-type', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { entries: { id: string; name: string; view: boolean; label: string; spec: Record<string, unknown> }[] };
+      expect(body.entries.map((e) => e.name).sort()).toEqual([...DAG_NODE_TYPES].sort());
+      expect(body.entries.every((e) => e.view && e.spec.label && e.spec.icon && typeof e.spec.order === 'number')).toBe(true);
+      // label 说的是画布上的样子（中文名 + 归组），不是把机器值重念一遍
+      expect(body.entries.find((e) => e.name === 'agent')).toMatchObject({
+        id: 'node-type:agent',
+        label: '「Agent 节点」· 核心',
+        spec: { icon: '⚙', group: 'core', order: 1 },
+      });
+      // 台账序（条目按 id 稳定排）与画布序是两件事：id 序把「结束」排在「开始」前面。
+      // 所以画法必须自带一枚 `order`，不能拿台账序冒充——这一条同时钉住「两把尺没被并成一把」。
+      const byId = body.entries.map((e) => e.name);
+      expect(byId).toEqual([...byId].sort());
+      expect(byId.indexOf('end')).toBeLessThan(byId.indexOf('start'));
+      const order = (name: string): number => body.entries.find((e) => e.name === name)!.spec.order as number;
+      expect(order('start')).toBeLessThan(order('end'));
     } finally {
       await app.close();
     }
@@ -249,7 +325,9 @@ describe('注册内核四动词（/api/registry）', () => {
       const list = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
       // 读面照读：盘上那条 + 出厂清单的视图项都在表上（视图项本来就不落盘，版本戳管不着它）
       expect(list.json().entries.filter((e: { view: boolean }) => !e.view)).toHaveLength(1);
-      expect(list.json().entries.filter((e: { view: boolean }) => e.view)).toHaveLength(AGENT_KINDS.length);
+      expect(list.json().entries.filter((e: { view: boolean }) => e.view)).toHaveLength(
+        AGENT_KINDS.length + NODE_TYPE_CATALOG.length,
+      );
       expect(list.json().schema).toEqual({ version: 99, writtenBy: '9.0.0' });
     } finally {
       await app.close();
