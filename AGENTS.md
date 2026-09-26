@@ -172,7 +172,7 @@ curl -s $BASE/api/runs/<runId>
 curl -s $BASE/api/runs/<runId>/events
 
 # 产物架（v13-K1：一处清单两个来源，各带 source）——worktree 回收后 workspace 侧蒸发的东西，架侧仍可读
-curl -s $BASE/api/runs/<runId>/artifacts           # → {runId,dir,exists,files:[{name,size,mtime,source,nodeId?,sha?,bytes?,shelved?}]}
+curl -s $BASE/api/runs/<runId>/artifacts           # → {runId,dir,exists,files:[{name,size,mtime,source,nodeId?,sha?,bytes?,shelved?}]}；exists=任一侧有货（工作目录被回收而架上还有原件时也为 true）
 curl -s "$BASE/api/runs/<runId>/artifacts/file?path=b/plan.md&src=shelf"  # 读原文；src 缺省=workspace 侧（旧语义一字不变）
 #   架根 `<dataDir>/shelves/<runId>/<nodeId>/<名>`（名只取 basename，穿越=400）；per-run 字节上限
 #   `PF_SHELF_MAX_BYTES`（缺省 32 MiB），超限的件 `shelved:false` + 一句 shelfError——只披露不拦

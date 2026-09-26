@@ -277,18 +277,21 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 8. **「用多workflow规划好」的两种读法**：v0.2 §六 给的是施工 workflow（含依赖与令牌轴）；若指的是业务侧多流程编排规划，
    则补一节「v14 出厂模板集：≥N 条业务流全部只由 注册项 + 模板 组成、不新增 TS」。请点名要哪个（或都要）。
 
-## 八、与 v13 的接续（账面清点，v0.2 加硬前置）
+## 八、与 v13 的接续（账面清点，2026-09-26 更新：硬前置已还清）
 
-- 已完成：v13 的 S/V/E/W/B 系 21 片，最后一笔 `afb8d4e`；16 笔未推 origin/main（推需明示）。
-- **在飞＝硬前置（v0.2 判死「先叠 v14」）**：K1 产物台账。工作区状态实测：`shared/dag.ts` 已声明 `ProductDecl`/`RunProduct`、
-  `cli/main.ts:334-341` 已渲染 `产物:` 行、`AGENTS.md` 已把产物架键写成既有 API，而
-  **`grep products packages/server/src`（生产码）零命中**，`/api/runs/<id>/artifacts` 实返
-  `{name,size,mtime,nodeId,nodeLabel,nodeState,unverified}`（`http.ts:1797-1846`）——sha/bytes/shelved/source 皆无。
-  收口动作：①server 侧读取/算 sha/上架 + 端点补键，或②先把 CLI 渲染与 AGENTS.md 那几行退回（不留文档先于代码的账）；
-  CLI 那条单测改成吃 server 真实响应形状或补 server 侧测试（禁 stub 自造 payload）。**这一步不做完，v14 任何切片不开。**
-- 未开工：v14 全部（本文＝立项草案）。v13-Z 收口（全量复验 + 状态表 + AGENTS.md + 记忆 + 一次去临时 env 的重启仪式）照办。
-- 基线读数：本会话实跑 server 684/684、engine.test 220/220、CLI 27/27、delivery 23/23；对抗路静态复算 675–682（差值为
-  `it.each` 与三处 for 循环展开），以实跑为准。
+- 已完成：v13 的 S/V/E/W/B/K 系 **22 片**，最后一笔 **K1 `a745c50`**（产物台账与硬引用）；18 笔未推 origin/main（推需明示）。
+- **前置-0 还清实录（原判据「server 落地或退文档」，处置=落地，不退文档）**：server 侧新增 `orchestrate/products.ts`
+  （声明清洗/实读算 sha/上架/取用同一处判据）+ 引擎收口采集点 `collectNodeProducts` + 硬引用替换
+  （`{{artifact:节点/名}}` 解析不到=本节点即时失败）；`/api/runs/:id/artifacts` 实返已含
+  `source/sha/bytes/shelved`，`file?src=shelf` 走台账+指纹双闸，真删除一并清架。
+  「禁 stub 自造 payload」一条的处置如实记：CLI 那条单测**仍按 `RunView` 最小结构读法手写**（这是 v11-A1 起每一片的既有
+  约定，不是本片新造的假 payload），真正的形状约束改由 server 侧测试钉住——`http-artifacts.test.ts` 的台账条目一律标
+  `RunProduct` 类型并**在架上手放同一串原文实算 sha**，端点返回形状若与 shared 类型分叉则编译期即红。
+- v13-Z 收口（全量复验 + 状态表 + AGENTS.md + 记忆）已办；**唯一余项=一次去临时 env 的重启仪式**
+  （撤 `PF_DIRTY_CHECK=0` / `PF_PROMPT_CONFIRM_MS=180000`，需队列空 + 用户令，属共享状态变更不代做）。
+- 未开工：v14 全部（本文＝立项草案，等 §七 裁决）。
+- 基线读数（2026-09-26 实跑）：server **721/721**（50 文件）、cli **43/43**、web **57/57**、`pnpm typecheck` 四包净
+  + `tsc -b packages/web` 净。
 
 ## 九、对账（三路对抗 41 条发现 · 逐条处置）
 
@@ -330,7 +333,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 
 | 片 | 名称 | 状态 | 提交 | 可感面已实跑 |
 |---|---|---|---|---|
-| 前置-0 | K1 收口（server 落地或退文档；单测去 stub 假 payload） | 阻塞中 | — | — |
+| 前置-0 | K1 收口（server 落地或退文档；单测去 stub 假 payload） | **已完成 `a745c50`** | `a745c50` | CLI `产物:` 行 + 架侧 `src=shelf` 取证已复验（server 721 绿） |
 | 前置-1 | agent-kind 两枚白名单合一 | 未开工 | — | — |
 | R1 | 统一信封 + Descriptor + 四动词（表单主路） | 未开工 | — | — |
 | R2 | 引用索引 + 写端拒悬挂/拒删被引用 | 未开工 | — | — |

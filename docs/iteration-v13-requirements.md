@@ -271,6 +271,49 @@ feature 单「从 main 拉 `feature/v{version}-{issue}`，PR→release/v{version
 - **C4 开跑窗口**：第一批收口后由用户令烧配额；三夜期间不再插工程片（防「边跑边改 harness」自造混淆因子——V4 的 ctxSha
   恰好会把这种事照出来）。
 
+## 实施状态（2026-09-26 收口轮：工程口径全落，实机口径欠账照旧全推 C4）
+
+复验读数（本轮实跑，不是引用旧账）：server **721** 绿 · cli **43** 绿 · web **57** 绿 · shared 无独立测试文件（其判据一律在
+server 侧锁住，`pnpm typecheck` 四包净）。落点 SHA 取该片的**首笔**提交，后续补测/补界面在同片内追加。
+
+| 片 | 状态 | 落点 | 一句话读数面 |
+| --- | --- | --- | --- |
+| S1 重启对账与孤儿闭环（D4 转正） | 已落 | `922ce8a` | 认领轴换 label 反解 runId；周期扫描 `PF_ORPHAN_SWEEP_MS`（<=0 关） |
+| S6 进程级存活 + 单实例锁 | 已落 | `944d154` | 同 dataDir 第二实例拒起（错误带活锁主 pid）；SIGTERM 优雅停机 |
+| S3 仓库软锁谓词修正 | 已落 | `ecc4dca` | 出闸判据改「锁是否还在」，三活空窗堵死 |
+| V0 校验器 fail-closed | 已落 | `f3af3d5` | node.type / checks[].type 值域白名单 + fanout 有顶 |
+| V2 等臂机检 | 已落 | `9ea5cdd` | `harness.readback/readbackOutcome/skeletonSha`；等臂=骨架# 相等 ∧ 读回不等 |
+| E1 发行链收口 | 已落 | `e89d06e` | launcher 窄判据（漂移结构性不可能）+ CI 产物冒烟 + install 三修 + 许可入包 |
+| S2 尝试边界掐断 | 已落 | `8033e40` | 重试不再双跑；`abandonments` 结构化账 + CLI 掐断账行 |
+| S4 门到期 fail-closed + 外解唤醒 | 已落 | `6d2b962` | 七门收进 `awaitGate`；`PF_GATE_TIMEOUT_MS` 缺省 0=关；到期不入人等分 |
+| S5 账本原子写与失败可见 | 已落 | `548bc0c` | tmp+fsync+rename 单 helper；health 多 `corruptRuns`/`persistFailures` |
+| V1 机检/自报双口径 | 已落 | `ef774d5` | `machineCheckTally` 读时算（0 是正断言，拿不到=整键省略）；覆盖率与契约取交 |
+| V3 收数表自含可信 | 已落 | `1744ac8` | 行数不再含表头 + append 三态 + `?reconcile=1` + 口径戳 + token 两列 |
+| V4 ctxSha 注入留痕 | 已落 | `7b7bc25`（补测 `2487c4c`） | 注入现场实读集指纹；replay 漂移只发事件不拦 |
+| V5① 沉淀注入降权 | 已落 | `7daa894` | 反面教材页进 agent prompt 吃 `LOW_CONFIDENCE_PENALTY`；②引用列仍门控在 C4 出料后 |
+| E2 Windows 诚实入账 | 已落 | `9707503` | win32 探测走 PATH×PATHEXT；探测全空 fail-closed（v6「不做 Windows 原生适配」裁决据实改判，开工令=用户「把 v13 全部实现」） |
+| W1 岗位装备槽与三轴划界 | 已落 | `b3e8216` | 节点 `equip{scope,skills,rules,unknownSkills}`；CLI 装备行 + 吃全量警告 |
+| W2 角色指纹与上岗 | 已落 | `bfdbc67` | `roleSha`（换装备=换指纹）+ `injectedBytes`（0 是正读数）落注入现场 |
+| W3 授权声明 + 事后对账 | 已落 | `dccc9c8` | `declares` 三面入 prompt；`declareViolations` 只照不拦，归因到单级上界 |
+| W4 角色能力账（本版唯一新端点，纯读） | 已落 | `59c4afd` | `GET /api/roles/:id/profile`；rework 如实不报 |
+| B1 交付约定声明位 | 已落 | `43f479c` | `SpaceProfile.delivery` + PUT merge 语义 + 脏形状 400 |
+| B2 家规三层消费 | 已落 | `afb8d4e` | 机检 fail-closed 拉基点 · 约定块进 prompt · 收口落差只照不拦（B4 交付出口同片） |
+| B3 分支与目录生命周期 | 已落 | `2f47ceb` | worktree 根默认 `<dataDir>/worktrees`；删目录必结分支半笔（`-d` 绝不 `-D`） |
+| K1 产物台账与硬引用 | 已落 | `a745c50` | `products` 声明位实读算指纹上架 + `{{artifact:节点/名}}` 硬引用解析不到即红 + 上游产物清单进注入块 |
+| 顺手账 #106/#107 | 已落 | `7daa894`/`bb86e5c`+`90b6f9c` | 节点侧 kind 落空即时报错；fresh dispatch 可打实验标 |
+
+**未落与门控（不硬结，按册顺延）**：
+
+- **K2 打回回路**——开工硬前置是裁决问题 9（回边语义）点头，至今未点；v14 立项文档已建议把它移入 v14 B 系与「产物即铆钉」
+  一起裁，不在 v13 单方面抢跑。K3 上下游岗位入编仍门控在 C4 复盘后（v14 头牌）。
+- dag.ts:696-698 那笔「未解析引用字面输出」的假绿账，K1 的处置=**分家而不是改判**：硬引用 fail-closed（新增拒绝类已进
+  `validateDag`，图外节点/引自己一律拒，fanout 克隆前缀 `x__N` 按基名认不误杀），软引用保留字面放行 + G2 既有 ⚠ 事件披露。
+  把软引用一并改成拒=误杀存量模板（`{{item.field}}` 等运行期形态静态不可判），这笔如实留在册上不称「结清」。
+- 实机口径欠账零变化：C4 三夜未跑完（#8/#9/#10 首驾实跑到 failed，网关流断），工程绿 ≠ 实机绿；重启仪式（撤
+  `PF_DIRTY_CHECK=0` / `PF_PROMPT_CONFIRM_MS=180000` 两条临时 env）待用户令，需队列空 + lsof-PID 走仪式。
+- 其余门控位原样：V5②、S7、旧 V3 断言溯源、closePane、T1 定时起单、W5 装备物化、岗位级 A/B、上线脚本 run 型 rehearsal、
+  手机触达全案。
+
 ## 明确不做（v13）
 
 - 重启复活 running run / re-attach 续跑（触「不重建 durable execution」；恢复走既有 ⤴/`--from-failed`）。
