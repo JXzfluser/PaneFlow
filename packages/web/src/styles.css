@@ -243,7 +243,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .console-resize::after {
   content: ''; position: absolute; left: 50%; top: 2px; transform: translateX(-50%);
   width: 36px; height: 2px; border-radius: 2px; background: var(--border);
-  transition: background 0.15s;
+  transition: background-color var(--t-fast);
 }
 .console-resize:hover::after { background: var(--accent); }
 .console-tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); align-items: center; font-variant-numeric: tabular-nums; }
@@ -528,7 +528,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 
 .tpl-item .tpl-ops {
   position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
-  display: flex; gap: 1px; opacity: 0.45; transition: opacity 0.12s ease;
+  display: flex; gap: 1px; opacity: 0.45; transition: opacity var(--t-fast);
 }
 .tpl-item:hover .tpl-ops, .tpl-item:focus-within .tpl-ops { opacity: 1; }
 .tpl-item .tpl-ops button {
@@ -598,10 +598,10 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .er-item .er-tag.disclosed { grid-column: 3; grid-row: 1; justify-self: end; margin-left: auto; }
 .er-kind { font-size: 11px; color: var(--accent); font-weight: 600; letter-spacing: 0.02em; }
 .er-tag.disclosed { font-size: 10.5px; color: var(--text-dim); background: var(--chip); padding: 1px 6px; border-radius: 999px; }
-.er-error { background: rgba(220,80,80,0.08); border: 1px solid rgba(220,80,80,0.3); color: #d66; padding: 8px 10px; border-radius: var(--radius-sm); margin: 10px 0; font-size: 12px; }
+.er-error { background: var(--chip-err); border: 1px solid var(--err); color: var(--err); padding: 8px 10px; border-radius: var(--radius-sm); margin: 10px 0; font-size: 12px; }
 .er-ok { background: var(--panel-2); border: 1px solid var(--accent); padding: 12px; border-radius: var(--radius-sm); margin-bottom: 8px; font-size: 13px; }
 .er-ok b { color: var(--accent); }
-.er-warns { color: #b8860b; font-size: 12px; margin: 6px 0 0 18px; padding: 0; }
+.er-warns { color: var(--warn); font-size: 12px; margin: 6px 0 0 18px; padding: 0; }
 .er-spacer { flex: 1; }
 .env-register .close-row { padding-top: 8px; border-top: 1px solid var(--border); margin-top: 8px; }
 .projects-head-actions { margin-left: auto; display: flex; gap: 8px; align-items: flex-start; white-space: nowrap; }
