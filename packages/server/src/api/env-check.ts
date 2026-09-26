@@ -2,27 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** kind → local binary probe name (herdr integration kinds) */
-export const AGENT_BINARIES: Record<string, string> = {
-  pi: 'pi',
-  claude: 'claude',
-  codex: 'codex',
-  opencode: 'opencode',
-  copilot: 'copilot',
-  devin: 'devin',
-  droid: 'droid',
-  kimi: 'kimi',
-  kilo: 'kilo',
-  hermes: 'hermes',
-  qwen: 'qwen',
-  qodercli: 'qodercli',
-  cursor: 'cursor',
-  grok: 'grok',
-  omp: 'omp',
-  mastracode: 'mastracode',
-  'antigravity-cli': 'antigravity',
-  gemini: 'gemini',
-};
+import { agentBinaryName } from './agent-kinds.js';
 
 interface CacheEntry {
   at: number;
@@ -91,7 +71,7 @@ export async function detectInstalledAgents(kinds: string[]): Promise<string[]> 
   if (hit && Date.now() - hit.at < TTL_MS) return hit.installed;
   const results = await Promise.all(
     kinds.map(async (kind) => {
-      const bin = AGENT_BINARIES[kind] ?? kind;
+      const bin = agentBinaryName(kind);
       return (await probeBinary(bin)) ? kind : null;
     }),
   );

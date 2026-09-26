@@ -78,27 +78,8 @@ import { readSkillIndex } from '../orchestrate/skills.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureStandardRoles, loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
-
-export const AGENT_KINDS = [
-  'opencode',
-  'claude',
-  'codex',
-  'pi',
-  'copilot',
-  'devin',
-  'droid',
-  'kimi',
-  'kilo',
-  'hermes',
-  'qwen',
-  'qodercli',
-  'cursor',
-  'grok',
-  'omp',
-  'mastracode',
-  'antigravity-cli',
-  'gemini',
-] as const;
+// v14 前置-1：agent kind 清单只有一处真身（此处曾与 env-check 的探测表各写一份，加一种要改两处）
+import { AGENT_KINDS, isAgentKind } from './agent-kinds.js';
 
 export interface HttpDeps {
   engine: Engine;
@@ -846,7 +827,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         return reply.code(400).send({ error: 'agentOverride 必须是布尔值' });
       }
       const kind = (req.body as Record<string, unknown> | undefined)?.defaultAgentKind;
-      if (typeof kind === 'string' && kind && !(AGENT_KINDS as readonly string[]).includes(kind)) {
+      if (typeof kind === 'string' && kind && !isAgentKind(kind)) {
         return reply.code(400).send({ error: `defaultAgentKind 不是已知类型：${kind}` });
       }
       // I2：经验注入开关只认真布尔（false 必须能存下去）
@@ -1307,7 +1288,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         profileTeam = profile.team;
         // E'+AE：Planner agent 取空间档案默认值；缺省回落自动推荐（已装优先 pi）
         // v13-E2：两路全空不再兜底 claude——下面显式 400 指路（实探读端见 /api/health）
-        plannerAgentKind = profile.defaultAgentKind && (AGENT_KINDS as readonly string[]).includes(profile.defaultAgentKind)
+        plannerAgentKind = profile.defaultAgentKind && isAgentKind(profile.defaultAgentKind)
           ? profile.defaultAgentKind
           : ((await (deps.recommendAgentKind ?? recommendAgentKind)()) ?? undefined);
       } catch {
