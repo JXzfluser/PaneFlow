@@ -124,15 +124,18 @@ const spaceRefs: Source = (dataDir) => Store.listSpaces(dataDir).flatMap(refsFro
 const roleRefs: Source = (dataDir) => loadRoles(dataDir).flatMap(refsFromRole);
 
 const templateRefs: Source = (dataDir) =>
-  readGraphs(dataDir).flatMap((g) => refsFromGraph(g, g.name));
+  readStoredGraphs(dataDir).flatMap((g) => refsFromGraph(g, g.name));
 
 /**
  * 只读地拿模板，**不 new Store**：`Store` 的构造期会 `mkdir` 并补写默认项目档案
  * （`store.ts:191-205`），一个自称纯读的推导器不该有这种写副作用。
  * 口径与 `Store.listGraphs()` 对齐：只取 `*.json`、坏文件跳过（那里也是 `readJson` 返回 null 就滤掉）。
  * 目录读不动则**照抛**——由路由层渲成「引用账扫不出」500，绝不降级成「零引用」放行删除。
+ *
+ * v14-T3 起这枚也供预检路由用（`GET /api/registry/check` 要遍历在册模板）：预检与引用账
+ * 看的是同一堆模板文件，开第二条读盘路＝迟早两边数的模板不一样。
  */
-function readGraphs(dataDir: string): DagGraph[] {
+export function readStoredGraphs(dataDir: string): DagGraph[] {
   const graphsDir = path.join(dataDir, 'graphs');
   if (!fs.existsSync(graphsDir)) return []; // 一个模板也没有＝正读数（新装机器）
   const out: DagGraph[] = [];

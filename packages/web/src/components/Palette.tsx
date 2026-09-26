@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 import type { DagGraph, DagNodeType } from '@paneflow/shared';
 import { PromptModal, type ModalRequest } from './PromptModal.jsx';
 import { isBuiltinTemplate, templateLabel } from '../template-labels.js';
+import { requirementBadge, requirementDetail, type RegistryCheckRow } from '../registry-view.js';
 
 /** 模板名前端校验：只挡空名与路径分隔符，字符集仍由用户自由决定。 */
 const validateTplName = (v: string): string | null => {
@@ -21,8 +22,30 @@ export function Palette() {
   const setTemplates = useStore((s) => s.setTemplates);
   const log = useStore((s) => s.log);
   const graphName = useStore((s) => s.graphName);
+  const space = useStore((s) => s.space);
   const [modal, setModal] = useState<ModalRequest | null>(null);
   const [advOpen, setAdvOpen] = useState(false);
+  /**
+   * v14-T3 预检读数（一次拿全部模板，不是一卡一发请求）。`null` = 还没读到/读失败了——
+   * 那时带槽的卡画「预检没读出」灰字，**绝不画 ✓**：缺口最坏的样子就是看着没事。
+   */
+  const [checks, setChecks] = useState<Map<string, RegistryCheckRow> | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setChecks(null); // 换项目先把上一个项目的命中收掉，不拿旧读数糊这张卡
+    api
+      .registryCheck()
+      .then((r) => {
+        if (alive) setChecks(new Map(r.templates.map((t) => [t.template, t])));
+      })
+      .catch(() => {
+        if (alive) setChecks(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [space]);
 
   const add = (type: DagNodeType) => {
     const { innerWidth, innerHeight } = window;
@@ -122,17 +145,25 @@ export function Palette() {
       {(graphs ?? []).map((g) => {
         const label = templateLabel(g.name, g.metadata.description);
         const loaded = g.name === graphName;
+        const row = checks?.get(g.name);
+        const badge = requirementBadge(row, g.requires?.length ?? 0);
+        const mark = badge.tone === 'ok' ? '✓' : badge.tone === 'gap' ? '✗' : badge.tone === 'pending' ? '?' : badge.tone === 'unknown' ? '…' : '';
         return (
           <div key={g.name} className={`tpl-item${loaded ? ' on' : ''}`}>
             <button
               className="tpl-load"
-              title={`${label.title}\n${label.use}\n\n模板 ID：${g.name}`}
+              title={`${label.title}\n${label.use}\n\n模板 ID：${g.name}${row ? `\n\n${requirementDetail(row)}` : ''}`}
               onClick={() => loadGraph(g)}
             >
               <span className="tpl-title">
                 {isBuiltinTemplate(g.name) ? '📦' : '📋'} {label.title}
               </span>
               {label.use && <span className="tpl-use">{label.use}</span>}
+              {badge.tone !== 'none' && (
+                <span className={`tpl-req tone-${badge.tone}`}>
+                  {mark} {badge.text}
+                </span>
+              )}
             </button>
             <div className="tpl-ops">
               <button title="复制另存" aria-label="复制模板" onClick={() => duplicate(g)}>⧉</button>

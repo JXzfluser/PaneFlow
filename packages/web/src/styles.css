@@ -496,6 +496,15 @@ button.icon { padding: 4px 6px; min-width: 28px; }
   display: block; margin-top: 2px; font-size: 10.5px; color: var(--text-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* v14-T3 能力槽读数：✓命中 / ✗缺口 / ?还判不了 / …预检没读出 —— 四态分开说，混一件就是假账 */
+.tpl-item .tpl-req {
+  display: block; margin-top: 2px; font-size: 10.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tpl-item .tpl-req.tone-ok { color: var(--ok); }
+.tpl-item .tpl-req.tone-gap { color: var(--err); }
+.tpl-item .tpl-req.tone-pending, .tpl-item .tpl-req.tone-unknown { color: var(--text-dim); }
+
 .tpl-item .tpl-ops {
   position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
   display: flex; gap: 1px; opacity: 0.45; transition: opacity 0.12s ease;

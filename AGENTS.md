@@ -89,6 +89,24 @@ paneflow replay <runId> --allow-side-effects      # 显式穿透副作用门禁�
 paneflow replay <runId> --from-failed --suite c4 --arm b
 paneflow experiments --suite c4              # 只读 server 端收数表（每行含 harness 摘要列 graphSha·agentKind·rb=<读回结局>·skel#<骨架指纹>（v13-V2 起，旧行缺项画到前一截），缺则 -；
 #                                             另含 v12-V2「人等分」列=人批门累计等待分钟，无账画 -）
+
+# 7) 注册中心（v14-A1/A2/R4）：能力条目说什么、谁在用、现在还在不在——三问三答，判据全在 server
+paneflow registry list [--kind model]        # 表 + 「被 N 处使用」+ 本机不认的条目（只披露不清除）
+paneflow registry get <id>                   # 单条：label 人话 + 引用出处逐条（读不出就说读不出，不画「没人用」）
+paneflow registry refs <id>                  # 只问引用账：删之前先看这一格
+paneflow registry add --from draft.json      # 草案文件原样 POST，CLI 不预校验不补 kind；脏形状 400 一句指路
+paneflow registry health [--refresh]         # 整表实探三态：live/missing/unknown（探通不通 ≠ 条目好不好）
+paneflow registry probe <id> [--refresh]     # 单枚探针，与批量面同一套画法
+#  改和删只有网页「注册中心」有（写端拒悬挂引用、拒删被引用条目，中文解释由 server 给）
+
+# 8) 起单前预检（v14-T3）：模板声明「这单要吃哪几项能力」，派活之前先对着注册表解析
+paneflow registry check [--template x] [--space S]   # 逐槽画 ✓命中 / ✗死缺 / ?还判不了 / ⚠形状不认
+#   给了 --template 时退出码即结论：0=槽全命中 / 1=有缺口（起单会被引擎 fail-closed 拒掉，同一把尺）；
+#   不给 --template = 普查全部在册模板，恒 0（普查不是闸，拦是起单口的事）
+paneflow registry check --template x --json  # → 那一行的原样负载：{slots,need,missing,unjudged,malformed,ok}
+#   模板侧声明（画布 JSON）：graph 顶层 `requires: [{kind, id?, hint?}]`——今天判死活的 kind 只有
+#   `model`（唯一已迁进注册表的类型），指向 skill/rule/repo/… 的槽落 `?`（表里没这一类，判「不存在」= 拿空白冒充断言）
+paneflow env probe <绝对路径>                 # 只读环境发现器（v14-E1）：这台机器有什么可登记的，给的是草案不是断言
 ```
 
 watch 退出码表（dispatch/runs/status/approve 恒为 0 成功 / 1 报错）：

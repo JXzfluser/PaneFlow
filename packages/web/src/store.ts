@@ -9,7 +9,7 @@ import {
   type NodeChange,
   type EdgeChange,
 } from '@xyflow/react';
-import type { DagGraph, DagNode, DagNodeType, EdgeCondition, NodeRunState, RunRecord, TemplateVariable } from '@paneflow/shared';
+import type { DagGraph, DagNode, DagNodeType, EdgeCondition, GraphRequirement, NodeRunState, RunRecord, TemplateVariable } from '@paneflow/shared';
 import { runHasEnded } from '@paneflow/shared';
 import { autosaveChanged, graphToRfParts, rfToGraph, type GraphMeta, type PfEdgeData, type PfNode, type PfNodeData } from './graph-serialization.js';
 import { setSpace as setApiSpace, getSpace, api } from './api.js';
@@ -94,6 +94,12 @@ interface PfStore {
   /** 当前项目（响应式镜像 localStorage 的 pf-space，D4） */
   space: string;
   graphVariables: TemplateVariable[];
+  /**
+   * v14-T3 模板带的 `requires` 能力槽。画布**不编辑**它（编辑位在 W5 的手填面清点里给），
+   * 这一格的存在只为一条底线：模板作者手写/导入的槽声明，经「打开画布→保存」不能被洗掉
+   * （R1 的老教训——画布只认识 UI 渲染得到的字段，其余静默丢，那就是第二起「保存了个寂寞」）。
+   */
+  graphRequires: GraphRequirement[];
   graphMeta: GraphMeta;
   /** v11-C5：沉淀发布成功计数——WikiSedimentCard 订阅它即时重拉 /api/wiki/state */
   wikiPublishTick: number;
@@ -162,6 +168,7 @@ export const useStore = create<PfStore>((set, get) => ({
   view: initialView(),
   space: getSpace(),
   graphVariables: [],
+  graphRequires: [],
   graphMeta: {},
   wikiPublishTick: 0,
 
@@ -177,6 +184,7 @@ export const useStore = create<PfStore>((set, get) => ({
       space: id,
       nodes: [],
       edges: [],
+      graphRequires: [],
       selectedNodeId: null,
       selectedEdgeId: null,
       activeRunId: null,
@@ -234,13 +242,14 @@ export const useStore = create<PfStore>((set, get) => ({
       if (!raw) return false;
       const saved = JSON.parse(raw) as {
         graphName: string; nodes: PfNode[]; edges: Edge[];
-        graphVariables: TemplateVariable[]; graphMeta: GraphMeta; cwd: string;
+        graphVariables: TemplateVariable[]; graphRequires?: GraphRequirement[]; graphMeta: GraphMeta; cwd: string;
       };
       set({
         graphName: saved.graphName ?? '未命名流水线',
         nodes: saved.nodes ?? [],
         edges: saved.edges ?? [],
         graphVariables: saved.graphVariables ?? [],
+        graphRequires: saved.graphRequires ?? [],
         graphMeta: saved.graphMeta ?? {},
         cwd: saved.cwd ?? '',
         canvasDirty: true,
@@ -343,6 +352,7 @@ export const useStore = create<PfStore>((set, get) => ({
       nodes: parts.nodes,
       edges: parts.edges,
       graphVariables: parts.variables,
+      graphRequires: parts.requires,
       graphMeta: parts.meta,
       selectedNodeId: null,
       selectedEdgeId: null,
@@ -352,12 +362,12 @@ export const useStore = create<PfStore>((set, get) => ({
   },
 
   toGraph: () => {
-    const { graphName, nodes, edges, graphVariables, graphMeta } = get();
-    return rfToGraph({ name: graphName, nodes, edges, variables: graphVariables, meta: graphMeta });
+    const { graphName, nodes, edges, graphVariables, graphRequires, graphMeta } = get();
+    return rfToGraph({ name: graphName, nodes, edges, variables: graphVariables, meta: graphMeta, requires: graphRequires });
   },
 
   clearCanvas: () => {
-    set({ nodes: [], edges: [], selectedNodeId: null, selectedEdgeId: null, graphName: '未命名流水线', graphVariables: [], graphMeta: {}, canvasDirty: false });
+    set({ nodes: [], edges: [], selectedNodeId: null, selectedEdgeId: null, graphName: '未命名流水线', graphVariables: [], graphRequires: [], graphMeta: {}, canvasDirty: false });
     get().log('info', '画布已清空');
   },
 
@@ -429,6 +439,7 @@ export const useStore = create<PfStore>((set, get) => ({
       nodes: parts.nodes,
       edges: parts.edges,
       graphVariables: parts.variables,
+      graphRequires: parts.requires,
       graphMeta: parts.meta,
       selectedNodeId: null,
       selectedEdgeId: null,
@@ -497,6 +508,7 @@ useStore.subscribe((state, prev) => {
       nodes: state.nodes,
       edges: state.edges,
       graphVariables: state.graphVariables,
+      graphRequires: state.graphRequires,
       graphMeta: state.graphMeta,
       cwd: state.cwd,
     },

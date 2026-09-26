@@ -38,6 +38,7 @@ export type {
   ProductDecl,
   RunProduct,
   TemplateVariable,
+  GraphRequirement,
   CheckSpec,
 } from './dag.js';
 export {
@@ -46,6 +47,8 @@ export {
   CHECK_SPEC_TYPES,
   FANOUT_MAX_ITEMS_LIMIT,
   validateDag,
+  requirementIssueOf,
+  GRAPH_REQUIREMENT_KEYS,
   validateRoleRefs,
   validateAcceptance,
   failedAssertionsOf,

@@ -424,7 +424,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | R5 | 能力快照账（capabilityRefs + specSha + cap#） | **已完成（本片）** | 本片 | 引擎起单现场落册两枚键 → `GET /api/runs/:id` 直呈 → `paneflow status` 渲一行 `能力: N 项（kind n）· cap#xxx`；收数表新增「能力#」列（表版本 3→4）。机证：单元 9 条（去重/cap# 键序无关/悬挂与未迁 kind 不进/null≠`[]`/副本不随活行变）+ 引擎集成 6 条（真注册表+真网关档落盘跑单：**编辑条目后历史 run 一字不动**、再起一单 cap# 随配置变、同配置两单 cap# 相等、停用→两键整缺、无登记→两键整缺、只吃本单生效那档）+ CLI 1 条（五种 payload 渲染）；`apiKey` 断言不进快照 |
 | T1 | 节点类型清单 + driver 只读数契约 | 未开工 | — | — |
 | T2 | 旧流程留引擎（判决表已改判） | 判决完成 | — | — |
-| T3 | `graph.requires` + `registry check` 预检 | 未开工 | — | — |
+| T3 | `graph.requires` + `registry check` 预检 | **已完成（本片）** | 本片 | 判据一份（`orchestrate/registry-check.ts`）→ HTTP `GET /api/registry/check` 与引擎 `startRun` 同吃 → CLI `paneflow registry check --template x [--space S]` 退 0/1、网页模板卡一行「需要：模型 1 · 技能 1」+ ✓/✗/?/…。机证：判据 12 条 + 路由 6 条 + 起单口 5 条 + CLI 6 条 + 网页 6 条（含 `requires` 画布往返零丢失）。四条改判见下 |
 | T4 | 插件 / MCP 承载 | 待裁决 §七 Q4 | — | — |
 | W5 | 全站手填面清点 | 未开工 | — | — |
 | W6 | `roleShaV: 2` | 待裁决 §七 Q3 | — | — |
@@ -434,7 +434,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | X2 | CLI 三处必动 + AGENTS/README + 发行 v0.3.0 | 未开工 | — | — |
 | X3 | 实机首驾（零手填路径全程） | 未开工 | — | — |
 
-**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（R5 片起算 57 文件 / **817** 绿，web 11/71、cli 3/63 同步绿，`pnpm typecheck` 净）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉未证**（同上 X1 行）。
+**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（T3 片实跑：server **60 文件 / 843** 绿、web 11/**77**、cli 3/**69**，`pnpm typecheck` 净；R5 片收口时是 57/817、web 71、cli 63——**只加不减**，且加的全是新片的判据断言，既有断言一条没放宽，`registry-check` 两枚新测试文件与真路由/真引擎口各占其一）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉未证**（同上 X1 行）。
 > ②「零改动」这条口径在 R5 需要说清它约束的是什么：**历史 run 的既有读数与既有判据不许改**（`骨架#/ctxSha/roleSha/graphSha` 逐字节、
 > 收口判定、退出码），不是「测试文件一行不许动」。R5 确实动了 5 条钉死字符串——收数表多一列（doc 明写要新增 `registrySnapshotSha` 列），
 > 那些断言本来就钉在列数上；改的是**期望值**（多一个 `- |`），不是放宽判据。这类「按 doc 要求改列」的动账逐片在此报备，不闷声改绿。

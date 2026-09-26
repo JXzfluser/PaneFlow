@@ -258,3 +258,69 @@ export function formatWhen(iso: string | undefined): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+// -- v14-T3 模板卡的能力槽读数（`GET /api/registry/check` 的直译 + 那一行的排版） ------------
+
+/** 一条槽的落点读数（`verdict` 按 string 读：server 日后加一枚落点不许把这里炸红，也不许并档） */
+export interface RequirementSlotView {
+  kind: string;
+  id?: string;
+  hint?: string;
+  verdict: string;
+  why: string;
+  entryId?: string;
+}
+
+/** 一张模板的预检读数（分组计数与中文组名全在 server 算，这里只排版） */
+export interface RegistryCheckRow {
+  template: string;
+  slots: RequirementSlotView[];
+  need: { kind: string; label: string; declared: number; judged: number; gaps: number }[];
+  missing: RequirementSlotView[];
+  unjudged: RequirementSlotView[];
+  malformed: RequirementSlotView[];
+  ok: boolean;
+}
+
+export interface RegistryCheckResponse {
+  space: string;
+  spaceNote?: string;
+  at: string;
+  templates: RegistryCheckRow[];
+}
+
+/** 卡片那一行的读数：`text` 是「需要：模型 1 · 技能 2」，`tone` 决定画 ✓ / ✗ / ? 还是什么都不画 */
+export interface RequirementBadge {
+  text: string;
+  tone: 'ok' | 'gap' | 'pending' | 'unknown' | 'none';
+}
+
+/**
+ * 模板卡上「需要：…」那一格。四件事分开说，混一件就是假账：
+ *  - 没声明槽（且 server 也没给读数）→ `none`：这一格不画，别拿「全绿」糊弄没带槽的模板；
+ *  - 声明了却没读到预检（预检那一刀失败/还没回来）→ `unknown`：**绝不画 ✓**，
+ *    缺口最坏的样子就是「看着没事」；
+ *  - `ok=false` → `gap`（死缺或形状不认，起单会被引擎 fail-closed 拒掉）；
+ *  - `ok=true` 但整组都判不了（这一类还没迁进注册表）→ `pending`，画问号灰点，
+ *    红绿都不对：它既不是缺口也不是命中。
+ */
+export function requirementBadge(row: RegistryCheckRow | undefined, declared: number): RequirementBadge {
+  if (!row) {
+    return declared
+      ? { text: `需要 ${declared} 项 · 预检没读出`, tone: 'unknown' }
+      : { text: '', tone: 'none' };
+  }
+  const need = row.need.map((n) => `${n.label} ${n.declared}`).join(' · ');
+  const text = need ? `需要：${need}` : '没带能力槽';
+  if (!row.slots.length) return { text, tone: 'none' };
+  if (!row.ok) return { text, tone: 'gap' };
+  return row.unjudged.length === row.slots.length ? { text, tone: 'pending' } : { text, tone: 'ok' };
+}
+
+/** 逐槽 hover 明细（一行一槽；`why` 是 server 写好的命中说明或缺因，原样转述） */
+export function requirementDetail(row: RegistryCheckRow): string {
+  const mark: Record<string, string> = { ok: '✓', missing: '✗', unjudged: '?', malformed: '⚠' };
+  return row.slots
+    .map((s) => `${mark[s.verdict] ?? s.verdict} ${s.kind}${s.id ? ` → ${s.id}` : ''}：${s.why}`)
+    .join('\n');
+}

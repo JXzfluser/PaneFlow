@@ -218,6 +218,38 @@ export interface RegistryProbeView {
   health?: RegistryHealthReadout;
 }
 
+/**
+ * v14-T3 一条能力槽的落点读数。`verdict` 按 string 读（日后加一枚落点不许把薄壳炸红，
+ * 也不许被就近塞进 ✓/✗ 某一档）；命中说明与缺因都是 server 写好的 `why`，CLI 不自己拼判定。
+ */
+export interface RequirementSlotView {
+  kind: string;
+  id?: string;
+  hint?: string;
+  verdict: string;
+  why: string;
+  entryId?: string;
+}
+
+/** 一张模板的预检读数（`need` 的分组计数与中文组名全在 server 算好） */
+export interface RegistryCheckRow {
+  template: string;
+  slots: RequirementSlotView[];
+  need: { kind: string; label: string; declared: number; judged: number; gaps: number }[];
+  missing: RequirementSlotView[];
+  unjudged: RequirementSlotView[];
+  malformed: RequirementSlotView[];
+  ok: boolean;
+}
+
+/** `GET /api/registry/check`：给 `--template` 时只有一行，不给=扫全部在册模板 */
+export interface RegistryCheckView {
+  space: string;
+  spaceNote?: string;
+  at?: string;
+  templates: RegistryCheckRow[];
+}
+
 export interface RegistryHealthView {
   at?: string;
   entries: RegistryHealthRow[];

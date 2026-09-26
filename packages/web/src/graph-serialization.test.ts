@@ -80,6 +80,30 @@ describe('graph round-trip (R1 数据完整性)', () => {
     expect(fork.config.expand).toEqual(g.nodes[2]!.config.expand);
   });
 
+  /**
+   * v14-T3：`requires` 是作者手写、画布画不出来的字段——正是 R1 那类事故的现场
+   * （「画布只认识 UI 能渲染的东西，其余静默丢弃」）。这一条钉住「打开→保存」不洗掉声明。
+   */
+  it('requires 经画布往返零丢失；没带槽的模板回写不凭空长出空数组', () => {
+    const g = { ...richGraph(), requires: [{ kind: 'model', id: 'gpt-4o-mini' }, { kind: 'skill', hint: '要能读图' }] } as DagGraph;
+    const parts = graphToRfParts(g);
+    expect(parts.requires).toEqual(g.requires); // 打开时就带着，不等保存才发现
+    const back = rfToGraph({
+      name: g.name,
+      nodes: parts.nodes,
+      edges: parts.edges,
+      variables: parts.variables,
+      meta: parts.meta,
+      requires: parts.requires,
+    });
+    expect(back.requires).toEqual(g.requires);
+    // 旧模板（无 requires）往返后仍是「没带槽」，不是 `requires: []`
+    const plain = graphToRfParts(richGraph());
+    expect(plain.requires).toEqual([]);
+    const round = rfToGraph({ name: 'rich', nodes: plain.nodes, edges: plain.edges, variables: plain.variables, meta: plain.meta });
+    expect(round.requires).toBeUndefined();
+  });
+
   it('缺少 metadata 的 graph 不抛异常（API 客户端/旧版本落盘的运行）', () => {
     const g = richGraph() as DagGraph;
     delete (g as { metadata?: unknown }).metadata;

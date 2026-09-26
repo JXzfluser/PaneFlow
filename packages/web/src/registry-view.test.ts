@@ -11,8 +11,11 @@ import {
   missingRequiredFields,
   refCountOf,
   rejectedSummary,
+  requirementBadge,
+  requirementDetail,
   sourceLabel,
   specRows,
+  type RegistryCheckRow,
   type RegistryEntryView,
 } from './registry-view';
 
@@ -154,5 +157,82 @@ describe('v14-X1 只读 spec 与前向兼容读数', () => {
     expect(formatWhen('2026-09-01T08:00:00.000Z')).toMatch(/^2026-09-0\d \d{2}:\d{2}$/);
     expect(formatWhen('不是时间')).toBe('不是时间');
     expect(formatWhen(undefined)).toBe('');
+  });
+});
+
+/**
+ * v14-T3 模板卡上那一行「需要：…」。四态各有归宿，混一件就是假账：
+ * 命中 ✓ / 缺口 ✗ / 还判不了 ? / 预检没读出 …（绝不画 ✓）/ 没带槽 什么都不画。
+ */
+describe('requirementBadge / requirementDetail（能力槽读数排版）', () => {
+  const row = (over: Partial<RegistryCheckRow> = {}): RegistryCheckRow => ({
+    template: 'flow',
+    slots: [{ kind: 'model', id: 'gpt-4o-mini', verdict: 'ok', why: '用「小4号」' }],
+    need: [{ kind: 'model', label: '模型', declared: 1, judged: 1, gaps: 0 }],
+    missing: [],
+    unjudged: [],
+    malformed: [],
+    ok: true,
+    ...over,
+  });
+
+  it('命中画 ✓、缺口画 ✗：文案吃 server 的分组计数，前端不自己数', () => {
+    expect(requirementBadge(row(), 1)).toEqual({ text: '需要：模型 1', tone: 'ok' });
+    expect(
+      requirementBadge(
+        row({
+          ok: false,
+          need: [
+            { kind: 'model', label: '模型', declared: 1, judged: 1, gaps: 1 },
+            { kind: 'skill', label: '技能', declared: 2, judged: 0, gaps: 0 },
+          ],
+        }),
+        3,
+      ),
+    ).toEqual({ text: '需要：模型 1 · 技能 2', tone: 'gap' });
+  });
+
+  it('整组都判不了 = pending（画问号）：它既不是缺口也不是命中，红绿都不对', () => {
+    const r = row({
+      slots: [{ kind: 'skill', id: 'skills/x/SKILL.md', verdict: 'unjudged', why: '还没迁进注册表' }],
+      need: [{ kind: 'skill', label: '技能', declared: 1, judged: 0, gaps: 0 }],
+      unjudged: [{ kind: 'skill', id: 'skills/x/SKILL.md', verdict: 'unjudged', why: '还没迁进注册表' }],
+    });
+    expect(requirementBadge(r, 1).tone).toBe('pending');
+    // 一半命中一半判不了 → 按命中说（有真读数就别挂问号）
+    expect(requirementBadge({ ...r, slots: [...r.slots, { kind: 'model', verdict: 'ok', why: '用「小4号」' }] }, 2).tone).toBe('ok');
+  });
+
+  it('预检没读出不冒充 ✓：模板自己说了要几项，就当「不知道」明说', () => {
+    expect(requirementBadge(undefined, 2)).toEqual({ text: '需要 2 项 · 预检没读出', tone: 'unknown' });
+    expect(requirementBadge(undefined, 0)).toEqual({ text: '', tone: 'none' }); // 没声明也没读数：这一格不画
+  });
+
+  it('slots 空数组是正读数「没带槽」，与「预检没读出」（row undefined）分家', () => {
+    expect(requirementBadge(row({ slots: [], need: [] }), 0)).toEqual({
+      text: '没带能力槽',
+      tone: 'none',
+    });
+  });
+
+  it('detail 一行一槽：✓/✗/?/⚠ 四种标记 + server 的缺因原文；认不出的 verdict 原样画不猜标记', () => {
+    const detail = requirementDetail(
+      row({
+        slots: [
+          { kind: 'model', id: 'gpt-4o-mini', verdict: 'ok', why: '用「小4号」' },
+          { kind: 'model', id: 'gpt-9', verdict: 'missing', why: '注册表里没有' },
+          { kind: 'skill', verdict: 'unjudged', why: '这一类还判不了' },
+          { kind: 'model', verdict: 'malformed', why: '声明形状不认' },
+          { kind: 'model', verdict: 'probed-elsewhere', why: '未来新值' },
+        ],
+      }),
+    );
+    expect(detail.split('\n')).toEqual([
+      '✓ model → gpt-4o-mini：用「小4号」',
+      '✗ model → gpt-9：注册表里没有',
+      '? skill：这一类还判不了',
+      '⚠ model：声明形状不认',
+      'probed-elsewhere model：未来新值',
+    ]);
   });
 });

@@ -1,5 +1,5 @@
 import type { DagGraph, NodeRunRecord, RunEvent, RunRecord } from '@paneflow/shared';
-import type { RegistryAddPayload, RegistryEntryView, RegistryHealthResponse, RegistryListResponse } from './registry-view.js';
+import type { RegistryAddPayload, RegistryCheckResponse, RegistryEntryView, RegistryHealthResponse, RegistryListResponse } from './registry-view.js';
 
 const BASE = '';
 
@@ -191,6 +191,12 @@ export const api = {
   registryHealth: (refresh = false) =>
     fetchJson<RegistryHealthResponse>('GET', `/api/registry/health${refresh ? '?refresh=1' : ''}`),
   registryAdd: (body: RegistryAddPayload) => fetchJson<{ entry: RegistryEntryView }>('POST', '/api/registry', body),
+  /**
+   * v14-T3 预检读数：一次拿全部在册模板的槽落点（模板卡不是一卡一发请求）。
+   * 走带 `?space=` 的那枚 helper——预检的口径是「按当前项目解析」，项目名必须跟着走；
+   * 上面几枚 registry 调用不带 space 是因为注册表本身是 dataDir 级唯一事实源。
+   */
+  registryCheck: () => json<RegistryCheckResponse>('GET', '/api/registry/check'),
   registryPatch: (id: string, body: { name?: string; spec?: unknown; enabled?: boolean }) =>
     fetchJson<{ entry: RegistryEntryView }>('PATCH', `/api/registry/${encodeURIComponent(id)}`, body),
   registryDelete: (id: string) =>

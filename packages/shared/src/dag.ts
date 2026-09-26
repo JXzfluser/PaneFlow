@@ -160,7 +160,28 @@ export interface DagGraph {
   };
   /** Declared run-time parameters (rendered into all string fields before execution) */
   variables?: TemplateVariable[];
+  /**
+   * v14-T3 模板带槽：这单要吃哪几枚注册能力，起单前按本机注册表解析（缺项 fail-closed 不起红单）。
+   * 今天缺口的样子是**静默少注入**——装备没上身，作者要等节点行为异常才发现，故声明先于派活可见。
+   */
+  requires?: GraphRequirement[];
 }
+
+/**
+ * 一条能力槽声明。形状约束住在 `validateDag`（未知键即拒：`knd` 拼错＝这一槽静默失效，
+ * 预检对着空表永远全绿——那是比「没声明」更坏的假绿）。
+ */
+export interface GraphRequirement {
+  /** 能力类型（`model`/`skill`/`check-type`/…）；未迁进注册表的类型只披露不判死活 */
+  kind: string;
+  /** 指向哪一枚；缺省＝「这一类有得用就行」 */
+  id?: string;
+  /** 人写的缺口指路，原样带进 400 文案与模板卡 */
+  hint?: string;
+}
+
+/** `requires` 每项认得的键（校验器与判定层共用，两份键表迟早对不上） */
+export const GRAPH_REQUIREMENT_KEYS = ['kind', 'id', 'hint'] as const;
 
 export interface TemplateVariable {
   key: string;
@@ -951,11 +972,43 @@ export interface DagIssue {
 const AGENT_KIND_PATTERN = /^[a-z][a-z0-9_-]*$/;
 const NODE_ID_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_-]{0,63}$/;
 
+/**
+ * `requires` 单项形状：没毛病返 null，否则返一句人话毛病。
+ * 住在这里的理由：写入面校验（下面的 `validateDag`）与起单前预检（server 的判定层）必须用同一把尺，
+ * 两把尺迟早一个放行一个判死——那就是「预检说没问题、起单当场红」的由来。
+ */
+export function requirementIssueOf(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return '不是对象（每项需形如 {kind, id?, hint?}）';
+  const item = raw as Record<string, unknown>;
+  const unknown = Object.keys(item).filter((k) => !(GRAPH_REQUIREMENT_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return `含未知键 ${unknown.join('、')}（只认 ${GRAPH_REQUIREMENT_KEYS.join('/')}）`;
+  const kind = item.kind;
+  if (typeof kind !== 'string' || !kind.trim()) return '缺 kind（这一槽要哪一类能力）';
+  for (const key of ['id', 'hint'] as const) {
+    const v = item[key];
+    if (v !== undefined && (typeof v !== 'string' || !v.trim())) return `${key} 需是非空字符串或不给`;
+  }
+  return null;
+}
+
 export function validateDag(graph: DagGraph): DagIssue[] {
   const issues: DagIssue[] = [];
   const nodes = graph.nodes ?? [];
   const edges = graph.edges ?? [];
   const byId = new Map(nodes.map((n) => [n.id, n]));
+
+  // v14-T3 模板带槽：形状脏必须在写入面就拒（放行了＝预检对着读不出的表永远全绿）。
+  // 只判形状不判死活——「这一槽指向的条目在不在」是注册表的事，这里判不了也不该判。
+  if (graph.requires !== undefined) {
+    if (!Array.isArray(graph.requires)) {
+      issues.push({ level: 'error', message: 'requires 必须是数组（每项形如 {kind, id?, hint?}）' });
+    } else {
+      graph.requires.forEach((raw, i) => {
+        const why = requirementIssueOf(raw);
+        if (why) issues.push({ level: 'error', message: `requires[${i}]：${why}` });
+      });
+    }
+  }
 
   if (nodes.length === 0) {
     issues.push({ level: 'error', message: '画布为空：至少需要一个开始节点' });

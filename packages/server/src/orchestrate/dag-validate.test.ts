@@ -113,3 +113,37 @@ describe('v13-K1 硬引用图校验', () => {
     expect(errors(chain('按 {{artifact:design__2/plan.md}} 实现'))).toEqual([]);
   });
 });
+
+/**
+ * v14-T3 模板带槽：`requires` 的形状在**写入面**就拒（与预检共用 `requirementIssueOf` 一把尺）。
+ * 姿态：脏声明正常进不到盘面（PUT /api/graphs 走 validateDag），但盘面手改得动，
+ * 所以读端预检还要再过一次同一把尺——两把尺就会「预检说全绿、起单当场红」。
+ */
+describe('v14-T3 requires 槽声明形状', () => {
+  const withRequires = (requires: unknown): string[] =>
+    errors({ ...oneNodeGraph({ prompt: '干活' }), requires } as DagGraph);
+
+  it('省略 = 不判（存量模板零新增，不因为新增字段集体变红）', () => {
+    expect(validateDag(oneNodeGraph({ prompt: '干活' }))).toEqual([]);
+    expect(withRequires([])).toEqual([]);
+  });
+
+  it('合法项放行：kind 必填，id/hint 可选', () => {
+    expect(withRequires([{ kind: 'model' }, { kind: 'skill', id: 'skills/x/SKILL.md', hint: '要能读图' }])).toEqual([]);
+  });
+
+  it('非数组 / 未知键 / 空 kind / id-hint 非字符串一律拒，且报错说清只认哪三个键', () => {
+    expect(withRequires('model').some((m) => m.includes('requires 必须是数组'))).toBe(true);
+    const msgs = withRequires([
+      { knd: 'model' },
+      { kind: '  ' },
+      { kind: 'model', id: 42 },
+      { kind: 'model', hint: '' },
+    ]);
+    expect(msgs[0]).toContain('含未知键 knd');
+    expect(msgs[0]).toContain('kind/id/hint');
+    expect(msgs.filter((m) => m.includes('缺 kind'))).toHaveLength(1);
+    expect(msgs.filter((m) => m.includes('需是非空字符串或不给'))).toHaveLength(2);
+    expect(msgs.every((m) => m.startsWith('requires['))).toBe(true); // 带下标，作者才知道改哪一格
+  });
+});

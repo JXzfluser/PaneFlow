@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { REGISTRY_KINDS, type RegistryEntry } from '@paneflow/shared';
 import type { RegistryStore, RegistryWriteResult } from '../orchestrate/registry.js';
 import { registryLabel } from '../orchestrate/registry-descriptors.js';
-import { readReferenceIndex, refsForEntry, type ReferenceIndex, type RegistryReferrer } from '../orchestrate/registry-refs.js';
+import { readStoredGraphs, readReferenceIndex, refsForEntry, type ReferenceIndex, type RegistryReferrer } from '../orchestrate/registry-refs.js';
+import { checkGraphRequirements } from '../orchestrate/registry-check.js';
 import { entryHealth, type EntryHealth } from './registry-health.js';
 
 /**
@@ -162,6 +163,44 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
         unknown: entries.filter((e) => e.health?.status === 'unknown').length,
         unused: entries.filter((e) => !(e.refs ?? []).length).length,
       },
+    };
+  });
+
+  /**
+   * v14-T3 预检读数（`paneflow registry check --template x --space demo` 的落点）。
+   *
+   * 判据一行都不在这里：槽命中与否、分组计数、人话标签、拒单文案全在 `registry-check.ts`，
+   * 引擎 `startRun` 起单时吃的也是那一枚——**预检说没问题而起单当场红**就是两把尺的典型症状，
+   * 所以 HTTP 面与起单口共用同一枚纯函数（一处 try/catch 只包读盘）。
+   *
+   * 两种问法同一个形状：给 `?template=` → `templates` 只有一行；不给 → 扫全部在册模板
+   * （网页模板卡一次拿全，不是一张卡发一次请求）。
+   */
+  app.get<{ Querystring: { template?: string; space?: string } }>('/api/registry/check', async (req, reply) => {
+    let entries: RegistryEntry[];
+    try {
+      entries = deps.registry.load().entries;
+    } catch (err) {
+      return reply.code(500).send({ error: `注册表读不出：${(err as Error).message}` });
+    }
+    let graphs;
+    try {
+      graphs = readStoredGraphs(deps.dataDir);
+    } catch (err) {
+      // 模板读不出不渲「零模板」：那会把「预检全绿」的假读数送给无人值守方
+      return reply.code(500).send({ error: `模板读不出，预检做不了：${(err as Error).message}` });
+    }
+    const asked = String(req.query.template ?? '').trim();
+    const targets = asked ? graphs.filter((g) => g.name === asked) : graphs;
+    if (asked && !targets.length) {
+      return reply.code(404).send({ error: `模板不存在：${asked}（GET /api/graphs 看在册模板名）` });
+    }
+    return {
+      space: String(req.query.space ?? '').trim() || 'default',
+      spaceNote:
+        '本版命中的判定只看注册表（已迁 kind=model 是全局表），项目名只影响指路文案；等带作用域的 kind（技能/规则/仓库）迁入，这一枚才真参与判定',
+      at: new Date().toISOString(),
+      templates: targets.map((g) => checkGraphRequirements(g, entries)),
     };
   });
 

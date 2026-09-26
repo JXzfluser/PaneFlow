@@ -13,6 +13,8 @@ import {
   type CliIo,
   type DispatchResult,
   type EnvProbeView,
+  type RegistryCheckRow,
+  type RegistryCheckView,
   type RegistryEntryView,
   type RegistryHealthView,
   type RegistryListView,
@@ -29,7 +31,7 @@ function kBytes(n: number): string {
 }
 
 /** 带值的长选项；不在列的 --xxx 视为布尔开关（目前只有 --json） */
-const VALUE_FLAGS = new Set(['url', 'repo', 'issue', 'timeout', 'interval', 'space', 'times', 'arm', 'suite', 'flag', 'path', 'kind', 'from']);
+const VALUE_FLAGS = new Set(['url', 'repo', 'issue', 'timeout', 'interval', 'space', 'times', 'arm', 'suite', 'flag', 'path', 'kind', 'from', 'template']);
 
 interface Args {
   positional: string[];
@@ -83,6 +85,8 @@ const USAGE = [
   '                                                              与 /api/gateway/catalog 共用同一份缓存（--refresh 绕开），探测慢不拖读表；恒退 0（这是读数不是判定）',
   '  paneflow registry probe <id> [--refresh] [--json]          v14-R4 单枚探针：只探这一条，吃同一份缓存（三态同上；这一类没探针通道时明说「不判死活」）',
   '  paneflow registry add --from <草案.json> [--json]          脚本/agent 专用的登记通道（日常登记走网页「注册中心」表单；脏形状由 server 400 一句人话指路）',
+  '  paneflow registry check [--template x] [--space S] [--json] v14-T3 起单前预检：模板的 requires 槽对着注册表解析；',
+  '                                                             给了 --template 时退出码即结论（0=槽全命中 / 1=有缺口），不给就只扫全部模板列出缺口（恒 0，普查不是闸）',
   '',
   '地址解析：--url > $PANEFLOW_URL > ~/.paneflow/cli.json 的 url > http://127.0.0.1:4310',
   '远程模式带令牌：$PANEFLOW_TOKEN → Authorization: Bearer',
@@ -545,6 +549,29 @@ const HEALTH_MARK: Record<string, { mark: string; color: string }> = {
   unknown: { mark: '?', color: '90' },
 };
 
+/**
+ * v14-T3 槽落点的画法表（键＝server 的 `verdict` 值）。与上面三态同一个纪律：
+ * **未知落点一律落灰、原样画 verdict**——server 日后加一枚读数，不许被就近塞进 ✓ 或 ✗ 某一档。
+ * `?`（判不了）与 `✗`（判死）必须分家：把「这一类还没迁进注册表」画成缺口就是替人判死一槽好装备。
+ */
+const VERDICT_MARK: Record<string, { mark: string; color: string }> = {
+  ok: { mark: '✓', color: '32' },
+  missing: { mark: '✗', color: '31' },
+  unjudged: { mark: '?', color: '90' },
+  malformed: { mark: '⚠', color: '33' },
+};
+
+/** 一行预检读数：模板名 + 需要哪几类（`need` 是 server 算好的分组）+ 项目名 */
+function renderCheck(io: CliIo, row: RegistryCheckRow, space: string): void {
+  const need = row.need.length ? row.need.map((n) => `${n.label} ${n.declared}`).join(' · ') : '没带能力槽（正读数）';
+  io.out(`模板「${row.template}」· 项目「${space}」· 需要：${need}${row.ok ? '' : ` ${paint(io, '31', '← 有缺口')}`}`);
+  for (const s of row.slots) {
+    const m = VERDICT_MARK[s.verdict] ?? { mark: s.verdict, color: '90' };
+    const hint = s.hint ? ` · 模板备注：${s.hint}` : '';
+    io.out(`  ${paint(io, m.color, m.mark)} ${s.kind}${s.id ? ` → ${s.id}` : ''}  ${s.why}${hint}`);
+  }
+}
+
 async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<number> {
   const verb = args.positional[0];
   switch (verb) {
@@ -683,8 +710,40 @@ async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<numb
       if (body.health.at) io.out(`  读数时刻 ${body.health.at}${body.health.cached ? '（吃的缓存，不是这次现探的）' : ''}`);
       return EXIT_OK;
     }
+    case 'check': {
+      // v14-T3 起单前预检：判定（命中/缺口/形状不认）与分组计数与中文组名**全是 server 字段**，
+      // 这一格的工作只有排版。--template 给了才把退出码当结论用（无人值守的闸），不给=普查。
+      const template = args.flags.template;
+      const params = new URLSearchParams();
+      if (template) params.set('template', template);
+      if (args.flags.space) params.set('space', args.flags.space);
+      const q = params.toString() ? `?${params.toString()}` : '';
+      const { body } = await request<RegistryCheckView>(io, baseUrl, 'GET', `/api/registry/check${q}`);
+      if (jsonOr(args)) {
+        // 单模板问法直吐那一行（机检要的 `{missing:[…]}` 就在这层，不必自己从数组里挑）
+        dump(io, template ? (body.templates[0] ?? null) : body);
+        return template && !body.templates[0]?.ok ? EXIT_RED : EXIT_OK;
+      }
+      if (!body.templates.length) {
+        io.out(`项目「${body.space}」：一个在册模板也没有——没模板可检是正读数，不是「全绿」`);
+        return EXIT_OK;
+      }
+      for (const row of body.templates) renderCheck(io, row, body.space);
+      if (!template) {
+        const gapped = body.templates.filter((r) => !r.ok).length;
+        io.out(
+          gapped
+            ? `\n${gapped} 个模板有缺口（逐个看：paneflow registry check --template <名>；只普查不拦，起单时引擎会 fail-closed）`
+            : '\n全部模板的槽都命中（普查口径；起单时引擎照同一份判据 fail-closed）',
+        );
+        return EXIT_OK;
+      }
+      return body.templates[0]!.ok ? EXIT_OK : EXIT_RED;
+    }
     default:
-      throw new Error('paneflow registry 目前只有 list / get / refs / add / health / probe 六枚（改和删走网页「注册中心」，写端守卫的中文解释由 server 给出）');
+      throw new Error(
+        'paneflow registry 目前只有 list / get / refs / add / health / probe / check 七枚（改和删走网页「注册中心」，写端守卫的中文解释由 server 给出）',
+      );
   }
 }
 

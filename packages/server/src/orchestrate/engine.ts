@@ -23,6 +23,7 @@ import type {
   NodeEquip,
   RunDeliveryViolation,
   RunDeliveryWorktree,
+  RegistryEntry,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, renderProductRefs, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT, DECLARE_FACES } from '@paneflow/shared';
 import type { DeclareFace, ProductRef, RunDeclareViolation } from '@paneflow/shared';
@@ -41,6 +42,7 @@ import {
   type RawReference,
 } from './registry-refs.js';
 import { capabilitySnapshot } from './registry-snapshot.js';
+import { checkGraphRequirements, requirementGapWhy } from './registry-check.js';
 import {
   buildDeliveryBlock,
   declaredGateNames,
@@ -762,6 +764,23 @@ export class Engine {
     const errors = issues.filter((i) => i.level === 'error');
     if (errors.length) {
       throw new Error(`DAG 校验失败：${errors.map((e) => e.message).join('；')}`);
+    }
+    // v14-T3 起单前预检：模板自带的 `requires` 槽对着注册表解析，缺项 fail-closed 不起单。
+    // 为什么在 run 落册之前：缺口的旧样子是「静默少注入」——单子跑完、装备根本没上身，
+    // 事后红得莫名其妙；现在是起单当场一句指路（同族姿态=v13-E2 `DISPATCH_NO_AGENT_ERROR`）。
+    // 没带槽的模板（含 Planner 现拼的派发图）零成本跳过，不去碰注册表——读不读得动都无所谓。
+    if (graph.requires?.length) {
+      let entries: RegistryEntry[];
+      try {
+        entries = this.registry.load().entries;
+      } catch (err) {
+        // 注册表读不出＝这一槽判不了；判不了就不放行（宁拒不错放，与 R2 引用账同姿态）
+        throw new Error(
+          `模板「${graph.name}」带了能力槽（requires），但注册表读不出，无法预检：${(err as Error).message}——先修好注册表再起单。`,
+        );
+      }
+      const check = checkGraphRequirements(graph, entries);
+      if (!check.ok) throw new Error(requirementGapWhy(check));
     }
     // G2 引用失败可见：applyVariables 后仍残留的 {{}} 是未声明变量或坏节点引用——
     // 不拦跑（与 B2 必填校验互补），但以 warn 事件上时间线，静默事故变可见事故

@@ -967,6 +967,89 @@ describe('registry probe（v14-R4 单枚探针：只探一条，三态与批量�
   });
 });
 
+describe('registry check（v14-T3 起单前预检：判定全在 server，CLI 只排版 + 把退出码当结论）', () => {
+  const gap = {
+    template: 'flow',
+    slots: [
+      { kind: 'model', id: 'gpt-4o-mini', verdict: 'ok', why: '用「小4号」', entryId: 'model:gpt-4o-mini' },
+      { kind: 'model', id: 'gpt-9', verdict: 'missing', why: '注册表里没有可用的「模型」条目指向「gpt-9」' },
+      { kind: 'skill', id: 'skills/x/SKILL.md', verdict: 'unjudged', why: '「技能」这一类还没迁进注册表' },
+      { kind: 'model', verdict: 'malformed', why: '声明形状不认：含未知键 knd' },
+    ],
+    need: [
+      { kind: 'model', label: '模型', declared: 3, judged: 3, gaps: 2 },
+      { kind: 'skill', label: '技能', declared: 1, judged: 0, gaps: 0 },
+    ],
+    missing: [],
+    unjudged: [],
+    malformed: [],
+    ok: false,
+  };
+  const body = (templates: unknown[]) => ({ space: 'demo', spaceNote: 'n', at: 'x', templates });
+
+  it('--template + --space 拼进 query；有缺口退 1，逐槽画 ✓/✗/?/⚠ 四态（缺因是 server 原文）', async () => {
+    const { fetchImpl, calls } = stubFetch([{ body: body([gap]) }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'check', '--template', 'flow', '--space', 'demo'], io)).toBe(1);
+    expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/registry/check?template=flow&space=demo');
+    const out = lines.join('\n');
+    expect(out).toContain('模板「flow」· 项目「demo」· 需要：模型 3 · 技能 1');
+    expect(out).toContain('← 有缺口');
+    expect(out).toContain('✓ model → gpt-4o-mini  用「小4号」');
+    expect(out).toContain('✗ model → gpt-9');
+    expect(out).toContain('? skill → skills/x/SKILL.md');
+    expect(out).toContain('⚠ model  声明形状不认');
+  });
+
+  it('全命中退 0；hint 一并带出（模板作者写的备注，不是 CLI 补的话）', async () => {
+    const ok = { ...gap, ok: true, slots: [{ kind: 'model', hint: '要便宜的', verdict: 'ok', why: '用「小4号」' }] };
+    const { fetchImpl } = stubFetch([{ body: body([ok]) }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'check', '--template', 'x'], io)).toBe(0);
+    expect(lines.join('\n')).toContain('· 模板备注：要便宜的');
+    expect(lines.join('\n')).not.toContain('← 有缺口');
+  });
+
+  it('不给 --template = 普查：有缺口也退 0（拦与不拦是起单口的事），汇总一句指路', async () => {
+    const { fetchImpl } = stubFetch([{ body: body([gap, { ...gap, template: 'other', ok: true }]) }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'check'], io)).toBe(0);
+    expect(lines.join('\n')).toContain('1 个模板有缺口');
+    expect(lines.join('\n')).toContain('paneflow registry check --template <名>');
+  });
+
+  it('--json：单模板问法直吐那一行（机检吃 {missing:[…]} 不必自己从数组挑）；普查吐整份', async () => {
+    const { fetchImpl } = stubFetch([{ body: body([gap]) }, { body: body([gap]) }]);
+    const one = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'check', '--template', 'flow', '--json'], one.io)).toBe(1);
+    expect(JSON.parse(one.lines.join('\n')).template).toBe('flow');
+    const all = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'check', '--json'], all.io)).toBe(0);
+    expect(JSON.parse(all.lines.join('\n')).space).toBe('demo');
+  });
+
+  it('空表与未来 verdict：一个模板也没有是正读数不冒充全绿；认不出的 verdict 原样画、不猜标记', async () => {
+    const { fetchImpl } = stubFetch([{ body: body([]) }, { body: body([{ ...gap, ok: true, slots: [{ kind: 'model', verdict: 'probed-elsewhere', why: '新值' }] }]) }]);
+    const none = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'check'], none.io)).toBe(0);
+    expect(none.lines.join('\n')).toContain('没模板可检是正读数');
+
+    const future = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'check', '--template', 'flow'], future.io)).toBe(0);
+    expect(future.lines.join('\n')).toContain('probed-elsewhere model'); // 未来 server 加值：薄壳不炸，原样显
+  });
+
+  it('server 的 404 一句指路照原样带出退 1；USAGE 点得到这枚动词（三处必动）', async () => {
+    const { fetchImpl } = stubFetch([{ status: 404, body: { error: '模板不存在：ghost（GET /api/graphs 看在册模板名）' } }]);
+    const bad = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'check', '--template', 'ghost'], bad.io)).toBe(1);
+    expect(bad.errLines.join('\n')).toContain('模板不存在：ghost');
+    const h = makeIo();
+    expect(await main(['--help'], h.io)).toBe(0);
+    expect(h.lines.join('\n')).toContain('paneflow registry check');
+  });
+});
+
 describe('入口守护', () => {
   it('未知子命令与 help', async () => {
     const { io, errLines } = makeIo();

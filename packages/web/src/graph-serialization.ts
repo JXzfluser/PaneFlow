@@ -1,4 +1,4 @@
-import type { DagGraph, DagNode, EdgeCondition, NodeRunState, TemplateVariable } from '@paneflow/shared';
+import type { DagGraph, DagNode, EdgeCondition, GraphRequirement, NodeRunState, TemplateVariable } from '@paneflow/shared';
 import type { Edge, Node } from '@xyflow/react';
 
 /**
@@ -58,6 +58,8 @@ export interface RfParts {
   edges: PfEdge[];
   variables: TemplateVariable[];
   meta: GraphMeta;
+  /** v14-T3 能力槽声明（不进画布渲染，只为「打开→保存」不把作者声明的东西抹掉） */
+  requires: GraphRequirement[];
 }
 
 let nodeSeq = 1;
@@ -128,6 +130,9 @@ export function graphToRfParts(graph: DagGraph): RfParts {
     nodes,
     edges,
     variables: graph.variables ?? [],
+    // v14-T3：requires 与 variables 同级——画布不画它，但它在场就得活着（R1 的老教训：
+    // 「画布只认识 UI 能渲染的字段，其余静默丢弃」会把作者手写的槽声明洗成没有）
+    requires: graph.requires ?? [],
     // metadata 在类型上必填、在运行期未必存在：API 客户端或旧版本落盘的 graph
     // 可能没有 metadata，此处必须兜底，否则「在画布中打开」会整页崩溃。
     meta: {
@@ -143,8 +148,9 @@ export function rfToGraph(args: {
   edges: PfEdge[];
   variables: TemplateVariable[];
   meta: GraphMeta;
+  requires?: GraphRequirement[];
 }): DagGraph {
-  const { name, nodes, edges, variables, meta } = args;
+  const { name, nodes, edges, variables, meta, requires = [] } = args;
   const now = new Date().toISOString();
   return {
     version: 1,
@@ -166,5 +172,6 @@ export function rfToGraph(args: {
       description: meta.description,
     },
     ...(variables.length ? { variables } : {}),
+    ...(requires.length ? { requires } : {}),
   };
 }
