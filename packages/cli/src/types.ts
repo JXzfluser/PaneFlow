@@ -157,6 +157,41 @@ export interface EnvProbeView {
   error?: string;
 }
 
+/**
+ * v14-A1/A2（R1+R2）注册表视图（`GET/POST /api/registry`）：**每个字段都是 server 算好的**——
+ * `label` 来自该 kind 的 Descriptor、`refs` 来自纯读引用索引，CLI 一格都不自己判（R4）。
+ */
+export interface RegistryEntryView {
+  id: string;
+  kind: string;
+  name: string;
+  source: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt?: string;
+  /** server 的一句人话标签（不看 spec 就能说清这条是什么） */
+  label?: string;
+  /**
+   * 「谁在用」。**缺键＝引用账没读出来（不知道）**，与 `[]`（正读数：一条引用都没有）分家——
+   * 这是 R2 的 宁缺毋假 在 HTTP 面上的形状，CLI 据此决定渲染哪句。
+   */
+  refs?: { face: string; id: string; name: string; via: string }[];
+}
+
+/** `GET /api/registry` 的响应（`rejected`/`refSummary` 都是只披露不清除的读端账） */
+export interface RegistryListView {
+  entries: RegistryEntryView[];
+  /** 手改盘面/旧版本写进来的条目：整条不认，但必须看得见（渲成「一条都没登记」是假绿） */
+  rejected: { id: string; why: string }[];
+  schema: { version: number; writtenBy?: string } | null;
+  knownKinds: string[];
+  refSummary?: {
+    scanned: number;
+    dangling: { kind: string; target: string; by: unknown[] }[];
+    unmigrated: { kind: string; targets: string[]; refs: number }[];
+  };
+}
+
 export const EXIT_OK = 0;
 /** 1 = 红（failed/cancelled/completed-with-failures）；API/用法错误同码 */
 export const EXIT_RED = 1;

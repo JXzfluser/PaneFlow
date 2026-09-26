@@ -19,7 +19,7 @@ export class ApiError extends Error {
 export async function request<T = unknown>(
   io: CliIo,
   baseUrl: string,
-  method: 'GET' | 'POST' | 'PUT',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   body?: unknown,
   timeoutMs = 15_000,

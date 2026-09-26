@@ -7,10 +7,19 @@ import {
   parseDuration,
   watchRun,
 } from './watch.js';
-import { EXIT_OK, EXIT_RED, type CliIo, type DispatchResult, type EnvProbeView, type RunView } from './types.js';
+import {
+  EXIT_OK,
+  EXIT_RED,
+  type CliIo,
+  type DispatchResult,
+  type EnvProbeView,
+  type RegistryEntryView,
+  type RegistryListView,
+  type RunView,
+} from './types.js';
 
 /** 与 release launcher（bin/paneflow.mjs）的路由表同源：这几枚子命令走 CLI，其余起 server */
-export const CLI_SUBCOMMANDS = ['dispatch', 'runs', 'status', 'watch', 'approve', 'replay', 'experiments', 'env'] as const;
+export const CLI_SUBCOMMANDS = ['dispatch', 'runs', 'status', 'watch', 'approve', 'replay', 'experiments', 'env', 'registry'] as const;
 
 /** v13-W2 注入字节读数为人话（`injected=12.3KB`）；纯格式换算，不是判据 */
 function kBytes(n: number): string {
@@ -18,7 +27,7 @@ function kBytes(n: number): string {
 }
 
 /** 带值的长选项；不在列的 --xxx 视为布尔开关（目前只有 --json） */
-const VALUE_FLAGS = new Set(['url', 'repo', 'issue', 'timeout', 'interval', 'space', 'times', 'arm', 'suite', 'flag', 'path']);
+const VALUE_FLAGS = new Set(['url', 'repo', 'issue', 'timeout', 'interval', 'space', 'times', 'arm', 'suite', 'flag', 'path', 'kind', 'from']);
 
 interface Args {
   positional: string[];
@@ -65,6 +74,10 @@ const USAGE = [
   '  paneflow experiments [--suite S] [--json]                  实验收数表（只读 server 落盘）',
   '  paneflow env probe <目录> [--space S] [--json]             v14-E1 环境发现器（**纯只读**）：探 git 仓/约定文档/skills/规则候选/机检候选/CI/worktree，',
   '                                                              每项带依据（发现自哪个相对路径）；只产草案不落盘（登记是 E2），七类判据全在 server',
+  '  paneflow registry list [--kind <k>] [--json]               v14-A1/A2 注册中心：一屏看全部能力条目（label/被引用数全由 server 算好）',
+  '  paneflow registry get <id> [--json]                        单条详情（含「谁在用」的逐处出处）',
+  '  paneflow registry refs <id> [--json]                       「谁在用这一项」纯读反查（缺 refs 键＝引用账没读出来，不等于没人用）',
+  '  paneflow registry add --from <草案.json> [--json]          脚本/agent 专用的登记通道（日常登记走网页「注册中心」表单；脏形状由 server 400 一句人话指路）',
   '',
   '地址解析：--url > $PANEFLOW_URL > ~/.paneflow/cli.json 的 url > http://127.0.0.1:4310',
   '远程模式带令牌：$PANEFLOW_TOKEN → Authorization: Bearer',
@@ -104,6 +117,8 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
         return await cmdExperiments(io, baseUrl, args);
       case 'env':
         return await cmdEnv(io, baseUrl, args);
+      case 'registry':
+        return await cmdRegistry(io, baseUrl, args);
     }
   } catch (err) {
     io.err(`${paint(io, '31', '✘')} ${(err as Error).message}`);
@@ -454,6 +469,123 @@ async function cmdEnv(io: CliIo, baseUrl: string, args: Args): Promise<number> {
   for (const m of res.missing ?? []) io.out(`    ${paint(io, '90', `缺项：${m}`)}`);
   io.out(`  草案直取：paneflow env probe ${res.path} --json（逐项带依据、stdout 干净可直接 | jq；登记进空间是 E2 的事，本片只探不落盘）`);
   return EXIT_OK;
+}
+
+// -- registry（v14-A1/A2 注册中心）--------------------------------------------
+// 薄壳到不能再薄：条目说什么（`label`）、谁在用（`refs`）、这版认识哪些类型（`knownKinds`）、
+// 盘面有几条不认（`rejected`）全是 server 字段。这里唯一的工作是**排版**与「缺键就不渲染那一句」。
+
+/** 来源chip：`source` 是三枚定值，未知值原样画（server 日后加一枚不许把薄壳炸红） */
+const SOURCE_CN: Record<string, string> = { builtin: '出厂', user: '登记', discovered: '探得' };
+
+/**
+ * 一条引用出处一行。`face` 原样画（`gateway`/`space`/…）——中文对照表住在 server 的 400 文案里，
+ * 这里再抄一份就是第二份事实源，改天两边措辞分叉没人发现。
+ */
+const refLine = (r: { face: string; id: string; name: string; via: string }): string =>
+  `${r.face} · ${r.name}（${r.id}）· ${r.via}`;
+
+/** 条目一行：id + server 的人话标签 + 来源 + 启用态 + 「被 N 处用」（refs 缺键＝不知道，不渲染那一句） */
+function entryLine(io: CliIo, e: RegistryEntryView): string {
+  const bits = [`  ${e.id}`, e.label ?? e.name, SOURCE_CN[e.source] ?? e.source];
+  if (!e.enabled) bits.push(paint(io, '33', '已禁用'));
+  if (e.refs) bits.push(e.refs.length ? `被 ${e.refs.length} 处用` : '没人用');
+  else bits.push(paint(io, '90', '引用账未读出'));
+  return bits.join('  ');
+}
+
+function renderEntry(io: CliIo, e: RegistryEntryView): void {
+  io.out(entryLine(io, e));
+  io.out(`  登记于 ${e.createdAt}${e.updatedAt && e.updatedAt !== e.createdAt ? ` · 改于 ${e.updatedAt}` : ''}`);
+  if (!e.refs) {
+    io.out(`  ${paint(io, '33', '「谁在用」没读出来——这是不知道，不是没人用（引用账扫不出时 server 就不给 refs 键）')}`);
+    return;
+  }
+  if (!e.refs.length) {
+    io.out('  谁在用：一处也没有（正读数）');
+    return;
+  }
+  io.out(`  谁在用（${e.refs.length} 处）：`);
+  for (const r of e.refs) io.out(`    ${refLine(r)}`);
+}
+
+async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<number> {
+  const verb = args.positional[0];
+  switch (verb) {
+    case 'list': {
+      const q = args.flags.kind ? `?kind=${encodeURIComponent(args.flags.kind)}` : '';
+      const { body } = await request<RegistryListView>(io, baseUrl, 'GET', `/api/registry${q}`);
+      if (jsonOr(args)) {
+        dump(io, body);
+        return EXIT_OK;
+      }
+      io.out(
+        `注册表 schema v${body.schema?.version ?? '?'}${body.schema?.writtenBy ? `（由 ${body.schema.writtenBy} 写）` : '（本机版本戳还没落盘=一条没登记过）'} · 这版认识：${body.knownKinds.join('/')}`,
+      );
+      if (!body.entries.length) {
+        io.out('  （一张表都还没登记——日常登记走网页「注册中心」表单，脚本走 `paneflow registry add --from <草案.json>`）');
+      }
+      // 分组只按 `kind` 字段排（值域由 server 说），组名原样：CLI 不维护第二份「类型→人话」表
+      for (const kind of [...new Set(body.entries.map((e) => e.kind))]) {
+        io.out(`· ${kind}（${body.entries.filter((e) => e.kind === kind).length} 项）`);
+        for (const e of body.entries.filter((x) => x.kind === kind)) io.out(entryLine(io, e));
+      }
+      for (const r of body.rejected) io.out(`  ${paint(io, '33', `⚠ 本机不认（只披露不清除）：${r.id} —— ${r.why}`)}`);
+      const s = body.refSummary;
+      if (s) {
+        io.out(
+          `引用账：扫过 ${s.scanned} 处跨面裸串引用 · 指向已迁类型却查不到条目 ${s.dangling.length} 处 · 指向未迁类型 ${s.unmigrated.reduce((n, u) => n + u.refs, 0)} 处（未迁的不判死活）`,
+        );
+        for (const d of s.dangling) io.out(`    ${paint(io, '33', `悬挂：${d.kind} → ${d.target}`)}`);
+      }
+      return EXIT_OK;
+    }
+    case 'get':
+    case 'refs': {
+      requirePos(args, 2, `paneflow registry ${verb} <id>`);
+      const id = args.positional[1]!;
+      const { body } = await request<{ entry: RegistryEntryView }>(io, baseUrl, 'GET', `/api/registry/${encodeURIComponent(id)}`);
+      if (jsonOr(args)) {
+        // `refs` 只回引用那一格——机器判据要的是「有没有人在用」，不是整条信封
+        dump(io, verb === 'refs' ? { id: body.entry.id, refs: body.entry.refs ?? null } : body.entry);
+        return EXIT_OK;
+      }
+      if (verb === 'refs') {
+        if (!body.entry.refs) {
+          io.out('引用账没读出来（不知道 ≠ 没人用）——server 扫不到就不给 refs 键，这里不替你猜');
+          return EXIT_OK;
+        }
+        if (!body.entry.refs.length) io.out('一处也没有在用（正读数：这条现在删得掉）');
+        for (const r of body.entry.refs) io.out(`  ${refLine(r)}`);
+        return EXIT_OK;
+      }
+      renderEntry(io, body.entry);
+      return EXIT_OK;
+    }
+    case 'add': {
+      const from = args.flags.from;
+      if (!from) throw new Error('参数不足：paneflow registry add --from <草案.json>（表单登记走网页「注册中心」，这条是脚本/agent 通道）');
+      const text = io.readFile(from);
+      if (text === null) throw new Error(`草案读不出：${from}`);
+      let draft: unknown;
+      try {
+        draft = JSON.parse(text);
+      } catch (err) {
+        throw new Error(`草案不是合法 JSON（${from}）：${(err as Error).message}`);
+      }
+      // 体形状/值域/撞 id 全是 server 的 400 一句话（ApiError 原文抛出），这里不预校验——预校验就是第二份判据
+      const { body } = await request<{ entry: RegistryEntryView }>(io, baseUrl, 'POST', '/api/registry', draft);
+      if (jsonOr(args)) {
+        dump(io, body.entry);
+        return EXIT_OK;
+      }
+      io.out(`已登记：${body.entry.id}`);
+      renderEntry(io, body.entry);
+      return EXIT_OK;
+    }
+    default:
+      throw new Error('paneflow registry 目前只有 list / get / refs / add 四枚（改和删走网页「注册中心」，写端守卫的中文解释由 server 给出）');
+  }
 }
 
 // -- watch ------------------------------------------------------------------

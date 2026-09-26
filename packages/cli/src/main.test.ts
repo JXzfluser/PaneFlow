@@ -662,6 +662,104 @@ describe('env probe（v14-E1 环境发现器：零判据，只画 server 给的�
   });
 });
 
+describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全由 server 说）', () => {
+  const entry = {
+    id: 'model:gpt-4o-mini',
+    kind: 'model',
+    name: 'gpt-4o-mini',
+    source: 'user',
+    enabled: true,
+    createdAt: '2026-09-26T10:00:00.000Z',
+    updatedAt: '2026-09-26T11:00:00.000Z',
+    label: 'gpt-4o-mini · 档=free',
+    refs: [{ face: 'gateway', id: 'free', name: '免费档', via: 'freeModel' }],
+  };
+  const listPayload = {
+    entries: [entry],
+    rejected: [{ id: 'plugin:x', why: '不认的能力类型「plugin」（这版只登记：model）' }],
+    schema: { version: 1, writtenBy: '0.3.0' },
+    knownKinds: ['model'],
+    refSummary: { scanned: 12, dangling: [{ kind: 'model', target: 'gpt-5', by: [] }], unmigrated: [{ kind: 'role', targets: ['r-x'], refs: 3 }] },
+  };
+
+  it('list：schema/knownKinds/分组/条目行 + 只披露不清除的 rejected + 引用账一行（全部照读字段）', async () => {
+    const { fetchImpl, calls } = stubFetch([{ body: listPayload }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'list', '--kind', 'model'], io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/registry?kind=model');
+    const out = lines.join('\n');
+    expect(out).toContain('注册表 schema v1（由 0.3.0 写） · 这版认识：model');
+    expect(out).toContain('· model（1 项）');
+    expect(out).toContain('model:gpt-4o-mini  gpt-4o-mini · 档=free  登记  被 1 处用');
+    expect(out).toContain('⚠ 本机不认（只披露不清除）：plugin:x —— 不认的能力类型「plugin」');
+    expect(out).toContain('扫过 12 处跨面裸串引用 · 指向已迁类型却查不到条目 1 处 · 指向未迁类型 3 处');
+    expect(out).toContain('悬挂：model → gpt-5');
+  });
+
+  it('list 空表是正读数（不猜「注册失败」）；refs 缺键画「引用账未读出」而不是「没人用」', async () => {
+    const { fetchImpl } = stubFetch([{ body: { ...listPayload, entries: [], rejected: [], schema: null, refSummary: undefined } }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'list'], io)).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('一张表都还没登记');
+    expect(out).not.toContain('引用账：'); // refSummary 缺（旧 server）就整行不画，不画「扫过 0 处」
+
+    const noRefs = stubFetch([{ body: { entry: { ...entry, refs: undefined } } }]);
+    const second = makeIo({ fetch: noRefs.fetchImpl });
+    expect(await main(['registry', 'get', 'model:gpt-4o-mini'], second.io)).toBe(0);
+    expect(second.lines.join('\n')).toContain('「谁在用」没读出来——这是不知道，不是没人用');
+    expect(second.lines.join('\n')).not.toContain('一处也没有');
+  });
+
+  it('refs：逐处出处画全（face/名称/键路径都是 server 字段，不翻第二份词表）；零引用是正读数', async () => {
+    const { fetchImpl } = stubFetch([{ body: { entry } }, { body: { entry: { ...entry, refs: [] } } }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'refs', 'model:gpt-4o-mini'], io)).toBe(0);
+    expect(lines.join('\n')).toContain('gateway · 免费档（free）· freeModel');
+    const second = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'refs', 'model:gpt-4o-mini'], second.io)).toBe(0);
+    expect(second.lines.join('\n')).toContain('一处也没有在用（正读数：这条现在删得掉）');
+  });
+
+  it('refs --json：{id, refs}，引用账读不出时 refs 为 null（机器判据不被 CLI 补成 []）', async () => {
+    const { fetchImpl } = stubFetch([{ body: { entry: { ...entry, refs: undefined } } }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'refs', 'model:gpt-4o-mini', '--json'], io)).toBe(0);
+    expect(JSON.parse(lines.join('\n'))).toEqual({ id: 'model:gpt-4o-mini', refs: null });
+  });
+
+  it('add --from：草案原样 POST（不预校验、不补 kind），400 由 server 一句人话指路', async () => {
+    const { fetchImpl, calls } = stubFetch([{ body: { entry } }, { status: 400, body: { error: 'spec 含未知键 frimo' } }]);
+    const { io, lines } = makeIo({
+      fetch: fetchImpl,
+      readFile: (p: string) => (p === './draft.json' ? '{"kind":"model","name":"gpt-4o-mini"}' : null),
+    });
+    expect(await main(['registry', 'add', '--from', './draft.json'], io)).toBe(0);
+    expect(JSON.parse(calls[0]!.init.body!)).toEqual({ kind: 'model', name: 'gpt-4o-mini' });
+    expect(lines.join('\n')).toContain('已登记：model:gpt-4o-mini');
+
+    const bad = makeIo({ fetch: fetchImpl, readFile: () => '{"kind":"model"}' });
+    expect(await main(['registry', 'add', '--from', './x.json'], bad.io)).toBe(1);
+    expect(bad.errLines.join('\n')).toContain('spec 含未知键 frimo'); // 文案原样透传，CLI 不自造判据
+  });
+
+  it('add 的参数缺口当场报错（不静默发空体）；未知子动词列出现役四枚', async () => {
+    const { io, errLines } = makeIo({ readFile: () => null });
+    expect(await main(['registry', 'add'], io)).toBe(1);
+    expect(errLines.join('\n')).toContain('--from');
+    const noFile = makeIo({ readFile: () => null });
+    expect(await main(['registry', 'add', '--from', './gone.json'], noFile.io)).toBe(1);
+    expect(noFile.errLines.join('\n')).toContain('草案读不出：./gone.json');
+    const verb = makeIo();
+    expect(await main(['registry', 'probe', 'x'], verb.io)).toBe(1);
+    expect(verb.errLines.join('\n')).toContain('只有 list / get / refs / add');
+    // USAGE 里点不到就等于命令不存在（v14 §X2 三处必动之一）
+    const h = makeIo();
+    expect(await main(['--help'], h.io)).toBe(0);
+    expect(h.lines.join('\n')).toContain('paneflow registry list');
+  });
+});
+
 describe('入口守护', () => {
   it('未知子命令与 help', async () => {
     const { io, errLines } = makeIo();
