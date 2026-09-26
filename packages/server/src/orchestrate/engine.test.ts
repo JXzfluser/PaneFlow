@@ -12,6 +12,7 @@ import { READBACK_HEADER } from './readback.js';
 import { WIKI_ROOT, wikiCacheDir } from '../api/wiki.js';
 import { upsertGatewayProfile } from '../api/gateway.js';
 import { Store } from './store.js';
+import { RegistryStore } from './registry.js';
 import { productSha } from './products.js';
 import type { SpaceProfile } from './store.js';
 import type { DeliveryRule } from './delivery.js';
@@ -5515,5 +5516,119 @@ describe('v13-K1 产物台账与硬引用', () => {
     expect(fs.readFileSync(shelved, 'utf8')).toBe('第二轮');
     // 指纹跟着内容走：覆盖后台账记的 sha 属于第二轮那份，不是第一轮
     expect(run.nodes['design']!.products![0]!.sha).toBe(productSha('第二轮'));
+  });
+});
+
+describe('v14-R5 逐单能力快照（起单现场抄 spec，cap# 进账）', () => {
+  /** 走真实落盘读端：注册表用 `RegistryStore`（就是 HTTP 面用的那一支），网关档用 `upsertGatewayProfile` */
+  const seed = (spec: Record<string, unknown> = {}) => {
+    const res = new RegistryStore(dataDir).add({
+      kind: 'model',
+      name: 'gpt-4o-mini',
+      spec: { model: 'gpt-4o-mini', ...spec },
+    });
+    if (!res.ok) throw new Error(res.why);
+    return res.entry!;
+  };
+  const gwFree = () =>
+    upsertGatewayProfile(dataDir, {
+      id: 'free',
+      name: '免费档',
+      baseUrl: 'https://gw.invalid',
+      apiKey: 'sk-secret-永不进快照',
+      freeModel: 'gpt-4o-mini',
+    });
+
+  it('生效档 freeModel 命中登记条目 → 快照落册，cap# 与逐条 specSha 自洽', async () => {
+    const entry = seed();
+    gwFree();
+    const run = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    expect(run.capabilityRefs).toEqual([
+      {
+        kind: 'model',
+        id: entry.id,
+        specSha: contentSha(entry.spec),
+        spec: { model: 'gpt-4o-mini' },
+        via: ['gateway·freeModel'],
+      },
+    ]);
+    expect(run.capabilitySha).toBe(
+      contentSha(run.capabilityRefs!.map(({ kind, id, specSha, spec }) => ({ kind, id, specSha, spec }))),
+    );
+    // 密钥禁入 spec/快照（R1 边界②）：整份记录里都不该出现那串 apiKey
+    expect(JSON.stringify(run.capabilityRefs)).not.toContain('sk-secret');
+  });
+
+  it('起单之后编辑条目：历史 run 的读数一字不动（v0.1「活行 sha」判死的那条病）', async () => {
+    const entry = seed();
+    gwFree();
+    const run = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    const before = JSON.stringify(run.capabilityRefs);
+    const capBefore = run.capabilitySha;
+    const upd = new RegistryStore(dataDir).update(entry.id, { spec: { model: 'gpt-4o-mini', note: '起单后才改的备注' } });
+    expect(upd.ok).toBe(true);
+    expect(JSON.stringify(run.capabilityRefs)).toBe(before);
+    expect(run.capabilitySha).toBe(capBefore);
+    // 盘上那份也还是起单时的原文——快照不是「读时再去查活行」
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(dataDir, 'spaces', 'default', 'runs', `${run.runId}.json`), 'utf8'),
+    ) as RunRecord;
+    expect(persisted.capabilityRefs?.[0]?.spec).toEqual({ model: 'gpt-4o-mini' });
+  });
+
+  it('再起一单＝重新现读：编辑后的能力面进新单的 cap#（等臂跨臂变更就此暴露）', async () => {
+    const entry = seed();
+    gwFree();
+    const first = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    new RegistryStore(dataDir).update(entry.id, { spec: { model: 'gpt-4o-mini', note: '换了一版配置' } });
+    const second = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    expect(second.capabilitySha).not.toBe(first.capabilitySha);
+    expect(second.capabilityRefs?.[0]?.spec).toEqual({ model: 'gpt-4o-mini', note: '换了一版配置' });
+    // 同配置连起两单：cap# 相等（等臂第四枚判据的正读数，不受 runId 等噪声影响）
+    const third = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    expect(third.capabilitySha).toBe(second.capabilitySha);
+  });
+
+  it('停用条目不进快照（enabled=false 不是现役能力）：能力面变空 → 两键整缺', async () => {
+    const entry = seed();
+    gwFree();
+    const run = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    expect(run.capabilityRefs).toHaveLength(1);
+    new RegistryStore(dataDir).update(entry.id, { enabled: false });
+    const off = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    expect(off.capabilityRefs).toBeUndefined();
+    expect(off.capabilitySha).toBeUndefined();
+  });
+
+  it('注册表里没这一枚（悬挂引用）/整张表为空 → 两键整缺，不写空数组冒充「吃了零项」', async () => {
+    gwFree(); // 只有网关档的 freeModel 裸串，注册表空
+    const run = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    expect(run.capabilityRefs).toBeUndefined();
+    expect(run.capabilitySha).toBeUndefined();
+    expect('capabilityRefs' in run).toBe(false);
+  });
+
+  it('只快照本单生效的那一档：别档的 freeModel 不算这单的能力面', async () => {
+    const freeEntry = seed(); // model:gpt-4o-mini
+    const paidEntry = new RegistryStore(dataDir).add({
+      kind: 'model',
+      name: 'other-model',
+      spec: { model: 'other-model' },
+    });
+    if (!paidEntry.ok) throw new Error(paidEntry.why);
+    // 两档都登记在表、都配了 freeModel——本单钉哪档，能力面就只吃哪档那枚
+    upsertGatewayProfile(dataDir, { id: 'paid', name: '付费档', baseUrl: 'https://gw.invalid', apiKey: 'sk-paid', freeModel: 'other-model' });
+    gwFree();
+    const space = new Store(dataDir, 'default');
+    space.writeProfile({ ...space.readProfile(), gatewayProfile: 'free' });
+    const run = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    expect(run.harness?.gwProfile).toBe('free');
+    expect(run.capabilityRefs).toHaveLength(1);
+    expect(run.capabilityRefs![0]!.id).toBe(freeEntry.id);
+    expect(run.capabilityRefs![0]!.via).toEqual(['gateway·freeModel']);
+    // 换钉付费档再起一单：能力面跟着换一枚（等臂两臂若钉了不同档，cap# 必不等）
+    space.writeProfile({ ...space.readProfile(), gatewayProfile: 'paid' });
+    const paid = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
+    expect(paid.capabilityRefs!.map((r) => r.id)).toEqual([paidEntry.entry!.id]);
   });
 });

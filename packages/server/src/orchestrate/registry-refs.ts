@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { REGISTRY_KINDS, type DagGraph, type DagNodeConfig, type RegistryEntry } from '@paneflow/shared';
-import { Store } from './store.js';
-import { loadRoles } from './roles.js';
-import { readGatewayDoc } from '../api/gateway.js';
+import { Store, type SpaceProfile } from './store.js';
+import { loadRoles, type Role } from './roles.js';
+import { readGatewayDoc, type GatewayDoc } from '../api/gateway.js';
 import { REGISTRY_DESCRIPTORS } from './registry-descriptors.js';
 
 /**
@@ -47,57 +47,84 @@ export interface ReferenceIndex {
 
 type Source = (dataDir: string) => RawReference[];
 
-const spaceRefs: Source = (dataDir) => {
-  const out: RawReference[] = [];
-  for (const sp of Store.listSpaces(dataDir)) {
-    const by = { face: 'space' as const, id: sp.id, name: sp.name };
-    const push = (kind: string, target: string | undefined, via: string): void => {
-      if (target) out.push({ ...by, via, kind, target });
-    };
-    push('agent-kind', sp.defaultAgentKind, 'defaultAgentKind');
-    push('gateway-profile', sp.gatewayProfile, 'gatewayProfile');
-    (sp.team ?? []).forEach((m, i) => push('role', m.roleId, `team[${i}].roleId`));
-    (sp.skills ?? []).forEach((s, i) => push('skill', s, `skills[${i}]`));
-    (sp.repos ?? []).forEach((r, i) => push('repo', r, `repos[${i}]`));
-    (sp.rules ?? []).forEach((r, i) => {
-      push('rule', r.file, `rules[${i}].file`);
-      push('repo', r.repo, `rules[${i}].repo`);
-    });
-    (sp.delivery ?? []).forEach((d, i) => push('repo', d.repo, `delivery[${i}].repo`));
-  }
-  return out;
-};
+/**
+ * 下面四支 `refsFromX` 是**纯函数**（一份档案 → 它发出的裸串引用），`SOURCES` 里的四支只是
+ * 它们套上读盘的薄壳。为什么拆：v14 R5 的能力快照要问的是「**这一单**实发吃了哪些引用」，
+ * 拿的是内存里的 run.graph / 该单的空间档案，不是全盘面重扫一遍——两头共用同一支抽取器，
+ * 「哪个键算哪类能力」这张表自此只有一处（拆成两份迟早对不上，那就是第二份判据）。
+ */
 
-const roleRefs: Source = (dataDir) => {
+export function refsFromSpace(sp: SpaceProfile): RawReference[] {
   const out: RawReference[] = [];
-  for (const role of loadRoles(dataDir)) {
-    const by = { face: 'role' as const, id: role.id, name: role.name };
-    if (role.agentKind) out.push({ ...by, via: 'agentKind', kind: 'agent-kind', target: role.agentKind });
-    (role.skills ?? []).forEach((s, i) => out.push({ ...by, via: `skills[${i}]`, kind: 'skill', target: s }));
-    (role.rules ?? []).forEach((r, i) => out.push({ ...by, via: `rules[${i}]`, kind: 'rule', target: r }));
-  }
+  const by = { face: 'space' as const, id: sp.id, name: sp.name };
+  const push = (kind: string, target: string | undefined, via: string): void => {
+    if (target) out.push({ ...by, via, kind, target });
+  };
+  push('agent-kind', sp.defaultAgentKind, 'defaultAgentKind');
+  push('gateway-profile', sp.gatewayProfile, 'gatewayProfile');
+  (sp.team ?? []).forEach((m, i) => push('role', m.roleId, `team[${i}].roleId`));
+  (sp.skills ?? []).forEach((s, i) => push('skill', s, `skills[${i}]`));
+  (sp.repos ?? []).forEach((r, i) => push('repo', r, `repos[${i}]`));
+  (sp.rules ?? []).forEach((r, i) => {
+    push('rule', r.file, `rules[${i}].file`);
+    push('repo', r.repo, `rules[${i}].repo`);
+  });
+  (sp.delivery ?? []).forEach((d, i) => push('repo', d.repo, `delivery[${i}].repo`));
   return out;
-};
+}
 
-const templateRefs: Source = (dataDir) => {
+export function refsFromRole(role: Role): RawReference[] {
   const out: RawReference[] = [];
-  for (const graph of readGraphs(dataDir)) {
-    // `DagGraph.name` 就是模板文件名（`saveGraph` 写向 `graphPath(graph.name)`），也正是
-    // `pipeline.template` 指向的那枚——两处同一枚键，反查才对得上
-    const by = { face: 'template' as const, id: graph.name, name: graph.name };
-    graph.nodes.forEach((node, i) => {
-      const cfg: DagNodeConfig = node.config ?? {};
-      out.push({ ...by, via: `nodes[${i}].type`, kind: 'node-type', target: node.type });
-      if (cfg.role) out.push({ ...by, via: `nodes[${i}].config.role`, kind: 'role', target: cfg.role });
-      if (cfg.agentKind) out.push({ ...by, via: `nodes[${i}].config.agentKind`, kind: 'agent-kind', target: cfg.agentKind });
-      if (cfg.pipeline?.template) out.push({ ...by, via: `nodes[${i}].config.pipeline.template`, kind: 'template', target: cfg.pipeline.template });
-      if (cfg.pipeline?.fallbackTemplate)
-        out.push({ ...by, via: `nodes[${i}].config.pipeline.fallbackTemplate`, kind: 'template', target: cfg.pipeline.fallbackTemplate });
-      (cfg.checks ?? []).forEach((c, j) => out.push({ ...by, via: `nodes[${i}].config.checks[${j}].type`, kind: 'check-type', target: c.type }));
-    });
+  const by = { face: 'role' as const, id: role.id, name: role.name };
+  if (role.agentKind) out.push({ ...by, via: 'agentKind', kind: 'agent-kind', target: role.agentKind });
+  (role.skills ?? []).forEach((s, i) => out.push({ ...by, via: `skills[${i}]`, kind: 'skill', target: s }));
+  (role.rules ?? []).forEach((r, i) => out.push({ ...by, via: `rules[${i}]`, kind: 'rule', target: r }));
+  return out;
+}
+
+/**
+ * 一张模板/一次实发 graph → 它的节点级裸串引用。
+ * `name` 由调用方给：在册模板传 `graph.name`（也就是 `pipeline.template` 指向的那枚），
+ * run 的出场 graph 同样传它的 `graph.name`——两处同一枚键，反查才对得上。
+ */
+export function refsFromGraph(graph: DagGraph, name: string): RawReference[] {
+  const out: RawReference[] = [];
+  const by = { face: 'template' as const, id: name, name };
+  graph.nodes.forEach((node, i) => {
+    const cfg: DagNodeConfig = node.config ?? {};
+    out.push({ ...by, via: `nodes[${i}].type`, kind: 'node-type', target: node.type });
+    if (cfg.role) out.push({ ...by, via: `nodes[${i}].config.role`, kind: 'role', target: cfg.role });
+    if (cfg.agentKind) out.push({ ...by, via: `nodes[${i}].config.agentKind`, kind: 'agent-kind', target: cfg.agentKind });
+    if (cfg.pipeline?.template) out.push({ ...by, via: `nodes[${i}].config.pipeline.template`, kind: 'template', target: cfg.pipeline.template });
+    if (cfg.pipeline?.fallbackTemplate)
+      out.push({ ...by, via: `nodes[${i}].config.pipeline.fallbackTemplate`, kind: 'template', target: cfg.pipeline.fallbackTemplate });
+    (cfg.checks ?? []).forEach((c, j) => out.push({ ...by, via: `nodes[${i}].config.checks[${j}].type`, kind: 'check-type', target: c.type }));
+  });
+  return out;
+}
+
+/**
+ * 网关文档 → `current` 与逐档 `freeModel` 的引用。只读文档、不读密钥——`apiKey` 在本模块的
+ * 任何输出里都不存在（R1 边界②：密钥禁入 spec，也禁入引用面与快照）。
+ */
+export function refsFromGatewayDoc(doc: GatewayDoc): RawReference[] {
+  const out: RawReference[] = [];
+  if (doc.current) {
+    const cur = doc.profiles.find((p) => p.id === doc.current);
+    out.push({ face: 'gateway', id: doc.current, name: cur?.name ?? doc.current, via: 'current', kind: 'gateway-profile', target: doc.current });
+  }
+  for (const p of doc.profiles) {
+    if (p.freeModel) out.push({ face: 'gateway', id: p.id, name: p.name, via: 'freeModel', kind: 'model', target: p.freeModel });
   }
   return out;
-};
+}
+
+const spaceRefs: Source = (dataDir) => Store.listSpaces(dataDir).flatMap(refsFromSpace);
+
+const roleRefs: Source = (dataDir) => loadRoles(dataDir).flatMap(refsFromRole);
+
+const templateRefs: Source = (dataDir) =>
+  readGraphs(dataDir).flatMap((g) => refsFromGraph(g, g.name));
 
 /**
  * 只读地拿模板，**不 new Store**：`Store` 的构造期会 `mkdir` 并补写默认项目档案
@@ -123,23 +150,8 @@ function readGraphs(dataDir: string): DagGraph[] {
   return out;
 }
 
-/**
- * 网关档的 `freeModel` 与 `current`：今天「哪个模型在用」唯一的落册处（§一 第 13 行：模型只作为网关档的
- * freeModel 字段活着）。只读文档、不读密钥——`apiKey` 在本模块的任何输出里都不存在（R1 边界②：密钥禁入 spec，
- * 也禁入引用面）。
- */
-const gatewayRefs: Source = (dataDir) => {
-  const doc = readGatewayDoc(dataDir);
-  const out: RawReference[] = [];
-  if (doc.current) {
-    const cur = doc.profiles.find((p) => p.id === doc.current);
-    out.push({ face: 'gateway', id: doc.current, name: cur?.name ?? doc.current, via: 'current', kind: 'gateway-profile', target: doc.current });
-  }
-  for (const p of doc.profiles) {
-    if (p.freeModel) out.push({ face: 'gateway', id: p.id, name: p.name, via: 'freeModel', kind: 'model', target: p.freeModel });
-  }
-  return out;
-};
+/** 网关档的 `freeModel` 与 `current`（§一 第 13 行：模型今天只作为网关档的 freeModel 字段活着） */
+const gatewayRefs: Source = (dataDir) => refsFromGatewayDoc(readGatewayDoc(dataDir));
 
 /** 一张表列尽现役裸串引用面；新面进表只加一行，不改判据 */
 const SOURCES: Source[] = [spaceRefs, roleRefs, templateRefs, gatewayRefs];
@@ -148,8 +160,11 @@ export function scanRawReferences(dataDir: string): RawReference[] {
   return SOURCES.flatMap((src) => src(dataDir));
 }
 
-/** 一条裸串是不是指向我这一枚条目（由 Descriptor 自报口径；未挂号的 kind 不匹配任何条目） */
-function matchesTarget(entry: RegistryEntry, target: string): boolean {
+/**
+ * 一条裸串是不是指向我这一枚条目（由 Descriptor 自报口径；未挂号的 kind 不匹配任何条目）。
+ * **导出给 R5 的快照器共用**：反向引用账与正向快照必须是同一把匹配尺，两份迟早给出两个答案。
+ */
+export function matchesTarget(entry: RegistryEntry, target: string): boolean {
   const descriptor = (REGISTRY_DESCRIPTORS as Record<string, { refKeys(e: RegistryEntry): string[] } | undefined>)[entry.kind];
   if (!descriptor) return false;
   return descriptor.refKeys(entry).includes(target);

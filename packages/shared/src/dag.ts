@@ -1,4 +1,5 @@
 import type { AgentStatus } from './states.js';
+import type { RegistryEntry } from './registry.js';
 
 // ---------------------------------------------------------------------------
 // DAG model — the single source of truth for both canvas (web) and orchestrator
@@ -688,6 +689,21 @@ export interface RunRecord {
    */
   harness?: RunHarness;
   /**
+   * v14 R5 能力快照账：本单**起单现场**解析到的注册表条目副本（整份 `spec` 一起烧进来）。
+   * 为什么是副本而不是引用（§二 R5 把 v0.1 的 `regSha=活行指纹` 判死的那条）：
+   * 引用活行＝今天编辑一条就把所有历史 run 的读数跟着改，「当时用什么」自此不可考；
+   * 快照自带原文，条目删了也读得到当时那枚。比对与分组只吃 `capabilitySha`（整单不可变集指纹）。
+   * 缺省=本单没解析到任何已迁 kind 的条目引用，或注册表读不出（宁缺毋假：
+   * 「没这一格」与「这单吃了零项能力」是两件事——后者是 `capabilityRefs: []` 才成立的正读数）。
+   */
+  capabilityRefs?: RunCapabilityRef[];
+  /**
+   * v14 R5 整单能力面指纹（`cap#`）：`capabilityRefs` 全集（含逐条 `specSha`）的 contentSha。
+   * 等臂第四枚的判据形态=**同 id 集合 ∧ 本值相等**，跨臂的注册表变更由收数表的 `cap#` 列暴露，
+   * 而不是指望活行不变。可选：更早的旧记录与没快照的单整键省略。
+   */
+  capabilitySha?: string;
+  /**
    * v12-S1a 副作用可见化：本单对外部世界写操作的统一落册（缺省=无在册副作用/旧记录，
    * JSON 向后兼容只增不改）。S1b 的 replay 门禁唯一输入：非空=直接重放会二次副作用。
    * 证据源边界见 RunSideEffects 各键注释——宁缺毋假，不做读时推导。
@@ -848,6 +864,22 @@ export interface RunHarness {
    * 可选：v13-W2 前的旧记录整键省略。
    */
   injectedBytes?: number;
+}
+
+/**
+ * v14 R5 能力快照的一格：起单现场解析到的某枚注册表条目的**副本**。
+ * `spec` 是整份抄写（不是引用活行）——条目日后被编辑甚至删除，本单读到的仍是当时那份。
+ * `specSha=contentSha(规范化 spec)`（口径同 `harness.ts` 的 graphSha/templateSha）：
+ * 同 id 而 specSha 变＝中间改过配置，等臂比对据此分臂。
+ * `via` 记本单里指向它的引用位置（`face·键`，人话由 CLI 原样转述），一条目多处引用只快照一次、`via` 并进数组。
+ * 密钥永不入 spec（R1 边界②）：快照吃的是条目本身，条目里就没有密钥。
+ */
+export interface RunCapabilityRef {
+  kind: string;
+  id: string;
+  specSha: string;
+  spec: RegistryEntry['spec'];
+  via: string[];
 }
 
 /**

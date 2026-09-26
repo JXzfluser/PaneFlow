@@ -26,6 +26,7 @@ export type {
   WikiReadbackTrace,
   RunExperimentMeta,
   RunHarness,
+  RunCapabilityRef,
   ReadbackOutcome,
   RunSideEffects,
   RunAttention,

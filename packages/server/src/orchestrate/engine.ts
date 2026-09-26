@@ -32,6 +32,15 @@ import { makeAgentName } from './herdr-ops.js';
 import { Store } from './store.js';
 import { buildConventionBlock, buildDeclareBlock, loadRoles, normalizeDeclares, roleEquipConfigured, type Role } from './roles.js';
 import { effectiveRules, matchRules } from './rules.js';
+import { RegistryStore } from './registry.js';
+import {
+  refsFromGatewayDoc,
+  refsFromGraph,
+  refsFromRole,
+  refsFromSpace,
+  type RawReference,
+} from './registry-refs.js';
+import { capabilitySnapshot } from './registry-snapshot.js';
 import {
   buildDeliveryBlock,
   declaredGateNames,
@@ -55,7 +64,7 @@ import {
   shelveProducts,
   type ProductDraft,
 } from './products.js';
-import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway } from '../api/gateway.js';
+import { buildGatewayEnv, gatewayActive, PI_GATEWAY_PROVIDER, readGateway, readGatewayDoc } from '../api/gateway.js';
 import { envInt, gatewayHostOf, GwConcurrencyGate, looksLikeGatewayThrottle } from './gwlimit.js';
 import {
   bookUsage,
@@ -320,6 +329,12 @@ export class Engine {
   >();
   /** v13-S1 worktree 根目录（泄漏清扫的扫描面） */
   private readonly wtRoot: string;
+  /**
+   * v14 R5 能力快照的读端（只读 `load()`，引擎从不写注册表——登记是 HTTP 面的事）。
+   * 在构造体里赋值而不是字段初始化器：TS 的字段初始化器跑在参数属性赋值**之前**，
+   * `= new RegistryStore(this.store.root)` 会在 `this.store` 还是 undefined 时炸。
+   */
+  private readonly registry: RegistryStore;
 
   constructor(
     private readonly ops: HerdrOps,
@@ -348,6 +363,7 @@ export class Engine {
     // 引擎清扫——那是 OS 自己的地盘由 OS 扫；我们刻意不做静默迁移（把别人目录下的东西搬走
     // = 动用户的证据链）。opts.worktreeRoot 显式给了仍然赢（测试注入通道）。
     this.wtRoot = opts.worktreeRoot ?? path.join(this.store.root, 'worktrees');
+    this.registry = new RegistryStore(this.store.root);
     // surface past runs (from disk, across all spaces) in listings after boot.
     // Runs persisted as 'running' belong to a dead process — mark them
     // interrupted here; their workspaces are reclaimed by the orphan sweep
@@ -832,6 +848,22 @@ export class Engine {
       });
     } catch {
       // 防御（读回同款姿势）：披露旁账不许把起跑挡下来，最坏这单缺 harness 字段
+    }
+    // v14 R5 逐单能力快照：把「这一单起单现场吃进了哪几枚注册表条目」连 spec 原文一起抄进
+    // run 记录（等臂第四枚判据 cap# 的来源；日后条目被编辑/删除，历史读数不改）。
+    // 同款防御，且缺键语义照 doc：没解析到任何已迁能力 / 注册表读不出 → 两键整缺，
+    // 不写 `capabilityRefs: []`——那是正断言「扫过、一条没吃」，与「没走到注册消费面」两件事。
+    try {
+      const snap = capabilitySnapshot(
+        this.registry.load().entries,
+        this.runRawReferences(run, run.harness?.gwProfile),
+      );
+      if (snap) {
+        run.capabilityRefs = snap.refs;
+        run.capabilitySha = snap.sha;
+      }
+    } catch {
+      // 快照是旁账：注册盘面读不动也不许把起跑挡下来（最坏这单没有能力账）
     }
     this.runs.set(runId, run);
     this.recordEvent(run, 'run', undefined, `运行启动：${graph.name}（${order.length} 个节点）`);
@@ -3054,6 +3086,42 @@ export class Engine {
     } catch {
       return gwProfile ? { gwProfile } : {};
     }
+  }
+
+  /**
+   * v14 R5：这一单实发吃进的裸串引用（正向版），取材面与 R2 反向扫描共用同一支抽取器：
+   *  1. `run.graph` = **出场** graph（变量替换/经验注入/读回注入后的 structuredClone），与 graphSha 同口径；
+   *  2. 本单所属空间档案（`storeFor`：带 spaceId 走该空间，否则默认空间）；
+   *  3. 只取本单节点**实绑**的角色（`config.role` 命中的那些，去重）——全量角色扫进快照会把
+   *     没上岗的岗的装备算成这单的能力面，那是假账；
+   *  4. 网关只取本单生效的那一档（`gwProfile` 钉档优先，否则文档 `current`），别档的 `freeModel`
+   *     这一单没吃。密钥不在抽取器输出里（R1 边界②，`refsFromGatewayDoc` 只读 id 与模型名）。
+   * 各面读不动都只让那一面留缺（try 内静默）：快照是旁账，不许把起跑挡下来，也不许拿半份盘面冒充全份。
+   */
+  private runRawReferences(run: RunRecord, gwProfile?: string): RawReference[] {
+    const refs: RawReference[] = refsFromGraph(run.graph, run.graph.name);
+    try {
+      refs.push(...refsFromSpace(this.storeFor(run).readProfile()));
+    } catch {
+      /* 档案读不出＝这单没记上空间级引用，不硬造 */
+    }
+    const seenRoles = new Set<string>();
+    const roles = loadRoles(this.store.root); // 读一次（loadRoles 内部无缓存，别在循环里逐岗摸盘）
+    for (const node of run.graph.nodes) {
+      const roleId = typeof node.config?.role === 'string' ? node.config.role : undefined;
+      if (!roleId || seenRoles.has(roleId)) continue;
+      seenRoles.add(roleId);
+      const role = roles.find((r) => r.id === roleId);
+      if (role) refs.push(...refsFromRole(role));
+    }
+    try {
+      const doc = readGatewayDoc(this.store.root);
+      const active = gwProfile ?? doc.current ?? undefined;
+      refs.push(...refsFromGatewayDoc(doc).filter((r) => !active || r.id === active));
+    } catch {
+      /* 网关文档读不出＝同上 */
+    }
+    return refs;
   }
 
   private roleById(run: RunRecord, roleId: string | undefined): Role | undefined {

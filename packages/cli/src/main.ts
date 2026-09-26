@@ -236,11 +236,13 @@ async function cmdRuns(io: CliIo, baseUrl: string, args: Args): Promise<number> 
 async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number> {
   requirePos(args, 1, 'paneflow status <runId>');
   const runId = args.positional[0]!;
-  // RunView 之外的两枚 v13-W3 新键就地声明（types.ts 不在本片所有权内；形状即 server 落册形状，零判据）
+  // RunView 之外的 v13-W3 两枚 + v14-R5 两枚新键就地声明（types.ts 不在本片所有权内；形状即 server 落册形状，零判据）
   const { body: run } = await request<
     RunView & {
       declares?: { roleId: string; faces?: Record<string, boolean> }[];
       declareViolations?: { roleId: string; face: string; seen: string }[];
+      capabilityRefs?: { kind: string; id: string; specSha: string; via?: string[] }[];
+      capabilitySha?: string;
     }
   >(io, baseUrl, 'GET', `/api/runs/${encodeURIComponent(runId)}`);
   if (jsonOr(args)) {
@@ -270,6 +272,23 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
       h.injectedBytes === undefined ? '' : `injected=${kBytes(h.injectedBytes)}`,
     ].filter(Boolean);
     io.out(`  harness: ${bits.join(' · ')}`);
+  }
+  // v14-R5 能力行：这一单起单现场吃进了哪几枚注册表条目。「吃了什么/指纹是多少」全在 server
+  // 落册的 capabilityRefs/capabilitySha 里（含逐条 specSha），这里只做两件纯渲染：数一数条数、
+  // 按 payload 里原样的 kind 分组计数（ kinds 的中文标签住在 server 的 Descriptor，CLI 自带一份
+  // 映射＝第二份事实源，违反 R4）。两枚键整缺＝这单没走到注册消费面 → 整行不显（不显「0 项」）。
+  const caps = run.capabilityRefs;
+  if (caps?.length) {
+    const order: string[] = [];
+    const count = new Map<string, number>();
+    for (const c of caps) {
+      if (!count.has(c.kind)) { count.set(c.kind, 0); order.push(c.kind); }
+      count.set(c.kind, count.get(c.kind)! + 1);
+    }
+    const group = order.map((k) => `${k} ${count.get(k)}`).join(' · ');
+    io.out(
+      `  能力: ${caps.length} 项（${group}）${run.capabilitySha ? `· cap#${run.capabilitySha}` : ''}`,
+    );
   }
   // v12-S1a 副作用行：同样零判据——账是 server 算好落册的，这里只照单渲染
   const se = run.sideEffects;

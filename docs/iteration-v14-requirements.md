@@ -143,6 +143,21 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   等臂第四枚仍成立，但判据换成：**同 id 集合 ∧ 快照指纹相等＝两臂能力面相同**；跨臂的注册表变更靠「语料表新增
   `registrySnapshotSha` 列」暴露，而不是指望活行不变。
   可感面：`paneflow status <runId>` 多一行 `  能力: 7 项（技能 2 · 机检 3 · agent 2）· cap#=8f21c0`；没走注册消费面=整行不显。
+- **R5 兑现读数与三条改判（本片实跑口径，不静默偏离）**：
+  1. **落点**：`RunRecord.capabilityRefs / capabilitySha`（`shared/dag.ts`）由**引擎起单现场**写入（`engine.ts` 的
+     harness 固化旁同一处，各自带防御 try）——注册表读不出/一条已迁能力没吃到 → **两键整缺**（`capabilitySnapshot`
+     返回 `null` 而非 `[]`）；`GET /api/runs/:id` 直呈（`...run`），CLI 只渲染。取材面＝出场 graph × 本单空间档案 ×
+     **本单实绑角色** × **本单生效网关档**，四支抽取器与 R2 反向扫描**共用同一支**（`refsFromSpace/Role/Graph/GatewayDoc`
+     + `matchesTarget`）——两份匹配口径迟早对不上，那就是第二份判据。
+  2. **改判（可感面词面）**：分组标签用注册表 **kind 原样**（今天是 `model 1`），不是 doc 样张里的「技能/机检/agent」中文词。
+     为什么：中文标签住在 server 的 `Descriptor.label`，CLI 若要显示就得自带一张 kind→中文 表＝第二份事实源（违 R4）。
+     样张那三组要等 A3-x 把 `skill`/`check-type`/`agent-kind` 迁进表才可能出现——**波次欠账，不是本片少写**。
+  3. **改判（收数表列名）**：doc 写 `registrySnapshotSha` 列，落成表内 `能力# = cap#<8位指纹>` 一列，
+     `EXPERIMENT_TABLE_VERSION` 3→**4**（append-only：历史行不回填，边界随口径戳声明）。这一列就是跨臂注册表变更的暴露位。
+  4. **改判（停用条目）**：`enabled: false` 的条目**不进快照**。停用是注册表里唯一表达「不再现役」的键，
+     算进能力面会让「一臂启用/一臂停用」的 cap# 相等，第四枚等臂判据就此漏掉一次真实变更——宁可少记一条，不可漏报一次。
+  5. `cap#` **不含 `via`**（引用出处不是能力面差异），逐条 `specSha` 与整单 `cap#` 都用 `harness.ts` 现成 `contentSha`
+     （键序无关，与 `graphSha` 同尺）；等臂第四枚＝**同 id 集合 ∧ 逐条 specSha 相等 ⇔ cap# 相等**。
 
 **kind 清单（v0.1 含糊处，定死）**：
 
@@ -406,7 +421,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | R2 | 引用索引 + 写端拒悬挂/拒删被引用 | **已完成 `b2f3d29`** | `b2f3d29` | `paneflow registry list` 尾行现网实跑：`引用账：扫过 116 处跨面裸串引用 · 指向已迁类型却查不到条目 0 处 · 指向未迁类型 115 处（未迁的不判死活）`；写端两条 400（拒删被引用/禁用被引用）带逐处出处 |
 | R3 | 只读聚合视图（逐 kind 亮分组；不搬数据） | 未开工 | — | — |
 | R4 | 探测单通道（复用缓存与三态） | **已完成 `1323bf5` + 单枚探针补齐（本片）** | `1323bf5` | 批量：`paneflow registry health` 现网实跑（`实探 1 项：●1 ○0 ?0 · 悬挂 0 · 没人用 0`）；单枚：`paneflow registry probe model:u1appnuf` → `● … ·· 在「默认档」的实探清单里（528 枚中第 512 枚 · 它正挂在免费位）` + `读数时刻`。**同一份缓存=命中计数器机证**（list 0 探／health 1／再 health 1／catalog 1／`?refresh=1` 2）。两条改判（`●/○/?` 替 `ok ·`、`--timeout` 不做）见 §二 R4 |
-| R5 | 能力快照账（capabilityRefs + specSha + cap#） | 未开工 | — | — |
+| R5 | 能力快照账（capabilityRefs + specSha + cap#） | **已完成（本片）** | 本片 | 引擎起单现场落册两枚键 → `GET /api/runs/:id` 直呈 → `paneflow status` 渲一行 `能力: N 项（kind n）· cap#xxx`；收数表新增「能力#」列（表版本 3→4）。机证：单元 9 条（去重/cap# 键序无关/悬挂与未迁 kind 不进/null≠`[]`/副本不随活行变）+ 引擎集成 6 条（真注册表+真网关档落盘跑单：**编辑条目后历史 run 一字不动**、再起一单 cap# 随配置变、同配置两单 cap# 相等、停用→两键整缺、无登记→两键整缺、只吃本单生效那档）+ CLI 1 条（五种 payload 渲染）；`apiKey` 断言不进快照 |
 | T1 | 节点类型清单 + driver 只读数契约 | 未开工 | — | — |
 | T2 | 旧流程留引擎（判决表已改判） | 判决完成 | — | — |
 | T3 | `graph.requires` + `registry check` 预检 | 未开工 | — | — |
@@ -419,5 +434,8 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | X2 | CLI 三处必动 + AGENTS/README + 发行 v0.3.0 | 未开工 | — | — |
 | X3 | 实机首驾（零手填路径全程） | 未开工 | — | — |
 
-**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（本片起算 56 文件 / **801** 绿，web 11/71、cli 3/62 同步绿，`pnpm typecheck` 净）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉未证**（同上 X1 行）。
+**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（R5 片起算 57 文件 / **817** 绿，web 11/71、cli 3/63 同步绿，`pnpm typecheck` 净）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉未证**（同上 X1 行）。
+> ②「零改动」这条口径在 R5 需要说清它约束的是什么：**历史 run 的既有读数与既有判据不许改**（`骨架#/ctxSha/roleSha/graphSha` 逐字节、
+> 收口判定、退出码），不是「测试文件一行不许动」。R5 确实动了 5 条钉死字符串——收数表多一列（doc 明写要新增 `registrySnapshotSha` 列），
+> 那些断言本来就钉在列数上；改的是**期望值**（多一个 `- |`），不是放宽判据。这类「按 doc 要求改列」的动账逐片在此报备，不闷声改绿。
 

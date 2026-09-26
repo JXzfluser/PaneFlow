@@ -275,6 +275,38 @@ describe('runs / status / approve', () => {
     expect(legacy.lines.join('\n')).not.toContain('副作用');
   });
 
+  it('v14-R5 status 能力行：N 项 + 逐 kind 计数 + cap# 全取自 server 落册的两枚键；整缺=没走注册消费面', async () => {
+    const cap = (kind: string, id: string) => ({ kind, id, specSha: 'aa11bb22', spec: { model: id }, via: ['gateway·freeModel'] });
+    const base = { runId: 'r-cap', state: 'completed', dagName: 'g', nodes: {} };
+    const { fetchImpl } = stubFetch([
+      { body: { ...base, capabilityRefs: [cap('model', 'a'), cap('model', 'b')], capabilitySha: '8f21c0' } },
+      // 多 kind（A3-x 迁完才会出现这种账）：分组按 payload 原序，kind 名照原样——中文标签住在 server
+      { body: { ...base, capabilityRefs: [cap('model', 'a'), cap('model', 'b'), { ...cap('skill', 's') }], capabilitySha: '9a0b1c' } },
+      // 只有清单没指纹（怪单）：项数照报，cap# 不硬造
+      { body: { ...base, capabilityRefs: [cap('model', 'a')] } },
+      // 空数组＝盘上脏账（server 侧「零项」的出口是整键不给）：不渲染也不解读
+      { body: { ...base, capabilityRefs: [], capabilitySha: 'deadbeef' } },
+      { body: base },
+    ]);
+    const full = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-cap'], full.io)).toBe(0);
+    expect(full.lines.join('\n')).toContain('能力: 2 项（model 2）· cap#8f21c0');
+    const multi = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-cap'], multi.io)).toBe(0);
+    expect(multi.lines.join('\n')).toContain('能力: 3 项（model 2 · skill 1）· cap#9a0b1c');
+    const noshift = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-cap'], noshift.io)).toBe(0);
+    const nOut = noshift.lines.join('\n');
+    expect(nOut).toContain('能力: 1 项（model 1）');
+    expect(nOut).not.toContain('cap#');
+    const empty = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-cap'], empty.io)).toBe(0);
+    expect(empty.lines.join('\n')).not.toContain('能力');
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-cap'], legacy.io)).toBe(0);
+    expect(legacy.lines.join('\n')).not.toContain('能力');
+  });
+
   it('v13-B2 status 交付行+落差行：家规账逐节点照单渲染（没拉新支就不编基点），落差行只照 server 的 detail；没账整缺不显', async () => {
     const base = {
       runId: 'r-dlv',

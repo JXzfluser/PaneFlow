@@ -18,7 +18,12 @@ export interface GatewayProfile extends ModelGatewaySettings {
   name: string;
 }
 
-interface GatewayDoc {
+/**
+ * v9-D2 网关档位文档。导出给引用面/快照用（`readGatewayDoc` 的返回形状）：
+ * 消费方拿结构类型=第二份形状定义，改天这里加一栏那边不会跟着变。
+ * **密钥（`apiKey`）只在这份盘上**：任何以它为输入的推导器都不许把它带进返回值。
+ */
+export interface GatewayDoc {
   profiles: GatewayProfile[];
   current: string | null;
 }

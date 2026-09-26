@@ -19,8 +19,10 @@ import { Store } from './store.js';
  * append-only 表头只写一次，历史文件拿不到新戳——「旧行不回填」是结构事实，
  * 边界随戳声明：新口径自本版新建的表/新行起生效。
  * v13-V2：harness 列追加 rb=/skel# 等臂读数 → 版本 bump 到 3。
+ * v14-R5：追加「能力#」列（run.capabilitySha 快照指纹）→ bump 到 4。这一列就是 doc 说的
+ * `registrySnapshotSha`：跨臂的注册表变更不再靠「活行恰好没变」来掩盖，改了配置这列就抖。
  */
-export const EXPERIMENT_TABLE_VERSION = 3;
+export const EXPERIMENT_TABLE_VERSION = 4;
 
 /** 日切口径（定死=UTC）：run 时间戳都是 toISOString()，slice(0,10) 即 UTC 日期 */
 function experimentDay(run: RunRecord): string {
@@ -76,6 +78,9 @@ export function experimentRow(run: RunRecord): string {
     tokenCell(tokens?.output),
     cell(run.replayOf ?? '-'),
     cell(harness),
+    // v14-R5 能力#：起单现场能力快照的整单指纹（cap#=…）；缺键画 '-'——
+    // 那是「没走到注册消费面/注册表读不出」，与「吃了零项能力」不是一件事（后者要等 A3-x 才谈得上）。
+    cell(run.capabilitySha ? `cap#${run.capabilitySha}` : '-'),
     cell(waited),
   ].join(' | ')} |`;
 }
@@ -95,6 +100,8 @@ export function experimentTableHeader(suite: string): string {
     'harness=graphSha·agentKind·rb=<readbackOutcome>·skel#<骨架指纹>（v13-V2 等臂读数：' +
     'rb 六态 injected/switch-off/no-pages/not-injected/error/inherited，skel 剥注入块并归一 run_id/draft_dir；' +
     '两臂 skel 相等 ∧ rb 不等=「只差读回块」机证；v13-V2 前的单只有前两截，缺项跳过）；' +
+    '能力#=cap#<起单现场能力快照指纹>（v14-R5：这一单吃进的注册表条目全集指纹，跨臂注册表被改过这列就抖；' +
+    '画「-」=没走到注册消费面或注册表读不出，不是「吃了零项能力」）；' +
     '日切按 UTC（finishedAt??startedAt 的 ISO 前 10 位），+08 夜跑跨日会拆两张表、行数按表各自计；' +
     `本表只追加不回改——新列/新口径自 v${EXPERIMENT_TABLE_VERSION} 起的新行生效，历史行不回填。`;
   return [
@@ -103,8 +110,8 @@ export function experimentTableHeader(suite: string): string {
     '',
     stamp,
     '',
-    '| runId | arm | flag | state | 断言 pass/total | 重试 | 墙钟秒 | token in | token out | replayOf | harness | 人等分 |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| runId | arm | flag | state | 断言 pass/total | 重试 | 墙钟秒 | token in | token out | replayOf | harness | 能力# | 人等分 |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
   ].join('\n');
 }
 
