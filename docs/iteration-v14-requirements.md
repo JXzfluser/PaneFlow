@@ -43,7 +43,7 @@ dataDir 一级落点实测 **15 枚**（grep `path.join(dataDir|this.store.root|
 | 已登记仓库 | `SpaceProfile.repos[]`（:21） | 同上 | **无** | 同上 | `rules[].repo` / `delivery[].repo` 目录名串 |
 | 交付家规 | `SpaceProfile.delivery[]`（:44） | 同上 | `validateDelivery` fail-closed 400（`delivery.ts:53`，未知键 :62-64） | 同上 | engine 建 worktree 现场匹配 |
 | 编排模板 | `graphs/*.json`（全局，v10-Y，`store.ts:197`） | 模板 CRUD | `validateDag` | **删了不查引用** | `pipeline.template` 裸名串；缺失→`fallbackTemplate`（`engine.ts:2648-2651` 落事件），仍无→节点失败「模板不存在…」（:2653） |
-| agent kind | **两枚 TS 常量**：`env-check.ts:6-25`（18）+ `http.ts:81-100`（`AGENT_KINDS`） | **改代码 ×2** | 节点侧只过正则（`dag.ts:914,1003`）；请求侧白名单 :848/:1309 | — | `node.config.agentKind` |
+| agent kind | ~~两枚 TS 常量~~ **前置-1 已合一**：`api/agent-kinds.ts` 一表两读（清单 `AGENT_KINDS` + 探测名 `AGENT_BINARIES`）；改代码仍只此一处，A3-2 接进注册台后连这处也不欠 | **改代码 ×1** | 节点侧只过正则（`dag.ts:914,1003`）；请求侧 `isAgentKind` | — | `node.config.agentKind` |
 | 机检类型 | **TS 常量 6 枚**（`dag.ts:109-116`）＋**编译期双向锁**（:119） | **改代码**（且引擎执行点是 if 链 `engine.ts:2276-2307`） | 未知即拒（v13-V0，:983） | — | `checks[].type` |
 | 节点类型 | **TS 常量 6 枚**（`dag.ts:7`） | **改代码**（引擎按类型分支 `engine.ts:1689,1710`） | 未知即拒（:975） | — | `nodes[].type` |
 | 内置模板 | **TS 常量**（`builtin-templates.ts:544`）+ 幂等 seed（:557，绝不覆盖用户改/删） | **改代码 + 重新发行** | 同模板 | — | 同模板；**C4 实机恢复路径依赖 seed**（`scripts/c4-night1.sh:88`：`mv graphs/<t>.json{,.bak}` + 重启触发重播） |
@@ -265,6 +265,12 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 
 ## 七、裁决问题（要用户点头，不代答）
 
+> **2026-09-26 状态刷新**：用户令「按需求走」＝按本文件推荐取值推进。Q2 已单独结掉（前置-1，见 §十）；
+> Q1/Q5/Q7 按推荐落地（只读聚合先行、只准**一个**新视图=注册中心、K1 已收口故 A 系可开）；
+> Q3（`roleShaV:2` 破历史可比）与 Q4（MCP/插件进 v14＝明示改判 v13:285）**仍不动**——
+> 这两条各自要推翻一笔既有裁决或毁掉既有可比性，推荐值也不是免费的，等点名再改。
+> Q6 七条红线随片确认（每片收尾时核自己踩没踩）；Q8 见 §六 施工 workflow 已按读法一执行，读法二（出厂模板集）另立批次。
+
 1. **既有 dataDir 文件走「只读聚合」还是「搬数据」？** 推荐：只读聚合先行（R3 已按此改判），搬数据前置版本戳 + dry-run + 快照回滚。
 2. **agent kind 两枚白名单合一**是不是可以立刻单独做（不需要 registry）？这是现状账里唯一「硬重复」，一片可结，建议插到 M0 之前。
 3. **`roleSha` 换口径允不允许破历史可比**（W6/`roleShaV: 2`）？这是改判，按 v13:72 先例须点头。
@@ -289,7 +295,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   `RunProduct` 类型并**在架上手放同一串原文实算 sha**，端点返回形状若与 shared 类型分叉则编译期即红。
 - v13-Z 收口（全量复验 + 状态表 + AGENTS.md + 记忆）已办；**唯一余项=一次去临时 env 的重启仪式**
   （撤 `PF_DIRTY_CHECK=0` / `PF_PROMPT_CONFIRM_MS=180000`，需队列空 + 用户令，属共享状态变更不代做）。
-- 未开工：v14 全部（本文＝立项草案，等 §七 裁决）。
+- 未开工：v14 R/T/W/E/X 系（前置-1 已单独结掉，见 §十；开工范围按 §七 状态刷新——Q3/Q4 两条改判仍等点名）。
 - 基线读数（2026-09-26 实跑）：server **721/721**（50 文件）、cli **43/43**、web **57/57**、`pnpm typecheck` 四包净
   + `tsc -b packages/web` 净。
 
@@ -334,7 +340,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | 片 | 名称 | 状态 | 提交 | 可感面已实跑 |
 |---|---|---|---|---|
 | 前置-0 | K1 收口（server 落地或退文档；单测去 stub 假 payload） | **已完成 `a745c50`** | `a745c50` | CLI `产物:` 行 + 架侧 `src=shelf` 取证已复验（server 721 绿） |
-| 前置-1 | agent-kind 两枚白名单合一 | 未开工 | — | — |
+| 前置-1 | agent-kind 两枚白名单合一 | **已完成** | `4d91ae8` | 无新增用户可见面（合一片）；机证=6 条判据（两表键集相等／唯一改名项 `antigravity-cli→antigravity`／清单外按原名探／`isAgentKind` 破烂拒）+ 真路由两条（`/api/health` 的 `agentKinds` 与 `PUT /api/spaces` 值域同源）；现网实测：合一前起的实例仍在跑，其 `agentKinds` 18 枚与新表**逐项相等**（兼容带）；server 全量 **727/727**（51 文件）· typecheck 净 |
 | R1 | 统一信封 + Descriptor + 四动词（表单主路） | 未开工 | — | — |
 | R2 | 引用索引 + 写端拒悬挂/拒删被引用 | 未开工 | — | — |
 | R3 | 只读聚合视图（逐 kind 亮分组；不搬数据） | 未开工 | — | — |
