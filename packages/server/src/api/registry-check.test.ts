@@ -165,4 +165,38 @@ describe('GET /api/registry/check', () => {
       await app.close();
     }
   });
+
+  /**
+   * 实机首驾（本片收口前）当场撞出来的洞：模板 `requires` 指着一枚条目，DELETE 却放行了
+   * ——删完那张模板的预检从此红着，而「删了会断谁」正是 R2 反向引用账唯一该回答的问题。
+   * 这一条钉住两个方向：写端拦得住，同时 `requires: []`（没点名任何条目）不误拦。
+   */
+  it('requires 点名的条目受「拒删被引用」保护；没点名的槽不建边', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      expect(registry.add({ kind: 'model', name: 'gpt-4o-mini', spec: { model: 'gpt-4o-mini' } }).ok).toBe(true);
+      writeGraphs(dataDir, [
+        graph('named', [{ kind: 'model', id: 'gpt-4o-mini' }]),
+        graph('anonymous', [{ kind: 'model' }]),
+      ]);
+      const blocked = await app.inject({ method: 'DELETE', url: '/api/registry/model%3Agpt-4o-mini', headers: { host: HOST } });
+      expect(blocked.statusCode).toBe(400);
+      expect(blocked.json().error).toContain('named'); // 指得到是哪张模板按名引用了它，不是含糊一句「有引用」
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('条目只被「没点名」的槽需要时仍可删：那种槽吃的是「这一类里随便一枚」，删一枚不等于删断它', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      expect(registry.add({ kind: 'model', name: 'gpt-4o-mini', spec: { model: 'gpt-4o-mini' } }).ok).toBe(true);
+      writeGraphs(dataDir, [graph('anonymous', [{ kind: 'model' }])]);
+      const del = await app.inject({ method: 'DELETE', url: '/api/registry/model%3Agpt-4o-mini', headers: { host: HOST } });
+      expect(del.statusCode).toBe(200);
+      expect(del.json().deleted.id).toBe('model:gpt-4o-mini');
+    } finally {
+      await app.close();
+    }
+  });
 });

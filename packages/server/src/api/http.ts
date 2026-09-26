@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import type { FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
@@ -962,9 +963,24 @@ export async function buildHttpServer(deps: HttpDeps) {
     return g;
   });
 
+  /**
+   * 落盘前的形状判据只有一处：`Store.saveGraph`（模板名规则）。这里不重抄一遍判据，
+   * 只把它抛的那一句换成 400——写面撞见脏体该回「你这具不对」，不该回服务端 500。
+   * （实机首驾撞形：POST 一具不带 `metadata` 的 graph 曾以 500 收场。）
+   */
+  function saveGraphReply(store: Store, graph: DagGraph, reply: FastifyReply): unknown {
+    try {
+      store.saveGraph(graph);
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+    return null;
+  }
+
   app.post<{ Body: { graph: DagGraph }; Querystring: { space?: string } }>('/api/graphs', async (req, reply) => {
     const { graph } = req.body;
-    spaceStore(deps, req.query.space).saveGraph(graph);
+    const bad = saveGraphReply(spaceStore(deps, req.query.space), graph, reply);
+    if (bad) return bad;
     return reply.code(201).send(graph);
   });
 
@@ -972,10 +988,12 @@ export async function buildHttpServer(deps: HttpDeps) {
     '/api/graphs/:id',
     async (req, reply) => {
       const { graph } = req.body;
-      if (graph.name !== req.params.id) {
+      // 缺体也走这一句：`graph?.name` 取不到就是「与 URL 不符」，不该以 TypeError 500 收场
+      if (graph?.name !== req.params.id) {
         return reply.code(400).send({ error: 'graph.name 与 URL id 不一致' });
       }
-      spaceStore(deps, req.query.space).saveGraph(graph);
+      const bad = saveGraphReply(spaceStore(deps, req.query.space), graph, reply);
+      if (bad) return bad;
       return graph;
     },
   );

@@ -253,3 +253,21 @@ describe('v13-S5 账本原子写与失败可见', () => {
     }
   });
 });
+
+/**
+ * v14-T3 实机首驾撞形：POST 一具不带 `metadata` 的 graph → `saveGraph` 往 undefined 上写
+ * 时间戳 → 500。这一格钉「形状判据仍只有一处（saveGraph 自己），但兜得住缺的那格账」。
+ */
+describe('v14-T3 模板写面的形状兜底', () => {
+  it('不带 metadata 也落得了盘：时间戳由服务器补；缺 graph 体是一句人话而不是 TypeError', () => {
+    const dir = tmpRoot();
+    const store = new Store(dir);
+    const bare = { version: 1, name: 'no-meta', nodes: [], edges: [] } as unknown as DagGraph;
+    expect(() => store.saveGraph(bare)).not.toThrow();
+    const saved = store.getGraph('no-meta')!;
+    expect(saved.metadata.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(saved.metadata.createdAt).toBe(saved.metadata.updatedAt); // 首落＝两枚同源
+    expect(() => store.saveGraph(graph('bad name'))).toThrow(/^模板名只能包含字母\/数字\/-\/_：bad name$/);
+    expect(() => store.saveGraph(undefined as unknown as DagGraph)).toThrow(/^缺少 graph 体：请求要带/);
+  });
+});

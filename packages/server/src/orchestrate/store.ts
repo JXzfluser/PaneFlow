@@ -342,12 +342,19 @@ export class Store {
   }
 
   saveGraph(graph: DagGraph): void {
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(graph.name)) {
-      throw new Error(`模板名只能包含字母/数字/-/_：${graph.name}`);
+    if (!graph || typeof graph !== 'object') {
+      throw new Error('缺少 graph 体：请求要带 {"graph":{name,nodes,edges}}');
     }
-    graph.metadata.updatedAt = new Date().toISOString();
-    if (!graph.metadata.createdAt) graph.metadata.createdAt = graph.metadata.updatedAt;
-    Store.atomicWriteSync(this.graphPath(graph.name), JSON.stringify(graph, null, 2));
+    // 名从体上取，但按运行时真相比对（API 客户端可能给出一具没有 name 的东西）
+    const name = String((graph as { name?: unknown }).name ?? '');
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+      throw new Error(`模板名只能包含字母/数字/-/_：${name}`);
+    }
+    // metadata 是服务器自己记账的地方：API 客户端不带这一格时补一枚，不拿 500 糊它
+    const prev = (graph.metadata ?? {}) as Partial<DagGraph['metadata']>;
+    const updatedAt = new Date().toISOString();
+    graph.metadata = { ...prev, createdAt: prev.createdAt || updatedAt, updatedAt };
+    Store.atomicWriteSync(this.graphPath(name), JSON.stringify(graph, null, 2));
   }
 
   deleteGraph(id: string): boolean {

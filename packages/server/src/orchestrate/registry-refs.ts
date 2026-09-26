@@ -48,10 +48,11 @@ export interface ReferenceIndex {
 type Source = (dataDir: string) => RawReference[];
 
 /**
- * 下面四支 `refsFromX` 是**纯函数**（一份档案 → 它发出的裸串引用），`SOURCES` 里的四支只是
+ * 下面几支 `refsFromX` 是**纯函数**（一份档案 → 它发出的裸串引用），`SOURCES` 里的四支只是
  * 它们套上读盘的薄壳。为什么拆：v14 R5 的能力快照要问的是「**这一单**实发吃了哪些引用」，
  * 拿的是内存里的 run.graph / 该单的空间档案，不是全盘面重扫一遍——两头共用同一支抽取器，
  * 「哪个键算哪类能力」这张表自此只有一处（拆成两份迟早对不上，那就是第二份判据）。
+ * 唯一的例外是 `refsFromRequires`：它只挂反向账，不进实发快照（原因写在那一支的注释里）。
  */
 
 export function refsFromSpace(sp: SpaceProfile): RawReference[] {
@@ -104,6 +105,23 @@ export function refsFromGraph(graph: DagGraph, name: string): RawReference[] {
 }
 
 /**
+ * 一张模板的**声明**引用（v14-T3 的 `requires`）——单列一支，不并进 `refsFromGraph`。
+ * 为什么分家：`refsFromGraph` 同时喂 R5 的运行能力快照（「这一单实发吃了哪些能力」），
+ * 而 `requires` 是作者写下的「这单**需要**什么」，今天没有任何执行面消费它——并进去就是拿
+ * 声明冒充实发（机检/自报双口径的同一条教训）。这里只进 R2 的反向引用账，回答的问题是
+ * 「删掉这枚条目会让哪张模板的预检从此红着」，那正是「删了会断」的账。
+ *
+ * 只统计**写了 id** 的槽：没 id 的槽是「这一类里随便一枚」，删哪枚都不构成对它的定点引用。
+ */
+export function refsFromRequires(graph: DagGraph, name: string): RawReference[] {
+  const by = { face: 'template' as const, id: name, name };
+  return (graph.requires ?? [])
+    .map((r, i) => ({ ref: r, via: `requires[${i}].id` }))
+    .filter(({ ref }) => typeof ref.id === 'string' && ref.id)
+    .map(({ ref, via }) => ({ ...by, via, kind: String(ref.kind), target: ref.id as string }));
+}
+
+/**
  * 网关文档 → `current` 与逐档 `freeModel` 的引用。只读文档、不读密钥——`apiKey` 在本模块的
  * 任何输出里都不存在（R1 边界②：密钥禁入 spec，也禁入引用面与快照）。
  */
@@ -124,7 +142,7 @@ const spaceRefs: Source = (dataDir) => Store.listSpaces(dataDir).flatMap(refsFro
 const roleRefs: Source = (dataDir) => loadRoles(dataDir).flatMap(refsFromRole);
 
 const templateRefs: Source = (dataDir) =>
-  readStoredGraphs(dataDir).flatMap((g) => refsFromGraph(g, g.name));
+  readStoredGraphs(dataDir).flatMap((g) => [...refsFromGraph(g, g.name), ...refsFromRequires(g, g.name)]);
 
 /**
  * 只读地拿模板，**不 new Store**：`Store` 的构造期会 `mkdir` 并补写默认项目档案

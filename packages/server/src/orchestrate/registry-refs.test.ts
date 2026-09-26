@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeRegistryEntry, type RegistryEntry } from '@paneflow/shared';
-import { buildReferenceIndex, readReferenceIndex, scanRawReferences } from './registry-refs.js';
+import { normalizeRegistryEntry, type DagGraph, type RegistryEntry } from '@paneflow/shared';
+import { buildReferenceIndex, readReferenceIndex, refsFromGraph, refsFromRequires, scanRawReferences } from './registry-refs.js';
 
 /**
  * v14 A2（R2）引用索引：五个测试块各自钉住一条姿态，全部读**真实落盘形状**
@@ -157,5 +157,54 @@ describe('读端装配（readReferenceIndex）', () => {
     const index = readReferenceIndex(fixtureDataDir(), [entry({ model: 'gpt-4o-mini' })]);
     expect(index.byEntry[0]!.refs[0]!.name).toBe('免费档');
     expect(index.scanned).toBeGreaterThan(10);
+  });
+});
+
+/**
+ * v14-T3 新增的引用面：模板的 `requires`。单独一套 fixture——上面那套四面断言钉的是
+ * 「现役四面各扫到位」的 exact 计数，把第五面混进去等于让老账给新行为改口；该入账的是新账。
+ */
+describe('模板声明面 requires（v14-T3）', () => {
+  function requiresFixture(): string {
+    const dataDir = tmp();
+    writeJson(path.join(dataDir, 'graphs', 'decl.json'), {
+      version: 1,
+      name: 'decl',
+      nodes: [{ id: 'n1', type: 'agent', label: '干活', config: { agentKind: 'pi' } }],
+      edges: [],
+      requires: [
+        { kind: 'model', id: 'gpt-4o-mini', hint: '要便宜的那枚' },
+        { kind: 'model', hint: '任一模型即可，不点名' },
+        { kind: 'skill', id: 'skills/y/SKILL.md' },
+      ],
+      metadata: { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    });
+    return dataDir;
+  }
+
+  const readDecl = (dataDir: string): DagGraph =>
+    JSON.parse(fs.readFileSync(path.join(dataDir, 'graphs', 'decl.json'), 'utf8')) as DagGraph;
+
+  it('逐槽建边：via 指得到第几槽；没点名（不写 id）的槽不建边', () => {
+    const raw = scanRawReferences(requiresFixture());
+    expect(raw.filter((r) => r.via.startsWith('requires')).map((r) => `${r.via}=${r.kind}:${r.target}`)).toEqual([
+      'requires[0].id=model:gpt-4o-mini',
+      'requires[2].id=skill:skills/y/SKILL.md',
+    ]);
+  });
+
+  it('声明面与实发面分家：requires 不进 refsFromGraph（R5 的 cap# 只记这单实发吃进的能力）', () => {
+    const dataDir = requiresFixture();
+    expect(refsFromRequires(readDecl(dataDir), 'decl').map((r) => r.via)).toEqual(['requires[0].id', 'requires[2].id']);
+    expect(refsFromGraph(readDecl(dataDir), 'decl').some((r) => r.via.startsWith('requires'))).toBe(false);
+  });
+
+  it('点名的条目登记后「被 1 处使用」有出处；没登记进 dangling；未迁的 kind 只披露', () => {
+    const raw = scanRawReferences(requiresFixture());
+    const hit = buildReferenceIndex([entry({ model: 'gpt-4o-mini' })], raw);
+    expect(hit.byEntry[0]!.refs).toEqual([{ face: 'template', id: 'decl', name: 'decl', via: 'requires[0].id' }]);
+    const miss = buildReferenceIndex([entry({ model: '别的型号' })], raw);
+    expect(miss.dangling.map((d) => `${d.kind}:${d.target}`)).toEqual(['model:gpt-4o-mini']);
+    expect(miss.unmigrated.find((u) => u.kind === 'skill')).toMatchObject({ targets: ['skills/y/SKILL.md'], refs: 1 });
   });
 });

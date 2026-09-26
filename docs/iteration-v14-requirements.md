@@ -194,16 +194,32 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   真正的「业务流走模板」兑现点因此**不在搬旧流程**，而在两条：①新增流程一律写成「模板 + 注册项」（新增节点类型走 T1，
   不新增引擎分支）；②模板作者能选的东西全进表（T3/P3）。诚实标注：slogan 后半句 v14 结的是「**新增**皆由模板编排」，
   「既有写账流程全外移」不在本版，也不假装在近路。
-- **T3 模板带槽 `graph.requires` + 起单前预检**：模板顶层声明 `requires:[{kind, id?, hint?}]`，纯校验增量
-  （`dag.ts:917-1041` 那套），起单按当前项目解析、缺项 fail-closed 即时红一句指路——今天的缺口是**静默少注入**
+- **T3 模板带槽 `graph.requires` + 起单前预检**（已落地 `e5dc0b6` + 本轮实机首驾两处补修）：模板顶层声明 `requires:[{kind, id?, hint?}]`，纯校验增量
+  （`dag.ts:917-1041` 那套），起单前对着注册表解析、缺项 fail-closed 即时红一句指路——今天的缺口是**静默少注入**
   （`unknownSkills` 只披露，模板作者要等节点行为异常才发现装备没上身）。
-  可感面（含无人值守可编程判据）：
+  可感面（逐条实跑过，命令与退出码按现状）：
   ```bash
-  paneflow registry check --template x --space demo       # 0=槽全命中；1=有缺口并列出缺哪几项
-  paneflow registry check --template x --space demo --json # → {missing:[{kind,id,hint}]}
-  paneflow dispatch "..." --template x --space demo        # 缺项当场退 1（与既有退出码表 0/1 完全兼容，watch 语义不动）
+  paneflow registry check --template x --space demo   # 0=槽全命中；1=有缺口（逐槽 ✓命中 / ✗缺口 / ?不认，缺口带 server 写好的 why）
+  paneflow registry check                             # 不给 --template = 全模板普查，只列不拦，恒退 0（无人值守的闸是单模板问法）
+  paneflow registry check --template x --json         # 直吐那一行：{template,slots[],need[],missing[],unjudged[],malformed[],ok}——机检要的 missing:[{kind,id,hint,…}] 就在这层
   ```
-  模板卡上显示「需要：技能 2 · 机检 1 · 模型 1」+ 本项目命中✓/缺口✗（**先于派活可见**，这是 T3 的可感面）。
+  模板卡上显示「需要：模型 1 · 技能 2」+ ✓/✗/?（`requirementBadge`，**先于派活可见**，这是 T3 的可感面；预检读数拿不到时显「需要 N 项 · 预检没读出」而不是画 ✓）。
+  **四条实施改判**（都不是设计时想出来的，是撞出来的）：
+  | v0.2 原文 | 实际落地与理由 |
+  |---|---|
+  | `paneflow dispatch "…" --template x` 缺项当场退 1 | **dispatch 没有 `--template`**——它走 Planner 现制图，不是模板起单，往它身上挂模板标是凭空造接口。fail-closed 设在 `startRun`，于是 `dispatch`/批量派发/replay/pipeline 子单一律被覆盖（比原方案的单入口更宽）。无人值守的可编程判据因此是 `registry check --template` 的退出码：**先查后派两拍**，不是一拍 |
+  | 「按当前项目解析」 | **本版 `--space` 不参与命中判定**：`REGISTRY_KINDS` 只迁了 `model`，注册表还是全局一张，拿空间去解析是假装读档案。空间如实回显（`space` + 一句 `spaceNote` 交代本轮解析与空间无关），判据不掺水 |
+  | 模板卡可编辑「需要」 | **本版没有 `requires` 的作者态 UI**（归 W5 全站手填面清点那一片承接）。但声明一旦写进模板文件，打开→保存→自动保存→再打开 全链路零丢失（`graph-serialization` 有回归测试压着——R1 的老事故形状：画布画不出来的字段，一回写就被抹平） |
+  | 预检结果落 run 事件行 | **不落**：`startRun` 直接抛，那句人话已经经 `error` 到 `status`/`watch`（退出码 1）。再补一条事件行是同一笔账记两遍 |
+  **两处实机首驾撞形**（读代码读不出来，只有真敲才露）：
+  - `POST /api/graphs` 收一具没有 `metadata` 的 graph → **500 `Cannot set properties of undefined (setting 'updatedAt')`**。
+    metadata 是服务器自己记账的地方，不该由客户端进贡：现在缺则补两枚时间戳、显式带 `createdAt` 则保旧值，
+    形状不合法（名字脏/无 body）改口 **400 一句指路**（`store.ts saveGraph` + `http.ts saveGraphReply`，两层各一枚回归测试）。
+  - `requires` 起初**不进反向引用账** → R2 的全部承诺（「拒删被引用」）对一个只被模板声明点名的条目是漏的；
+    现场就演示出那次「本该拒、结果删掉了」的删除。修法：`refsFromRequires` 单独一支，**只挂反向账**。
+    这里有一枚形状区别值得留档：**声明面（模板写了要什么）与实发面（这一单真吃了什么）是两回事**——
+    `refsFromGraph` 同时喂 R2 的盘上扫描和 R5 的 run 实发快照（`cap#`），把 `requires` 塞进去等于让「作者许愿」
+    污染「这一单的装备读数」，故分家；没点名的宽槽（只有 `hint` 无 `id`）不建边，不拿模糊匹配凑数。
 - **T4 插件与 MCP 承载**：v0.1 只给 58 字，本轮**降级为待裁决**（撞 v13:285 既有裁决，见 §七 Q4）。若点头，形状定为：
   插件＝一组 RegistryEntry + 一个传输；MCP server 以 stdio 登记，工具**只暴露为 check 类与节点装备**（只读/受限动作），
   不暴露为可改图、可批门者；「新增 MCP」表单＝名称 + 启动命令（**用可执行文件实探下拉，`/api/fs/browse` 已在**）→
@@ -424,7 +440,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | R5 | 能力快照账（capabilityRefs + specSha + cap#） | **已完成（本片）** | 本片 | 引擎起单现场落册两枚键 → `GET /api/runs/:id` 直呈 → `paneflow status` 渲一行 `能力: N 项（kind n）· cap#xxx`；收数表新增「能力#」列（表版本 3→4）。机证：单元 9 条（去重/cap# 键序无关/悬挂与未迁 kind 不进/null≠`[]`/副本不随活行变）+ 引擎集成 6 条（真注册表+真网关档落盘跑单：**编辑条目后历史 run 一字不动**、再起一单 cap# 随配置变、同配置两单 cap# 相等、停用→两键整缺、无登记→两键整缺、只吃本单生效那档）+ CLI 1 条（五种 payload 渲染）；`apiKey` 断言不进快照 |
 | T1 | 节点类型清单 + driver 只读数契约 | 未开工 | — | — |
 | T2 | 旧流程留引擎（判决表已改判） | 判决完成 | — | — |
-| T3 | `graph.requires` + `registry check` 预检 | **已完成（本片）** | 本片 | 判据一份（`orchestrate/registry-check.ts`）→ HTTP `GET /api/registry/check` 与引擎 `startRun` 同吃 → CLI `paneflow registry check --template x [--space S]` 退 0/1、网页模板卡一行「需要：模型 1 · 技能 1」+ ✓/✗/?/…。机证：判据 12 条 + 路由 6 条 + 起单口 5 条 + CLI 6 条 + 网页 6 条（含 `requires` 画布往返零丢失）。四条改判见下 |
+| T3 | `graph.requires` + `registry check` 预检 | **已完成（本片）** | 本片 | 判据一份（`orchestrate/registry-check.ts`）→ HTTP `GET /api/registry/check` 与引擎 `startRun` 同吃 → CLI `paneflow registry check --template x [--space S]` 退 0/1、网页模板卡一行「需要：模型 1 · 技能 1」+ ✓/✗/?/…。机证：判据 12 条 + 路由 6 条 + 起单口 5 条 + CLI 6 条 + 网页 6 条（含 `requires` 画布往返零丢失）。**四条实施改判 + 两处实机首驾撞形（模板写面 500 / `requires` 漏进反向引用账）见 §三 T3** |
 | T4 | 插件 / MCP 承载 | 待裁决 §七 Q4 | — | — |
 | W5 | 全站手填面清点 | 未开工 | — | — |
 | W6 | `roleShaV: 2` | 待裁决 §七 Q3 | — | — |
@@ -434,7 +450,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | X2 | CLI 三处必动 + AGENTS/README + 发行 v0.3.0 | 未开工 | — | — |
 | X3 | 实机首驾（零手填路径全程） | 未开工 | — | — |
 
-**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（T3 片实跑：server **60 文件 / 843** 绿、web 11/**77**、cli 3/**69**，`pnpm typecheck` 净；R5 片收口时是 57/817、web 71、cli 63——**只加不减**，且加的全是新片的判据断言，既有断言一条没放宽，`registry-check` 两枚新测试文件与真路由/真引擎口各占其一）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉未证**（同上 X1 行）。
+**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（T3 片 + 实机首驾补修后实跑：server **61 文件 / 852** 绿、web 11/**77**、cli 3/**69**，`pnpm typecheck` 净；R5 片收口时是 57/817、web 71、cli 63——**只加不减**，且加的全是新片的判据断言，既有断言一条没放宽，`registry-check` 两枚新测试文件与真路由/真引擎口各占其一）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉未证**（同上 X1 行）。
 > ②「零改动」这条口径在 R5 需要说清它约束的是什么：**历史 run 的既有读数与既有判据不许改**（`骨架#/ctxSha/roleSha/graphSha` 逐字节、
 > 收口判定、退出码），不是「测试文件一行不许动」。R5 确实动了 5 条钉死字符串——收数表多一列（doc 明写要新增 `registrySnapshotSha` 列），
 > 那些断言本来就钉在列数上；改的是**期望值**（多一个 `- |`），不是放宽判据。这类「按 doc 要求改列」的动账逐片在此报备，不闷声改绿。
