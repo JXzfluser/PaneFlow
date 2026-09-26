@@ -4,9 +4,11 @@ import {
   formFieldsFor,
   formatWhen,
   groupEntriesByKind,
+  healthDot,
+  healthIndex,
+  healthTitle,
   kindGroupLabel,
   missingRequiredFields,
-  probeOf,
   refCountOf,
   rejectedSummary,
   sourceLabel,
@@ -112,16 +114,40 @@ describe('v14-X1 只读 spec 与前向兼容读数', () => {
     expect(specRows('怪形状')[0]!.text).toBe('怪形状');
   });
 
-  it('refs/probe：键不在就什么都不画——缺 ≠ 0，缺 ≠ 不健康', () => {
+  it('refs：键不在就什么都不画——缺 ≠ 0（引用账没读出来不是「没人用」）', () => {
     expect(refCountOf(entry())).toBeNull();
-    expect(probeOf(entry())).toBeNull();
     // 引用者形状与 server 的 RegistryReferrer 一致（face/id/name/via），别拿假形状喂测试
     expect(refCountOf(entry({ refs: [{ face: 'gateway', id: 'p-free', name: '免费档', via: 'freeModel' }] } as never))).toBe(1);
     expect(refCountOf(entry({ refs: 3 } as never))).toBe(3);
     expect(refCountOf(entry({ refs: null } as never))).toBeNull();
-    const p = probeOf(entry({ probe: { ok: false, detail: '404', at: '2026-09-01' } } as never));
-    expect(p).toEqual({ ok: false, detail: '404', at: '2026-09-01' });
-    expect(probeOf(entry({ probe: { detail: '形状不认识' } } as never))).toBeNull();
+  });
+
+  it('R4 三态：live 绿 / missing 红 / 其余一律灰，没读数就不画——探不通绝不并成「不在」', () => {
+    expect(healthDot(undefined)).toBeNull();
+    expect(healthDot({ status: 'live', detail: '在清单里' })).toBe('ok');
+    expect(healthDot({ status: 'missing', detail: '清单里没有' })).toBe('bad');
+    expect(healthDot({ status: 'unknown', detail: 'HTTP 503' })).toBe('unknown');
+    // server 日后加一枚枚举值：落灰、原样，不就近并进红点（那等于替人判死）
+    expect(healthDot({ status: 'degraded', detail: '' })).toBe('unknown');
+    expect(healthTitle(undefined)).toBeUndefined();
+    expect(healthTitle({ status: 'unknown', detail: '未探得：「档」HTTP 503' })).toBe('未探得：「档」HTTP 503');
+    expect(healthTitle({ status: 'live', detail: '在', cached: true })).toBe('在（缓存读数）');
+    expect(healthTitle({ status: 'missing', detail: '  ' })).toBe('状态「missing」（server 没给解释）');
+  });
+
+  it('healthIndex：没有探针通道的 kind 整键不给 → 表上天然没有点（不是画成灰点）', () => {
+    const res = {
+      at: '2026-09-26T12:00:00.000Z',
+      entries: [
+        { id: 'model:a', health: { status: 'live', detail: '在', at: 'x', cached: false } },
+        { id: 'role:r-x' },
+      ],
+      dangling: [],
+    } as never;
+    const idx = healthIndex(res);
+    expect(healthDot(idx.get('model:a'))).toBe('ok');
+    expect(idx.has('role:r-x')).toBe(false);
+    expect(healthDot(idx.get('role:r-x'))).toBeNull();
   });
 
   it('时间戳：能读则读成人话，读不出原样挂出，空才是空', () => {

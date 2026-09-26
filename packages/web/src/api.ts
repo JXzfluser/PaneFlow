@@ -1,5 +1,5 @@
 import type { DagGraph, NodeRunRecord, RunEvent, RunRecord } from '@paneflow/shared';
-import type { RegistryAddPayload, RegistryEntryView, RegistryListResponse } from './registry-view.js';
+import type { RegistryAddPayload, RegistryEntryView, RegistryHealthResponse, RegistryListResponse } from './registry-view.js';
 
 const BASE = '';
 
@@ -184,6 +184,12 @@ export const api = {
   createSpace: (id: string, name: string) => json<unknown>('POST', '/api/spaces', { id, name }, { raw: true }),
   // -- v14 X1 注册中心：表是 dataDir 级唯一事实源，不随项目空间走，故一律 raw（不带 space 参） --
   registryList: () => fetchJson<RegistryListResponse>('GET', '/api/registry'),
+  /**
+   * R4 健康读数（逐条目实探 + 被引用数）：**单独一刀**，`registryList` 保持纯读盘——
+   * 网关慢/挂掉只把健康点这一刀拖住，不许连带整张表读不出（?refresh=1 绕开 server 5min 缓存）。
+   */
+  registryHealth: (refresh = false) =>
+    fetchJson<RegistryHealthResponse>('GET', `/api/registry/health${refresh ? '?refresh=1' : ''}`),
   registryAdd: (body: RegistryAddPayload) => fetchJson<{ entry: RegistryEntryView }>('POST', '/api/registry', body),
   registryPatch: (id: string, body: { name?: string; spec?: unknown; enabled?: boolean }) =>
     fetchJson<{ entry: RegistryEntryView }>('PATCH', `/api/registry/${encodeURIComponent(id)}`, body),

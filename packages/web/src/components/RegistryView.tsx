@@ -7,9 +7,11 @@ import {
   formFieldsFor,
   formatWhen,
   groupEntriesByKind,
+  healthDot,
+  healthIndex,
+  healthTitle,
   kindGroupLabel,
   missingRequiredFields,
-  probeOf,
   refCountOf,
   rejectedSummary,
   REGISTRY_NAME_FIELD,
@@ -17,6 +19,7 @@ import {
   specRows,
   type RegistryEntryView,
   type RegistryFormValues,
+  type RegistryHealthReadout,
   type RegistryListResponse,
 } from '../registry-view.js';
 
@@ -33,6 +36,12 @@ export function RegistryView() {
   const [detailId, setDetailId] = useState<string | null>(null);
   // 对某条目最近一次写失败的服务端原文（进详情抽屉披露，不 toast 完就蒸发）
   const [writeErrors, setWriteErrors] = useState<Record<string, string>>({});
+  /**
+   * R4 健康点：**独立一刀、后于表到达**（`/api/registry` 保持纯读盘）。
+   * `null` 且无错＝还在探（那一格什么都不画，不画灰点冒充「不健康」）；读不出只说健康点这一刀，表照常。
+   */
+  const [health, setHealth] = useState<Map<string, RegistryHealthReadout> | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
 
   const [formOpen, setFormOpen] = useState(false);
   const [formKind, setFormKind] = useState('model');
@@ -44,6 +53,16 @@ export function RegistryView() {
   const [modelCandidates, setModelCandidates] = useState<string[]>([]);
   const [catalogNote, setCatalogNote] = useState<string | null>(null);
 
+  const loadHealth = useCallback((refresh: boolean) => {
+    void api
+      .registryHealth(refresh)
+      .then((r) => {
+        setHealth(healthIndex(r));
+        setHealthError(null);
+      })
+      .catch((e: Error) => setHealthError(e.message));
+  }, []);
+
   const load = useCallback(() =>
     api
       .registryList()
@@ -51,8 +70,10 @@ export function RegistryView() {
         setData(r);
         setLoadError(null);
       })
-      .catch((e: Error) => setLoadError(e.message)),
-  []);
+      .catch((e: Error) => setLoadError(e.message))
+      // 表先到、点后到：健康那一刀不 await——网关挂掉时表照样读得出，只有点缺着（R4 分刀的理由）
+      .finally(() => void loadHealth(false)),
+  [loadHealth]);
 
   useEffect(() => {
     void load();
@@ -178,10 +199,27 @@ export function RegistryView() {
         <button className="primary" onClick={openForm}>
           + 登记一项
         </button>
+        <button
+          className="ghost"
+          onClick={() => void loadHealth(true)}
+          title="绕开服务端 5 分钟实探缓存重新探一遍（表不受影响）"
+        >
+          重探健康点
+        </button>
       </div>
 
       {loadError && (
         <p className="registry-load-fail">注册表读不出：{loadError}</p>
+      )}
+
+      {healthError && (
+        <p className="registry-load-fail">
+          健康点读不出：{healthError}（表不受影响：那一格没点＝不知道，不是「不健康」）
+        </p>
+      )}
+
+      {!health && !healthError && (
+        <p className="settings-hint">健康点探测中…（与型号清单同一份实探缓存，不拖读表）</p>
       )}
 
       {rejectedText && data && (
@@ -334,16 +372,15 @@ export function RegistryView() {
               <tbody>
                 {g.entries.map((e) => {
                   const refs = refCountOf(e);
-                  const probe = probeOf(e);
+                  const readout = health?.get(e.id);
+                  const dot = healthDot(readout);
                   return (
                     <Fragment key={e.id}>
                       <tr className={e.enabled ? '' : 'registry-row-off'}>
                         <td>
                           <b>{e.name}</b>
                           {refs !== null && <span className="registry-chip" title="R2 引用账">被引用 {refs}</span>}
-                          {probe && (
-                            <span className={`dot ${probe.ok ? 'ok' : 'bad'}`} title={probe.detail || undefined} />
-                          )}
+                          {dot && <span className={`dot ${dot}`} title={healthTitle(readout)} />}
                         </td>
                         <td className="registry-label">{e.label}</td>
                         <td><span className="registry-chip">{sourceLabel(e.source)}</span></td>
@@ -389,6 +426,16 @@ export function RegistryView() {
                                   <dd>{row.text}</dd>
                                 </div>
                               ))}
+                              {readout && (
+                                <>
+                                  <dt>健康</dt>
+                                  <dd>
+                                    {readout.status === 'live' ? '● 在' : readout.status === 'missing' ? '○ 不在' : `? ${readout.status}`}
+                                    ：{readout.detail}
+                                    {readout.at ? `（读数时刻 ${formatWhen(readout.at) || readout.at}${readout.cached ? ' · 缓存' : ''}）` : ''}
+                                  </dd>
+                                </>
+                              )}
                               {writeErrors[e.id] && (
                                 <>
                                   <dt>最近写入失败</dt>

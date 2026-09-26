@@ -21,8 +21,7 @@ export interface CliIo {
   color: boolean;
 }
 
-/** GET /api/runs / GET /api/runs/:id 的最小结构读法（只声明 CLI 用到的字段） */
-export interface RunView {
+/** GET /api/runs / GET /api/runs/:id 的最小结构读法（只声明 CLI 用到的字段） */export interface RunView {
   runId: string;
   state: string;
   dagName?: string;
@@ -189,6 +188,32 @@ export interface RegistryListView {
     scanned: number;
     dangling: { kind: string; target: string; by: unknown[] }[];
     unmigrated: { kind: string; targets: string[]; refs: number }[];
+  };
+}
+
+/**
+ * v14 R4 健康读数（`GET /api/registry/health`）：三态与计数**全是 server 算好的**。
+ * `status` 按 string 读（日后加枚举不许把薄壳炸红）；`health` **缺键＝这一类没有探针通道**，
+ * 与 `unknown`（探了没探通）、`missing`（探通了清单里没有）是三件事，各画各的。
+ */
+export interface RegistryHealthRow extends RegistryEntryView {
+  health?: { status: string; detail: string; at?: string; cached?: boolean };
+}
+
+export interface RegistryHealthView {
+  at?: string;
+  entries: RegistryHealthRow[];
+  /** 盘上指向已迁类型却查不到条目的裸串（E2「一键登记」的输入源；server 不给「已被承接」字段——那枚恒 false） */
+  dangling: { kind: string; target: string; by: { face: string; id: string; name: string; via: string }[] }[];
+  summary?: {
+    scanned?: number;
+    dangling?: number;
+    unmigrated?: number;
+    probed?: number;
+    live?: number;
+    missing?: number;
+    unknown?: number;
+    unused?: number;
   };
 }
 

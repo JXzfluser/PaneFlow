@@ -3,6 +3,7 @@ import { REGISTRY_KINDS, type RegistryEntry } from '@paneflow/shared';
 import type { RegistryStore, RegistryWriteResult } from '../orchestrate/registry.js';
 import { registryLabel } from '../orchestrate/registry-descriptors.js';
 import { readReferenceIndex, refsForEntry, type ReferenceIndex, type RegistryReferrer } from '../orchestrate/registry-refs.js';
+import { entryHealth, type EntryHealth } from './registry-health.js';
 
 /**
  * v14 A1+A2（R1+R2）注册内核的 HTTP 面：四动词（`add`/`update`/`delete` + 纯读 `list`/`get`）
@@ -26,6 +27,9 @@ export interface RegistryRouteDeps {
 
 /** 条目 + 人话标签 + 引用账（API 与 CLI 共用同一份渲染输入；`refs: []` 是正读数「没人用」，缺键才是「不知道」） */
 type RegistryView = RegistryEntry & { label: string; refs?: RegistryReferrer[] };
+
+/** `GET /api/registry/health` 的一行：list 的那一格 + 实探读数（没通道的 kind 整键不给 `health`） */
+type RegistryHealthRow = RegistryView & { health?: EntryHealth };
 
 const view = (entry: RegistryEntry, index: ReferenceIndex): RegistryView => ({
   ...entry,
@@ -108,6 +112,55 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
         scanned: idx.index.scanned,
         dangling: idx.index.dangling,
         unmigrated: idx.index.unmigrated,
+      },
+    };
+  });
+
+  /**
+   * v14 R4：首屏那颗「健康点」＋「被引用数」的一次读数（`?refresh=1` 绕开 5min 实探缓存）。
+   *
+   * 为什么不并进 `GET /api/registry`：那一刀现在是纯读盘（CLI 每问一次都跑它），把网络实探塞进去
+   * 等于让网关慢起来时整张表跟着慢、跟着变红——表读不出与点读不出是两回事，得分开报。
+   *
+   * 三样东西同一次给齐，消费面（网页首屏、`paneflow registry health`）零拼装：
+   *  - `entries[].health`：逐条目实探读数（**这一类没有探针通道＝整键不给**，不是 unknown）；
+   *  - `entries[].refs`：谁在用这一枚（R2 的引用账，同 list 一份实现）；
+   *  - `dangling[]`：盘上正在被引用、表里却没有条目的裸串（E2「一键登记」的输入源）。
+   *    这里**不放**「已被条目承接」那种字段：能被 `refKeys` 匹配上的引用压根不会进 dangling，
+   *    加一枚恒 false 的 `consumed` 就是自己造一个假读数（曾想过，故在此留字为证）。
+   *    反过来可读的只有这一枚——登记了却一处没人用的 `unused`（**只披露不判死活**：
+   *    刚登记完还没接线也是这个读数，别画成错误）。
+   *
+   * 逐条目**串行**探：同一次里两枚条目钉同一档时并发会把那一档打两次，探针通道自己造重复读数。
+   */
+  app.get<{ Querystring: { refresh?: string } }>('/api/registry/health', async (req, reply) => {
+    let snapshot;
+    try {
+      snapshot = deps.registry.load();
+    } catch (err) {
+      return reply.code(500).send({ error: `注册表读不出：${(err as Error).message}` });
+    }
+    const idx = indexOf(deps, snapshot.entries);
+    if ('why' in idx) return reply.code(500).send({ error: idx.why });
+    const refresh = req.query.refresh === '1';
+    const entries: RegistryHealthRow[] = [];
+    for (const e of snapshot.entries) {
+      entries.push({ ...view(e, idx.index), health: await entryHealth(deps.dataDir, e, { refresh }) });
+    }
+    return {
+      at: new Date().toISOString(),
+      entries,
+      dangling: idx.index.dangling,
+      // 计数与归一全在判据层：消费面只照读这句汇总，不自己数（数错了没人知道）
+      summary: {
+        scanned: idx.index.scanned,
+        dangling: idx.index.dangling.length,
+        unmigrated: idx.index.unmigrated.length,
+        probed: entries.filter((e) => e.health).length,
+        live: entries.filter((e) => e.health?.status === 'live').length,
+        missing: entries.filter((e) => e.health?.status === 'missing').length,
+        unknown: entries.filter((e) => e.health?.status === 'unknown').length,
+        unused: entries.filter((e) => !(e.refs ?? []).length).length,
       },
     };
   });

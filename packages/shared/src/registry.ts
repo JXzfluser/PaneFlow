@@ -80,7 +80,8 @@ export interface RegistrySchemaDoc {
  * Descriptor（§十.5）：一 kind 一枚，把「这一类能力怎么读、怎么跟人说话」收在一处。
  * `label` 用**方法语法**声明（不是属性函数）：TS 对方法参数按双变放宽，
  * 于是 `RegistryDescriptor<'model'>` 能原样进 `RegistryDescriptor<RegistryKind>[]` 分派表，
- * 不必为一次查表写三枚 cast。`probe`（只读第五动词）不在这里——A1 没有调用它的面，槽随 R4 落。
+ * 不必为一次查表写三枚 cast。`probe`（只读第五动词）**不在这里**——它是 IO（网络/读盘），
+ * 而 descriptor 是纯判据件；R4 的探针通道分派表住在 server 侧 `api/registry-health.ts:CHANNELS`。
  */
 export interface RegistryDescriptor<K extends RegistryKind = RegistryKind> {
   kind: K;

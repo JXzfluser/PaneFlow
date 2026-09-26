@@ -14,6 +14,7 @@ import {
   type DispatchResult,
   type EnvProbeView,
   type RegistryEntryView,
+  type RegistryHealthView,
   type RegistryListView,
   type RunView,
 } from './types.js';
@@ -77,6 +78,8 @@ const USAGE = [
   '  paneflow registry list [--kind <k>] [--json]               v14-A1/A2 注册中心：一屏看全部能力条目（label/被引用数全由 server 算好）',
   '  paneflow registry get <id> [--json]                        单条详情（含「谁在用」的逐处出处）',
   '  paneflow registry refs <id> [--json]                       「谁在用这一项」纯读反查（缺 refs 键＝引用账没读出来，不等于没人用）',
+  '  paneflow registry health [--refresh] [--json]              v14-R4 健康读数：逐条目实探（●在 / ○不在 / ?未知，探不通绝不并成○）＋被引用数＋悬挂清单；',
+  '                                                              与 /api/gateway/catalog 共用同一份缓存（--refresh 绕开），探测慢不拖读表；恒退 0（这是读数不是判定）',
   '  paneflow registry add --from <草案.json> [--json]          脚本/agent 专用的登记通道（日常登记走网页「注册中心」表单；脏形状由 server 400 一句人话指路）',
   '',
   '地址解析：--url > $PANEFLOW_URL > ~/.paneflow/cli.json 的 url > http://127.0.0.1:4310',
@@ -509,6 +512,18 @@ function renderEntry(io: CliIo, e: RegistryEntryView): void {
   for (const r of e.refs) io.out(`    ${refLine(r)}`);
 }
 
+/**
+ * R4 三态的画法表。键是 server 的 `HealthStatus` 值；**未知值一律落灰、原样画 status**——
+ * server 日后加一枚读数不许把薄壳炸红，也不许被就近塞进某一档（那会把新读数洗成旧结论）。
+ * 三态各一枚符号：`●` 在 / `○` 不在（探通了、清单里查无此项）/ `?` 未知（没探通、没配置、没有依据）。
+ * 「未知」与「不在」必须分家：把网关 503 画成○就是替人判死一枚好模型。
+ */
+const HEALTH_MARK: Record<string, { mark: string; color: string }> = {
+  live: { mark: '●', color: '32' },
+  missing: { mark: '○', color: '31' },
+  unknown: { mark: '?', color: '90' },
+};
+
 async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<number> {
   const verb = args.positional[0];
   switch (verb) {
@@ -583,8 +598,45 @@ async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<numb
       renderEntry(io, body.entry);
       return EXIT_OK;
     }
+    case 'health': {
+      // --refresh 只透传成 query，缓存判据（5min TTL / 键怎么拼）全在 server 那一侧（R4）
+      const { body } = await request<RegistryHealthView>(
+        io,
+        baseUrl,
+        'GET',
+        `/api/registry/health${args.bools.has('refresh') ? '?refresh=1' : ''}`,
+      );
+      if (jsonOr(args)) {
+        dump(io, body);
+        return EXIT_OK;
+      }
+      // 汇总一格都不自己数：probed/live/missing/unknown/unused/dangling 全是 server 的 summary 字段
+      const s = body.summary;
+      const tally = s
+        ? `（实探 ${s.probed ?? 0} 项：${paint(io, '32', `●${s.live ?? 0}`)} ${paint(io, '31', `○${s.missing ?? 0}`)} ${paint(io, '90', `?${s.unknown ?? 0}`)} · 悬挂 ${s.dangling ?? 0} · 没人用 ${s.unused ?? 0}）`
+        : paint(io, '33', '（这版 server 没给汇总，计数请自己看 --json）');
+      io.out(`注册表健康${body.at ? ` · 读数时刻 ${body.at}` : ''} · ${tally}`);
+      if (!body.entries.length) io.out('  （表上还没有条目：先走网页「注册中心」表单或 `paneflow registry add`）');
+      for (const e of body.entries) {
+        if (!e.health) {
+          // 没有探针通道的 kind：**不画点、不判**——「这一类没探」不是「这一类坏了」
+          io.out(`  ${paint(io, '90', '—')} ${entryLine(io, e).trim()}${paint(io, '90', '  ·· 这一类没有探针通道（不判死活）')}`);
+          continue;
+        }
+        const m = HEALTH_MARK[e.health.status] ?? { mark: e.health.status, color: '90' };
+        io.out(
+          `  ${paint(io, m.color, m.mark)} ${entryLine(io, e).trim()}${e.health.cached ? paint(io, '90', `  ·· ${e.health.detail}（缓存）`) : `  ·· ${e.health.detail}`}`,
+        );
+      }
+      // 悬挂＝盘上正在被引用、表里却没条目；只列不登记（登记是 E2），也不判它是错——很多单还没迁而已
+      for (const d of body.dangling) {
+        const by = d.by.map((r) => refLine(r)).join('、') || '出处未读出';
+        io.out(`  ${paint(io, '33', `悬挂：${d.kind} → ${d.target}`)}（被 ${by} 引用 · 登记：paneflow registry add --from <草案>）`);
+      }
+      return EXIT_OK;
+    }
     default:
-      throw new Error('paneflow registry 目前只有 list / get / refs / add 四枚（改和删走网页「注册中心」，写端守卫的中文解释由 server 给出）');
+      throw new Error('paneflow registry 目前只有 list / get / refs / add / health 五枚（改和删走网页「注册中心」，写端守卫的中文解释由 server 给出）');
   }
 }
 

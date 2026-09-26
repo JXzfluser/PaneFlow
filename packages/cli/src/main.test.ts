@@ -743,7 +743,7 @@ describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全�
     expect(bad.errLines.join('\n')).toContain('spec 含未知键 frimo'); // 文案原样透传，CLI 不自造判据
   });
 
-  it('add 的参数缺口当场报错（不静默发空体）；未知子动词列出现役四枚', async () => {
+  it('add 的参数缺口当场报错（不静默发空体）；未知子动词列出现役五枚', async () => {
     const { io, errLines } = makeIo({ readFile: () => null });
     expect(await main(['registry', 'add'], io)).toBe(1);
     expect(errLines.join('\n')).toContain('--from');
@@ -752,11 +752,101 @@ describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全�
     expect(noFile.errLines.join('\n')).toContain('草案读不出：./gone.json');
     const verb = makeIo();
     expect(await main(['registry', 'probe', 'x'], verb.io)).toBe(1);
-    expect(verb.errLines.join('\n')).toContain('只有 list / get / refs / add');
+    expect(verb.errLines.join('\n')).toContain('只有 list / get / refs / add / health');
     // USAGE 里点不到就等于命令不存在（v14 §X2 三处必动之一）
     const h = makeIo();
     expect(await main(['--help'], h.io)).toBe(0);
     expect(h.lines.join('\n')).toContain('paneflow registry list');
+  });
+});
+
+describe('registry health（v14-R4：三态各画各的，探通不通是两回事）', () => {
+  const base = {
+    id: 'model:gpt-4o-mini',
+    kind: 'model',
+    name: 'gpt-4o-mini',
+    source: 'user',
+    enabled: true,
+    createdAt: '2026-09-26T10:00:00.000Z',
+    label: 'gpt-4o-mini · 档=free',
+    refs: [{ face: 'gateway', id: 'free', name: '免费档', via: 'freeModel' }],
+  };
+  const row = (id: string, health?: { status: string; detail: string; at?: string; cached?: boolean }, kind = 'model') => ({
+    ...base,
+    id: `${kind}:${id}`,
+    kind,
+    name: id,
+    health,
+  });
+  const payload = {
+    at: '2026-09-26T12:00:00.000Z',
+    entries: [
+      row('gpt-4o-mini', { status: 'live', detail: '在「免费档」的实探清单里（12 枚中第 3 枚）', at: '2026-09-26T11:59:00.000Z', cached: true }),
+      row('gpt-9', { status: 'missing', detail: '「免费档」的实探清单（共 12 枚）里都没有「gpt-9」', at: '2026-09-26T11:59:00.000Z', cached: false }),
+      row('other', { status: 'unknown', detail: '未探得：「免费档」HTTP 503（没探通不等于不可用）', at: '2026-09-26T11:59:00.000Z', cached: false }),
+      row('r-x', undefined, 'role'),
+    ],
+    dangling: [{ kind: 'model', target: 'gpt-5', by: [{ face: 'gateway', id: 'free', name: '免费档', via: 'model' }] }],
+    summary: { scanned: 5, dangling: 1, unmigrated: 2, probed: 3, live: 1, missing: 1, unknown: 1, unused: 2 },
+  };
+
+  it('一张表：●在 / ○不在 / ?未知 各画各的，没有通道的 kind 不画点；有 missing 也恒退 0（这是读数不是判定）', async () => {
+    const { fetchImpl, calls } = stubFetch([{ body: payload }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'health'], io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/registry/health');
+    const out = lines.join('\n');
+    expect(out).toContain('注册表健康 · 读数时刻 2026-09-26T12:00:00.000Z');
+    expect(out).toContain('实探 3 项：●1 ○1 ?1 · 悬挂 1 · 没人用 2');
+    expect(out).toContain('● model:gpt-4o-mini');
+    expect(out).toContain('在「免费档」的实探清单里（12 枚中第 3 枚）（缓存）');
+    expect(out).toContain('○ model:gpt-9');
+    expect(out).toContain('? model:other');
+    expect(out).toContain('没探通不等于不可用');
+    // 探不通的那一行绝不许被画成「不在」——这一条就是 R4 的立命之处
+    expect(lines.join('\n').split('\n').find((l) => l.includes('model:other'))).not.toContain('○');
+    const bare = lines.join('\n').split('\n').find((l) => l.includes('role:r-x'))!;
+    expect(bare).toContain('这一类没有探针通道（不判死活）');
+    expect(bare).not.toMatch(/[●○?]/);
+    // 悬挂：只列出处 + 指路登记，不替人登记（E2 的事）
+    expect(out).toContain('悬挂：model → gpt-5');
+    expect(out).toContain('gateway · 免费档（free）· model');
+    expect(out).toContain('paneflow registry add --from');
+  });
+
+  it('计数与状态词全照读 server：谎报的 summary 原样画（CLI 一格不自算），新枚举值落灰不炸红', async () => {
+    const { fetchImpl } = stubFetch([
+      {
+        body: {
+          ...payload,
+          entries: [row('a', { status: 'live', detail: '在', at: 'x', cached: false }), row('b', { status: 'sick', detail: '这版 CLI 没见过的读数', at: 'x', cached: false })],
+          summary: { ...payload.summary, probed: 9, live: 9, missing: 0, unknown: 0, unused: 0 },
+        },
+      },
+    ]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'health'], io)).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('实探 9 项：●9 ○0 ?0'); // 两行里只有一行 live，仍照读 9
+    expect(out).toContain('sick model:b');
+  });
+
+  it('--refresh 透传成 query（缓存判据在 server 一侧）；--json 原样负载；空表/空悬挂不造读数', async () => {
+    const { fetchImpl, calls } = stubFetch([{ body: payload }, { body: { ...payload, entries: [], dangling: [] } }, { body: payload }]);
+    const r = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'health', '--refresh'], r.io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/registry/health?refresh=1');
+    const e = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'health'], e.io)).toBe(0);
+    expect(e.lines.join('\n')).toContain('表上还没有条目');
+    expect(e.lines.join('\n')).not.toContain('悬挂：');
+    const j = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'health', '--json'], j.io)).toBe(0);
+    expect(JSON.parse(j.lines.join('\n'))).toEqual(payload);
+    // USAGE 点不到就等于命令不存在
+    const h = makeIo();
+    expect(await main(['--help'], h.io)).toBe(0);
+    expect(h.lines.join('\n')).toContain('paneflow registry health');
   });
 });
 

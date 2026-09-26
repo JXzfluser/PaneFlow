@@ -176,8 +176,8 @@ export function specRows(spec: unknown): SpecRow[] {
 }
 
 // ---------------------------------------------------------------------------
-// R2/R4 的前向兼容读数：条目哪天带上 refs / probe 就渲，没带就整块不画。
-// 「缺」不是 0，也不是「不健康」——没走到落册现场和不健康是两回事。
+// R2/R4 的读数消费面：被引用数与三态健康点。
+// 「缺」不是 0，也不是「不健康」——没通道、还在探、探不通是三件事，各画各的。
 // ---------------------------------------------------------------------------
 
 /** 被引用数：refs 键不在 → null（什么都不画）；数组按条数、数值直取；其它形状不猜 */
@@ -189,23 +189,59 @@ export function refCountOf(entry: RegistryEntryView): number | null {
   return null;
 }
 
-export interface ProbeReadout {
-  ok: boolean;
+/**
+ * R4 `GET /api/registry/health` 的逐条目读数。`status` 按 string 收（server 日后加一枚枚举值
+ * 不许把页面炸红，也不许被就近并进某一档），`detail` 是 server 的一句人话、原样进 title。
+ */
+export interface RegistryHealthReadout {
+  status: string;
   detail: string;
   at?: string;
+  cached?: boolean;
 }
 
-/** probe 健康读数：键不在或形状不认识 → null（不画健康点，更不画成「坏」） */
-export function probeOf(entry: RegistryEntryView): ProbeReadout | null {
-  const p = (entry as { probe?: unknown }).probe;
-  if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
-  const o = p as { ok?: unknown; detail?: unknown; at?: unknown };
-  if (typeof o.ok !== 'boolean') return null;
-  return {
-    ok: o.ok,
-    detail: typeof o.detail === 'string' ? o.detail : '',
-    at: typeof o.at === 'string' ? o.at : undefined,
+export interface RegistryHealthResponse {
+  at: string;
+  entries: (RegistryEntryView & { health?: RegistryHealthReadout })[];
+  /** 盘上正被引用、表里却没条目的裸串（登记是 E2 的事，这里不消费） */
+  dangling: { kind: string; target: string; by: { face: string; id: string; name: string; via: string }[] }[];
+  summary?: {
+    scanned?: number;
+    dangling?: number;
+    unmigrated?: number;
+    probed?: number;
+    live?: number;
+    missing?: number;
+    unknown?: number;
+    unused?: number;
   };
+}
+
+/** id → 健康读数；**没有通道的 kind 整键不给**，于是它在表上天然没有点（不是画成灰点） */
+export function healthIndex(res: RegistryHealthResponse): Map<string, RegistryHealthReadout> {
+  const m = new Map<string, RegistryHealthReadout>();
+  for (const e of res.entries) if (e.health) m.set(e.id, e.health);
+  return m;
+}
+
+/**
+ * 三态 → 点色的类名。**live=绿 / missing=红 / 其余一律灰**：未知状态与「探不通」都不许被
+ * 洗成红点——网关 503 时把整表画红是替人判死一堆好模型（R4 的立命之处）。
+ * 没读数（还没探到 / 这一类没通道）→ null，那一格什么都不画。
+ */
+export function healthDot(readout: RegistryHealthReadout | undefined): 'ok' | 'bad' | 'unknown' | null {
+  if (!readout) return null;
+  if (readout.status === 'live') return 'ok';
+  if (readout.status === 'missing') return 'bad';
+  return 'unknown';
+}
+
+/** 点的 hover 文案：server 的人话 + 「（缓存）」标（读数不是这刻现探的就说清） */
+export function healthTitle(readout: RegistryHealthReadout | undefined): string | undefined {
+  if (!readout) return undefined;
+  const d = readout.detail.trim();
+  const text = d || `状态「${readout.status}」（server 没给解释）`;
+  return readout.cached ? `${text}（缓存读数）` : text;
 }
 
 /** rejected 的一句话总述（表前披露用；不代清、不提供批量清除） */
