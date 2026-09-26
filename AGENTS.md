@@ -111,6 +111,11 @@ paneflow registry check --template x --json  # → 那一行的原样负载：{s
 #   `model` 与 `agent-kind`（后者的引用写法=整枚 id 或 kind 名；探测名 `antigravity` 那种异名**不算**引用写法，
 #   与 R2 引用账同一把尺——两把尺就会出现「预检说缺、引用账说在用」），指向 skill/rule/repo/… 的槽落 `?`（表里没这一类，判「不存在」= 拿空白冒充断言）
 paneflow env probe <绝对路径>                 # 只读环境发现器（v14-E1）：这台机器有什么可登记的，给的是草案不是断言
+paneflow env add <绝对路径> --space <id>      # 一次事务登记（v14-E2）：probe → map → 原子写档案，失败整体回滚
+#   四类入档：repo→repos / doc→conventionFiles / skill→skills / rule→rules（rule 带 repo 关联）；
+#   三类只披露不登记：check/workflow/worktree（无对应档案字段，向导里勾选框置灰，CLI 直接跳过并入 warnings）；
+#   一行回执「已登记 N 项 · 项目 X」；--json 时 stdout 原样吐 {registered, profile, warnings}。
+#   诚实边界：不装任何软件——只登记「本机/本仓确实有这些东西」。
 ```
 
 watch 退出码表（dispatch/runs/status/approve 恒为 0 成功 / 1 报错）：

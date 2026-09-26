@@ -819,8 +819,6 @@ function EquipPicker(props: {
   onChange: (next: string[]) => void;
 }) {
   const { label, hint, options, selected, onChange } = props;
-  const [manual, setManual] = useState('');
-  const [open, setOpen] = useState(false);
   const toggle = (path: string, on: boolean) =>
     onChange(on ? [...selected, path] : selected.filter((x) => x !== path));
   // 清单外的存量项不藏：它今天确实会被「跳过不注」，画出来才是诚实账
@@ -854,29 +852,13 @@ function EquipPicker(props: {
           </button>
         </p>
       )}
-      <div className={open ? 'equip-manual open' : 'equip-manual'}>
-        <button className="ghost tiny" onClick={() => setOpen((v) => !v)}>
-          {open ? '收起' : '登记清单里没有这篇？手填一条'}
+      <div className="equip-manual open">
+        <button
+          className="ghost tiny"
+          onClick={() => useStore.getState().setView('registry')}
+        >
+          登记清单里没有？去注册中心新增
         </button>
-        {open && (
-          <span>
-            <input
-              value={manual}
-              onChange={(e) => setManual(e.target.value)}
-              placeholder="相对项目根的文档路径，如 docs/skills/x.md"
-            />
-            <button
-              className="ghost tiny"
-              disabled={!manual.trim() || selected.includes(manual.trim())}
-              onClick={() => {
-                onChange([...selected, manual.trim()]);
-                setManual('');
-              }}
-            >
-              加入
-            </button>
-          </span>
-        )}
       </div>
       <p className="settings-hint">{hint}</p>
     </div>

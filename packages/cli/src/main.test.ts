@@ -694,6 +694,52 @@ describe('env probe（v14-E1 环境发现器：零判据，只画 server 给的�
   });
 });
 
+describe('env add（v14-E2 一次事务登记：CLI 只透传目录与空间，判据全在 server）', () => {
+  const ok = { registered: 7, profile: { repos: ['my-repo'] }, warnings: ['2 项只披露不登记（check/workflow 无对应档案字段）'] };
+
+  it('位置参数 + --space → 打 POST /api/env/register，人读一行「已登记 N 项 · 项目 X」，warnings 前置 ⚠', async () => {
+    const { fetchImpl, calls } = stubFetch([{ body: ok }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'add', '/Users/x/code/my-repo', '--space', 'demo'], io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/env/register');
+    expect(calls[0]!.init.method).toBe('POST');
+    expect(JSON.parse(calls[0]!.init.body!)).toEqual({ path: '/Users/x/code/my-repo', space: 'demo' });
+    const out = lines.join('\n');
+    expect(out).toContain('已登记 7 项 · 项目 demo');
+    expect(out).toContain('⚠ 2 项只披露不登记');
+  });
+
+  it('--json：stdout 干净可 JSON.parse（原样回 API 负载：registered/profile/warnings 都在）', async () => {
+    const { fetchImpl } = stubFetch([{ body: ok }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'add', '/tmp/a', '--space', 's', '--json'], io)).toBe(0);
+    expect(JSON.parse(lines.join('\n'))).toEqual(ok);
+  });
+
+  it('body.error 分支：人读 ✘ 一行退 1；--json 下 stdout 仍是 JSON 负载且退 1（判据在 server，CLI 不解读 error 语义）', async () => {
+    const { fetchImpl } = stubFetch([
+      { body: { error: 'space 必填：要登记到的项目 id' } },
+      { body: { error: 'path 必须是绝对路径（相对路径不猜基准）：a/b' } },
+    ]);
+    const human = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'add', '/tmp/c', '--space', 's'], human.io)).toBe(1);
+    expect(human.lines.join('\n')).toContain('✘ space 必填');
+    const json = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'add', 'a/b', '--space', 's', '--json'], json.io)).toBe(1);
+    expect(JSON.parse(json.lines.join('\n'))).toEqual({ error: 'path 必须是绝对路径（相对路径不猜基准）：a/b' });
+  });
+
+  it('脏输入：缺目录 / 缺 space 各退 1 且不发请求；USAGE 有 env add 一行（三处必动·文案）', async () => {
+    const { io, errLines } = makeIo();
+    expect(await main(['env', 'add'], io)).toBe(1);
+    expect(await main(['env', 'add', '/tmp/a'], io)).toBe(1);
+    expect(errLines.join('\n')).toContain('paneflow env add');
+    const h = makeIo();
+    expect(await main(['--help'], h.io)).toBe(0);
+    expect(h.lines.join('\n')).toContain('paneflow env add <目录> --space <id>');
+  });
+});
+
 describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全由 server 说）', () => {
   const entry = {
     id: 'model:gpt-4o-mini',

@@ -3,6 +3,7 @@ import { fetchJson } from '../api.js';
 import { useStore } from '../store.js';
 import { PromptModal, type ModalRequest } from './PromptModal.jsx';
 import { ProjectProfileEditor } from './ProjectProfileEditor.jsx';
+import { EnvRegister } from './EnvRegister.jsx';
 import { projectCardFacts, sortProjectsCurrentFirst, type ProjectLite } from '../project-cards.js';
 
 /** v10-V/W 项目视图：项目是一等公民——卡片墙总览 + 就地展开的档案面板（主从布局）。
@@ -15,6 +16,7 @@ export function ProjectsView() {
   const [list, setList] = useState<ProjectLite[]>([]);
   const [modal, setModal] = useState<ModalRequest | null>(null);
   const [editing, setEditing] = useState(false);
+  const [envWizard, setEnvWizard] = useState(false);
 
   const load = () =>
     fetchJson<{ spaces: ProjectLite[] }>('GET', '/api/spaces')
@@ -70,9 +72,14 @@ export function ProjectsView() {
             运行记录与档案按项目互相隔离，编排模板全局共享；点卡片即切换当前项目，「编辑档案」在下方就地展开档案面板。
           </p>
         </div>
-        <button className="primary" onClick={newProject}>
-          + 新建项目
-        </button>
+        <div className="projects-head-actions">
+          <button onClick={() => setEnvWizard(true)} title="从本机目录探测并登记到当前项目">
+            🔍 发现环境并登记
+          </button>
+          <button className="primary" onClick={newProject}>
+            + 新建项目
+          </button>
+        </div>
       </div>
 
       <div className="project-grid">
@@ -142,6 +149,13 @@ export function ProjectsView() {
       )}
 
       {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
+      {envWizard && (
+        <EnvRegister
+          spaceId={space}
+          onClose={() => setEnvWizard(false)}
+          onRegistered={() => { void load(); }}
+        />
+      )}
     </div>
   );
 }

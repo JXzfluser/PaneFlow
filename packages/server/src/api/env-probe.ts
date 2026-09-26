@@ -450,3 +450,80 @@ export async function probeEnvironment(dir: string, opts: ProbeOptions = {}): Pr
   result.agentsAvailable = await detect();
   return result;
 }
+
+// -- E2 草案→档案映射（纯函数）------------------------------------------------
+
+/** probe item 的 kind 到空间档案字段的映射：只有这四类能登记，其余只披露不入库 */
+const MAPPABLE_KINDS = new Set<ProbeKind>(['repo', 'doc', 'skill', 'rule']);
+
+/**
+ * 把选中的 probe items 翻译成 SpaceProfile 的增量 patch（纯函数，零 IO）。
+ * 映射规则：repo→repos[] · doc→conventionFiles[] · skill→skills[] · rule→rules[]；
+ * check/workflow/worktree 不进档案（落入 unmapped 只披露）。
+ * 去重：与档案已有值比对，重复的不计入 registered。
+ */
+export function mapProbeToProfilePatch(
+  probe: EnvProbeResult,
+  existing: { repos?: string[]; conventionFiles?: string[]; skills?: string[]; rules?: { file: string }[] },
+  selected?: number[],
+): { patch: ProfilePatch; registered: number; unmapped: ProbeItem[] } {
+  const indices = selected ?? probe.items.map((_, i) => i);
+  const repoName = probe.items.find((i) => i.kind === 'repo')?.name;
+
+  const patch: ProfilePatch = {};
+  const newRepos: string[] = [];
+  const newDocs: string[] = [];
+  const newSkills: string[] = [];
+  const newRules: { file: string; repo?: string }[] = [];
+  const unmapped: ProbeItem[] = [];
+  let registered = 0;
+
+  for (const idx of indices) {
+    const item = probe.items[idx];
+    if (!item) continue;
+    if (!MAPPABLE_KINDS.has(item.kind)) {
+      unmapped.push(item);
+      continue;
+    }
+    switch (item.kind) {
+      case 'repo':
+        if (!existing.repos?.includes(item.name) && !newRepos.includes(item.name)) {
+          newRepos.push(item.name);
+        }
+        registered++;
+        break;
+      case 'doc':
+        if (!existing.conventionFiles?.includes(item.evidence) && !newDocs.includes(item.evidence)) {
+          newDocs.push(item.evidence);
+        }
+        registered++;
+        break;
+      case 'skill':
+        if (!existing.skills?.includes(item.evidence) && !newSkills.includes(item.evidence)) {
+          newSkills.push(item.evidence);
+        }
+        registered++;
+        break;
+      case 'rule':
+        if (!existing.rules?.some((r) => r.file === item.evidence) && !newRules.some((r) => r.file === item.evidence)) {
+          newRules.push({ file: item.evidence, ...(repoName ? { repo: repoName } : {}) });
+        }
+        registered++;
+        break;
+    }
+  }
+
+  if (newRepos.length) patch.repos = newRepos;
+  if (newDocs.length) patch.conventionFiles = newDocs;
+  if (newSkills.length) patch.skills = newSkills;
+  if (newRules.length) patch.rules = newRules;
+  return { patch, registered, unmapped };
+}
+
+/** 档案增量 patch（E2 登记端点消费；只含本次新增的条目，合并由路由负责） */
+export interface ProfilePatch {
+  repos?: string[];
+  conventionFiles?: string[];
+  skills?: string[];
+  rules?: { file: string; repo?: string }[];
+}

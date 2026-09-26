@@ -59,6 +59,25 @@ export const fetchJson = <T>(method: string, path: string, body?: unknown): Prom
     return (await r.json()) as T;
   });
 
+export type ProbeKind = 'repo' | 'doc' | 'skill' | 'rule' | 'check' | 'workflow' | 'worktree';
+
+export interface EnvProbeItem {
+  kind: ProbeKind;
+  name: string;
+  detail: string;
+  evidence: string;
+}
+
+export interface EnvProbeResult {
+  path: string;
+  root?: string;
+  summary?: string;
+  items: EnvProbeItem[];
+  missing: string[];
+  agentsAvailable?: string[];
+  error?: string;
+}
+
 export const api = {
   request: fetchJson,
   health: () => json<{
@@ -183,7 +202,8 @@ export const api = {
     ),
   createSpace: (id: string, name: string) => json<unknown>('POST', '/api/spaces', { id, name }, { raw: true }),
   // -- v14 X1 注册中心：表是 dataDir 级唯一事实源，不随项目空间走，故一律 raw（不带 space 参） --
-  registryList: () => fetchJson<RegistryListResponse>('GET', '/api/registry'),
+  registryList: (kind?: string) =>
+    fetchJson<RegistryListResponse>('GET', `/api/registry${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
   /**
    * R4 健康读数（逐条目实探 + 被引用数）：**单独一刀**，`registryList` 保持纯读盘——
    * 网关慢/挂掉只把健康点这一刀拖住，不许连带整张表读不出（?refresh=1 绕开 server 5min 缓存）。
@@ -209,6 +229,14 @@ export const api = {
     fetchJson<{
       profiles: { id: string; name: string; baseUrl: string; freeModel?: string; isCurrent: boolean; models: string[]; error?: string | null }[];
     }>('GET', `/api/gateway/catalog${refresh ? '?refresh=1' : ''}`),
+  /** v14-E2 一次事务登记：probe → map → write 原子完成 */
+  envRegister: (path: string, space: string, selected?: number[]) =>
+    fetchJson<{ registered: number; profile: Record<string, unknown>; warnings: string[] }>(
+      'POST', '/api/env/register', { path, space, ...(selected !== undefined ? { selected } : {}) },
+    ),
+  /** v14-E1 环境发现器（纯只读探测） */
+  envProbe: (path: string) =>
+    fetchJson<EnvProbeResult>('POST', '/api/env/probe', { path }),
 };
 
 export interface WsRunMessage {

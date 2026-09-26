@@ -107,6 +107,7 @@ function NodePropertyPanel() {
   const nodes = useStore((s) => s.nodes);
   const updateNodeConfig = useStore((s) => s.updateNodeConfig);
   const agentKinds = useStore((s) => s.agentKinds);
+  const templateList = useStore((s) => s.templateList);
   const [roles, setRoles] = useState<{ id: string; name: string }[]>([]);
   const [advOpen, setAdvOpen] = useState(false);
   useEffect(() => {
@@ -312,40 +313,80 @@ function NodePropertyPanel() {
           />
 
           <label>独立工作目录（相对流水线目录，可空）</label>
-          <input value={cfg.cwd ?? ''} onChange={(e) => set({ cwd: e.target.value })} />
-          <div className="hint">留空则与流水线工作目录一致。</div>
+          <CwdInput value={cfg.cwd ?? ''} onChange={(v) => set({ cwd: v || undefined })} />
           </div>
         </>
       )}
 
       {isPipeline && (
         <>
-          <label>目标模板名（支持 {'{{上游.artifact.*}}'} 插值做路由）</label>
+          <label>目标模板（可从列表选，也支持 {'{{上游.artifact.*}}'} 插值路由）</label>
           <input
+            list="pp-tpl-list"
             value={cfg.pipeline?.template ?? ''}
             onChange={(e) => set({ pipeline: { ...cfg.pipeline, template: e.target.value } })}
-            placeholder="{{triage.artifact.extra.suggestedTemplate}}"
+            placeholder="选择或输入模板名"
           />
+          <datalist id="pp-tpl-list">
+            {templateList.map((g) => <option key={g.name} value={g.name} />)}
+          </datalist>
           <label>兜底模板（目标不存在时使用）</label>
           <input
+            list="pp-tpl-list-fb"
             value={cfg.pipeline?.fallbackTemplate ?? ''}
             onChange={(e) => set({ pipeline: { ...cfg.pipeline, fallbackTemplate: e.target.value || undefined } })}
-            placeholder="builtin-generic-issue-delivery"
+            placeholder="选择或输入兜底模板名"
           />
-          <label>参数（key=值，每行一个；值支持插值）</label>
-          <textarea
-            style={{ minHeight: 60 }}
-            value={Object.entries(cfg.pipeline?.params ?? {}).map(([k, v]) => `${k}=${v}`).join('\n')}
-            onChange={(e) => {
-              const params: Record<string, string> = {};
-              for (const line of e.target.value.split('\n')) {
-                const i = line.indexOf('=');
-                if (i > 0) params[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-              }
-              set({ pipeline: { ...cfg.pipeline, params } });
+          <datalist id="pp-tpl-list-fb">
+            {templateList.map((g) => <option key={g.name} value={g.name} />)}
+          </datalist>
+          <label>参数（值支持插值）</label>
+          {Object.entries(cfg.pipeline?.params ?? {}).length === 0 && (
+            <div className="hint" style={{ marginBottom: 4 }}>未配置参数。</div>
+          )}
+          {Object.entries(cfg.pipeline?.params ?? {}).map(([k, v], i) => (
+            <div key={i} className="row" style={{ alignItems: 'center' }}>
+              <input
+                style={{ flex: '0 0 35%' }}
+                value={k}
+                placeholder="参数名"
+                onChange={(e) => {
+                  const entries = Object.entries(cfg.pipeline?.params ?? {});
+                  entries[i] = [e.target.value, v];
+                  set({ pipeline: { ...cfg.pipeline, params: Object.fromEntries(entries) } });
+                }}
+              />
+              <input
+                style={{ flex: 1 }}
+                value={v}
+                placeholder="值（支持 {{插值}}）"
+                onChange={(e) => {
+                  const entries = Object.entries(cfg.pipeline?.params ?? {});
+                  entries[i] = [k, e.target.value];
+                  set({ pipeline: { ...cfg.pipeline, params: Object.fromEntries(entries) } });
+                }}
+              />
+              <button
+                className="danger"
+                style={{ padding: '0 6px', fontSize: 10, flex: '0 0 auto' }}
+                onClick={() => {
+                  const entries = Object.entries(cfg.pipeline?.params ?? {}).filter((_, j) => j !== i);
+                  set({ pipeline: { ...cfg.pipeline, params: entries.length ? Object.fromEntries(entries) : undefined } });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            style={{ fontSize: 11, marginBottom: 4 }}
+            onClick={() => {
+              const cur = cfg.pipeline?.params ?? {};
+              set({ pipeline: { ...cfg.pipeline, params: { ...cur, '': '' } } });
             }}
-            placeholder={'issue_id={{triage.artifact.extra.issue_id}}'}
-          />
+          >
+            + 参数
+          </button>
           <label>执行模式</label>
           <select
             value={cfg.pipeline?.mode ?? 'wait'}
@@ -400,9 +441,85 @@ function NodePropertyPanel() {
       {!isAgent && (
         <>
           <label>独立工作目录（相对流水线目录，可空）</label>
-          <input value={cfg.cwd ?? ''} onChange={(e) => set({ cwd: e.target.value })} />
-          <div className="hint">留空则与流水线工作目录一致。</div>
+          <CwdInput value={cfg.cwd ?? ''} onChange={(v) => set({ cwd: v || undefined })} />
         </>
+      )}
+    </div>
+  );
+}
+
+function CwdInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const pipelineCwd = useStore((s) => s.cwd);
+  const [open, setOpen] = useState(false);
+  const [browseDir, setBrowseDir] = useState('');
+  const [entries, setEntries] = useState<string[]>([]);
+
+  const doBrowse = async (dir: string) => {
+    try {
+      const r = await fetch(`/api/fs/browse?path=${encodeURIComponent(dir)}`);
+      const d = await r.json() as { entries?: string[]; dir?: string };
+      setEntries((d.entries ?? []).filter((e) => !e.startsWith('.')));
+      setBrowseDir(d.dir ?? dir);
+    } catch {
+      setEntries([]);
+    }
+  };
+
+  const toggleOpen = () => {
+    if (!open) {
+      const base = pipelineCwd || '';
+      doBrowse(base);
+    }
+    setOpen((v) => !v);
+  };
+
+  const enter = (name: string) => {
+    const next = browseDir.endsWith('/') ? browseDir + name : browseDir + '/' + name;
+    doBrowse(next);
+  };
+
+  const pick = () => {
+    if (!pipelineCwd || !browseDir.startsWith(pipelineCwd)) return;
+    const rel = browseDir.slice(pipelineCwd.length).replace(/^\/+/, '');
+    onChange(rel);
+    setOpen(false);
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <input
+          style={{ flex: 1 }}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="子目录路径，如 src/components"
+        />
+        {pipelineCwd && (
+          <button className="ghost" style={{ fontSize: 11, whiteSpace: 'nowrap' }} onClick={toggleOpen}>
+            {open ? '收起' : '浏览'}
+          </button>
+        )}
+      </div>
+      <div className="hint">
+        {pipelineCwd
+          ? `留空则与流水线工作目录一致。基于：${pipelineCwd}`
+          : '留空则与流水线工作目录一致。请先在顶栏设置流水线工作目录。'}
+      </div>
+      {open && pipelineCwd && (
+        <div className="cwd-browser">
+          <div className="cwd-browser-path">
+            <code style={{ fontSize: 11 }}>{browseDir}</code>
+            <button className="ghost tiny" onClick={pick} disabled={!browseDir || browseDir === pipelineCwd}>
+              选此目录
+            </button>
+          </div>
+          {entries.length === 0 && <div className="hint">无子目录</div>}
+          {entries.map((e) => (
+            <button key={e} className="cwd-browser-entry" onClick={() => enter(e)}>
+              <span>📁</span> {e}
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );

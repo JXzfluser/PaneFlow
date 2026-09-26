@@ -78,6 +78,8 @@ const USAGE = [
   '  paneflow experiments [--suite S] [--json]                  实验收数表（只读 server 落盘）',
   '  paneflow env probe <目录> [--space S] [--json]             v14-E1 环境发现器（**纯只读**）：探 git 仓/约定文档/skills/规则候选/机检候选/CI/worktree，',
   '                                                              每项带依据（发现自哪个相对路径）；只产草案不落盘（登记是 E2），七类判据全在 server',
+  '  paneflow env add <目录> --space <id> [--json]              v14-E2 一次事务登记：probe → 全量映射 → 原子写档案（失败整体回滚），一行回执',
+  '                                                              repo/doc/skill/rule 四类入档，check/workflow/worktree 只披露不登记（无对应字段）；不装任何软件',
   '  paneflow registry list [--kind <k>] [--json]               v14-A1/A2 注册中心：一屏看全部能力条目（label/被引用数全由 server 算好）',
   '  paneflow registry get <id> [--json]                        单条详情（含「谁在用」的逐处出处）',
   '  paneflow registry refs <id> [--json]                       「谁在用这一项」纯读反查（缺 refs 键＝引用账没读出来，不等于没人用）',
@@ -473,8 +475,9 @@ async function cmdExperiments(io: CliIo, baseUrl: string, args: Args): Promise<n
 
 async function cmdEnv(io: CliIo, baseUrl: string, args: Args): Promise<number> {
   const verb = args.positional[0];
+  if (verb === 'add') return await cmdEnvAdd(io, baseUrl, args);
   if (verb !== 'probe') {
-    throw new Error(`paneflow env 目前只有 probe（E1 纯只读发现器）：paneflow env probe <目录>`);
+    throw new Error(`paneflow env 目前只有 probe / add：paneflow env probe <目录> · paneflow env add <目录> --space <id>`);
   }
   // 目录可给位置参数（`env probe <目录>`，与可感面一致）或 --path；两条通道都只是参数编排，不是判据
   const dir = args.positional[1] ?? args.flags.path;
@@ -496,6 +499,31 @@ async function cmdEnv(io: CliIo, baseUrl: string, args: Args): Promise<number> {
   for (const i of res.items ?? []) io.out(`    ${i.kind} · ${i.name} —— ${i.detail}（依据：${i.evidence}）`);
   for (const m of res.missing ?? []) io.out(`    ${paint(io, '90', `缺项：${m}`)}`);
   io.out(`  草案直取：paneflow env probe ${res.path} --json（逐项带依据、stdout 干净可直接 | jq；登记进空间是 E2 的事，本片只探不落盘）`);
+  return EXIT_OK;
+}
+
+/** v14-E2 一次事务登记：probe → 全选 → POST /api/env/register → 回执 */
+async function cmdEnvAdd(io: CliIo, baseUrl: string, args: Args): Promise<number> {
+  const dir = args.positional[1] ?? args.flags.path;
+  if (!dir) throw new Error('参数不足：paneflow env add <目录> --space <id>');
+  const space = args.flags.space;
+  if (!space) throw new Error('必须指定目标项目：paneflow env add <目录> --space <id>');
+  // 一次事务：server 端 probe + map + write 原子完成；CLI 只透传目录与空间
+  const { body: res } = await request<{ registered: number; profile?: Record<string, unknown>; warnings?: string[]; error?: string }>(
+    io, baseUrl, 'POST', '/api/env/register', { path: dir, space }, 60_000,
+  );
+  if (args.bools.has('json')) {
+    io.out(JSON.stringify(res));
+    return res.error ? EXIT_RED : EXIT_OK;
+  }
+  if (res.error) {
+    io.out(`${paint(io, '31', '✘')} ${res.error}`);
+    return EXIT_RED;
+  }
+  if (res.warnings?.length) {
+    for (const w of res.warnings) io.out(`  ${paint(io, '33', '⚠')} ${w}`);
+  }
+  io.out(`${paint(io, '32', '✔')} 已登记 ${res.registered} 项 · 项目 ${space}`);
   return EXIT_OK;
 }
 

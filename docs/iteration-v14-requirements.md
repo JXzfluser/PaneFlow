@@ -473,13 +473,13 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | T2 | 旧流程留引擎（判决表已改判） | 判决完成 | — | — |
 | T3 | `graph.requires` + `registry check` 预检 | **已完成（本片）** | 本片 | 判据一份（`orchestrate/registry-check.ts`）→ HTTP `GET /api/registry/check` 与引擎 `startRun` 同吃 → CLI `paneflow registry check --template x [--space S]` 退 0/1、网页模板卡一行「需要：模型 1 · 技能 1」+ ✓/✗/?/…。机证：判据 12 条 + 路由 6 条 + 起单口 5 条 + CLI 6 条 + 网页 6 条（含 `requires` 画布往返零丢失）。**四条实施改判 + 两处实机首驾撞形（模板写面 500 / `requires` 漏进反向引用账）见 §三 T3** |
 | T4 | 插件 / MCP 承载 | 待裁决 §七 Q4 | — | — |
-| W5 | 全站手填面清点 | 未开工 | — | — |
+| W5 | 全站手填面清点 | **已完成** | — | 五处手填→选择：①PropertyPanel 模板名/兜底模板 → datalist（数据源=templateList）；②pipeline params → 结构化 key/value 行+增删；③两处 cwd → CwdInput 组件（文本+浏览按钮+内联目录面板，基于 /api/fs/browse）；④EquipPicker 手填 → 「去注册中心新增」跳转。机证：web tsc -b 净 + 90/90 绿 + build 成功 |
 | W6 | `roleShaV: 2` | 待裁决 §七 Q3 | — | — |
 | E1 | 环境发现器（只读） | **已完成 `e37d7b3`** | `e37d7b3` | `paneflow env probe <目录> [--json]` 七类草案逐项带依据（发现自哪个相对路径）；探测失败落 `missing`+一句为什么，不是 400 |
-| E2 | 一次事务登记 + 向导四步 | 未开工·门控 | — | — |
+| E2 | 一次事务登记 + 向导四步 | **已完成（本片）** | 本片 | `POST /api/env/register` 一次事务：probe → map → write 全绿才落档案（原子写），任一步失败整体不落盘。CLI `paneflow env add <目录> --space <id>` 一行回执；网页「项目」页头「🔍 发现环境并登记」开四步向导（选目录 → 看发现 → 勾选 → 登记回执）。判据在 `env-probe.mapProbeToProfilePatch` 纯函数：四类可登记（repo/doc/skill/rule 各自映射档案字段，rule 带 repo 关联），三类只披露（check/workflow/worktree 无字段，向导里勾选框置灰）。机证：单测 6 条（四类映射/三类披露/selected 越界与负索引忽略/existing 与同批去重/rule 按 file 去重/空 selected 全不选）+ 端到端 27 条（env-probe.test.ts 全绿）；`panelflow typecheck` 净 + web `tsc -b` 净 + server 61/890 绿 + web 12/90 绿。诚实边界：向导不装任何软件，只登记「本机/本仓确实有这些东西」 |
 | X1 | 注册中心视图（现役控件对照） | **首屏已完成 `10bc315`**（全量仍待 §七 Q5） | `10bc315` | 网页「注册中心」= 一张表（分组/label/来源/启停/删除）+ 健康点 ●/○/? + 被引用数 + 表单登记（不写 JSON）；**机证=真浏览器 DOM 断言**（innerText + `.dot` class/title），截图未取到（应用内视口不可用），M0 样张③ 的「肉眼看到」这条仍欠 |
-| X2 | CLI 三处必动 + AGENTS/README + 发行 v0.3.0 | 未开工 | — | — |
-| X3 | 实机首驾（零手填路径全程） | 未开工 | — | — |
+| X2 | CLI 三处必动 + AGENTS/README + 发行 v0.3.0 | **代码面已完成（本片）**；版本与 Release 待用户点头 | 本片 | 三处：①`CLI_SUBCOMMANDS` 已含 `env/registry`（前片完成，本片无需增枚）；②`VALUE_FLAGS` 已含 `kind/from/path/space/template`（本片不新增）；③USAGE 补 `env add` 一行（含 --json）；`paneflow env add <目录> --space <id> [--json]` 与网页向导同一 API、同一判据（stdout 干净可 `| jq`）；AGENTS.md 补 `env add` 命令块（四类入档 / 三类只披露 / 一行回执 / 不装任何软件）。机证：CLI 单测 4 条（人读一行 + `--json` 直出 + `body.error` 双语义退 1 + 脏输入不发请求与 USAGE 覆盖），CLI **3 文件 / 74** 全绿 + `pnpm typecheck` 净。v0.3.0 版本 bump / tag / push 是用户动作，不越权代做 |
+| X3 | 实机首驾（零手填路径全程） | 待用户实机跑 | — | 代码路径已通：`paneflow env add <绝对路径> --space <id>` → `paneflow registry check --template x` → `paneflow dispatch "..." --repo ... --issue ...` → `paneflow status <runId>` 见「能力: N 项 · cap#xxx」一行；向导四步（网页）同路。欠的是真项目上跑一遍：本机装 v0.3.0 之后手敲一次；agent 侧无可代做的部分 |
 
 **M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（A3-2 片收口实跑：server **61 文件 / 872** 绿、web 11/**82**、cli 3/**70**，`pnpm typecheck` 净 + web `tsc -b` 净；T3 片时是 61/852、web 77、cli 69，R5 片收口时 57/817、web 71、cli 63——**只加不减**，且加的全是新片的判据断言，既有断言一条没放宽）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉半证**（A3-2 后 `pnpm build` 刷新了 server 一键模式挂的前端，实机页面读回 `Agent 引擎 18 项 内置清单` 分组与「出厂行无启停/删除」；截图仍未取到——应用内视口不可用，见 X1 行）。
 > ②里那条**工程口径**要写死：本仓 server 一键模式服务的是 `packages/web/dist`，改完 web 源码不跑 `pnpm build` 就等于没改——A3-2 第一次实机检查看到的就是旧包（`未知类型：agent-kind`），build 之后才读到新组名。判据落在构建链上，不靠记性。

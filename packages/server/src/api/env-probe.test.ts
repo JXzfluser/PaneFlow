@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { buildHttpServer } from './http.js';
-import { judgeEnvProbe, probeEnvironment, type GitRead, type ProbeScene } from './env-probe.js';
+import { judgeEnvProbe, mapProbeToProfilePatch, probeEnvironment, type EnvProbeResult, type GitRead, type ProbeItem, type ProbeScene } from './env-probe.js';
 import type { Engine } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import type { Store } from '../orchestrate/store.js';
@@ -472,5 +472,105 @@ describe('POST /api/env/probe（v14-E1 真路）', () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+// -- v14-E2 mapProbeToProfilePatch 判据（纯函数，喂假物） ---------------------
+describe('mapProbeToProfilePatch（v14-E2 一次事务登记的判据核心）', () => {
+  const item = (kind: ProbeItem['kind'], name: string, evidence: string): ProbeItem => ({
+    kind,
+    name,
+    detail: `d-${name}`,
+    evidence,
+  });
+  const probe = (items: ProbeItem[]): EnvProbeResult => ({ path: '/abs/dir', items, missing: [] });
+
+  it('repo/doc/skill/rule 四类各自映射到档案字段；rule 带上仓名关联', () => {
+    const res = mapProbeToProfilePatch(
+      probe([
+        item('repo', 'my-repo', 'git:origin'),
+        item('doc', 'AGENTS.md', './AGENTS.md'),
+        item('skill', 'foo', '.agents/foo'),
+        item('rule', 'rules/api', 'rules/api'),
+      ]),
+      {},
+    );
+    expect(res.registered).toBe(4);
+    expect(res.patch.repos).toEqual(['my-repo']);
+    expect(res.patch.conventionFiles).toEqual(['./AGENTS.md']);
+    expect(res.patch.skills).toEqual(['.agents/foo']);
+    expect(res.patch.rules).toEqual([{ file: 'rules/api', repo: 'my-repo' }]);
+    expect(res.unmapped).toEqual([]);
+  });
+
+  it('check/workflow/worktree 三类只披露不登记，进 unmapped 且不减 registered', () => {
+    const res = mapProbeToProfilePatch(
+      probe([
+        item('repo', 'r', 'x'),
+        item('check', 'npm test', 'scripts.test'),
+        item('workflow', 'ci', '.github/workflows/ci.yml'),
+        item('worktree', 'wt', 'git worktree'),
+      ]),
+      {},
+    );
+    expect(res.registered).toBe(1);
+    expect(res.patch.repos).toEqual(['r']);
+    expect(res.unmapped.map((u) => u.kind)).toEqual(['check', 'workflow', 'worktree']);
+  });
+
+  it('selected 索引只挑中的项参与映射；越界/负索引忽略', () => {
+    const res = mapProbeToProfilePatch(
+      probe([
+        item('repo', 'r1', 'a'),
+        item('doc', 'd1', './d1'),
+        item('skill', 's1', './s1'),
+      ]),
+      {},
+      [1, 99, -1],
+    );
+    expect(res.registered).toBe(1);
+    expect(res.patch.conventionFiles).toEqual(['./d1']);
+    expect(res.patch.repos).toBeUndefined();
+    expect(res.patch.skills).toBeUndefined();
+  });
+
+  it('已有档案与探得重复项去重：既不与 existing 冲、也不与同批 self 冲', () => {
+    const res = mapProbeToProfilePatch(
+      probe([
+        item('repo', 'r-old', 'a'),
+        item('repo', 'r-new', 'b'),
+        item('repo', 'r-new', 'c'),
+        item('doc', 'AGENTS.md', './AGENTS.md'),
+        item('doc', 'OTHER.md', './OTHER.md'),
+      ]),
+      { repos: ['r-old'], conventionFiles: ['./AGENTS.md'] },
+    );
+    // registered 按遍历次数计（每次进入 case 就 ++），但 patch 只装未重复项
+    expect(res.registered).toBe(5);
+    expect(res.patch.repos).toEqual(['r-new']);
+    expect(res.patch.conventionFiles).toEqual(['./OTHER.md']);
+  });
+
+  it('rule 去重按 file；existing 已有同 file 则跳过', () => {
+    const res = mapProbeToProfilePatch(
+      probe([
+        item('rule', 'r1', 'rules/a.md'),
+        item('rule', 'r2', 'rules/b.md'),
+      ]),
+      { rules: [{ file: 'rules/a.md' }] },
+    );
+    expect(res.patch.rules).toEqual([{ file: 'rules/b.md' }]);
+  });
+
+  it('空 selected 数组 = 全不选：patch 与 registered 都空，unmapped 仍列出', () => {
+    const res = mapProbeToProfilePatch(
+      probe([item('repo', 'r', 'a'), item('check', 'c', 'x')]),
+      {},
+      [],
+    );
+    expect(res.registered).toBe(0);
+    expect(res.patch).toEqual({});
+    // 未选中的项不进 unmapped（unmapped 只报「形状上就登记不了」的，不报「用户没勾」的）
+    expect(res.unmapped).toEqual([]);
   });
 });

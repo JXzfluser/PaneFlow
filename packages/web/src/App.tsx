@@ -23,6 +23,14 @@ export function App() {
 
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.classList.add('theme-switching');
+    setTheme(next);
+    requestAnimationFrame(() => {
+      document.documentElement.classList.remove('theme-switching');
+    });
+  };
   const [guideOpen, setGuideOpen] = useState(false);
   const [wizard, setWizard] = useState<{
     herdrOk: boolean;
@@ -108,7 +116,7 @@ export function App() {
           <button
             className="icon theme-toggle"
             data-theme={theme}
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            onClick={toggleTheme}
             title={theme === 'dark' ? '切到浅色' : '切到暗夜'}
           >
             {/* 日月两枚常驻，靠 opacity/scale/blur 交叉淡入——表情符硬切换没有过渡语言 */}

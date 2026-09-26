@@ -159,6 +159,7 @@ const ICONS = {
 export type IconName = keyof typeof ICONS;
 
 export function Icon({ name, size = 14, className }: { name: IconName; size?: number; className?: string }) {
+  const stroke = size >= 14 ? 2 : Math.max(1.5, (size / 14) * 2);
   return (
     <svg
       className={`ic${className ? ` ${className}` : ''}`}
@@ -167,7 +168,7 @@ export function Icon({ name, size = 14, className }: { name: IconName; size?: nu
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={2}
+      strokeWidth={stroke}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"

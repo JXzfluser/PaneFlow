@@ -74,7 +74,7 @@ interface UpdateIssueBody {
   runId?: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
-import { probeEnvironment } from './env-probe.js';
+import { mapProbeToProfilePatch, probeEnvironment } from './env-probe.js';
 import { buildRoleProfile } from './role-profile.js';
 import { buildDispatchGraph, candidateRepos, DISPATCH_NO_AGENT_ERROR, extractAcceptance, INTAKE_TEMPLATE_PATH, intakeTemplateMarkdown, parseIssueRef, teamEquipView, type IssueView } from './dispatch.js';
 import { readSkillIndex } from '../orchestrate/skills.js';
@@ -949,6 +949,69 @@ export async function buildHttpServer(deps: HttpDeps) {
     // ?space= 本片不消费：E1 的判据与空间无关（探的是目录实态），这枚旗标是 E2 登记目标空间的落点
     return await probeEnvironment(dir);
   });
+
+  // -- v14-E2 一次事务登记（草案→空间档案，原子写）----------------------------
+  // 判据在 env-probe.ts 的 mapProbeToProfilePatch（纯函数）；这里只做 IO：
+  // ①验证入参形状 ②新鲜探测 ③映射+合并 ④writeProfile（atomicWriteSync 兜底）
+  // 失败整体回滚：writeProfile 走 tmp+rename，写崩旧文件不动（不留半套环境）。
+  app.post<{ Body: { path?: unknown; space?: unknown; selected?: unknown } }>(
+    '/api/env/register',
+    async (req, reply) => {
+      const rawPath = (req.body as Record<string, unknown> | undefined)?.path;
+      const rawSpace = (req.body as Record<string, unknown> | undefined)?.space;
+      if (typeof rawPath !== 'string' || !rawPath.trim()) {
+        return reply.code(400).send({ error: 'path 必填：要登记的目录绝对路径' });
+      }
+      if (!path.isAbsolute(rawPath.trim())) {
+        return reply.code(400).send({ error: `path 必须是绝对路径（相对路径不猜基准）：${rawPath.trim()}` });
+      }
+      if (typeof rawSpace !== 'string' || !rawSpace.trim()) {
+        return reply.code(400).send({ error: 'space 必填：要登记到的项目 id' });
+      }
+      const dir = rawPath.trim();
+      const spaceId = rawSpace.trim();
+
+      // 选定的 item 索引（可选）；不选=全登记
+      let selected: number[] | undefined;
+      const rawSel = (req.body as Record<string, unknown> | undefined)?.selected;
+      if (rawSel !== undefined) {
+        if (!Array.isArray(rawSel) || !rawSel.every((n) => typeof n === 'number' && Number.isInteger(n) && n >= 0)) {
+          return reply.code(400).send({ error: 'selected 必须是自然数索引数组' });
+        }
+        selected = rawSel as number[];
+      }
+
+      const probe = await probeEnvironment(dir);
+      if (probe.error) {
+        return reply.code(400).send({ error: probe.error });
+      }
+
+      const store = spaceStore(deps, spaceId);
+      const existing = store.readProfile();
+      const { patch, registered, unmapped } = mapProbeToProfilePatch(probe, existing, selected);
+
+      // 合并：数组字段追加+去重；rootCwd 直接设
+      const updated: SpaceProfile = { ...existing, rootCwd: probe.root ?? dir };
+      if (patch.repos) updated.repos = [...(existing.repos ?? []), ...patch.repos];
+      if (patch.conventionFiles) updated.conventionFiles = [...(existing.conventionFiles ?? []), ...patch.conventionFiles];
+      if (patch.skills) updated.skills = [...(existing.skills ?? []), ...patch.skills];
+      if (patch.rules) {
+        const merged = [...(existing.rules ?? [])];
+        for (const r of patch.rules) {
+          if (!merged.some((m) => m.file === r.file)) merged.push(r);
+        }
+        updated.rules = merged;
+      }
+
+      store.writeProfile(updated);
+
+      const warnings: string[] = [];
+      if (unmapped.length) {
+        warnings.push(`${unmapped.length} 项只披露不登记（${[...new Set(unmapped.map((u) => u.kind))].join('/')} 无对应档案字段）`);
+      }
+      return { registered, profile: updated, warnings };
+    },
+  );
 
   // -- graphs (templates) -----------------------------------------------------
   // v10-Y：模板是全局资产（dataDir/graphs）——?space= 照旧接收但对模板无作用（运行记录仍按项目隔离）
