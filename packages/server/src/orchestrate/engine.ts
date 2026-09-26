@@ -2026,6 +2026,10 @@ export class Engine {
     let unsub: (() => void) | null = null;
     let repoClaimKey: string | null = null;
     let nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
+    // #108：worktree 隔离只改「pane 起在哪 / 产物落哪 / 机检跑在哪」；
+    // `resolveContext` 的家规/规则取材仍按**主检出**匹配（worktree 是同一 git 仓的另一份 checkout，
+    // 相对 rootCwd 的相对路径不再是「仓名」而是 dataDir 下的兄弟目录，仓库级家规就匹配不到了）。
+    const lookupCwd = nodeCwd;
     try {
       const rootPane = this.rootPanes.get(run.runId)!;
       // R3.1/R3.2 仓库占用：同 run 兄弟并发写同仓 → worktree 隔离；跨 run → 软锁排队
@@ -2200,9 +2204,8 @@ export class Engine {
           .map((m) => `${m.raw}——${refReasons.get(m.raw) ?? '未知'}`)
           .join('；')}`;
       }
-      const nodeCwd = cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
       const artifactRel = cfg.artifactFile ?? defaultArtifactFile(nodeId);
-      const { block: ctxBlock, agentKind, ctxFiles, equip } = this.resolveContext(run, cfg, nodeCwd);
+      const { block: ctxBlock, agentKind, ctxFiles, equip } = this.resolveContext(run, cfg, lookupCwd);
       // v13-K1 消费面（结 N1）：上游命名产物清单随注入块进 prompt——硬引用要作者知道有得引、怎么引，
       // 光有机制没有目录等于没有。追加在 ctxBlock 之后：涨 injectedBytes，不进 ctxSha（运行时文本非实读文件）
       const block = ctxBlock + this.upstreamProductBlock(run, nodeId);
@@ -2326,7 +2329,7 @@ export class Engine {
 
       // checks gate: all configured checks must pass for the node to be done
       const checkFail = await this.runChecks(
-        run, rec, nodeId, nodeCwdOf(run, cfg),
+        run, rec, nodeId, nodeCwd,
         { agentName, timeoutMs, artifactRel, blackboard },
       );
       if (checkFail) return checkFail;
@@ -4054,10 +4057,6 @@ function gitStatusPorcelain(repo: string): string | null {
   } catch {
     return null; // 非 git 仓库/无 git 命令 —— 视为干净
   }
-}
-
-function nodeCwdOf(run: RunRecord, cfg: DagNodeConfig): string {
-  return cfg.cwd ? path.resolve(run.cwd, cfg.cwd) : run.cwd;
 }
 
 /**

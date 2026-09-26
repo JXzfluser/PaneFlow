@@ -919,6 +919,53 @@ describe('Engine (serial DAG)', () => {
     expect(reclaimEvents[0]!.text).toContain(`paneflow/${run.runId}-b`);
   });
 
+  // 还账 #108：同仓并发的 worktree 隔离此前只走通到 pane 侧（splitPane 吃 nodeCwd）；
+  // prompt 侧曾把同一个 nodeCwd 用另一枚 `const` 遮蔽回非隔离路径——结果 b 的 agent 在
+  // 隔离目录里起、却被要求把 artifact.json 写到主检出下，回收时目录干净、账上却查无产物。
+  it('R3.1 补账 · 同仓并发：worktree 隔离目录一路跟到 prompt 侧（artifact 交接绝对路径写向 wtPath 而非主仓）', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-wt-prompt-'));
+    execFileSync('git', ['-C', repo, 'init']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 't@t']);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'base');
+    execFileSync('git', ['-C', repo, 'add', '-A']);
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'base']);
+
+    const graph: DagGraph = {
+      version: 1,
+      name: 'wt-prompt-side',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'fork', type: 'fanout', label: '展开', config: {} },
+        { id: 'a', type: 'agent', label: '任务A', config: { agentKind: 'fake', prompt: 'PROMPT-A', cwd: repo } },
+        { id: 'b', type: 'agent', label: '任务B', config: { agentKind: 'fake', prompt: 'PROMPT-B', cwd: repo } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'fork' },
+        { id: 'e2', source: 'fork', target: 'a' },
+        { id: 'e3', source: 'fork', target: 'b' },
+        { id: 'e4', source: 'a', target: 'end' },
+        { id: 'e5', source: 'b', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    const run = await engine.startRun(graph, repo);
+    await waitFor(() => (engine.getRun(run.runId)!.nodes['b']!.worktree ?? '') !== '');
+    const wtPath = engine.getRun(run.runId)!.nodes['b']!.worktree!;
+    await waitFor(() => engine.getRun(run.runId)!.state !== 'running');
+
+    const promptForB = ops.prompts.find((p) => p.text.includes('PROMPT-B'));
+    const promptForA = ops.prompts.find((p) => p.text.includes('PROMPT-A'));
+    expect(promptForB, 'b 的 prompt 应被发出').toBeTruthy();
+    expect(promptForA, 'a 的 prompt 应被发出').toBeTruthy();
+    // 交接约定行的绝对路径必须跟着走：b 落 wtPath、a 落主检出——两枚路径互斥才是「跟到了」
+    expect(promptForB!.text).toContain(wtPath);
+    expect(promptForB!.text).not.toContain(repo);
+    expect(promptForA!.text).toContain(repo);
+    expect(promptForA!.text).not.toContain(wtPath);
+  });
+
   it('首驾-3 跨 run 软锁随节点尝试结束释放：run1 审批放行后，同仓排队等待的 run2 得以跑完（旧实现 claim 只写不还 → 等锁必至超时）', async () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-lock-'));
     execFileSync('git', ['-C', repo, 'init']);
@@ -5539,11 +5586,21 @@ describe('v14-R5 逐单能力快照（起单现场抄 spec，cap# 进账）', ()
       freeModel: 'gpt-4o-mini',
     });
 
+  /**
+   * v14 T1 起快照按 kind 取格。这一格的老账钉的是「网关档 freeModel → model 条目」那条链，
+   * 而 T1 把 `node-type` 也迁进了表，于是每一单从此固定多背几枚节点型条目。
+   * 按 kind 过滤而不是把三枚 node-type 抄进期望值：期望值里写死出厂清单的成员＝清单改一行、
+   * 这里跟着改一次，而那次改动跟这一格要钉的东西毫无关系。
+   */
+  const refsOf = (run: RunRecord, kind: string) => (run.capabilityRefs ?? []).filter((r) => r.kind === kind);
+  /** 本单吃进的节点型（按 id 排，与快照自身的序一致） */
+  const nodeTypesIn = (run: RunRecord) => refsOf(run, 'node-type').map((r) => r.id);
+
   it('生效档 freeModel 命中登记条目 → 快照落册，cap# 与逐条 specSha 自洽', async () => {
     const entry = seed();
     gwFree();
     const run = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
-    expect(run.capabilityRefs).toEqual([
+    expect(refsOf(run, 'model')).toEqual([
       {
         kind: 'model',
         id: entry.id,
@@ -5589,23 +5646,33 @@ describe('v14-R5 逐单能力快照（起单现场抄 spec，cap# 进账）', ()
     expect(third.capabilitySha).toBe(second.capabilitySha);
   });
 
-  it('停用条目不进快照（enabled=false 不是现役能力）：能力面变空 → 两键整缺', async () => {
+  it('停用条目不进快照（enabled=false 不是现役能力）：能力面变窄，但本单仍带着吃进的节点型', async () => {
     const entry = seed();
     gwFree();
     const run = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
-    expect(run.capabilityRefs).toHaveLength(1);
+    expect(refsOf(run, 'model')).toHaveLength(1);
     new RegistryStore(dataDir).update(entry.id, { enabled: false });
     const off = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
-    expect(off.capabilityRefs).toBeUndefined();
-    expect(off.capabilitySha).toBeUndefined();
+    expect(refsOf(off, 'model')).toEqual([]);
+    // 变空的是 model 那一格，不是整张能力面：节点型条目不受这次停用影响（等臂两臂若只差这一枚停用，cap# 照样不等）
+    expect(nodeTypesIn(off).length).toBeGreaterThan(0);
+    expect(off.capabilitySha).not.toBe(run.capabilitySha);
   });
 
-  it('注册表里没这一枚（悬挂引用）/整张表为空 → 两键整缺，不写空数组冒充「吃了零项」', async () => {
-    gwFree(); // 只有网关档的 freeModel 裸串，注册表空
+  /**
+   * T1 之前这一格钉的是「注册表空 → 两键整缺」。今天这条路**走不到了**：每一单的图都有节点型，
+   * 而 `node-type` 已迁进表，于是任何一单都至少吃到几枚条目——所以这一格改钉还成立的两件事：
+   * 悬挂引用（表里没这一枚）不进快照；整键不给只留给「没走到注册消费面」（今天的形状＝旧 run）。
+   * 顺带落一条正向读数：cap# 从此对**任何**一单都可比，不再只在「恰好登记过模型」时才有值。
+   */
+  it('注册表里没这一枚（悬挂引用）→ 不进快照；本单的节点型照落册（两键整缺只留给没走到快照现场）', async () => {
+    gwFree(); // 只有网关档的 freeModel 裸串，注册表空——那枚型号是本单的悬挂引用
     const run = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
-    expect(run.capabilityRefs).toBeUndefined();
-    expect(run.capabilitySha).toBeUndefined();
-    expect('capabilityRefs' in run).toBe(false);
+    expect(refsOf(run, 'model')).toEqual([]);
+    expect(nodeTypesIn(run).sort()).toEqual(['node-type:agent', 'node-type:end', 'node-type:start']);
+    expect(run.capabilitySha).toBe(
+      contentSha(run.capabilityRefs!.map(({ kind, id, specSha, spec }) => ({ kind, id, specSha, spec }))),
+    );
   });
 
   it('只快照本单生效的那一档：别档的 freeModel 不算这单的能力面', async () => {
@@ -5623,12 +5690,12 @@ describe('v14-R5 逐单能力快照（起单现场抄 spec，cap# 进账）', ()
     space.writeProfile({ ...space.readProfile(), gatewayProfile: 'free' });
     const run = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
     expect(run.harness?.gwProfile).toBe('free');
-    expect(run.capabilityRefs).toHaveLength(1);
-    expect(run.capabilityRefs![0]!.id).toBe(freeEntry.id);
-    expect(run.capabilityRefs![0]!.via).toEqual(['gateway·freeModel']);
+    expect(refsOf(run, 'model')).toHaveLength(1);
+    expect(refsOf(run, 'model')[0]!.id).toBe(freeEntry.id);
+    expect(refsOf(run, 'model')[0]!.via).toEqual(['gateway·freeModel']);
     // 换钉付费档再起一单：能力面跟着换一枚（等臂两臂若钉了不同档，cap# 必不等）
     space.writeProfile({ ...space.readProfile(), gatewayProfile: 'paid' });
     const paid = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
-    expect(paid.capabilityRefs!.map((r) => r.id)).toEqual([paidEntry.entry!.id]);
+    expect(refsOf(paid, 'model').map((r) => r.id)).toEqual([paidEntry.entry!.id]);
   });
 });
