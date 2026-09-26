@@ -72,6 +72,7 @@ interface UpdateIssueBody {
   runId?: string;
 }
 import { registerFsRoutes } from './fs-routes.js';
+import { probeEnvironment } from './env-probe.js';
 import { buildRoleProfile } from './role-profile.js';
 import { buildDispatchGraph, candidateRepos, DISPATCH_NO_AGENT_ERROR, extractAcceptance, INTAKE_TEMPLATE_PATH, intakeTemplateMarkdown, parseIssueRef, teamEquipView, type IssueView } from './dispatch.js';
 import { readSkillIndex } from '../orchestrate/skills.js';
@@ -948,6 +949,24 @@ export async function buildHttpServer(deps: HttpDeps) {
         gatewayEnabled: gatewayActive(deps.dataDir),
       },
     };
+  });
+
+  // -- v14-E1 环境发现器（**纯只读**）----------------------------------------
+  // 判据全在 ./env-probe.ts（只 stat/readdir + 三条只读 git 查询，绝不写盘、绝不 fetch/checkout）；
+  // 这里只把请求形状挡一道。**探测失败是读数不是客户端错误**：目录读不到也回 200 带一句人话
+  // （items:[] + error），400 只留给脏体——CLI 零判据，据此才能「server 给什么画什么」。
+  app.post<{ Body: { path?: unknown }; Querystring: { space?: string } }>('/api/env/probe', async (req, reply) => {
+    const raw = (req.body as { path?: unknown } | undefined)?.path;
+    if (typeof raw !== 'string' || !raw.trim()) {
+      return reply.code(400).send({ error: 'path 必填：要探测的目录绝对路径（E1 纯只读，不落任何登记）' });
+    }
+    const dir = raw.trim();
+    // 相对路径的基准是 server 进程的 cwd，不是调用方 shell 的 cwd——不猜，指路（worktreeRoot 同款口径）
+    if (!path.isAbsolute(dir)) {
+      return reply.code(400).send({ error: `path 必须是绝对路径（相对路径不猜基准）：${dir}` });
+    }
+    // ?space= 本片不消费：E1 的判据与空间无关（探的是目录实态），这枚旗标是 E2 登记目标空间的落点
+    return await probeEnvironment(dir);
   });
 
   // -- graphs (templates) -----------------------------------------------------

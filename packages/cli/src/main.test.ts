@@ -562,6 +562,106 @@ describe('replay / experiments（v11-E1）', () => {
   });
 });
 
+describe('env probe（v14-E1 环境发现器：零判据，只画 server 给的草案）', () => {
+  const payload = {
+    path: '/Users/x/code/my-repo',
+    root: '/Users/x/code/my-repo',
+    summary: 'git 仓 origin=my-org/my-repo · 约定文档 2 · 技能 3 篇 · 机检候选 pnpm test、pnpm typecheck',
+    items: [
+      { kind: 'repo', name: 'my-org/my-repo', detail: 'origin=git@github.com:my-org/my-repo.git → my-org/my-repo', evidence: '.git/config' },
+      { kind: 'doc', name: 'AGENTS.md', detail: '1234 字节（只报存在与大小，未读内容）', evidence: 'AGENTS.md' },
+      { kind: 'skill', name: 'export.md', detail: '96 字节（只报存在与大小，未读内容）', evidence: 'skills/export.md' },
+      { kind: 'check', name: '多套 lockfile 并存', detail: '探到 pnpm-lock.yaml、yarn.lock——按 pnpm>yarn>npm 取 pnpm（只披露不拦）', evidence: 'pnpm-lock.yaml · yarn.lock' },
+      { kind: 'worktree', name: 'wt-one', detail: '额外 worktree：/tmp/wt-one', evidence: '.git/worktrees/' },
+    ],
+    missing: ['没有 CI workflow（未探到 .github/workflows/*.yml 或 *.yaml）'],
+    agentsAvailable: ['pi', 'opencode'],
+  };
+
+  it('人读一行「发现：」照读 server 的 summary + root + agents，缺项逐条列出', async () => {
+    const { fetchImpl, calls } = stubFetch([{ body: payload }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'probe', '/Users/x/code/my-repo', '--url', 'http://x:1'], io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://x:1/api/env/probe');
+    expect(calls[0]!.init.method).toBe('POST');
+    expect(JSON.parse(calls[0]!.init.body!)).toEqual({ path: '/Users/x/code/my-repo' });
+    const out = lines.join('\n');
+    expect(out).toContain('发现：git 仓 origin=my-org/my-repo · 约定文档 2 · 技能 3 篇 · 机检候选 pnpm test、pnpm typecheck');
+    expect(out).toContain('本机可用 agent：pi, opencode');
+    expect(out).toContain('git 仓根：/Users/x/code/my-repo');
+    expect(out).toContain('缺项：没有 CI workflow');
+    expect(out).toContain('草案直取：paneflow env probe /Users/x/code/my-repo --json');
+  });
+
+  it('--space 进 query（E1 判据与空间无关，server 不消费）；--path 与位置参数同义', async () => {
+    const { fetchImpl, calls } = stubFetch([{ body: payload }, { body: payload }]);
+    const { io } = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'probe', '/tmp/a', '--space', 'demo'], io)).toBe(0);
+    expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/env/probe?space=demo');
+    expect(JSON.parse(calls[0]!.init.body!)).toEqual({ path: '/tmp/a' });
+    expect(await main(['env', 'probe', '--path', '/tmp/b'], io)).toBe(0);
+    expect(JSON.parse(calls[1]!.init.body!)).toEqual({ path: '/tmp/b' });
+  });
+
+  it('--json：stdout 干净可 JSON.parse（原样回 API 负载，一条人读都不掺）', async () => {
+    const { fetchImpl } = stubFetch([{ body: payload }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'probe', '/tmp/a', '--json'], io)).toBe(0);
+    expect(JSON.parse(lines.join('\n'))).toEqual(payload);
+  });
+
+  it('现场读不到：server 给的是 200 读数（items 全空 + error），CLI 照说不炸、不自己判目录存不存在', async () => {
+    const { fetchImpl } = stubFetch([
+      { body: { path: '/tmp/nope', items: [], missing: [], error: '这个目录读不到：目录不存在（/tmp/nope）', agentsAvailable: [] } },
+    ]);
+    const { io, lines, errLines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'probe', '/tmp/nope'], io)).toBe(0);
+    expect(lines.join('\n')).toContain('这个目录读不到：目录不存在（/tmp/nope）');
+    expect(errLines.join('\n')).toBe('');
+  });
+
+  it('草案逐条列且带依据（items 是 E2 勾选的输入，人读也要看得见每项从哪来）', async () => {
+    const { fetchImpl } = stubFetch([{ body: payload }]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'probe', '/Users/x/code/my-repo'], io)).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('repo · my-org/my-repo —— origin=git@github.com:my-org/my-repo.git → my-org/my-repo（依据：.git/config）');
+    expect(out).toContain('check · 多套 lockfile 并存 —— 探到 pnpm-lock.yaml、yarn.lock——按 pnpm>yarn>npm 取 pnpm（只披露不拦）（依据：pnpm-lock.yaml · yarn.lock）');
+    expect(out).toContain('worktree · wt-one —— 额外 worktree：/tmp/wt-one（依据：.git/worktrees/）');
+  });
+
+  it('缺键不渲染：无 root/无 agents/无缺项时零新增行（宁缺毋假，不拿空串占位）', async () => {
+    const { fetchImpl } = stubFetch([
+      { body: { path: '/tmp/plain', items: [], missing: [], summary: '未发现任何可登记项（原因见缺项）' } },
+    ]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'probe', '/tmp/plain'], io)).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('发现：未发现任何可登记项');
+    expect(out).not.toContain('git 仓根');
+    expect(out).not.toContain('本机可用 agent');
+    expect(out).not.toContain('缺项：');
+    // 一条草案都没有时不硬凑草案行（items=[] 是正读数）
+    expect(out.split('\n').filter((l) => l.trim().startsWith('repo ·'))).toHaveLength(0);
+  });
+
+  it('脏输入与 server 指路：缺路径退 1 不发请求；400 的 error 原样带出退 1；未知动词退 1', async () => {
+    const { io, errLines } = makeIo();
+    expect(await main(['env'], io)).toBe(1);
+    expect(await main(['env', 'probe'], io)).toBe(1);
+    expect(await main(['env', 'drop', '/tmp/a'], io)).toBe(1);
+    expect(errLines.join('\n')).toContain('paneflow env probe');
+    const { fetchImpl } = stubFetch([{ status: 400, body: { error: 'path 必须是绝对路径（相对路径不猜基准）：a/b' } }]);
+    const bad = makeIo({ fetch: fetchImpl });
+    expect(await main(['env', 'probe', 'a/b'], bad.io)).toBe(1);
+    expect(bad.errLines.join('\n')).toContain('必须是绝对路径');
+    // 三处必动之一（v14 §X2）：USAGE 里点不到就等于命令不存在
+    const h = makeIo();
+    expect(await main(['--help'], h.io)).toBe(0);
+    expect(h.lines.join('\n')).toContain('paneflow env probe');
+  });
+});
+
 describe('入口守护', () => {
   it('未知子命令与 help', async () => {
     const { io, errLines } = makeIo();

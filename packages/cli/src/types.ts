@@ -131,6 +131,32 @@ export interface DispatchResult {
   experiment?: { suite?: string; arm?: string; flag?: string };
 }
 
+/** POST /api/env/probe 的最小结构读法（v14-E1 草案注册集；只声明 CLI 用到的字段） */
+export interface EnvProbeItemView {
+  /** 类目按 string 读：server 日后加类目（如 channel）不许把薄壳炸红 */
+  kind: string;
+  name: string;
+  detail: string;
+  /** 依据：发现自哪个相对路径——E1 的定义要求每项都带，CLI 只照读不核 */
+  evidence: string;
+}
+
+export interface EnvProbeView {
+  path: string;
+  /** git 仓根：不是 git 仓=整键缺省（不是空串），缺就不渲染 */
+  root?: string;
+  /** server 算好的一句人话汇总：计数与归一全在判据层，CLI 零判据只照读 */
+  summary?: string;
+  /** 只含有依据的发现；[] 是正读数「一条都没探到」，与 error（现场读不到）分家 */
+  items: EnvProbeItemView[];
+  /** 没探到的类目 + 一句为什么 */
+  missing: string[];
+  /** 本机可用 agent CLI（/api/health 同一套实探）；[] 是正读数，整缺=旧 server */
+  agentsAvailable?: string[];
+  /** 探测失败的一句人话（这是读数不是客户端错误：HTTP 200 带它） */
+  error?: string;
+}
+
 export const EXIT_OK = 0;
 /** 1 = 红（failed/cancelled/completed-with-failures）；API/用法错误同码 */
 export const EXIT_RED = 1;
