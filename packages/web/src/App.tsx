@@ -6,6 +6,7 @@ import { TasksView } from './components/TasksView.jsx';
 import { OrchestrateView } from './components/OrchestrateView.jsx';
 import { RunsCenter } from './components/RunsCenter.jsx';
 import { ProjectsView } from './components/ProjectsView.jsx';
+import { RegistryView } from './components/RegistryView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import { Guide } from './components/Guide.jsx';
 import { EnvWizard } from './components/EnvWizard.jsx';
@@ -99,7 +100,9 @@ export function App() {
                   ? 'RUNS · 运行中心'
                   : view === 'projects'
                     ? 'PROJECTS · 项目'
-                    : 'SETTINGS · 设置'}
+                    : view === 'registry'
+                      ? 'REGISTRY · 注册中心'
+                      : 'SETTINGS · 设置'}
           </span>
           <div className="spacer" />
           <button
@@ -123,6 +126,7 @@ export function App() {
         {view === 'orchestrate' && <OrchestrateView />}
         {view === 'runs' && <RunsCenter />}
         {view === 'projects' && <ProjectsView />}
+        {view === 'registry' && <RegistryView />}
         {view === 'settings' && <SettingsView />}
       </div>
       {wizard && (

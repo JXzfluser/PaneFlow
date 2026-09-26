@@ -148,6 +148,12 @@ const ICONS = {
       <path d="M20 3.5V8h-4.5" />
     </>
   ),
+  registry: (
+    <>
+      <rect x="3.5" y="4" width="17" height="16" rx="2" />
+      <path d="M3.5 9.5h17M3.5 15h17M8.5 9.5V20" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof ICONS;

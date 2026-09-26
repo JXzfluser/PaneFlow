@@ -1,4 +1,5 @@
 import type { DagGraph, NodeRunRecord, RunEvent, RunRecord } from '@paneflow/shared';
+import type { RegistryAddPayload, RegistryEntryView, RegistryListResponse } from './registry-view.js';
 
 const BASE = '';
 
@@ -181,6 +182,21 @@ export const api = {
       { raw: true },
     ),
   createSpace: (id: string, name: string) => json<unknown>('POST', '/api/spaces', { id, name }, { raw: true }),
+  // -- v14 X1 注册中心：表是 dataDir 级唯一事实源，不随项目空间走，故一律 raw（不带 space 参） --
+  registryList: () => fetchJson<RegistryListResponse>('GET', '/api/registry'),
+  registryAdd: (body: RegistryAddPayload) => fetchJson<{ entry: RegistryEntryView }>('POST', '/api/registry', body),
+  registryPatch: (id: string, body: { name?: string; spec?: unknown; enabled?: boolean }) =>
+    fetchJson<{ entry: RegistryEntryView }>('PATCH', `/api/registry/${encodeURIComponent(id)}`, body),
+  registryDelete: (id: string) =>
+    fetchJson<{ deleted: RegistryEntryView }>('DELETE', `/api/registry/${encodeURIComponent(id)}`),
+  /** 网关档清单（表单「归属网关档」下拉的选项源；apiKey 永不回显，这里只拿 id/name） */
+  gatewayProfiles: () =>
+    fetchJson<{ profiles: { id: string; name: string; baseUrl: string; isCurrent: boolean }[] }>('GET', '/api/gateway'),
+  /** 每档实探的模型清单（登记表单的型号候选；?refresh=1 强刷，其余走 server 5min 缓存） */
+  gatewayCatalog: (refresh = false) =>
+    fetchJson<{
+      profiles: { id: string; name: string; baseUrl: string; freeModel?: string; isCurrent: boolean; models: string[]; error?: string | null }[];
+    }>('GET', `/api/gateway/catalog${refresh ? '?refresh=1' : ''}`),
 };
 
 export interface WsRunMessage {

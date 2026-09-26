@@ -1217,3 +1217,66 @@ details.settings-more[open] summary { margin-bottom: 6px; }
   .settings-nav-group + .settings-nav-group { margin-top: 0; }
   .settings-body { overflow: visible; padding-right: 0; }
 }
+
+/* ============ v14 X1 注册中心（M0 可感面：一张表 + 表单登记，判据全在 server） ============ */
+.registry-view { flex: 1; overflow-y: auto; padding: 20px 24px; }
+.registry-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.registry-head h2 { margin: 0 0 2px; font-size: 20px; font-family: var(--font-display); }
+.registry-head .primary { margin-left: auto; white-space: nowrap; }
+.registry-load-fail { color: var(--err); font-size: 12px; margin: 0 0 12px; }
+/* rejected：server 只披露不清除的盘上残条——警告面板原样转述，不给批量清除按钮 */
+.registry-rejected {
+  border: 1px solid var(--warn); border-left-width: 3px; border-radius: var(--radius);
+  background: var(--chip-warn); color: var(--warn);
+  font-size: 12px; padding: 8px 12px; margin-bottom: 14px;
+}
+.registry-rejected p { margin: 0 0 4px; }
+.registry-rejected ul { margin: 0; padding-left: 18px; line-height: 1.7; }
+.registry-rejected code { font-family: var(--font-mono); font-size: 11.5px; }
+/* 表单登记的卡片：字段长自 kind 的 spec 形状，界面上永不出现裸 JSON */
+.registry-form {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 18px; margin-bottom: 16px;
+}
+.registry-form-field { margin-bottom: 10px; }
+.registry-form-field label { display: block; color: var(--text-dim); font-size: 12px; margin: 0 0 4px; }
+.registry-form-field input,
+.registry-form-field select {
+  width: 100%; background-color: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 12px;
+}
+.registry-form-field select { padding-right: 26px; }
+.registry-form-check { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px; margin-bottom: 10px; }
+.registry-form-check .settings-hint { margin: 0; }
+.registry-form-error { color: var(--err); font-size: 12px; margin: 4px 0 0; }
+.registry-form-ops { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.registry-group { margin-bottom: 20px; }
+.registry-group h3 { margin: 0 0 6px; font-size: 15px; font-family: var(--font-display); display: flex; align-items: baseline; gap: 8px; }
+.registry-count { font-size: 11px; color: var(--text-dim); font-family: var(--font-body); }
+.registry-empty { margin: 2px 0 0; }
+.registry-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.registry-table th {
+  text-align: start; color: var(--text-dim); font-weight: 500; font-size: 11px;
+  border-bottom: 1px solid var(--border); padding: 4px 8px;
+}
+.registry-table td { border-bottom: 1px solid var(--border); padding: 6px 8px; vertical-align: middle; }
+.registry-table td:first-child { white-space: nowrap; }
+.registry-label { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); word-break: break-all; }
+.registry-chip {
+  display: inline-block; margin-left: 6px; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text-dim); white-space: nowrap;
+}
+.registry-row-off td { opacity: 0.55; }
+.registry-row-off .registry-chip:first-of-type { border-color: var(--warn); color: var(--warn); }
+.registry-ops { text-align: end; white-space: nowrap; }
+.registry-ops .link { margin-right: 8px; }
+.registry-detail-row td { background: var(--panel-2); }
+.registry-detail { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 12px; }
+.registry-detail dt { color: var(--text-dim); }
+.registry-detail dd { margin: 0; overflow-wrap: break-word; }
+.registry-detail code { font-family: var(--font-mono); font-size: 11.5px; background: var(--chip); border-radius: 4px; padding: 0 4px; }
+.registry-detail-fail { color: var(--err); }
+@media (max-width: 900px) {
+  .registry-view { padding: 12px; }
+  .registry-head { flex-wrap: wrap; }
+}
