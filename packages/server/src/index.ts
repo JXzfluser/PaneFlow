@@ -2,6 +2,8 @@ import { HerdrClient } from './herdr/client.js';
 import { RealHerdrOps } from './orchestrate/herdr-ops.js';
 import { Engine } from './orchestrate/engine.js';
 import { Store } from './orchestrate/store.js';
+import { detectAppVersion, RegistryStore } from './orchestrate/registry.js';
+import { registerRegistryRoutes } from './api/registry-routes.js';
 import { buildHttpServer } from './api/http.js';
 import { detectInstalledAgents, recommendAgentKind } from './api/env-check.js';
 import { syncPiGatewayProvider } from './api/gateway.js';
@@ -11,6 +13,15 @@ import { acquireInstanceLock, annotateInstanceLock, InstanceLockError, installPr
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  // v14 A1（§十.2）注册表版本闸门：**先于任何写盘动作**（连单实例锁都不写）——
+  // 旧二进制在新 dataDir 上「零配置健康」启动会把不认识的东西洗掉，那是假绿最贵的形态。
+  // 回滚单位是整个 registry/ 目录快照，这里绝不自动改数据、绝不 .bak 改名。
+  const registry = new RegistryStore(config.dataDir, detectAppVersion());
+  const registryGate = RegistryStore.assertSchemaOk(registry.readSchema());
+  if (!registryGate.ok) {
+    console.error(`[paneflow] ${registryGate.why}`);
+    process.exit(1);
+  }
   // v13-S6 单实例守卫：同 dataDir 第二实例拒起——双实例互踩账本，
   // 且旧行为下第二实例在构造期就把在飞单一律改判 failed 写盘（发行包误敲即触发）
   let lock;
@@ -51,6 +62,9 @@ async function main(): Promise<void> {
     authToken: config.authToken,
     corsOrigins: config.corsOrigins,
   });
+  // v14 A1：注册内核的路由组住自己的模块（§一 记 `api/http.ts` 是本仓最挤的令牌轴，v14 要做的就是不再往里堆）。
+  // 挂在同一 root 实例上 → 根实例的 CORS 守卫与令牌钩子照旧覆盖这组路由（单测有断言，不靠信念）。
+  registerRegistryRoutes(app, { registry });
 
   await app.listen({ port: config.port, host: config.host });
   annotateInstanceLock(lock, config.port);

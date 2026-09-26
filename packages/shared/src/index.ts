@@ -65,3 +65,22 @@ export {
   lintUnresolvedRefs,
   type UnresolvedRef,
 } from './dag.js';
+export {
+  REGISTRY_SCHEMA_VERSION,
+  REGISTRY_KINDS,
+  REGISTRY_SOURCES,
+  parseRegistrySpec,
+  parseModelSpec,
+  normalizeRegistryEntry,
+  registryId,
+  splitRegistryId,
+  unknownKindWhy,
+  type ModelRegistrySpec,
+  type RegistrySpecMap,
+  type RegistryKind,
+  type RegistrySource,
+  type RegistryEntry,
+  type RegistryDescriptor,
+  type RegistrySchemaDoc,
+  type RegistryParse,
+} from './registry.js';
