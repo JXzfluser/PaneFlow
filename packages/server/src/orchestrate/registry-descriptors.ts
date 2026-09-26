@@ -1,4 +1,4 @@
-import type { RegistryDescriptor, RegistryEntry, RegistryKind } from '@paneflow/shared';
+import { splitRegistryId, type RegistryDescriptor, type RegistryEntry, type RegistryKind } from '@paneflow/shared';
 
 /**
  * v14 A1（R1）Descriptor 表：**一 kind 一模块**的落地处（决议 §十.5）。
@@ -19,6 +19,15 @@ export const modelDescriptor: RegistryDescriptor<'model'> = {
     if (entry.spec.freeModel) parts.push('免费位');
     if (entry.spec.note) parts.push(entry.spec.note);
     return parts.join(' · ');
+  },
+  /**
+   * 现役配置里指向一枚模型条目的写法只有三种：整枚 id、id 的 slug 段、以及 spec 里的型号原值
+   * （今天落册的引用就是网关档 `freeModel` 那串型号名，见 `registry-refs.ts`）。
+   * 登记时起的中文名不是引用写法——所以它进不了这张表，别拿 label 当匹配键。
+   */
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return [entry.id, entry.spec.model, ...(slug ? [slug] : [])];
   },
 };
 

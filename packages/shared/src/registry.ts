@@ -86,6 +86,12 @@ export interface RegistryDescriptor<K extends RegistryKind = RegistryKind> {
   kind: K;
   /** 一句人话标签：API 的 `label` 字段与 CLI 渲染共用同一句，零判据的 CLI 因此不必认识 spec */
   label(entry: RegistryEntry<K>): string;
+  /**
+   * 这一枚条目**能被哪些裸串引用到**（R2 反查用）。必须由 kind 自己报：
+   * 引用面写的是原始值（网关档的 `freeModel: 'gpt-4o-mini'`），而条目 id 是人登记时起的名字——
+   * 两者不是一回事，只按 id 匹配会把「其实正在用」读成「没人用」（那是最危险方向的一次假读数）。
+   */
+  refKeys(entry: RegistryEntry<K>): string[];
 }
 
 const MODEL_SPEC_KEYS = ['model', 'gatewayProfile', 'freeModel', 'note'] as const;

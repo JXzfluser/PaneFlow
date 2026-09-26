@@ -10,12 +10,13 @@ import { buildHttpServer } from './http.js';
 import { registerRegistryRoutes } from './registry-routes.js';
 
 /**
- * v14 A1（R1）注册内核 HTTP 面：四动词走真 `buildHttpServer` + `app.inject`，
+ * v14 A1+A2（R1+R2）注册内核 HTTP 面：四动词与引用账走真 `buildHttpServer` + `app.inject`，
  * 挂载方式与 `index.ts` 逐字相同（先 build 再 `registerRegistryRoutes(app, …)`）——
  * 于是第 7 条断言（令牌钩子覆盖这组路由）证的是**生产组合方式**，不是「Fastify 应该会继承吧」。
  *
  * 引擎/账本在这里桩掉是既有约定（同 `http-health.test.ts`）：这组路由一个字节都不碰 run 账，
  * 桩它不会让任何断言变成自证——判据全在 server 侧的 `normalizeRegistryEntry` 与 `RegistryStore`。
+ * 引用面（`registry-refs.ts`）**不桩**：它读的是 fixture dataDir 的真实落盘形状。
  */
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'pf-reg-routes-'));
 const HOST = '127.0.0.1:4310';
@@ -31,11 +32,19 @@ async function build(extra: { authToken?: string } = {}) {
     dataDir,
     ...extra,
   });
-  registerRegistryRoutes(app, { registry });
+  registerRegistryRoutes(app, { registry, dataDir });
   return { app, registry, dataDir };
 }
 
 const MODEL = { kind: 'model', name: 'gpt-4o-mini', spec: { model: 'gpt-4o-mini', gatewayProfile: 'free' } };
+
+/** 现役盘面唯一的模型引用写法：网关档 `freeModel`（R2 写端守卫的可感来源，不靠虚构形状） */
+function pinGatewayModel(dataDir: string, model: string | null): void {
+  fs.writeFileSync(
+    path.join(dataDir, 'gateway.json'),
+    `${JSON.stringify({ profiles: [{ id: 'free', name: '免费档', baseUrl: 'https://gw.example', ...(model ? { freeModel: model } : {}) }], current: 'free' }, null, 2)}\n`,
+  );
+}
 
 describe('注册内核四动词（/api/registry）', () => {
   it('一条都没登记：空表是正读数，knownKinds 当场说清这版认识什么', async () => {
@@ -43,7 +52,13 @@ describe('注册内核四动词（/api/registry）', () => {
     try {
       const res = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ entries: [], rejected: [], schema: null, knownKinds: ['model'] });
+      expect(res.json()).toEqual({
+        entries: [],
+        rejected: [],
+        schema: null,
+        knownKinds: ['model'],
+        refSummary: { scanned: 0, dangling: [], unmigrated: [] },
+      });
     } finally {
       await app.close();
     }
@@ -170,6 +185,103 @@ describe('注册内核四动词（/api/registry）', () => {
         payload: MODEL,
       });
       expect(withHeader.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('引用完整性（R2：写端拒悬挂、读端列引用者）', () => {
+  it('有人正在用：条目带 refs 上架，删除与禁用都 400 且把要改的位置一次给够', async () => {
+    const { app, dataDir } = await build();
+    try {
+      await app.inject({ method: 'POST', url: '/api/registry', headers: { host: HOST }, payload: MODEL });
+      pinGatewayModel(dataDir, 'gpt-4o-mini');
+      const list = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
+      expect(list.json().entries[0].refs).toEqual([{ face: 'gateway', id: 'free', name: '免费档', via: 'freeModel' }]);
+      expect(list.json().refSummary.dangling).toEqual([]);
+
+      const del = await app.inject({ method: 'DELETE', url: '/api/registry/model:gpt-4o-mini', headers: { host: HOST } });
+      expect(del.statusCode).toBe(400);
+      expect(del.json().error).toContain('还被 1 处引用着');
+      expect(del.json().error).toContain('网关档「免费档」的 freeModel');
+      expect(del.json().error).toContain('先改掉那几处再来');
+      const off = await app.inject({
+        method: 'PATCH',
+        url: '/api/registry/model:gpt-4o-mini',
+        headers: { host: HOST },
+        payload: { enabled: false },
+      });
+      expect(off.statusCode).toBe(400);
+      expect(off.json().error).toContain('禁用它');
+      // 条目照旧在盘上：拒的是这一次写，不是顺手把账清了
+      expect((await app.inject({ method: 'GET', url: '/api/registry/model:gpt-4o-mini', headers: { host: HOST } })).json().entry.enabled).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('改名不是改引用：把 freeModel 换掉之后删除立刻放行（守卫吃实读，不缓存旧账）', async () => {
+    const { app, dataDir } = await build();
+    try {
+      await app.inject({ method: 'POST', url: '/api/registry', headers: { host: HOST }, payload: MODEL });
+      pinGatewayModel(dataDir, 'gpt-4o-mini');
+      pinGatewayModel(dataDir, 'another-model');
+      const del = await app.inject({ method: 'DELETE', url: '/api/registry/model:gpt-4o-mini', headers: { host: HOST } });
+      expect(del.statusCode).toBe(200);
+      expect(del.json().deleted.id).toBe('model:gpt-4o-mini');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('普通更新（改名）不受引用守卫牵连：只有「不再被选」的两件事需要过闸', async () => {
+    const { app, dataDir } = await build();
+    try {
+      await app.inject({ method: 'POST', url: '/api/registry', headers: { host: HOST }, payload: MODEL });
+      pinGatewayModel(dataDir, 'gpt-4o-mini');
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/registry/model:gpt-4o-mini',
+        headers: { host: HOST },
+        payload: { name: '小4号' },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().entry).toMatchObject({ name: '小4号', id: 'model:gpt-4o-mini' });
+      // id 是引用锚，改名后引用账照旧跟得上
+      expect(res.json().entry.refs).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('引用账扫不出 → 500，绝不降级成「零引用」放行删除（假绿最危险的落点）', async () => {
+    const { app, dataDir } = await build();
+    try {
+      await app.inject({ method: 'POST', url: '/api/registry', headers: { host: HOST }, payload: MODEL });
+      // 拿「`graphs` 不是目录」当探针：比 chmod 稳（root/CI 下权限挡不住读），且是真实会发生的盘面形状
+      fs.writeFileSync(path.join(dataDir, 'graphs'), '不是目录');
+      const list = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
+      expect(list.statusCode).toBe(500);
+      expect(list.json().error).toContain('引用账扫不出');
+      const del = await app.inject({ method: 'DELETE', url: '/api/registry/model:gpt-4o-mini', headers: { host: HOST } });
+      expect(del.statusCode).toBe(500);
+      expect(del.json().error).toContain('引用账扫不出');
+      // 条目还在盘上：读不出引用账时删除**没有**被放行
+      expect(fs.readFileSync(path.join(dataDir, 'registry', 'entries.json'), 'utf8')).toContain('model:gpt-4o-mini');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('写端回执读不动引用账时省掉 refs 键（缺＝不知道，绝不渲成「零引用」）', async () => {
+    const { app, dataDir } = await build();
+    try {
+      fs.writeFileSync(path.join(dataDir, 'graphs'), '不是目录');
+      const res = await app.inject({ method: 'POST', url: '/api/registry', headers: { host: HOST }, payload: MODEL });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().entry).toMatchObject({ id: 'model:gpt-4o-mini', label: 'gpt-4o-mini · 档=free' });
+      expect('refs' in res.json().entry).toBe(false);
     } finally {
       await app.close();
     }

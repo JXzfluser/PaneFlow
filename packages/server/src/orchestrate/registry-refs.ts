@@ -1,0 +1,205 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { REGISTRY_KINDS, type DagGraph, type DagNodeConfig, type RegistryEntry } from '@paneflow/shared';
+import { Store } from './store.js';
+import { loadRoles } from './roles.js';
+import { readGatewayDoc } from '../api/gateway.js';
+import { REGISTRY_DESCRIPTORS } from './registry-descriptors.js';
+
+/**
+ * v14 A2（R2）引用索引：**纯读推导**「谁在用这一项能力」，零新写路径
+ * （先例=v13-V1 `machineCheckTally`：从既有落盘形状读时算，不建第二份事实源）。
+ *
+ * 为什么现在能扫、且只有这一份口径：跨面引用今天全是**裸字符串**（§一 第 3 读数：悬挂引用没有一处在写入面被拒过）。
+ * 本模块把那批裸串按「哪个面的哪个键指向哪类能力」列成一张表（`SOURCES`），扫描即遍历这张表——
+ * 将来某面迁进注册表（把裸串换成 `{kind,id}`），改的是这张表的一行，不是散在各处的 if。
+ *
+ * 三条姿态（都是 宁缺毋假 的具体化）：
+ *  1. **只有已迁进表的 kind 才有「悬挂」可言**：指向 `gateway-profile`/`role`/`skill`… 的裸串今天不判死活
+ *     （表里没有这一类，判「不存在」就是拿空白冒充断言）→ 进 `unmigrated`，只给计数与出处；
+ *  2. 一条引用**指向表内 kind 且解析不到条目**才叫 dangling——它才是「删了会断」的那类账；
+ *  3. 匹配用 Descriptor 的 `refKeys`（每 kind 自报「哪些裸串算指向我」），扫面侧不认识任何 spec 形状。
+ */
+
+/** 引用者是谁：面 + 条目 + 具体哪个键（`via` 是人能按图索骥去改的位置） */
+export interface RegistryReferrer {
+  face: 'space' | 'role' | 'template' | 'gateway';
+  id: string;
+  name: string;
+  via: string;
+}
+
+export interface RawReference extends RegistryReferrer {
+  kind: string;
+  target: string;
+}
+
+export interface ReferenceIndex {
+  /** 已迁 kind 的条目 → 引用者（注册中心「被 N 处使用」与详情列的来源） */
+  byEntry: { entryId: string; kind: string; refs: RegistryReferrer[] }[];
+  /** 指向已迁 kind 却解析不到条目：这才是可断的账 */
+  dangling: { kind: string; target: string; by: RegistryReferrer[] }[];
+  /** 指向尚未迁进表的 kind：只披露计数，绝不判死活（姿态 1） */
+  unmigrated: { kind: string; targets: string[]; refs: number }[];
+  /** 扫过的原始引用条数（含未迁 kind）——「这次扫描确实看了盘面」的自证 */
+  scanned: number;
+}
+
+type Source = (dataDir: string) => RawReference[];
+
+const spaceRefs: Source = (dataDir) => {
+  const out: RawReference[] = [];
+  for (const sp of Store.listSpaces(dataDir)) {
+    const by = { face: 'space' as const, id: sp.id, name: sp.name };
+    const push = (kind: string, target: string | undefined, via: string): void => {
+      if (target) out.push({ ...by, via, kind, target });
+    };
+    push('agent-kind', sp.defaultAgentKind, 'defaultAgentKind');
+    push('gateway-profile', sp.gatewayProfile, 'gatewayProfile');
+    (sp.team ?? []).forEach((m, i) => push('role', m.roleId, `team[${i}].roleId`));
+    (sp.skills ?? []).forEach((s, i) => push('skill', s, `skills[${i}]`));
+    (sp.repos ?? []).forEach((r, i) => push('repo', r, `repos[${i}]`));
+    (sp.rules ?? []).forEach((r, i) => {
+      push('rule', r.file, `rules[${i}].file`);
+      push('repo', r.repo, `rules[${i}].repo`);
+    });
+    (sp.delivery ?? []).forEach((d, i) => push('repo', d.repo, `delivery[${i}].repo`));
+  }
+  return out;
+};
+
+const roleRefs: Source = (dataDir) => {
+  const out: RawReference[] = [];
+  for (const role of loadRoles(dataDir)) {
+    const by = { face: 'role' as const, id: role.id, name: role.name };
+    if (role.agentKind) out.push({ ...by, via: 'agentKind', kind: 'agent-kind', target: role.agentKind });
+    (role.skills ?? []).forEach((s, i) => out.push({ ...by, via: `skills[${i}]`, kind: 'skill', target: s }));
+    (role.rules ?? []).forEach((r, i) => out.push({ ...by, via: `rules[${i}]`, kind: 'rule', target: r }));
+  }
+  return out;
+};
+
+const templateRefs: Source = (dataDir) => {
+  const out: RawReference[] = [];
+  for (const graph of readGraphs(dataDir)) {
+    // `DagGraph.name` 就是模板文件名（`saveGraph` 写向 `graphPath(graph.name)`），也正是
+    // `pipeline.template` 指向的那枚——两处同一枚键，反查才对得上
+    const by = { face: 'template' as const, id: graph.name, name: graph.name };
+    graph.nodes.forEach((node, i) => {
+      const cfg: DagNodeConfig = node.config ?? {};
+      out.push({ ...by, via: `nodes[${i}].type`, kind: 'node-type', target: node.type });
+      if (cfg.role) out.push({ ...by, via: `nodes[${i}].config.role`, kind: 'role', target: cfg.role });
+      if (cfg.agentKind) out.push({ ...by, via: `nodes[${i}].config.agentKind`, kind: 'agent-kind', target: cfg.agentKind });
+      if (cfg.pipeline?.template) out.push({ ...by, via: `nodes[${i}].config.pipeline.template`, kind: 'template', target: cfg.pipeline.template });
+      if (cfg.pipeline?.fallbackTemplate)
+        out.push({ ...by, via: `nodes[${i}].config.pipeline.fallbackTemplate`, kind: 'template', target: cfg.pipeline.fallbackTemplate });
+      (cfg.checks ?? []).forEach((c, j) => out.push({ ...by, via: `nodes[${i}].config.checks[${j}].type`, kind: 'check-type', target: c.type }));
+    });
+  }
+  return out;
+};
+
+/**
+ * 只读地拿模板，**不 new Store**：`Store` 的构造期会 `mkdir` 并补写默认项目档案
+ * （`store.ts:191-205`），一个自称纯读的推导器不该有这种写副作用。
+ * 口径与 `Store.listGraphs()` 对齐：只取 `*.json`、坏文件跳过（那里也是 `readJson` 返回 null 就滤掉）。
+ * 目录读不动则**照抛**——由路由层渲成「引用账扫不出」500，绝不降级成「零引用」放行删除。
+ */
+function readGraphs(dataDir: string): DagGraph[] {
+  const graphsDir = path.join(dataDir, 'graphs');
+  if (!fs.existsSync(graphsDir)) return []; // 一个模板也没有＝正读数（新装机器）
+  const out: DagGraph[] = [];
+  for (const f of fs.readdirSync(graphsDir).filter((x) => x.endsWith('.json')).sort()) {
+    let graph: unknown;
+    try {
+      graph = JSON.parse(fs.readFileSync(path.join(graphsDir, f), 'utf8')) as unknown;
+    } catch {
+      continue;
+    }
+    if (graph && typeof graph === 'object' && typeof (graph as DagGraph).name === 'string' && Array.isArray((graph as DagGraph).nodes)) {
+      out.push(graph as DagGraph);
+    }
+  }
+  return out;
+}
+
+/**
+ * 网关档的 `freeModel` 与 `current`：今天「哪个模型在用」唯一的落册处（§一 第 13 行：模型只作为网关档的
+ * freeModel 字段活着）。只读文档、不读密钥——`apiKey` 在本模块的任何输出里都不存在（R1 边界②：密钥禁入 spec，
+ * 也禁入引用面）。
+ */
+const gatewayRefs: Source = (dataDir) => {
+  const doc = readGatewayDoc(dataDir);
+  const out: RawReference[] = [];
+  if (doc.current) {
+    const cur = doc.profiles.find((p) => p.id === doc.current);
+    out.push({ face: 'gateway', id: doc.current, name: cur?.name ?? doc.current, via: 'current', kind: 'gateway-profile', target: doc.current });
+  }
+  for (const p of doc.profiles) {
+    if (p.freeModel) out.push({ face: 'gateway', id: p.id, name: p.name, via: 'freeModel', kind: 'model', target: p.freeModel });
+  }
+  return out;
+};
+
+/** 一张表列尽现役裸串引用面；新面进表只加一行，不改判据 */
+const SOURCES: Source[] = [spaceRefs, roleRefs, templateRefs, gatewayRefs];
+
+export function scanRawReferences(dataDir: string): RawReference[] {
+  return SOURCES.flatMap((src) => src(dataDir));
+}
+
+/** 一条裸串是不是指向我这一枚条目（由 Descriptor 自报口径；未挂号的 kind 不匹配任何条目） */
+function matchesTarget(entry: RegistryEntry, target: string): boolean {
+  const descriptor = (REGISTRY_DESCRIPTORS as Record<string, { refKeys(e: RegistryEntry): string[] } | undefined>)[entry.kind];
+  if (!descriptor) return false;
+  return descriptor.refKeys(entry).includes(target);
+}
+
+/**
+ * 建索引。`entries` 由调用方给（通常是 `RegistryStore.load().entries`）——本模块不读注册表，
+ * 免得在扫描器里再开一条读盘路（同一份数据两个读端＝迟早对不上）。
+ */
+export function buildReferenceIndex(entries: RegistryEntry[], raw: RawReference[]): ReferenceIndex {
+  const byEntry = entries.map((e) => ({ entryId: e.id, kind: e.kind, refs: [] as RegistryReferrer[] }));
+  const slot = new Map(byEntry.map((b) => [b.entryId, b]));
+  const danglingByKey = new Map<string, { kind: string; target: string; by: RegistryReferrer[] }>();
+  const unmigratedByKey = new Map<string, { kind: string; targets: Set<string>; refs: number }>();
+  const known = new Set<string>(REGISTRY_KINDS);
+
+  for (const ref of raw) {
+    if (!known.has(ref.kind)) {
+      const cur = unmigratedByKey.get(ref.kind) ?? { kind: ref.kind, targets: new Set<string>(), refs: 0 };
+      cur.targets.add(ref.target);
+      cur.refs += 1;
+      unmigratedByKey.set(ref.kind, cur);
+      continue;
+    }
+    const hit = entries.find((e) => e.kind === ref.kind && matchesTarget(e, ref.target));
+    if (hit) {
+      slot.get(hit.id)?.refs.push({ face: ref.face, id: ref.id, name: ref.name, via: ref.via });
+      continue;
+    }
+    const key = `${ref.kind}\u0000${ref.target}`;
+    const cur = danglingByKey.get(key) ?? { kind: ref.kind, target: ref.target, by: [] };
+    cur.by.push({ face: ref.face, id: ref.id, name: ref.name, via: ref.via });
+    danglingByKey.set(key, cur);
+  }
+
+  for (const b of byEntry) b.refs.sort((x, y) => `${x.face}:${x.id}:${x.via}`.localeCompare(`${y.face}:${y.id}:${y.via}`));
+  return {
+    byEntry,
+    dangling: [...danglingByKey.values()].sort((a, b) => `${a.kind}${a.target}`.localeCompare(`${b.kind}${b.target}`)),
+    unmigrated: [...unmigratedByKey.values()]
+      .map((u) => ({ kind: u.kind, targets: [...u.targets].sort(), refs: u.refs }))
+      .sort((a, b) => b.refs - a.refs || a.kind.localeCompare(b.kind)),
+    scanned: raw.length,
+  };
+}
+
+export function readReferenceIndex(dataDir: string, entries: RegistryEntry[]): ReferenceIndex {
+  return buildReferenceIndex(entries, scanRawReferences(dataDir));
+}
+
+export function refsForEntry(index: ReferenceIndex, entryId: string): RegistryReferrer[] {
+  return index.byEntry.find((b) => b.entryId === entryId)?.refs ?? [];
+}

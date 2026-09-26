@@ -64,7 +64,7 @@ async function main(): Promise<void> {
   });
   // v14 A1：注册内核的路由组住自己的模块（§一 记 `api/http.ts` 是本仓最挤的令牌轴，v14 要做的就是不再往里堆）。
   // 挂在同一 root 实例上 → 根实例的 CORS 守卫与令牌钩子照旧覆盖这组路由（单测有断言，不靠信念）。
-  registerRegistryRoutes(app, { registry });
+  registerRegistryRoutes(app, { registry, dataDir: config.dataDir });
 
   await app.listen({ port: config.port, host: config.host });
   annotateInstanceLock(lock, config.port);
