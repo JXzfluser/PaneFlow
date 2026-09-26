@@ -204,6 +204,12 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   paneflow registry check --template x --json         # 直吐那一行：{template,slots[],need[],missing[],unjudged[],malformed[],ok}——机检要的 missing:[{kind,id,hint,…}] 就在这层
   ```
   模板卡上显示「需要：模型 1 · 技能 2」+ ✓/✗/?（`requirementBadge`，**先于派活可见**，这是 T3 的可感面；预检读数拿不到时显「需要 N 项 · 预检没读出」而不是画 ✓）。
+  **一条撤回的自报 bug**（写文档自查时误报，落测试当场被证伪，记在这里是因为「以为自己修了个真 bug」是假账最常见来源）：
+  我判断「未迁 kind 的**没点名**宽槽（`{kind:'skill', hint:'要能读图'}`）会落 `missing` → 误拒起单」，
+  并照这个判断改了判据、写了文案。测试第一条就把这版改判打死：`checkGraphRequirements` 在**进匹配之前**
+  就有 `if (!isJudged(slot.kind)) → unjudged; continue`（`registry-check.ts:141-148`），点名与宽槽同一路，
+  我新加的那支是**走不到的死码**，`missing` 从来只可能出现在「已迁 kind 且账上没货」。改动整体撤回、零残留
+  （`git diff` 净）。真缺口仍是真缺口：已迁 kind 而表里空 → `missing` → 拒单，这条原有测试压着。
   **四条实施改判**（都不是设计时想出来的，是撞出来的）：
   | v0.2 原文 | 实际落地与理由 |
   |---|---|
