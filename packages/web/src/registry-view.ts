@@ -7,8 +7,17 @@
  */
 import type { RegistryEntry } from '@paneflow/shared';
 
-/** API 返回的条目 = 信封 + server 算好的人话标签（零判据消费面，不看 spec 说话） */
-export type RegistryEntryView = RegistryEntry & { label: string };
+/**
+ * API 返回的条目 = 信封 + server 算好的人话标签（零判据消费面，不看 spec 说话）
+ * + `view`（A3-2：这一项是内置清单的视图项，不可登记/改/删）。
+ * `view` 是 server 给的读数，**不是**这里拿 `source==='builtin'` 推的——出处与可写性是两条判据。
+ */
+export type RegistryEntryView = RegistryEntry & { label: string; view?: boolean };
+
+/** 这一项是不是内置清单的视图项（缺键＝旧 server，按可写条目渲染） */
+export function isViewEntry(entry: RegistryEntryView): boolean {
+  return entry.view === true;
+}
 
 /** 盘上没被认出的残条（server 只披露不清除；why 是 server 的一句人话，原样转述） */
 export interface RegistryRejectedRow {
@@ -22,35 +31,52 @@ export interface RegistryListResponse {
   rejected: RegistryRejectedRow[];
   schema: { version: number; writtenBy?: string } | null;
   knownKinds: string[];
+  /** `knownKinds` 里「内置清单现算、写入面不接」的那几类（A3-2；缺键＝旧 server，一律按可登记渲染） */
+  viewKinds?: string[];
+  /** kind → 人话组名，server 算好（与预检的 `need[].label` 同一处措辞；缺键＝旧 server，见 kindGroupLabel） */
+  kindLabels?: Record<string, string>;
 }
 
-/** kind → 分组中文名。只映射认识的；没挂号的 kind 不静默吞掉（见 kindGroupLabel）。 */
-const KIND_GROUP_LABELS: Record<string, string> = {
-  model: '模型',
-};
-
-export function kindGroupLabel(kind: string): string {
-  return KIND_GROUP_LABELS[kind] ?? `未知类型：${kind}`;
+/** kind → 人话组名：`labels` 来自 server（`GET /api/registry` 的 `kindLabels`，与预检的组名同源）。
+ *  这里**不留第二份措辞表**——两张表迟早分叉，而分叉了没人会去比对。`labels` 缺（旧 server / 还没到）
+ *  或那一枚没挂号，都明说「未知类型」：把不认识的 kind 画成猜来的中文名是假账。 */
+export function kindGroupLabel(kind: string, labels?: Record<string, string>): string {
+  return labels?.[kind] ?? `未知类型：${kind}`;
 }
 
 export interface KindGroup {
   kind: string;
   label: string;
   entries: RegistryEntryView[];
+  /** 这一整组都是出厂清单的视图项：登记控件对它不开，行内的启停/删除也不画 */
+  view: boolean;
 }
 
 /**
  * 按 kind 分组：先按 server 给的 knownKinds 顺序立牌（空组也立——「迁一个 kind 亮一个分组」，
  * 空表是正读数不是错误），entries 里冒出 knownKinds 之外的 kind 时追加在尾部（不静默吞）。
+ * `viewKinds` 决定那一组是不是出厂组——以 server 的清单为准而不是「这一组恰好有条目且都带 view」，
+ * 出厂组暂时探不出货（比如清单为空）也该说清「这一类不用登记」。
  */
-export function groupEntriesByKind(entries: RegistryEntryView[], knownKinds: string[]): KindGroup[] {
+export function groupEntriesByKind(
+  entries: RegistryEntryView[],
+  knownKinds: string[],
+  viewKinds: string[] = [],
+  kindLabels?: Record<string, string>,
+): KindGroup[] {
   const kinds = [...knownKinds];
   for (const e of entries) if (!kinds.includes(e.kind)) kinds.push(e.kind);
   return kinds.map((kind) => ({
     kind,
-    label: kindGroupLabel(kind),
+    label: kindGroupLabel(kind, kindLabels),
     entries: entries.filter((e) => e.kind === kind),
+    view: viewKinds.includes(kind),
   }));
+}
+
+/** 能被表单登记的 kind（= 认识的 kind 减掉出厂那几类）；出厂 kind 进下拉就是「点开却登记不了」的假可点 */
+export function registrableKinds(knownKinds: string[], viewKinds: string[] = []): string[] {
+  return knownKinds.filter((k) => !viewKinds.includes(k));
 }
 
 /** source 三态语义（§十.3 定死）：builtin=代码出厂、user=表单/CLI 登记、discovered=环境探得 */
@@ -155,6 +181,7 @@ const SPEC_FIELD_LABELS: Record<string, string> = {
   gatewayProfile: '网关档',
   freeModel: '免费位',
   note: '备注',
+  binary: '探测名',
 };
 
 export interface SpecRow {
@@ -257,6 +284,16 @@ export function formatWhen(iso: string | undefined): string {
   if (Number.isNaN(d.getTime())) return iso;
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * 详情格里两枚时刻的表头（出厂项那句「登记于」是假话——它没被登记过）。
+ * 出厂项的 `createdAt` 是「本机这次运行开始看见它」的时刻，文案这么说，不替它编登记账。
+ */
+export function whenLabels(view: boolean): { created: string; updated: string; note: string } {
+  return view
+    ? { created: '本机自', updated: '本次运行', note: '内置清单项由版本自带，没有登记时刻' }
+    : { created: '登记于', updated: '改于', note: '' };
 }
 
 // -- v14-T3 模板卡的能力槽读数（`GET /api/registry/check` 的直译 + 那一行的排版） ------------

@@ -1,14 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  isRegistryViewKind,
   normalizeRegistryEntry,
   registryId,
+  REGISTRY_KINDS,
   REGISTRY_SCHEMA_VERSION,
+  splitRegistryId,
   type RegistryEntry,
   type RegistryKind,
   type RegistrySchemaDoc,
 } from '@paneflow/shared';
 import { Store } from './store.js';
+import { registryViewEntries, viewKindWriteWhy } from './registry-view.js';
 
 /**
  * v14 A1（R1）注册表落盘层：`<dataDir>/registry/` 下两份文件——
@@ -114,8 +118,12 @@ export class RegistryStore {
   }
 
   /**
-   * 全表读取：不存在=空表（正读数，不是错误）；整份 JSON 读不出=抛给调用方披露（不静默当空表——
+   * 全表读取（**盘上事实**）：不存在=空表（正读数，不是错误）；整份 JSON 读不出=抛给调用方披露（不静默当空表——
    * 把「盘坏了」渲成「一条都没登记」是最典型的假绿）；单条不认识=进 rejected，其余照给。
+   *
+   * 写入路径（`add`/`update`/`remove`）只能吃这一枚：它们把结果整数组回写盘，
+   * 一旦在这里并进视图条目，出厂清单就被抄进了 `entries.json`（视图从此不再是视图，且再也删不掉）。
+   * 要「用户登记项 + 内置清单」的完整读数，用下面的 `readView()`。
    */
   load(): RegistrySnapshot {
     let text: string;
@@ -140,22 +148,52 @@ export class RegistryStore {
       if (norm.ok) entries.push(norm.value);
       else rejected.push({ id: labelOf(raw, i), why: norm.why });
     }
-    entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    entries.sort(compareEntries);
     return { entries, rejected };
   }
 
-  /** 按 kind 过滤（`--kind` 与将来 UI 分组共用；不认识的 kind 返回空表，不报错——那是「这一组没有条目」） */
+  /**
+   * 读端全貌（A3-2 起所有 HTTP/引擎读面吃这一枚）：`load()` 的用户登记项 **+ 视图 kind 现算条目**。
+   *
+   * 两条规矩：
+   *  1. **视图赢**：视图 kind（今天 `agent-kind`）在盘上的那几条一律不生效，整条挪进 `rejected`
+   *     说清为什么不生效——把它们和出厂清单并排渲出来就是两份「本机有哪些 agent」打架；
+   *  2. **不落盘**：本方法只读，`add`/`update`/`remove` 走 `load()`。视图条目进了写路径＝出厂清单被抄进台账。
+   */
+  readView(): RegistrySnapshot {
+    const disk = this.load();
+    const views = registryViewEntries();
+    const shadowed = disk.entries.filter((e) => isRegistryViewKind(e.kind));
+    const entries = [...disk.entries.filter((e) => !isRegistryViewKind(e.kind)), ...views];
+    entries.sort(compareEntries);
+    return {
+      entries,
+      rejected: [
+        ...disk.rejected,
+        ...shadowed.map((e) => ({ id: e.id, why: shadowedOnDiskWhy(e.kind) })),
+      ],
+    };
+  }
+
+  /** 按 kind 过滤（**盘上事实**，与 `load()` 同源；给「只谈用户登记项」的读端用）。视图条目请走 `readView()`。 */
   list(kind?: RegistryKind | string): RegistryEntry[] {
     const { entries } = this.load();
     return kind ? entries.filter((e) => e.kind === kind) : entries;
   }
 
+  /**
+   * 按 id 取**盘上那条**（写路径与「这条是不是用户登记的」判定用；视图项在这里查不到，正是它该被认出的地方）。
+   * 面向人的详情读取用 `readView()`——出厂项也要能查得到。
+   */
   get(id: string): RegistryEntry | undefined {
     return this.load().entries.find((e) => e.id === id);
   }
 
   /** 新增：id 缺省时按 name 生成；撞已有 id 一律拒（改=显式 update，id 不可变＝§十.6） */
   add(raw: unknown): RegistryWriteResult {
+    // 视图 kind 出厂自带，登记这条路不通（不拒的话，用户造的假 kind 会被读端当成可用能力）
+    const kind = (raw as { kind?: unknown } | null)?.kind;
+    if (typeof kind === 'string' && isRegistryViewKind(kind)) return viewRefused('登记', kind);
     const norm = normalizeRegistryEntry(raw);
     if (!norm.ok) return { ok: false, why: norm.why };
     const guard = this.ensureSchema();
@@ -176,13 +214,15 @@ export class RegistryStore {
    */
   update(id: string, patch: unknown): RegistryWriteResult {
     if (!id) return { ok: false, why: '缺少要改的条目 id' };
+    const { entries } = this.load();
+    const kind = splitRegistryId(id)?.kind;
+    if (kind && isRegistryViewKind(kind)) return viewRefused('改', kind, entries.some((e) => e.id === id));
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       return { ok: false, why: '更新体必须是 {name?, spec?, enabled?} 对象' };
     }
     const o = patch as Record<string, unknown>;
     const unknown = Object.keys(o).filter((k) => !['name', 'spec', 'enabled'].includes(k));
     if (unknown.length) return { ok: false, why: `更新体含不可改的键：${unknown.join('/')}（只认 name/spec/enabled）` };
-    const { entries } = this.load();
     const cur = entries.find((e) => e.id === id);
     if (!cur) return { ok: false, why: `没有条目「${id}」（注册表不代造条目，改前先登记）` };
     const merged = normalizeRegistryEntry({
@@ -200,12 +240,22 @@ export class RegistryStore {
     return { ok: true, entry: merged.value };
   }
 
-  /** 删除：找不到=失败读数（不静默成功）。R2 的「被引用不许删」长在这个入口之前，不塞进本片 */
+  /**
+   * 删除：找不到=失败读数（不静默成功）。R2 的「被引用不许删」长在这个入口之前，不塞进本片。
+   * 视图 kind 的 id 在**读端看得到**（出厂项上架），盘上却没有那条记录——这里只说「没有条目」会自相矛盾，
+   * 所以点名「这一类删不了」；盘上真有一条手写的残记录时走下面的正常删除（清的是账，拆不掉出厂项）。
+   */
   remove(id: string): RegistryWriteResult {
     if (!id) return { ok: false, why: '缺少要删的条目 id' };
     const { entries } = this.load();
     const cur = entries.find((e) => e.id === id);
-    if (!cur) return { ok: false, why: `没有条目「${id}」` };
+    if (!cur) {
+      const kind = splitRegistryId(id)?.kind;
+      if (kind && isRegistryViewKind(kind)) return viewRefused('删', kind);
+      return { ok: false, why: `没有条目「${id}」` };
+    }
+    // 只删**盘上那条**（手放进 `entries.json` 的记录）：读端本来就不吃它（见 `readView()` 的 shadow 账），
+    // 删掉它只是清账，拆不掉出厂项。删视图项走不到这里——它压根不在 `load()` 的结果里。
     const rest = entries.filter((e) => e.id !== id);
     const guard = this.ensureSchema();
     if (!guard.ok) return guard;
@@ -232,6 +282,36 @@ function labelOf(raw: unknown, i: number): string {
     }
   }
   return `entries[${i}]`;
+}
+
+/**
+ * 排序：先按 kind（`REGISTRY_KINDS` 的挂号顺序），再按 id。
+ * 为什么不裸按 id：内置清单一次就是十几枚，按 id 排会把它们整块压在用户亲手登记的那几枚前面
+ * （`agent-kind:` 字典序在 `model:` 之前）——「我登记的东西」该在第一屏，不是被出厂项埋了。
+ * 挂号顺序本身即「用户可写的在前、出厂视图在后」那份意图（视图 kind 总在清单尾部加）。
+ */
+function compareEntries(a: RegistryEntry, b: RegistryEntry): number {
+  const ka = REGISTRY_KINDS.indexOf(a.kind);
+  const kb = REGISTRY_KINDS.indexOf(b.kind);
+  // 认不出的 kind 走不到这里（`load()` 整条不认）；-1 就当排最前，不拿它冒充 0
+  if (ka !== kb) return ka - kb;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** 盘上那条视图项的披露文案（进 `rejected`：只说清为什么不生效，不替人删——它是手放进去的，人该看见） */
+function shadowedOnDiskWhy(kind: string): string {
+  return (
+    `「${kind}」这一类是 PaneFlow 的内置能力清单，读端只看出厂项，盘上这条不生效（不占 id、不参与引用账与预检）。` +
+    '要清掉它发 DELETE（删的就是这条盘上记录）；留着的话它每次都会出现在这份披露里。'
+  );
+}
+
+/** 视图 kind 的写入面拒答：`onDisk` 只影响要不要补那句「盘上那条也不生效，想清头发 DELETE」 */
+function viewRefused(action: string, kind: string, onDisk = false): RegistryWriteResult {
+  return {
+    ok: false,
+    why: `${viewKindWriteWhy(action, kind)}${onDisk ? '盘上那条同名记录同样不生效——要清账请发 DELETE。' : ''}`,
+  };
 }
 
 /**

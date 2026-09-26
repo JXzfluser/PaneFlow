@@ -7,14 +7,17 @@ import {
   healthDot,
   healthIndex,
   healthTitle,
+  isViewEntry,
   kindGroupLabel,
   missingRequiredFields,
   refCountOf,
   rejectedSummary,
+  registrableKinds,
   requirementBadge,
   requirementDetail,
   sourceLabel,
   specRows,
+  whenLabels,
   type RegistryCheckRow,
   type RegistryEntryView,
 } from './registry-view';
@@ -33,25 +36,40 @@ const entry = (over: Partial<RegistryEntryView> = {}): RegistryEntryView => ({
 });
 
 describe('v14-X1 注册中心分组与文案（判据全在 server，这里只渲给到的）', () => {
+  /** 组名只从 server 的 `kindLabels` 来——这里给的是「server 说了什么」的桩，不是 web 自己的表 */
+  const LABELS = { model: '模型', 'agent-kind': 'Agent 引擎' };
+
   it('knownKinds 立牌：空组也在——空表是正读数不是错误，不画报错', () => {
-    const groups = groupEntriesByKind([], ['model']);
+    const groups = groupEntriesByKind([], ['model'], [], LABELS);
     expect(groups).toHaveLength(1);
     expect(groups[0]!.kind).toBe('model');
     expect(groups[0]!.label).toBe('模型');
     expect(groups[0]!.entries).toEqual([]);
   });
 
+  /**
+   * 单一词表（A3-2 决议）：web 里不留 kind→中文名 那份表。
+   * 所以「server 没给 labels」必须是**看得见**的「未知类型」，而不是悄悄回落成中文——
+   * 回落了就是两张表还在，只是这一版没测到。
+   */
+  it('组名只认 server 给的 labels：没给就明说未知，绝不回落成 web 自带的中文名', () => {
+    expect(kindGroupLabel('model')).toBe('未知类型：model');
+    expect(kindGroupLabel('model', LABELS)).toBe('模型');
+    expect(groupEntriesByKind([], ['model'], [])[0]!.label).toBe('未知类型：model');
+  });
+
   it('分组按 server 给的 knownKinds 顺序，条目按 kind 归位', () => {
-    const groups = groupEntriesByKind([entry(), entry({ id: 'x:1', kind: 'other' as never })], ['model']);
+    const groups = groupEntriesByKind([entry(), entry({ id: 'x:1', kind: 'other' as never })], ['model'], [], LABELS);
     expect(groups.map((g) => g.kind)).toEqual(['model', 'other']);
     expect(groups[0]!.entries.map((e) => e.id)).toEqual(['model:gpt-4o']);
   });
 
   it('未知 kind 不静默吞：条目里有 knownKinds 之外的 kind 时追加成组并标明未知', () => {
-    const groups = groupEntriesByKind([entry({ kind: 'skill' as never })], ['model']);
+    const groups = groupEntriesByKind([entry({ kind: 'skill' as never })], ['model'], [], LABELS);
     expect(groups.map((g) => g.kind)).toEqual(['model', 'skill']);
-    expect(kindGroupLabel('skill')).toContain('未知类型');
-    expect(kindGroupLabel('skill')).toContain('skill');
+    expect(kindGroupLabel('skill', LABELS)).toContain('未知类型');
+    expect(kindGroupLabel('skill', LABELS)).toContain('skill');
+    expect(groups[1]!.label).toBe('未知类型：skill');
   });
 
   it('source 三态中文定死；没挂号的来源值原样披露而不是画成空', () => {
@@ -234,5 +252,42 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
       '⚠ model：声明形状不认',
       'probed-elsewhere model：未来新值',
     ]);
+  });
+});
+
+describe('v14-A3-2 内置清单视图项的消费面（只认 server 给的 view 标，不拿 source 猜）', () => {
+  const viewEntry = (over: Partial<RegistryEntryView> = {}): RegistryEntryView =>
+    entry({ id: 'agent-kind:pi', kind: 'agent-kind' as never, name: 'pi', source: 'builtin', view: true, ...over });
+
+  it('条目级：view 是 server 的读数；缺键（旧 server）按可写条目渲染', () => {
+    expect(isViewEntry(viewEntry())).toBe(true);
+    expect(isViewEntry(entry())).toBe(false);
+    // source 是出处、view 是可写性：拿 builtin 推「不可删」会把未来的 discovered 出厂项一起判死
+    expect(isViewEntry(entry({ source: 'builtin' }))).toBe(false);
+  });
+
+  it('分组级：出厂那一组整组标 view，且以 server 的 viewKinds 为准（空组也说清「不用登记」）', () => {
+    const groups = groupEntriesByKind([viewEntry()], ['model', 'agent-kind'], ['agent-kind'], {
+      model: '模型',
+      'agent-kind': 'Agent 引擎',
+    });
+    expect(groups.map((g) => [g.kind, g.view, g.label])).toEqual([
+      ['model', false, '模型'],
+      ['agent-kind', true, 'Agent 引擎'],
+    ]);
+    // 出厂组一枚货都没探到时仍立牌并说明——不能因为它空就当普通空组劝人来登记
+    const empty = groupEntriesByKind([], ['agent-kind'], ['agent-kind'], { 'agent-kind': 'Agent 引擎' });
+    expect(empty[0]).toMatchObject({ view: true, entries: [] });
+  });
+
+  it('登记下拉里不挂出厂 kind：挂上去就是「点开却登记不了」的假可点', () => {
+    expect(registrableKinds(['model', 'agent-kind'], ['agent-kind'])).toEqual(['model']);
+    expect(registrableKinds(['model', 'agent-kind'])).toEqual(['model', 'agent-kind']); // 旧 server 缺键：不猜
+  });
+
+  it('两枚时刻的表头分家：出厂项没有登记时刻，说「登记于」是假话', () => {
+    expect(whenLabels(false)).toMatchObject({ created: '登记于', updated: '改于', note: '' });
+    expect(whenLabels(true).created).not.toContain('登记');
+    expect(whenLabels(true).note).toContain('版本自带');
   });
 });

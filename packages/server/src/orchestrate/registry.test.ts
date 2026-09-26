@@ -7,9 +7,11 @@ import {
   REGISTRY_SCHEMA_VERSION,
   registryId,
   splitRegistryId,
+  parseAgentKindSpec,
   parseModelSpec,
   parseRegistrySpec,
 } from '@paneflow/shared';
+import { AGENT_KINDS } from '../api/agent-kinds.js';
 import { detectAppVersion, RegistryStore } from './registry.js';
 
 /**
@@ -187,5 +189,83 @@ describe('RegistryStore 落盘姿态（§十.1/§十.2）', () => {
     fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify({ name: 'paneflow', version: '1.2.3' })}\n`);
     expect(detectAppVersion(path.join(dir, 'lib', 'nested'))).toBe('1.2.3');
     expect(detectAppVersion(path.join(os.tmpdir(), 'no-such-pkg-dir-xyz'))).toBeUndefined();
+  });
+});
+
+/**
+ * v14 A3-2（R3）视图 kind：`agent-kind` 的条目由出厂清单**现算**，盘上永远没有它们。
+ *
+ * 三条最容易在实施时被洗掉的姿态，各有专测：
+ *  1. **只读**——`readView()` 合进来的条目一个字节都不落盘（落了就是台账里多一份「本机有哪些 agent」，
+ *     而真正决定能不能起 agent 的是代码那张表）；
+ *  2. **视图赢**——手塞进 `entries.json` 的 `agent-kind` 那条不生效，且要出现在 `rejected` 里说清为什么
+ *     （静默吞掉就是「盘上明明有、表上看不见」那种查三天的账）；
+ *  3. **写入面拒**——`add`/`update`/`remove` 三动词对视图 kind 全关（不拒就等于给用户造一个不生效的假开关）。
+ */
+describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', () => {
+  it('agent-kind 的 spec 形状：只认 binary 一键，且必须非空', () => {
+    expect(parseAgentKindSpec({ binary: 'pi' })).toEqual({ ok: true, value: { binary: 'pi' } });
+    // 拼错的键会静默失效（读端永远读不到它）——宁拒不错放
+    const unknown = parseAgentKindSpec({ binary: 'pi', bin: 'p' });
+    if (unknown.ok) throw new Error('未知键竟然被认下了');
+    expect(unknown.why).toContain('未知键 bin');
+    expect(parseAgentKindSpec({ binary: '  ' }).ok).toBe(false);
+    expect(parseAgentKindSpec('pi').ok).toBe(false);
+  });
+
+  it('一条没登记：视图项在表上、盘上无文件（读操作不写盘，出厂清单不抄进台账）', () => {
+    const dir = tmp();
+    const store = storeAt(dir);
+    const view = store.readView();
+    expect(view.entries).toHaveLength(AGENT_KINDS.length);
+    expect(view.entries.every((e) => e.kind === 'agent-kind' && e.source === 'builtin' && e.enabled)).toBe(true);
+    expect(new Set(view.entries.map((e) => e.name))).toEqual(new Set(AGENT_KINDS));
+    // spec 由 `agentBinaryName` 现算：异名那几枚（antigravity）与 kind 不同，别拿 kind 冒充探测名
+    expect(view.entries.find((e) => e.name === 'antigravity-cli')?.spec).toEqual({ binary: 'antigravity' });
+    expect(fs.existsSync(path.join(dir, 'registry', 'entries.json'))).toBe(false);
+    // 而写路径吃的仍是 `load()`：盘上就是零条
+    expect(store.list()).toEqual([]);
+  });
+
+  it('用户登记的 model 排在前屏（compareEntries 吃 REGISTRY_KINDS 顺序，出厂那 18 行不糊住自己的账）', () => {
+    const store = storeAt(tmp());
+    store.add(MODEL);
+    const ids = store.readView().entries.map((e) => e.id);
+    expect(ids[0]).toBe('model:gpt-4o-mini');
+    expect(ids).toHaveLength(AGENT_KINDS.length + 1);
+  });
+
+  it('盘上手写的 agent-kind 那条：视图赢、进 rejected 说清怎么清，且 DELETE 清得掉', () => {
+    const dir = tmp();
+    const store = storeAt(dir);
+    fs.mkdirSync(path.join(dir, 'registry'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'registry', 'entries.json'),
+      JSON.stringify({ entries: [{ id: 'agent-kind:myth', kind: 'agent-kind', name: 'myth', source: 'user', enabled: true, createdAt: '2026-09-01T08:00:00.000Z', updatedAt: '2026-09-01T08:00:00.000Z', spec: { binary: 'myth' } }] }),
+      'utf8',
+    );
+    const view = store.readView();
+    expect(view.entries.some((e) => e.id === 'agent-kind:myth')).toBe(false);
+    expect(view.entries).toHaveLength(AGENT_KINDS.length); // 出厂项一枚不少，手写那枚一枚不掺
+    expect(view.rejected.map((r) => r.id)).toEqual(['agent-kind:myth']);
+    expect(view.rejected[0]!.why).toContain('读端只看出厂项');
+    expect(view.rejected[0]!.why).toContain('DELETE');
+    // 清账路真的通：删的是盘上那条，删完出厂项照在（视图项拆不掉）
+    const removed = store.remove('agent-kind:myth');
+    expect(removed.ok).toBe(true);
+    expect(store.readView().rejected).toEqual([]);
+    expect(store.readView().entries).toHaveLength(AGENT_KINDS.length);
+  });
+
+  it('三动词对视图 kind 全拒，且拒得没落盘（登记不了的类不在这里开第二条写路）', () => {
+    const dir = tmp();
+    const store = storeAt(dir);
+    const add = store.add({ kind: 'agent-kind', name: 'my-agent', spec: { binary: 'my-agent' } });
+    expect(add.ok).toBe(false);
+    expect(add.why).toContain('内置能力清单');
+    expect(store.update('agent-kind:pi', { enabled: false }).ok).toBe(false);
+    expect(store.remove('agent-kind:pi').ok).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'registry'))).toBe(false);
+    expect(store.list('agent-kind')).toEqual([]);
   });
 });

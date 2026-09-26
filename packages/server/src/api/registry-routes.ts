@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
-import { REGISTRY_KINDS, type RegistryEntry } from '@paneflow/shared';
+import { isRegistryViewKind, REGISTRY_KINDS, REGISTRY_VIEW_KINDS, type RegistryEntry } from '@paneflow/shared';
 import type { RegistryStore, RegistryWriteResult } from '../orchestrate/registry.js';
 import { registryLabel } from '../orchestrate/registry-descriptors.js';
 import { readStoredGraphs, readReferenceIndex, refsForEntry, type ReferenceIndex, type RegistryReferrer } from '../orchestrate/registry-refs.js';
-import { checkGraphRequirements } from '../orchestrate/registry-check.js';
+import { checkGraphRequirements, requirementKindLabel } from '../orchestrate/registry-check.js';
 import { entryHealth, type EntryHealth } from './registry-health.js';
 
 /**
@@ -27,15 +27,28 @@ export interface RegistryRouteDeps {
 }
 
 /** 条目 + 人话标签 + 引用账（API 与 CLI 共用同一份渲染输入；`refs: []` 是正读数「没人用」，缺键才是「不知道」） */
-type RegistryView = RegistryEntry & { label: string; refs?: RegistryReferrer[] };
+type RegistryView = RegistryEntry & {
+  label: string;
+  refs?: RegistryReferrer[];
+  /** 内置清单的视图项：不可登记/改/删（前端据此收起控件，而不是自己拿 `source` 猜——R4 零判据） */
+  view: boolean;
+};
 
 /** `GET /api/registry/health` 的一行：list 的那一格 + 实探读数（没通道的 kind 整键不给 `health`） */
 type RegistryHealthRow = RegistryView & { health?: EntryHealth };
 
-const view = (entry: RegistryEntry, index: ReferenceIndex): RegistryView => ({
+const row = (entry: RegistryEntry, index: ReferenceIndex): RegistryView => ({
   ...entry,
   label: registryLabel(entry),
   refs: refsForEntry(index, entry.id),
+  view: isRegistryViewKind(entry.kind),
+});
+
+/** 不带引用账的那一格（引用账读不动时的回执，以及删除回执——删掉的条目再谈「谁在用」没意义） */
+const bare = (entry: RegistryEntry): RegistryView => ({
+  ...entry,
+  label: registryLabel(entry),
+  view: isRegistryViewKind(entry.kind),
 });
 
 /**
@@ -43,8 +56,8 @@ const view = (entry: RegistryEntry, index: ReferenceIndex): RegistryView => ({
  * 以为没登记成功而重复登记）。此时**省掉 `refs` 键**＝「这一格不知道」，绝不渲成零引用。
  */
 function viewWithRefs(deps: RegistryRouteDeps, entry: RegistryEntry): RegistryView {
-  const r = indexOf(deps, deps.registry.load().entries);
-  return 'why' in r ? { ...entry, label: registryLabel(entry) } : view(entry, r.index);
+  const r = indexOf(deps, deps.registry.readView().entries);
+  return 'why' in r ? bare(entry) : row(entry, r.index);
 }
 
 /** 写端结果的 HTTP 码：本机版本过旧＝不是调用方的错（409），其余脏输入与「还在被用」一律 400 指路 */
@@ -79,7 +92,10 @@ type Guard = { ok: true } | { ok: false; code: number; why: string };
 
 function guardReferenced(deps: RegistryRouteDeps, entry: RegistryEntry | undefined, action: string): Guard {
   if (!entry) return { ok: true };
-  const r = indexOf(deps, deps.registry.load().entries);
+  // 视图 kind 的盘上那条读端本就不吃（`readView()` 把它挪进 rejected），引用账挂的是出厂项而不是它——
+  // 拿出厂项的引用去拦「清账用的 DELETE」，就成了「删不掉一条本来就不生效的记录」。
+  if (isRegistryViewKind(entry.kind)) return { ok: true };
+  const r = indexOf(deps, deps.registry.readView().entries);
   if ('why' in r) return { ok: false, code: 500, why: r.why };
   const refs = refsForEntry(r.index, entry.id);
   return refs.length ? { ok: false, code: 400, why: referencedWhy(action, entry, refs) } : { ok: true };
@@ -89,7 +105,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
   app.get<{ Querystring: { kind?: string } }>('/api/registry', async (req, reply) => {
     let snapshot;
     try {
-      snapshot = deps.registry.load();
+      snapshot = deps.registry.readView();
     } catch (err) {
       // 盘读不出不渲空表：500 带一句为什么（与 Store 的 S5 姿态同源——静默失败不伪装成正断言）
       return reply.code(500).send({ error: `注册表读不出：${(err as Error).message}` });
@@ -103,11 +119,17 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     if ('why' in idx) return reply.code(500).send({ error: idx.why });
     const entries = kind ? snapshot.entries.filter((e) => e.kind === kind) : snapshot.entries;
     return {
-      entries: entries.map((e) => view(e, idx.index)),
+      entries: entries.map((e) => row(e, idx.index)),
       rejected: snapshot.rejected,
       schema: deps.registry.readSchema(),
       // 这版认识的 kind：让「登记了却没亮出来」当场可辨（未知 kind 整条不认，见 §十.4）
       knownKinds: REGISTRY_KINDS,
+      // 其中「内置清单现算、写入面不接」的那几类（A3-2）：消费面据此收起登记/编辑/删除控件，
+      // 不必自己拿 `source==='builtin'` 猜（那是出处，不是可写性——两条判据迟早分家）
+      viewKinds: REGISTRY_VIEW_KINDS,
+      // kind → 人话组名：措辞只有 `KIND_CN` 一处（预检的 `need[].label` 同源），网页与 CLI 拿它渲染。
+      // 为什么外发而不是让前端各抄一份：两张措辞表迟早分叉，而没人会去比对两张措辞表——分叉了也没人红。
+      kindLabels: Object.fromEntries(REGISTRY_KINDS.map((k) => [k, requirementKindLabel(k)] as const)),
       // M0 的底座读数：现役配置里到底有多少跨面裸串引用、其中多少指向还没迁进表的 kind（只披露计数，不判死活）
       refSummary: {
         scanned: idx.index.scanned,
@@ -120,7 +142,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
   /**
    * v14 R4：首屏那颗「健康点」＋「被引用数」的一次读数（`?refresh=1` 绕开 5min 实探缓存）。
    *
-   * 为什么不并进 `GET /api/registry`：那一刀现在是纯读盘（CLI 每问一次都跑它），把网络实探塞进去
+   * 为什么不并进 `GET /api/registry`：那一刀现在是盘上加现算视图、零网络探针（CLI 每问一次都跑它），把网络实探塞进去
    * 等于让网关慢起来时整张表跟着慢、跟着变红——表读不出与点读不出是两回事，得分开报。
    *
    * 三样东西同一次给齐，消费面（网页首屏、`paneflow registry health`）零拼装：
@@ -137,7 +159,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
   app.get<{ Querystring: { refresh?: string } }>('/api/registry/health', async (req, reply) => {
     let snapshot;
     try {
-      snapshot = deps.registry.load();
+      snapshot = deps.registry.readView();
     } catch (err) {
       return reply.code(500).send({ error: `注册表读不出：${(err as Error).message}` });
     }
@@ -146,7 +168,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     const refresh = req.query.refresh === '1';
     const entries: RegistryHealthRow[] = [];
     for (const e of snapshot.entries) {
-      entries.push({ ...view(e, idx.index), health: await entryHealth(deps.dataDir, e, { refresh }) });
+      entries.push({ ...row(e, idx.index), health: await entryHealth(deps.dataDir, e, { refresh }) });
     }
     return {
       at: new Date().toISOString(),
@@ -179,7 +201,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
   app.get<{ Querystring: { template?: string; space?: string } }>('/api/registry/check', async (req, reply) => {
     let entries: RegistryEntry[];
     try {
-      entries = deps.registry.load().entries;
+      entries = deps.registry.readView().entries;
     } catch (err) {
       return reply.code(500).send({ error: `注册表读不出：${(err as Error).message}` });
     }
@@ -198,7 +220,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     return {
       space: String(req.query.space ?? '').trim() || 'default',
       spaceNote:
-        '本版命中的判定只看注册表（已迁 kind=model 是全局表），项目名只影响指路文案；等带作用域的 kind（技能/规则/仓库）迁入，这一枚才真参与判定',
+        '本版命中的判定只看注册表（已迁的 model 与内置清单 agent-kind 都是全局表），项目名只影响指路文案；等带作用域的 kind（技能/规则/仓库）迁入，这一枚才真参与判定',
       at: new Date().toISOString(),
       templates: targets.map((g) => checkGraphRequirements(g, entries)),
     };
@@ -208,7 +230,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     let entry: RegistryEntry | undefined;
     let snapshot;
     try {
-      snapshot = deps.registry.load();
+      snapshot = deps.registry.readView();
       entry = snapshot.entries.find((e) => e.id === req.params.id);
     } catch (err) {
       return reply.code(500).send({ error: `注册表读不出：${(err as Error).message}` });
@@ -218,7 +240,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     }
     const idx = indexOf(deps, snapshot.entries);
     if ('why' in idx) return reply.code(500).send({ error: idx.why });
-    return { entry: view(entry, idx.index) };
+    return { entry: row(entry, idx.index) };
   });
 
   /**
@@ -234,7 +256,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     async (req, reply) => {
       let snapshot;
       try {
-        snapshot = deps.registry.load();
+        snapshot = deps.registry.readView();
       } catch (err) {
         return reply.code(500).send({ error: `注册表读不出：${(err as Error).message}` });
       }
@@ -245,7 +267,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
       const idx = indexOf(deps, snapshot.entries);
       if ('why' in idx) return reply.code(500).send({ error: idx.why });
       const health = await entryHealth(deps.dataDir, entry, { refresh: req.query.refresh === '1' });
-      return { at: new Date().toISOString(), entry: view(entry, idx.index), ...(health ? { health } : {}) };
+      return { at: new Date().toISOString(), entry: row(entry, idx.index), ...(health ? { health } : {}) };
     },
   );
 
@@ -274,6 +296,6 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     if (!blocked.ok) return reply.code(blocked.code).send({ error: blocked.why });
     const r = deps.registry.remove(req.params.id);
     if (!r.ok) return reply.code(codeOf(r)).send({ error: r.why });
-    return { deleted: { ...r.entry!, label: registryLabel(r.entry!) } };
+    return { deleted: bare(r.entry!) };
   });
 }

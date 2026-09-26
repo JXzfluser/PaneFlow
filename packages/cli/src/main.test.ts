@@ -728,6 +728,31 @@ describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全�
     expect(out).toContain('悬挂：model → gpt-5');
   });
 
+  /**
+   * v14 A3-2 单一词表：组名吃 server 的 `kindLabels`（全仓那一处表），CLI 不抄第二份。
+   * 上面那格断言的是**缺键回落**（旧 server 画 kind 原值）——两格合起来才钉住「有就读、没有就不猜」。
+   */
+  it('list：有 kindLabels 时组名与「这版认识」都画 server 给的人话', async () => {
+    const { fetchImpl } = stubFetch([
+      {
+        body: {
+          ...listPayload,
+          knownKinds: ['model', 'agent-kind'],
+          viewKinds: ['agent-kind'],
+          kindLabels: { model: '模型', 'agent-kind': 'Agent 引擎' },
+          entries: [entry, { ...entry, id: 'agent-kind:pi', kind: 'agent-kind', name: 'pi', source: 'builtin', view: true, label: '探测名同 kind' }],
+        },
+      },
+    ]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'list'], io)).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('这版认识：模型/Agent 引擎');
+    expect(out).toContain('· 模型（1 项）');
+    expect(out).toContain('· Agent 引擎（1 项）');
+    expect(out).not.toContain('· agent-kind（'); // 有标签时不退回画 kind 原值
+  });
+
   it('list 空表是正读数（不猜「注册失败」）；refs 缺键画「引用账未读出」而不是「没人用」', async () => {
     const { fetchImpl } = stubFetch([{ body: { ...listPayload, entries: [], rejected: [], schema: null, refSummary: undefined } }]);
     const { io, lines } = makeIo({ fetch: fetchImpl });

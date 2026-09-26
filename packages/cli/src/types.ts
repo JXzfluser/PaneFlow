@@ -175,6 +175,11 @@ export interface RegistryEntryView {
    * 这是 R2 的 宁缺毋假 在 HTTP 面上的形状，CLI 据此决定渲染哪句。
    */
   refs?: { face: string; id: string; name: string; via: string }[];
+  /**
+   * v14-A3-2：这一项是**内置清单的视图项**（出厂自带、不落盘、写入面不接）。server 给的读数，
+   * CLI 不拿 `source==='builtin'` 自己推（出处与可写性是两条判据，两份迟早分叉）。缺键＝旧 server，按非视图渲染。
+   */
+  view?: boolean;
 }
 
 /** `GET /api/registry` 的响应（`rejected`/`refSummary` 都是只披露不清除的读端账） */
@@ -184,6 +189,10 @@ export interface RegistryListView {
   rejected: { id: string; why: string }[];
   schema: { version: number; writtenBy?: string } | null;
   knownKinds: string[];
+  /** `knownKinds` 里「内置清单现算、不可登记/改/删」的那几类（A3-2；缺键＝旧 server） */
+  viewKinds?: string[];
+  /** kind → 人话组名（server 那一处词表外发；缺键＝旧 server，画 kind 原值，CLI 不自备对照表） */
+  kindLabels?: Record<string, string>;
   refSummary?: {
     scanned: number;
     dangling: { kind: string; target: string; by: unknown[] }[];

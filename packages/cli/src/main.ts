@@ -522,9 +522,21 @@ function entryLine(io: CliIo, e: RegistryEntryView): string {
   return bits.join('  ');
 }
 
+/**
+ * kind → 人话组名：措辞全在 server 那一份词表（`kindLabels`，与预检 `need[].label` 同源），
+ * 这里只是取用；没给那一格就画 kind 原值——薄壳不猜中文名（猜来的标签错了没人知道）。
+ */
+const kindLabel = (body: { kindLabels?: Record<string, string> }) => (kind: string): string =>
+  body.kindLabels?.[kind] ?? kind;
+
 function renderEntry(io: CliIo, e: RegistryEntryView): void {
   io.out(entryLine(io, e));
-  io.out(`  登记于 ${e.createdAt}${e.updatedAt && e.updatedAt !== e.createdAt ? ` · 改于 ${e.updatedAt}` : ''}`);
+  if (e.view) {
+    // 视图项没有「登记」这件事，所以那句「登记于」不能照画（时刻是本次运行的读数，不是账）
+    io.out(`  内置清单的视图项：出厂自带、不落盘，改不了也删不了（这里的时刻=本机这次运行开始看见它，不是登记时刻）`);
+  } else {
+    io.out(`  登记于 ${e.createdAt}${e.updatedAt && e.updatedAt !== e.createdAt ? ` · 改于 ${e.updatedAt}` : ''}`);
+  }
   if (!e.refs) {
     io.out(`  ${paint(io, '33', '「谁在用」没读出来——这是不知道，不是没人用（引用账扫不出时 server 就不给 refs 键）')}`);
     return;
@@ -583,14 +595,15 @@ async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<numb
         return EXIT_OK;
       }
       io.out(
-        `注册表 schema v${body.schema?.version ?? '?'}${body.schema?.writtenBy ? `（由 ${body.schema.writtenBy} 写）` : '（本机版本戳还没落盘=一条没登记过）'} · 这版认识：${body.knownKinds.join('/')}`,
+        `注册表 schema v${body.schema?.version ?? '?'}${body.schema?.writtenBy ? `（由 ${body.schema.writtenBy} 写）` : '（本机版本戳还没落盘=一条没登记过）'} · 这版认识：${body.knownKinds.map(kindLabel(body)).join('/')}`,
       );
       if (!body.entries.length) {
         io.out('  （一张表都还没登记——日常登记走网页「注册中心」表单，脚本走 `paneflow registry add --from <草案.json>`）');
       }
-      // 分组只按 `kind` 字段排（值域由 server 说），组名原样：CLI 不维护第二份「类型→人话」表
+      // 分组只按 `kind` 字段排（值域由 server 说），组名吃 server 的 `kindLabels`（全仓那一处词表）；
+      // 旧 server 没给这一格就画 kind 原值——CLI 从不自带第二份「类型→人话」表
       for (const kind of [...new Set(body.entries.map((e) => e.kind))]) {
-        io.out(`· ${kind}（${body.entries.filter((e) => e.kind === kind).length} 项）`);
+        io.out(`· ${kindLabel(body)(kind)}（${body.entries.filter((e) => e.kind === kind).length} 项）`);
         for (const e of body.entries.filter((x) => x.kind === kind)) io.out(entryLine(io, e));
       }
       for (const r of body.rejected) io.out(`  ${paint(io, '33', `⚠ 本机不认（只披露不清除）：${r.id} —— ${r.why}`)}`);

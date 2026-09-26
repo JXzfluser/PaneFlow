@@ -6,6 +6,8 @@ import type { Engine } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import type { Store } from '../orchestrate/store.js';
 import { RegistryStore } from '../orchestrate/registry.js';
+import { requirementKindLabel } from '../orchestrate/registry-check.js';
+import { AGENT_KINDS } from './agent-kinds.js';
 import { buildHttpServer } from './http.js';
 import { registerRegistryRoutes } from './registry-routes.js';
 
@@ -47,18 +49,112 @@ function pinGatewayModel(dataDir: string, model: string | null): void {
 }
 
 describe('注册内核四动词（/api/registry）', () => {
-  it('一条都没登记：空表是正读数，knownKinds 当场说清这版认识什么', async () => {
+  it('一条都没登记：用户登记项为空是正读数，出厂清单以视图项上架（A3-2 R3 分组的面）', async () => {
     const { app } = await build();
     try {
       const res = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({
-        entries: [],
-        rejected: [],
-        schema: null,
-        knownKinds: ['model'],
-        refSummary: { scanned: 0, dangling: [], unmigrated: [] },
+      const body = res.json() as {
+        entries: { id: string; kind: string; name: string; source: string; view: boolean; label: string; spec: unknown }[];
+        rejected: unknown[];
+        schema: unknown;
+        knownKinds: string[];
+        viewKinds: string[];
+        kindLabels: Record<string, string>;
+        refSummary: unknown;
+      };
+      expect(body.entries.filter((e) => !e.view)).toEqual([]); // 盘上真的一条没登记——这格还是正读数零
+      expect(body.rejected).toEqual([]);
+      expect(body.schema).toBeNull();
+      expect(body.knownKinds).toEqual(['model', 'agent-kind']);
+      expect(body.viewKinds).toEqual(['agent-kind']);
+      // 组名只有一处措辞表（`registry-check.ts` 的 `KIND_CN`）：网页拿这张外发表的标签画分组，
+      // 前端不再自己抄一份——抄了迟早分叉，而分叉的代价是「同一个 kind 两处两个名字」。
+      expect(Object.keys(body.kindLabels).sort()).toEqual([...body.knownKinds].sort());
+      expect(body.kindLabels).toMatchObject({ model: '模型', 'agent-kind': 'Agent 引擎' });
+      expect(requirementKindLabel('agent-kind')).toBe(body.kindLabels['agent-kind']);
+      expect(body.refSummary).toEqual({ scanned: 0, dangling: [], unmigrated: [] });
+      // 视图项=出厂清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
+      expect(body.entries).toHaveLength(AGENT_KINDS.length);
+      expect(new Set(body.entries.map((e) => e.name))).toEqual(new Set(AGENT_KINDS));
+      expect(body.entries.every((e) => e.view && e.kind === 'agent-kind' && e.source === 'builtin')).toBe(true);
+      // label 由 Descriptor 算：异名才说话，同名不重复一遍
+      const agy = body.entries.find((e) => e.name === 'antigravity-cli');
+      expect(agy).toMatchObject({ id: 'agent-kind:antigravity-cli', label: '探测名 antigravity', spec: { binary: 'antigravity' } });
+      expect(body.entries.find((e) => e.name === 'pi')).toMatchObject({ label: '探测名同 kind', spec: { binary: 'pi' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * 视图 kind 的写入面三动词全拒（A3-2 的立命之处）：不拒的话，用户手造的 `agent-kind:xxx`
+   * 会被读端当成可用能力，而它既进不了节点校验也起不了 agent。
+   */
+  it('内置清单类不能登记也不能改：POST/PATCH 400 一句指路，DELETE 只清盘上那条', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      const add = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'agent-kind', name: 'my-agent', spec: { binary: 'my-agent' } },
       });
+      expect(add.statusCode).toBe(400);
+      expect(add.json().error).toContain('内置能力清单');
+      expect(add.json().error).toContain('注册表不代造本机没有的东西');
+      expect(registry.list('agent-kind')).toEqual([]); // 拒得干净：盘上没落下一条
+      expect(fs.existsSync(path.join(dataDir, 'registry', 'entries.json'))).toBe(false);
+
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: '/api/registry/agent-kind%3Api',
+        headers: { host: HOST },
+        payload: { enabled: false },
+      });
+      expect(patch.statusCode).toBe(400);
+      expect(patch.json().error).toContain('改不了它');
+
+      // 视图项在表上：GET 得到、DELETE 拒（它不落盘，拆不掉出厂项——写面 refusal 与未知 id 同款 400）
+      const got = await app.inject({ method: 'GET', url: '/api/registry/agent-kind%3Api', headers: { host: HOST } });
+      expect(got.statusCode).toBe(200);
+      expect(got.json().entry).toMatchObject({ id: 'agent-kind:pi', view: true });
+      const del = await app.inject({ method: 'DELETE', url: '/api/registry/agent-kind%3Api', headers: { host: HOST } });
+      expect(del.statusCode).toBe(400);
+      expect(del.json().error).toContain('内置能力清单');
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * 手把 `agent-kind` 塞进 `entries.json`（绕过写入面）：读端**不吃**它，出厂项优先，
+   * 盘上那条进 `rejected` 只披露——同时 DELETE 仍能清掉它（不然一条不生效的残记录永远删不掉）。
+   */
+  it('盘上手写的视图项：被出厂项遮蔽并进 rejected，DELETE 清得掉', async () => {
+    const { app, dataDir } = await build();
+    try {
+      fs.mkdirSync(path.join(dataDir, 'registry'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dataDir, 'registry', 'entries.json'),
+        `${JSON.stringify({ entries: [{ id: 'agent-kind:pi', kind: 'agent-kind', name: 'pi', source: 'user', enabled: false, createdAt: '2026-01-01T00:00:00.000Z', spec: { binary: 'not-real' } }] })}\n`,
+      );
+      const list = await app.inject({ method: 'GET', url: '/api/registry?kind=agent-kind', headers: { host: HOST } });
+      expect(list.json().entries).toHaveLength(AGENT_KINDS.length); // 全看出厂项，遮蔽的那条不掺进来
+      const pi = list.json().entries.find((e: { id: string }) => e.id === 'agent-kind:pi');
+      expect(pi).toMatchObject({ source: 'builtin', enabled: true, spec: { binary: 'pi' } });
+      const shadow = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
+      expect(shadow.json().rejected).toHaveLength(1);
+      expect(shadow.json().rejected[0].id).toBe('agent-kind:pi');
+      expect(shadow.json().rejected[0].why).toContain('内置能力清单');
+      expect(shadow.json().rejected[0].why).toContain('DELETE');
+
+      const del = await app.inject({ method: 'DELETE', url: '/api/registry/agent-kind%3Api', headers: { host: HOST } });
+      expect(del.statusCode).toBe(200);
+      expect(del.json().deleted).toMatchObject({ id: 'agent-kind:pi', view: true });
+      const after = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
+      expect(after.json().rejected).toEqual([]);
+      expect(after.json().entries).toHaveLength(AGENT_KINDS.length); // 清的是盘上残条，出厂项一条没少
     } finally {
       await app.close();
     }
@@ -151,7 +247,9 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(res.statusCode).toBe(409);
       expect(res.json().error).toContain('先升级 PaneFlow');
       const list = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
-      expect(list.json().entries).toHaveLength(1);
+      // 读面照读：盘上那条 + 出厂清单的视图项都在表上（视图项本来就不落盘，版本戳管不着它）
+      expect(list.json().entries.filter((e: { view: boolean }) => !e.view)).toHaveLength(1);
+      expect(list.json().entries.filter((e: { view: boolean }) => e.view)).toHaveLength(AGENT_KINDS.length);
       expect(list.json().schema).toEqual({ version: 99, writtenBy: '9.0.0' });
     } finally {
       await app.close();

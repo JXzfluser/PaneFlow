@@ -7,7 +7,6 @@ import type { Engine } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import type { Store } from '../orchestrate/store.js';
 import { RegistryStore } from '../orchestrate/registry.js';
-import { normalizeRegistryEntry, type RegistryEntry } from '@paneflow/shared';
 import { buildHttpServer } from './http.js';
 import { registerRegistryRoutes } from './registry-routes.js';
 
@@ -22,27 +21,15 @@ import { registerRegistryRoutes } from './registry-routes.js';
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'pf-reg-check-'));
 const HOST = '127.0.0.1:4310';
 
-const modelEntry = (enabled = true): RegistryEntry => {
-  const r = normalizeRegistryEntry({
-    kind: 'model',
-    name: 'gpt-4o-mini',
-    spec: { model: 'gpt-4o-mini', gatewayProfile: 'free' },
-    enabled,
-  });
-  if (!r.ok) throw new Error(r.why);
-  return r.value;
-};
-
 /**
- * 桩 `load()` 只在两格用：注册表读不出（真 store 造不出破烂盘面而不抛——它整条不认是设计），
- * 以及 `enabled:false`（写端把禁用位留着，POST 造不出「禁用但仍注册」的形状）。
- * 其余一律走真 store，免得把「路由 ↔ RegistryStore 的装配」桩成自证。
+ * 这两格要的形状 POST 面给不出（禁用位、破烂盘），但同样**不必桩 `load()`**：真 store 的
+ * `update({enabled:false})` 造得出「注册但禁用」，直接往 `registry/entries.json` 写破烂造得出读不出。
+ * A3-2 起读面吃的是 `readView()`，桩 `load` 等于把「路由 ↔ 合并视图」这一层装配桩成自证——所以这里全走真 store。
  */
-async function build(loadStub?: () => { entries: RegistryEntry[]; rejected: unknown[] }) {
+async function build(prepare?: (dataDir: string, registry: RegistryStore) => void) {
   const dataDir = tmp();
-  const registry = loadStub
-    ? ({ load: loadStub } as unknown as RegistryStore)
-    : new RegistryStore(dataDir, '0.3.0-test');
+  const registry = new RegistryStore(dataDir, '0.3.0-test');
+  prepare?.(dataDir, registry);
   const { app } = await buildHttpServer({
     engine: { onChange: () => {} } as unknown as Engine,
     store: {} as unknown as Store,
@@ -51,7 +38,7 @@ async function build(loadStub?: () => { entries: RegistryEntry[]; rejected: unkn
     dataDir,
   });
   registerRegistryRoutes(app as FastifyInstance, { registry, dataDir });
-  return { app, registry: registry as RegistryStore, dataDir };
+  return { app, registry, dataDir };
 }
 
 const graph = (name: string, requires?: unknown[]) => ({
@@ -140,8 +127,9 @@ describe('GET /api/registry/check', () => {
   });
 
   it('注册表读不出 → 500 一句人话，绝不降级成「模板都没带槽」的全绿', async () => {
-    const { app } = await build(() => {
-      throw new Error('盘上 registry.json 是破烂');
+    const { app } = await build((dataDir) => {
+      fs.mkdirSync(path.join(dataDir, 'registry'), { recursive: true });
+      fs.writeFileSync(path.join(dataDir, 'registry', 'entries.json'), '{"entries": 坏');
     });
     try {
       const res = await get(app, '/api/registry/check');
@@ -153,7 +141,11 @@ describe('GET /api/registry/check', () => {
   });
 
   it('禁用中的条目不凑槽：HTTP 面与纯函数同一结论（不是路由自己放宽了一次）', async () => {
-    const { app, dataDir } = await build(() => ({ entries: [modelEntry(false)], rejected: [] }));
+    // 走真 store：add 之后 update 禁用位——POST 面造不出「禁用但仍注册」，写端能
+    const { app, dataDir } = await build((_d, registry) => {
+      expect(registry.add({ kind: 'model', name: 'gpt-4o-mini', spec: { model: 'gpt-4o-mini' } }).ok).toBe(true);
+      expect(registry.update('model:gpt-4o-mini', { enabled: false }).ok).toBe(true);
+    });
     try {
       writeGraphs(dataDir, [graph('flow', [{ kind: 'model' }])]);
       const res = await get(app, '/api/registry/check');

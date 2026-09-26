@@ -10,13 +10,16 @@ import {
   healthDot,
   healthIndex,
   healthTitle,
+  isViewEntry,
   kindGroupLabel,
   missingRequiredFields,
   refCountOf,
   rejectedSummary,
+  registrableKinds,
   REGISTRY_NAME_FIELD,
   sourceLabel,
   specRows,
+  whenLabels,
   type RegistryEntryView,
   type RegistryFormValues,
   type RegistryHealthReadout,
@@ -181,9 +184,10 @@ export function RegistryView() {
     }
   };
 
-  const groups = data ? groupEntriesByKind(data.entries, data.knownKinds) : [];
+  const groups = data ? groupEntriesByKind(data.entries, data.knownKinds, data.viewKinds ?? [], data.kindLabels) : [];
   const rejectedText = data ? rejectedSummary(data.rejected) : null;
-  const kinds = data?.knownKinds ?? [];
+  // 表单只问能登记的那几类：出厂清单类（agent-kind）没有表单形状，选它必被 server 拒，不在这里挂出来
+  const kinds = registrableKinds(data?.knownKinds ?? [], data?.viewKinds ?? []);
 
   return (
     <div className="registry-view">
@@ -246,7 +250,7 @@ export function RegistryView() {
             >
               {(kinds.length ? kinds : [formKind]).map((k) => (
                 <option key={k} value={k}>
-                  {kindGroupLabel(k)}
+                  {kindGroupLabel(k, data?.kindLabels)}
                 </option>
               ))}
             </select>
@@ -353,10 +357,17 @@ export function RegistryView() {
           <h3>
             {g.label}
             <span className="registry-count">{g.entries.length} 项</span>
+            {g.view && (
+              <span className="registry-chip" title="这一类由版本自带清单生成，不落盘、不登记">
+                内置清单
+              </span>
+            )}
           </h3>
           {g.entries.length === 0 ? (
             <p className="settings-hint registry-empty">
-              还没有登记的{g.label}——点右上「+ 登记一项」，从表单填进去。
+              {g.view
+                ? '这一类是版本自带的内置清单，没有可登记的东西（本机没探到货就是正读数，不是没配好）。'
+                : `还没有登记的${g.label}——点右上「+ 登记一项」，从表单填进去。`}
             </p>
           ) : (
             <table className="registry-table">
@@ -374,6 +385,8 @@ export function RegistryView() {
                   const refs = refCountOf(e);
                   const readout = health?.get(e.id);
                   const dot = healthDot(readout);
+                  const view = isViewEntry(e);
+                  const when = whenLabels(view);
                   return (
                     <Fragment key={e.id}>
                       <tr className={e.enabled ? '' : 'registry-row-off'}>
@@ -385,13 +398,19 @@ export function RegistryView() {
                         <td className="registry-label">{e.label}</td>
                         <td><span className="registry-chip">{sourceLabel(e.source)}</span></td>
                         <td>
-                          <input
-                            type="checkbox"
-                            checked={e.enabled}
-                            disabled={busy === e.id}
-                            title={e.enabled ? '点击停用（留着但不再被选）' : '点击启用'}
-                            onChange={() => void toggleEnabled(e)}
-                          />
+                          {view ? (
+                            <span className="registry-label" title="出厂清单没有启停这一格：本机探到货就能用">
+                              —
+                            </span>
+                          ) : (
+                            <input
+                              type="checkbox"
+                              checked={e.enabled}
+                              disabled={busy === e.id}
+                              title={e.enabled ? '点击停用（留着但不再被选）' : '点击启用'}
+                              onChange={() => void toggleEnabled(e)}
+                            />
+                          )}
                         </td>
                         <td className="registry-ops">
                           <button
@@ -400,14 +419,16 @@ export function RegistryView() {
                           >
                             {detailId === e.id ? '收起' : '详情'}
                           </button>
-                          <button
-                            className="sm ghost danger"
-                            disabled={busy === e.id}
-                            onClick={() => void remove(e)}
-                            title="删除条目（禁用请用左边的开关）"
-                          >
-                            <Icon name="trash" size={12} /> 删除
-                          </button>
+                          {view ? null : (
+                            <button
+                              className="sm ghost danger"
+                              disabled={busy === e.id}
+                              onClick={() => void remove(e)}
+                              title="删除条目（禁用请用左边的开关）"
+                            >
+                              <Icon name="trash" size={12} /> 删除
+                            </button>
+                          )}
                         </td>
                       </tr>
                       {detailId === e.id && (
@@ -415,11 +436,20 @@ export function RegistryView() {
                           <td colSpan={5}>
                             <dl className="registry-detail">
                               <dt>id</dt>
-                              <dd><code>{e.id}</code>（不可变；改名=重新登记）</dd>
-                              <dt>登记于</dt>
+                              <dd>
+                                <code>{e.id}</code>
+                                {view ? '（出厂清单生成，不可改）' : '（不可变；改名=重新登记）'}
+                              </dd>
+                              <dt>{when.created}</dt>
                               <dd>{formatWhen(e.createdAt) || '—'}</dd>
-                              <dt>改于</dt>
+                              <dt>{when.updated}</dt>
                               <dd>{formatWhen(e.updatedAt) || '—'}</dd>
+                              {when.note && (
+                                <>
+                                  <dt>说明</dt>
+                                  <dd>{when.note}</dd>
+                                </>
+                              )}
                               {specRows(e.spec).map((row) => (
                                 <div key={row.key}>
                                   <dt>{row.label}</dt>

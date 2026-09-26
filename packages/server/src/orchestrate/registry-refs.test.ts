@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { normalizeRegistryEntry, type DagGraph, type RegistryEntry } from '@paneflow/shared';
-import { buildReferenceIndex, readReferenceIndex, refsFromGraph, refsFromRequires, scanRawReferences } from './registry-refs.js';
+import { registryViewEntries } from './registry-view.js';
+import { buildReferenceIndex, readReferenceIndex, refsFromGraph, refsFromRequires, scanRawReferences, type ReferenceIndex } from './registry-refs.js';
 
 /**
  * v14 A2（R2）引用索引：五个测试块各自钉住一条姿态，全部读**真实落盘形状**
@@ -93,11 +94,15 @@ describe('跨面裸串引用扫描（scanRawReferences）', () => {
 });
 
 describe('引用索引（buildReferenceIndex）', () => {
+  // A3-2 起 `agent-kind` 也迁进了表（视图 kind），fixture 里那三枚 kind 裸串从此参与判定：
+  // 这里的 model 面断言按 kind 取自己的账，agent-kind 的承接情况在下面那格专测（该入账的是新账）。
+  const modelDangling = (index: ReferenceIndex) => index.dangling.filter((d) => d.kind === 'model');
+
   it('已迁 kind：网关档的 freeModel 认进模型条目，「被 N 处使用」有出处', () => {
     const index = buildReferenceIndex([entry({ model: 'gpt-4o-mini' })], scanRawReferences(fixtureDataDir()));
     expect(index.byEntry).toHaveLength(1);
     expect(index.byEntry[0]!.refs).toEqual([{ face: 'gateway', id: 'free', name: '免费档', via: 'freeModel' }]);
-    expect(index.dangling).toEqual([]);
+    expect(modelDangling(index)).toEqual([]);
   });
 
   it('匹配吃 Descriptor 的多种写法：整枚 id、slug、spec 里的型号原值都算指向我', () => {
@@ -105,7 +110,7 @@ describe('引用索引（buildReferenceIndex）', () => {
     // 中文名登记的条目：id 是散列形（`model:u…`），引用面写的却是型号原值——只按 id 匹配就会读成「没人用」
     const byModel = buildReferenceIndex([entry({ model: 'gpt-4o-mini' }, '小4号')], scanRawReferences(dataDir));
     expect(byModel.byEntry[0]!.entryId).not.toBe('model:gpt-4o-mini');
-    expect(byModel.dangling).toEqual([]);
+    expect(modelDangling(byModel)).toEqual([]);
     expect(byModel.byEntry[0]!.refs).toHaveLength(1);
     // 同一枚条目换成 id 形引用（迁移后的写法）也照样认得
     const byId = buildReferenceIndex([entry({ model: 'xlarge' }, 'gpt-4o-mini')], [
@@ -117,16 +122,19 @@ describe('引用索引（buildReferenceIndex）', () => {
 
   it('指向已迁 kind 却解析不到条目 = dangling，带得上游出处（这才是「删了会断」的那类账）', () => {
     const index = buildReferenceIndex([], scanRawReferences(fixtureDataDir()));
-    expect(index.dangling).toEqual([
+    expect(modelDangling(index)).toEqual([
       { kind: 'model', target: 'gpt-4o-mini', by: [{ face: 'gateway', id: 'free', name: '免费档', via: 'freeModel' }] },
     ]);
+    // 迁入表的另一面：这一类判得了死活了——只喂 model 条目时，三枚 kind 裸串全是悬挂（下面那格喂出厂清项即归零）
+    expect(index.dangling.filter((d) => d.kind === 'agent-kind').map((d) => d.target).sort()).toEqual(['claude', 'codex', 'pi']);
   });
 
   it('未迁进表的 kind 只披露计数、绝不判死活（表里没有这一类，判「不存在」就是拿空白冒充断言）', () => {
     const raw = scanRawReferences(fixtureDataDir());
     const index = buildReferenceIndex([], raw);
+    // A3-2 改口入账：`agent-kind` 自此不在这份名单里（它进了表，成员由出厂清单现算）
     expect(index.unmigrated.map((u) => u.kind).sort()).toEqual(
-      ['agent-kind', 'check-type', 'gateway-profile', 'node-type', 'repo', 'role', 'rule', 'skill', 'template'].sort(),
+      ['check-type', 'gateway-profile', 'node-type', 'repo', 'role', 'rule', 'skill', 'template'].sort(),
     );
     const role = index.unmigrated.find((u) => u.kind === 'role');
     expect(role).toEqual({ kind: 'role', targets: ['r-deliver'], refs: 2 }); // 班底名册 + 模板节点绑岗
@@ -147,8 +155,8 @@ describe('引用索引（buildReferenceIndex）', () => {
   it('表里没这一类条目时，别的 kind 引用不受牵连（unmigrated 与 dangling 分家）', () => {
     const index = buildReferenceIndex([entry({ model: 'other-model' })], scanRawReferences(fixtureDataDir()));
     expect(index.byEntry[0]!.refs).toEqual([]);
-    expect(index.dangling).toHaveLength(1);
-    expect(index.dangling[0]!.target).toBe('gpt-4o-mini');
+    expect(modelDangling(index)).toHaveLength(1);
+    expect(modelDangling(index)[0]!.target).toBe('gpt-4o-mini');
   });
 });
 
@@ -204,7 +212,54 @@ describe('模板声明面 requires（v14-T3）', () => {
     const hit = buildReferenceIndex([entry({ model: 'gpt-4o-mini' })], raw);
     expect(hit.byEntry[0]!.refs).toEqual([{ face: 'template', id: 'decl', name: 'decl', via: 'requires[0].id' }]);
     const miss = buildReferenceIndex([entry({ model: '别的型号' })], raw);
-    expect(miss.dangling.map((d) => `${d.kind}:${d.target}`)).toEqual(['model:gpt-4o-mini']);
+    // fixture 的节点还写着 `agentKind: 'pi'`——A3-2 起这一类判得了死活，按 kind 取 model 那格的老账
+    expect(miss.dangling.filter((d) => d.kind === 'model').map((d) => `${d.kind}:${d.target}`)).toEqual(['model:gpt-4o-mini']);
     expect(miss.unmigrated.find((u) => u.kind === 'skill')).toMatchObject({ targets: ['skills/y/SKILL.md'], refs: 1 });
+  });
+});
+
+/**
+ * v14 A3-2 的入账：`agent-kind` 迁入表（视图 kind）之后，盘面那三枚 kind 裸串第一次有了反查——
+ * 「这型引擎被谁在用」从此和模型条目同一把尺。这里喂的条目集是 `registryViewEntries()`，
+ * 即读面装配的真实形状（HTTP 面与引擎都拿它调 `buildReferenceIndex`）；只喂 model 条目测的是另一件事（上面那几格）。
+ */
+describe('agent-kind 承接后的引用账（v14 A3-2）', () => {
+  const view = registryViewEntries();
+  const raw = () => scanRawReferences(fixtureDataDir());
+
+  it('现役三枚 kind 裸串全部落到出厂条目：unmigrated 不再报这一类，也不是 dangling', () => {
+    const index = buildReferenceIndex(view, raw());
+    expect(index.unmigrated.find((u) => u.kind === 'agent-kind')).toBeUndefined();
+    expect(index.dangling.filter((d) => d.kind === 'agent-kind')).toEqual([]);
+    const used = index.byEntry.filter((b) => b.kind === 'agent-kind' && b.refs.length);
+    expect(used.map((b) => `${b.entryId}←${b.refs[0]!.face}.${b.refs[0]!.via}`).sort()).toEqual([
+      'agent-kind:claude←role.agentKind',
+      'agent-kind:codex←template.nodes[0].config.agentKind',
+      'agent-kind:pi←space.defaultAgentKind',
+    ]);
+    // 出厂清单里没人用的那 15 枚：refs=[] 是正读数（与「读不出」分家，消费面据此画「没人用」）
+    expect(index.byEntry.filter((b) => b.kind === 'agent-kind' && !b.refs.length)).toHaveLength(view.length - 3);
+  });
+
+  it('清单外的 kind 裸串判得出死活＝dangling（这正是迁入表换来的能力：以前只数不判）', () => {
+    const index = buildReferenceIndex(view, [
+      ...raw(),
+      { face: 'space', id: 'demo', name: '演示项目', via: 'defaultAgentKind', kind: 'agent-kind', target: 'no-such-agent' },
+    ]);
+    expect(index.dangling.find((d) => d.kind === 'agent-kind')).toMatchObject({
+      target: 'no-such-agent',
+      by: [{ face: 'space', via: 'defaultAgentKind' }],
+    });
+  });
+
+  it('探测名不是引用写法：配置里写 `antigravity`（binary）不指向 `antigravity-cli` 这一型', () => {
+    const index = buildReferenceIndex(view, [
+      { face: 'space', id: 'demo', name: '演示项目', via: 'defaultAgentKind', kind: 'agent-kind', target: 'antigravity' },
+    ]);
+    // 拿探测名当引用是把「打错的那个名字」读成「正在用」——这一条钉死 Descriptor 的 refKeys 不收 binary
+    expect(index.byEntry.some((b) => b.refs.length)).toBe(false);
+    expect(index.dangling).toEqual([
+      { kind: 'agent-kind', target: 'antigravity', by: [{ face: 'space', id: 'demo', name: '演示项目', via: 'defaultAgentKind' }] },
+    ]);
   });
 });

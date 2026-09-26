@@ -192,7 +192,8 @@ export function matchesTarget(entry: RegistryEntry, target: string): boolean {
 }
 
 /**
- * 建索引。`entries` 由调用方给（通常是 `RegistryStore.load().entries`）——本模块不读注册表，
+ * 建索引。`entries` 由调用方给（读面是 `RegistryStore.readView().entries`——用户登记项 + 出厂视图项；
+ * 只喂 `load()` 的话 `agent-kind` 一类永远读成悬挂）——本模块不读注册表，
  * 免得在扫描器里再开一条读盘路（同一份数据两个读端＝迟早对不上）。
  */
 export function buildReferenceIndex(entries: RegistryEntry[], raw: RawReference[]): ReferenceIndex {

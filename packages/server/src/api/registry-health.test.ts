@@ -7,7 +7,10 @@ import type { Engine } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import type { Store } from '../orchestrate/store.js';
 import { RegistryStore } from '../orchestrate/registry.js';
+import { registryViewEntries } from '../orchestrate/registry-view.js';
 import type { RegistryEntry } from '@paneflow/shared';
+import { AGENT_KINDS } from './agent-kinds.js';
+import { clearAgentProbeCache } from './env-check.js';
 import { buildHttpServer } from './http.js';
 import { registerRegistryRoutes } from './registry-routes.js';
 import { entryHealth } from './registry-health.js';
@@ -29,12 +32,18 @@ const BASE = 'http://127.0.0.1:19099';
 async function build(stubEntries?: RegistryEntry[]) {
   const dataDir = tmp();
   /**
-   * 桩盘面**只在测「这一类没有探针通道」时用**：今天只有 `model` 进了表（`REGISTRY_KINDS`），
-   * 走真 store 写不进第二枚 kind（会被 400 拒），而路由那格的「整键不给」必须在 HTTP 面证到
-   * ——只测 `entryHealth` 返回 undefined，等于没证路由不把 undefined 写成 `null`。
+   * 桩盘面**只在测「这一类没有探针通道」时用**：`REGISTRY_KINDS` 之外的 kind 走真 store 写不进
+   * （POST 当场 400），而路由那格的「整键不给」必须在 HTTP 面证到——只测 `entryHealth` 返回
+   * undefined，等于没证路由不把 undefined 写成 `null`。
+   * A3-2 起读面吃 `readView()`，桩它就得**把出厂视图并进去**（与真 store 同形）：不然表上压根没那些
+   * 视图行，「role 这一格没有 health」可能只是因为它被当成唯一的行读过了。
    */
   const registry = stubEntries
-    ? ({ load: () => ({ entries: stubEntries, rejected: [] }), readSchema: () => null } as unknown as RegistryStore)
+    ? ({
+        load: () => ({ entries: stubEntries, rejected: [] }),
+        readView: () => ({ entries: [...stubEntries, ...registryViewEntries()], rejected: [] }),
+        readSchema: () => null,
+      } as unknown as RegistryStore)
     : new RegistryStore(dataDir, '0.3.0-test');
   const { app } = await buildHttpServer({
     engine: { onChange: () => {} } as unknown as Engine,
@@ -282,9 +291,11 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
       expect('health' in body).toBe(false);
       // 静态段 vs 参数段的优先级：`/api/registry/health` 不能被 `:id` 吞成「探 id 叫 health 的条目」
       const batch = (await get(app, '/api/registry/health')).json();
-      expect(batch.entries).toHaveLength(1);
-      expect(batch.summary).toMatchObject({ scanned: 0, probed: 0 });
-      expect('health' in batch.entries[0]).toBe(false);
+      const roleRow = batch.entries.find((e: { id: string }) => e.id === 'role:r-x');
+      expect(batch.entries).toHaveLength(1 + AGENT_KINDS.length); // 桩的那条 + 出厂视图项（并进去了才算生产形状）
+      expect('health' in roleRow).toBe(false);
+      // 视图 kind 有通道：probed 只数出厂项（桩那条 role 仍算「没通道」）
+      expect(batch.summary).toMatchObject({ scanned: 0, probed: AGENT_KINDS.length });
     } finally {
       vi.unstubAllGlobals();
       await app.close();
@@ -301,15 +312,24 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {  
       expect(before.dangling).toEqual([
         { kind: 'model', target: 'gpt-9', by: [{ face: 'gateway', id: 'p-free', name: '免费档', via: 'freeModel' }] },
       ]);
-      // 一条都没登记：没有探针通道＝probed 0（缺读数，不是 unknown）；unused 也是 0
-      expect(before.summary).toEqual({ scanned: 2, dangling: 1, unmigrated: 1, probed: 0, live: 0, missing: 0, unknown: 0, unused: 0 });
+      // 一条用户登记项都没有：被探到的只有出厂视图项（A3-2 起 agent 通道有货，probed 不再恒 0）
+      expect(before.summary).toMatchObject({
+        scanned: 2,
+        dangling: 1,
+        unmigrated: 1,
+        probed: AGENT_KINDS.length,
+        unused: AGENT_KINDS.length,
+      });
+      // live/missing 的分配**本机装了谁**决定，测试不写死；三态之和=探到的条数才是这里的账
+      expect(before.summary.live + before.summary.missing + before.summary.unknown).toBe(before.summary.probed);
 
       // 登记时人给的名字与裸串不同——按 spec 值匹配（refKeys）才对得上，按登记名匹配必猜错
       await app.inject({ method: 'POST', url: '/api/registry', headers: { host: HOST }, payload: { kind: 'model', name: '备用型号', spec: { model: 'gpt-9' } } });
       const after = (await get(app, '/api/registry/health')).json();
       expect(after.dangling).toEqual([]);
       expect(after.entries[0].refs).toHaveLength(1);
-      expect(after.summary).toMatchObject({ dangling: 0, probed: 1, live: 1, unused: 0 });
+      expect(after.entries[0].health.status).toBe('live'); // model 通道自己那句 live（summary 里混着 agent 的读数，不按它断言）
+      expect(after.summary).toMatchObject({ dangling: 0, probed: AGENT_KINDS.length + 1, unused: AGENT_KINDS.length });
     } finally {
       vi.unstubAllGlobals();
       await app.close();
@@ -325,10 +345,85 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {  
       // 只有 `current` 这一枚 gateway-profile 引用：没进表＝只数不判（判「不存在」就是拿空白冒充断言）
       expect(body.summary.unmigrated).toBe(1);
       expect(body.dangling).toEqual([]);
-      expect(body.entries).toEqual([]); // 一条都没登记＝[] 是正读数
-      expect(body.summary.probed).toBe(0);
+      // 「一条都没登记」的正读数现在要说清是哪一半：用户登记项为空，出厂视图项照在表上
+      expect(body.entries.filter((e: { view: boolean }) => !e.view)).toEqual([]);
+      expect(body.entries.every((e: { kind: string }) => e.kind === 'agent-kind')).toBe(true);
+      expect(body.summary.probed).toBe(AGENT_KINDS.length);
     } finally {
       vi.unstubAllGlobals();
+      await app.close();
+    }
+  });
+});
+
+/**
+ * A3-2 起 agent 条目也在表上，健康点因此多出一条**本地**通道（探 PATH 上的可执行文件）。
+ * 三态里 `live`/`missing` 由 PATH 可控地造出来——不拿本机实装了谁当断言（换台机器就红的断言不是判据）；
+ * `unknown` 那一态由 `env-probe.test.ts`（win32 无 PATH）与上面 model 通道的超时条钉住，这里不重复造。
+ */
+describe('v14-R4 agent-kind 通道：出厂清项的健康点（吃 spec.binary 不是 name）', () => {
+  /**
+   * 造一枚「PATH 上只有这些件」的目录。非 win32 要额外软链一枚 `sh` 进去：探针本身是
+   * `execFile('sh', …)`，把 PATH 收窄成空目录会连 sh 都找不到，那条路给出的读数是 `unknown`
+   * （探测没跑起来）而不是 `missing`——那正是本片要严格分家的两态，不能让 fixture 把它们混掉。
+   */
+  function probePath(bins: string[]): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-agent-path-'));
+    if (process.platform !== 'win32') fs.symlinkSync('/bin/sh', path.join(dir, 'sh'));
+    for (const bin of bins) fs.writeFileSync(path.join(dir, bin), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    return dir;
+  }
+
+  async function probeOne(binPath: string, id: string) {
+    const { app } = await build();
+    const previous = process.env.PATH;
+    process.env.PATH = binPath;
+    clearAgentProbeCache(); // 探针对本机缓存 60 秒：不清掉的话上一条的读数会冒充这一条
+    try {
+      return (await get(app, `/api/registry/${encodeURIComponent(id)}/health`)).json();
+    } finally {
+      process.env.PATH = previous;
+      clearAgentProbeCache();
+      await app.close();
+    }
+  }
+
+  it('PATH 上有那枚可执行文件＝live，detail 说出探测名', async () => {
+    const body = await probeOne(probePath(['kimi']), 'agent-kind:kimi');
+    expect(body.entry).toMatchObject({ id: 'agent-kind:kimi', view: true, source: 'builtin' });
+    expect(body.health.status).toBe('live');
+    expect(body.health.detail).toContain('「kimi」');
+  });
+
+  it('PATH 枚举完没有＝missing（这是正读数：本机确实没装这一型）', async () => {
+    const body = await probeOne(probePath(['other-agent']), 'agent-kind:kimi');
+    expect(body.health.status).toBe('missing');
+    expect(body.health.detail).toContain('没有「kimi」这个可执行文件');
+  });
+
+  it('异名 kind 探的是 spec.binary：kind 叫 antigravity-cli、PATH 上放 antigravity 才算在', async () => {
+    const byBinary = await probeOne(probePath(['antigravity']), 'agent-kind:antigravity-cli');
+    expect(byBinary.health.status).toBe('live');
+    const byKind = await probeOne(probePath(['antigravity-cli']), 'agent-kind:antigravity-cli');
+    expect(byKind.health.status).toBe('missing');
+  });
+
+  it('视图项在批量面也算 probed：首屏一次读数把出厂引擎清单一并给出', async () => {
+    const dir = probePath(['kimi']);
+    const { app } = await build();
+    const previous = process.env.PATH;
+    process.env.PATH = dir;
+    clearAgentProbeCache();
+    try {
+      const body = (await get(app, '/api/registry/health')).json();
+      expect(body.summary.probed).toBe(AGENT_KINDS.length);
+      const kimi = body.entries.find((e: { id: string }) => e.id === 'agent-kind:kimi');
+      expect(kimi.health.status).toBe('live');
+      expect(kimi.view).toBe(true);
+      expect(JSON.stringify(body)).not.toContain('sk-secret');
+    } finally {
+      process.env.PATH = previous;
+      clearAgentProbeCache();
       await app.close();
     }
   });

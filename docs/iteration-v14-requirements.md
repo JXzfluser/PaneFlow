@@ -120,6 +120,24 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   `graphs/` 永不搬（云同步面 `github-sync.ts:74,106` 依赖 `store.listGraphs()`）；内置 seed 永不删
   （`c4-night1.sh:88` 的实机恢复路径靠它）。
   可感面：`paneflow registry list` 一屏看到四类；「A3-x 随片可见面」——迁一个 kind，注册中心亮一个分组。
+- **R3 兑现读数（A3-2 第一片：`agent-kind` 进表）与三条改判**：
+  1. **改判（顺序）**：原计划 A3-1 先迁 `template`，实施改为 **A3-2 先迁 `agent-kind`**。为什么：`template` 进表在屏幕上
+     什么都不是（模板卡已经在了），而 `agent-kind` 一进，三处现役缺口同时闭合——R4 那枚 parked 样张 `registry probe agent-kind:pi`
+     跑得到、T3 的 `{kind:'agent-kind'}` 槽从「判不了」变成「判死活」、R5 能力面第一次吃到第二枚 kind。欠账要挑能一并还清的那种。
+  2. **形状（视图 kind，新台类）**：`agent-kind` 的成员住在代码那张出厂清单（`api/agent-kinds.ts`，前置-1 合一的产物），
+     **不落盘**——搬进盘＝同一件事两处存，而真正决定「能不能起这个 agent」的是代码那片。于是加一层
+     `REGISTRY_VIEW_KINDS`/`isRegistryViewKind`：`load()` 保持**盘上纯读**（三个写动词只吃它），`readView()` 才是所有读面
+     （HTTP×5、引擎预检、R5 快照、R2 引用账）吃的那一枚合并视图。三条推论各有断言：
+     写入面三动词对视图 kind 全拒（不拒＝用户造的假 kind 被读端当成可用能力）；手塞进 `entries.json` 的那条**读端不吃**、
+     整条挪进 `rejected` 说清为什么不生效（静默吞掉就是查三天的那类账），且 DELETE 仍清得掉（不然一条不生效的残记录永远删不掉）；
+     时刻不能造假——视图项带的是**进程启动时刻**（含义=本机这次运行从何时开始看见它），文案与 CLI 都按 `view` 标分家，不写「登记于」。
+     读面渲染同理：出厂行的「启用」格画 `—` + 一句「出厂清单没有启停这一格：本机探到货就能用」，不是留白——留白读成「控件坏了」，`—` 读成「这一格不适用」。
+  3. **改判（单一词表）**：kind→中文组名 原先两处（server `KIND_CN` 与 web `KIND_GROUP_LABELS`，措辞已实际分叉：
+     `agent-kind` 一处「代理」一处「Agent 引擎」）。现收在 server `registry-check.ts` 一处，并由 `GET /api/registry`
+     外发 `kindLabels` 供网页与 CLI 渲染。**判据零参与**（改标签不会让预检变绿变红），但分叉的代价是「同一枚 kind 两个名字」，
+     而没人会去比对两张措辞表——所以 web 那份删掉、回落语义改成显式「未知类型」，让「server 没给」看得见。
+  4. **翻转代价入账**：`{kind:'agent-kind'}` 槽从前一律放行，现在指不到就是死缺、起单被拒。调用方**必须喂 `readView()`**——
+     只喂 `load()` 会把整类 agent 读成死缺，那是假红不是 fail-closed（引擎与路由两侧都已换，断言在 `registry-check.test.ts` 的专格里）。
 - **R4 探测单通道**：一个 probe 调度（缓存 / 超时 / 强刷一份实现），复用既有件：`env-check.ts:27-101` 60s 缓存 +
   `:103 clearAgentProbeCache` 失效钩子、`herdr-ops.ts:120-128 probeAgent` 三态。
   **超时＝未知，绝不并入 `gone`**（探针通道自己造假缺就是造第二个 684 绿假账）。
@@ -134,8 +152,12 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   - 改判二：**`--timeout` 不做**。原文那句 `探测超时 10s` 想证的性质（超时＝未知）已经由共享通道保证：
     `probeGatewayModels` 自带 6s AbortSignal，掐表一律落 `error`→`unknown`（不是空清单→`missing`）。
     给人一根可调秒针=在探针通道上再开一个入口，且改的是**别人**那一档的耗时预算，不是这条命令的判据。
-    于是 `paneflow registry probe agent-kind:pi` 那枚样张**仍挂在 A3-2**：今天 `REGISTRY_KINDS` 只有 `model`
+    于是 `paneflow registry probe agent-kind:pi` 那枚样张**曾在 A3-2 挂着**：当时 `REGISTRY_KINDS` 只有 `model`
     （`shared/registry.ts:44`），表里没有 agent-kind 条目可探——那是 kind 进表的波次问题，不是探针缺件。
+    **A3-2 已还清**：`agent-kind` 走视图 kind 进表（见上面 R3 兑现读数），`registry-health.ts` 补上 agent 通道
+    （直接抄 `probeBinaryPresence` 的三态：超时/sh 起不来/PATH 读不到一律 `unknown`，只有本机明确答「PATH 里没这个可执行文件」
+    才是 `missing`）。同一改动把 A3-2 之前的旧病一并修了：`probeBinary` 那一路把「sh 三秒没答话」和「command -v 说没有」
+    都收成 `false`——对首屏 `agentsInstalled` 无所谓（少列一枚＝与今天一字不差），但健康点照那个口径画就是把**「未探得」画成「没装」**。
 - **R5 逐单能力快照账（v0.1 `regSha=活行内容指纹` 判死，重设计）**：run 记录存
   `capabilityRefs: [{kind, id, specSha, spec}]`——解析现场**快照整份 spec 副本**，`specSha=contentSha(规范化 spec)`，
   用 `harness.ts:16-33` 现成 canonical 内容指纹；比对与分组用**整单不可变集**的指纹，不引用活行。
@@ -152,6 +174,9 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   2. **改判（可感面词面）**：分组标签用注册表 **kind 原样**（今天是 `model 1`），不是 doc 样张里的「技能/机检/agent」中文词。
      为什么：中文标签住在 server 的 `Descriptor.label`，CLI 若要显示就得自带一张 kind→中文 表＝第二份事实源（违 R4）。
      样张那三组要等 A3-x 把 `skill`/`check-type`/`agent-kind` 迁进表才可能出现——**波次欠账，不是本片少写**。
+     **A3-2 后的现状**：那把锁由 `GET /api/registry` 的 `kindLabels` 外发解掉（网页分组与 CLI 组名同吃那一处词表），
+     但 `paneflow status` 的 `能力:` 行仍画 kind 原样——它读的是 `GET /api/runs/:id`，那条负载里没有 `kindLabels`，
+     为一行文案去给 run 负载塞措辞表是走错门（判据面与文案面分家）。**明写为欠账**，随 A3 后续片一并定夺。
   3. **改判（收数表列名）**：doc 写 `registrySnapshotSha` 列，落成表内 `能力# = cap#<8位指纹>` 一列，
      `EXPERIMENT_TABLE_VERSION` 3→**4**（append-only：历史行不回填，边界随口径戳声明）。这一列就是跨臂注册表变更的暴露位。
   4. **改判（停用条目）**：`enabled: false` 的条目**不进快照**。停用是注册表里唯一表达「不再现役」的键，
@@ -441,8 +466,8 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | 前置-1 | agent-kind 两枚白名单合一 | **已完成** | `4d91ae8` | 无新增用户可见面（合一片）；机证=6 条判据（两表键集相等／唯一改名项 `antigravity-cli→antigravity`／清单外按原名探／`isAgentKind` 破烂拒）+ 真路由两条（`/api/health` 的 `agentKinds` 与 `PUT /api/spaces` 值域同源）；现网实测：合一前起的实例仍在跑，其 `agentKinds` 18 枚与新表**逐项相等**（兼容带）；server 全量 **727/727**（51 文件）· typecheck 净 |
 | R1 | 统一信封 + Descriptor + 四动词（表单主路） | **已完成 `9b2a7ae`** | `9b2a7ae` | `paneflow registry list/get/refs/add`（`3de8ef4`）+ 网页表单（`10bc315`）现网实跑：`注册表 schema v1（由 0.2.0 写）· 这版认识：model`；版本戳「遇更高版本拒启」有真路由断言 |
 | R2 | 引用索引 + 写端拒悬挂/拒删被引用 | **已完成 `b2f3d29`** | `b2f3d29` | `paneflow registry list` 尾行现网实跑：`引用账：扫过 116 处跨面裸串引用 · 指向已迁类型却查不到条目 0 处 · 指向未迁类型 115 处（未迁的不判死活）`；写端两条 400（拒删被引用/禁用被引用）带逐处出处 |
-| R3 | 只读聚合视图（逐 kind 亮分组；不搬数据） | 未开工 | — | — |
-| R4 | 探测单通道（复用缓存与三态） | **已完成 `1323bf5` + 单枚探针补齐（本片）** | `1323bf5` | 批量：`paneflow registry health` 现网实跑（`实探 1 项：●1 ○0 ?0 · 悬挂 0 · 没人用 0`）；单枚：`paneflow registry probe model:u1appnuf` → `● … ·· 在「默认档」的实探清单里（528 枚中第 512 枚 · 它正挂在免费位）` + `读数时刻`。**同一份缓存=命中计数器机证**（list 0 探／health 1／再 health 1／catalog 1／`?refresh=1` 2）。两条改判（`●/○/?` 替 `ok ·`、`--timeout` 不做）见 §二 R4 |
+| R3 | 只读聚合视图（逐 kind 亮分组；不搬数据） | **已完成（A3-2 第一片：`agent-kind` 进表）** | 本片 | CLI 现网实跑 `paneflow registry list`：`这版认识：模型/Agent 引擎` + 组行 `· Agent 引擎（18 项）`（18 枚由出厂清单现算、**不落盘**）；网页 `pnpm build` 后实机看到 `Agent 引擎 18 项 内置清单` 分组、出厂行只剩「详情」（无启停/删除，启停格画 `—` 并注明「出厂清单没有启停这一格」），详情抽屉两枚时刻 `本机自/本次运行` 同源 + 说明「内置清单项由版本自带，没有登记时刻」。引用账随之从 `扫过 116 · 未迁 115` 变 `125 · 90`（`agent-kind` 迁入后这批裸串有了正身可指）。机证：`readView` 5 条（不落盘且条数=出厂清单长度／盘上手写影子行落 `rejected` 并指路 DELETE／三写动词全拒且**不建 `registry/` 目录**／模型组排在前的排序）+ 预检 4 条（探测名 `antigravity` **不是**引用写法）+ 快照 1 条 + 路由 `kindLabels` 1 条 + CLI 1 条 + web 5 条。**三条改判（顺序、视图 kind 形状、单一词表）与翻转代价见 §二 R3** |
+| R4 | 探测单通道（复用缓存与三态） | **已完成 `1323bf5` + 单枚探针补齐 + agent 通道还清（A3-2）** | `1323bf5` | 批量：`paneflow registry health` 现网实跑（`实探 1 项：●1 ○0 ?0 · 悬挂 0 · 没人用 0`）；单枚：`paneflow registry probe model:u1appnuf` → `● … ·· 在「默认档」的实探清单里（528 枚中第 512 枚 · 它正挂在免费位）` + `读数时刻`。**同一份缓存=命中计数器机证**（list 0 探／health 1／再 health 1／catalog 1／`?refresh=1` 2）。两条改判（`●/○/?` 替 `ok ·`、`--timeout` 不做）见 §二 R4。**A3-2 还清 parked 样张**：`registry probe agent-kind:pi` → `● agent-kind:pi  探测名同 kind  出厂  被 4 处用  ·· 本机 PATH 上探到可执行文件「pi」，这一型可用`；批量面现在是 `实探 19 项：●7 ○12 ?0`，○ 的人话是「PATH 上逐个目录枚举完，没有「copilot」这个可执行文件：本机没装这一型」——**枚举完=正读数，不是「不知道」**（旧的 `probeBinary` 假 missing 病根见 §二 R4）。本地 PATH 通道与网关目录共用那份 60s 缓存（win32=PATH×PATHEXT，拿不到 PATH ⇒ `?`） |
 | R5 | 能力快照账（capabilityRefs + specSha + cap#） | **已完成（本片）** | 本片 | 引擎起单现场落册两枚键 → `GET /api/runs/:id` 直呈 → `paneflow status` 渲一行 `能力: N 项（kind n）· cap#xxx`；收数表新增「能力#」列（表版本 3→4）。机证：单元 9 条（去重/cap# 键序无关/悬挂与未迁 kind 不进/null≠`[]`/副本不随活行变）+ 引擎集成 6 条（真注册表+真网关档落盘跑单：**编辑条目后历史 run 一字不动**、再起一单 cap# 随配置变、同配置两单 cap# 相等、停用→两键整缺、无登记→两键整缺、只吃本单生效那档）+ CLI 1 条（五种 payload 渲染）；`apiKey` 断言不进快照 |
 | T1 | 节点类型清单 + driver 只读数契约 | 未开工 | — | — |
 | T2 | 旧流程留引擎（判决表已改判） | 判决完成 | — | — |
@@ -456,7 +481,8 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | X2 | CLI 三处必动 + AGENTS/README + 发行 v0.3.0 | 未开工 | — | — |
 | X3 | 实机首驾（零手填路径全程） | 未开工 | — | — |
 
-**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（T3 片 + 实机首驾补修后实跑：server **61 文件 / 852** 绿、web 11/**77**、cli 3/**69**，`pnpm typecheck` 净；R5 片收口时是 57/817、web 71、cli 63——**只加不减**，且加的全是新片的判据断言，既有断言一条没放宽，`registry-check` 两枚新测试文件与真路由/真引擎口各占其一）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉未证**（同上 X1 行）。
+**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（A3-2 片收口实跑：server **61 文件 / 872** 绿、web 11/**82**、cli 3/**70**，`pnpm typecheck` 净 + web `tsc -b` 净；T3 片时是 61/852、web 77、cli 69，R5 片收口时 57/817、web 71、cli 63——**只加不减**，且加的全是新片的判据断言，既有断言一条没放宽）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉半证**（A3-2 后 `pnpm build` 刷新了 server 一键模式挂的前端，实机页面读回 `Agent 引擎 18 项 内置清单` 分组与「出厂行无启停/删除」；截图仍未取到——应用内视口不可用，见 X1 行）。
+> ②里那条**工程口径**要写死：本仓 server 一键模式服务的是 `packages/web/dist`，改完 web 源码不跑 `pnpm build` 就等于没改——A3-2 第一次实机检查看到的就是旧包（`未知类型：agent-kind`），build 之后才读到新组名。判据落在构建链上，不靠记性。
 > ②「零改动」这条口径在 R5 需要说清它约束的是什么：**历史 run 的既有读数与既有判据不许改**（`骨架#/ctxSha/roleSha/graphSha` 逐字节、
 > 收口判定、退出码），不是「测试文件一行不许动」。R5 确实动了 5 条钉死字符串——收数表多一列（doc 明写要新增 `registrySnapshotSha` 列），
 > 那些断言本来就钉在列数上；改的是**期望值**（多一个 `- |`），不是放宽判据。这类「按 doc 要求改列」的动账逐片在此报备，不闷声改绿。

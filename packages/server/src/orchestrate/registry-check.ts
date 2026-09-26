@@ -14,8 +14,8 @@ import { matchesTarget } from './registry-refs.js';
  * 这一条是有教训的：预检与起单若是两把尺，就会出现「预检说全绿、起单当场红」，那比没预检更糟。
  *
  * 三条姿态，与 R2 引用索引同形：
- *  1. **只有已迁进注册表的 kind 才判死活**（今天＝`REGISTRY_KINDS`，只有 `model`）。指向
- *     `skill`/`check-type`/… 的槽落 `unjudged` 只披露：表里压根没有这一类，判「不存在」＝拿空白冒充断言。
+ *  1. **只有已迁进注册表的 kind 才判死活**（今天＝`REGISTRY_KINDS`：`model` 与 A3-2 起的 `agent-kind`）。
+ *     指向 `skill`/`check-type`/… 的槽落 `unjudged` 只披露：表里压根没有这一类，判「不存在」＝拿空白冒充断言。
  *  2. **形状不认的槽落 `malformed` 且 `ok=false`**——判不了就不放行。脏形状正常走不到这里
  *     （`validateDag` 在写入面就拒），但盘面手改得动，读端不能因为脏项而假绿。
  *  3. 匹配用 R2 那把尺（`matchesTarget` → Descriptor 的 `refKeys`）：声明写整枚 id、id 的 slug 段、
@@ -78,7 +78,9 @@ export interface RequirementCheckView {
 }
 
 /**
- * kind → 人话组名。**只管「跟人说话」，不参与任何判定**（改这里不会让预检变绿或变红）。
+ * kind → 人话组名。**全仓唯一一份 this 表**（决议「单一词表」）：预检的 `need[].label`、
+ * `GET /api/registry` 的 `kindLabels` 都从这一处出——网页与 CLI 拿它渲染，不再各抄一份
+ * （两张表迟早分叉措辞，而没人会去比对两张措辞表）。
  * 值域不封死：注册表日后加 kind，这里没跟上就原样画——把未知 kind 画成猜来的中文名是假账。
  */
 const KIND_CN: Record<string, string> = {
@@ -88,7 +90,7 @@ const KIND_CN: Record<string, string> = {
   repo: '仓库',
   'gateway-profile': '网关档',
   role: '角色',
-  'agent-kind': '代理',
+  'agent-kind': 'Agent 引擎',
   'check-type': '机检',
   'node-type': '节点类型',
   template: '模板',

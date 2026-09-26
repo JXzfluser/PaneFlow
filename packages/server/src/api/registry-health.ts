@@ -1,5 +1,6 @@
 import { probeCatalogProfiles } from './gateway-catalog.js';
 import { readGatewayDoc } from './gateway.js';
+import { probeBinaryPresence } from './env-check.js';
 import type { RegistryEntry } from '@paneflow/shared';
 
 /**
@@ -8,14 +9,16 @@ import type { RegistryEntry } from '@paneflow/shared';
  * `DESCRIPTORS` 同一张分派表的形状（判据集中在 server 一处，消费面零判据）。
  *
  * 三条姿态，一条都不能松：
- *  1. **单通道**——模型在不在，只经 `gateway-catalog.ts` 那份实探（同缓存、同时效、同密钥纪律）。
- *     这里绝不自己 fetch `<base>/v1/models`：第二条探针通道迟早和第一条读数不一致，
+ *  1. **每类一条通道**——模型在不在，只经 `gateway-catalog.ts` 那份实探（同缓存、同时效、同密钥纪律）；
+ *     agent 类型在不在，只经 `env-check.ts` 那份 PATH 探测（同缓存、同三态，也就是 `/api/health` 的
+ *     `agentsInstalled` 吃的那一枚）。这里绝不自己 fetch `<base>/v1/models`、也绝不另起一次 `command -v`：
+ *     第二条探针通道迟早和第一条读数不一致，
  *     注册中心从此一半表看网关、一半表看自己的旧账（v14 立项点名的 684 绿假账形状）。
  *  2. **三态**：`live`（实探清单里有）/ `missing`（探通了、清单里没有）/ `unknown`（没探通、档不存在、
  *     或压根没配档）。**超时与探不通一律 `unknown`，绝不并入 `missing`**——「未探得」不是「不可用」，
  *     把探针通道的故障画成红点就是替机器造一个不存在的结论（先例：`herdr-ops.ts:120-128 probeAgent`
  *     也只由明确错误码给 `gone`，答不上来返回 null）。
- *  3. **宁缺毋假**：这一类没有探针通道（今天的 role/gateway 视图 kind）→ 整键不给，界面上什么都不画。
+ *  3. **宁缺毋假**：这一类没有探针通道（今天的 template/role 等视图 kind）→ 整键不给，界面上什么都不画。
  *     「不知道这一类怎么探」和「探了说它不在」是两回事。
  */
 
@@ -87,9 +90,28 @@ async function modelHealth(dataDir: string, entry: RegistryEntry<'model'>, refre
   };
 }
 
+/**
+ * `agent-kind` 通道（v14 A3-2）：出厂清单里这一型的二进制在不在本机 PATH 上。
+ * 三态直接抄 `probeBinaryPresence`——**那里的 `unknown` 就是这里的 `unknown`**（超时/sh 起不来/PATH 读不到
+ * 都不是「没装」）。装没装永不进 `spec`（R1 边界：spec 是登记内容，探针结果是读数），所以这里每次现读、
+ * 缓存只在探测层那一份。
+ */
+async function agentKindHealth(entry: RegistryEntry<'agent-kind'>, refresh: boolean): Promise<EntryHealth> {
+  const bin = entry.spec.binary;
+  const probed = await probeBinaryPresence(bin, { refresh });
+  const detail =
+    probed.status === 'live'
+      ? `本机 PATH 上探到可执行文件「${bin}」，这一型可用`
+      : probed.status === 'missing'
+        ? `PATH 上逐个目录枚举完，没有「${bin}」这个可执行文件：本机没装这一型`
+        : `未探得：${probed.why ?? '探测没给出原因'}（没探得不等于没装）`;
+  return { status: probed.status, detail, cached: probed.cached, at: new Date(probed.at).toISOString() };
+}
+
 /** kind → 探针通道。没有条目的 kind 一律没有健康读数（整键不给，不画成未知）。 */
 const CHANNELS: Record<string, (dataDir: string, entry: RegistryEntry, refresh: boolean) => Promise<EntryHealth>> = {
   model: (dataDir, entry, refresh) => modelHealth(dataDir, entry as RegistryEntry<'model'>, refresh),
+  'agent-kind': (_dataDir, entry, refresh) => agentKindHealth(entry as RegistryEntry<'agent-kind'>, refresh),
 };
 
 /**

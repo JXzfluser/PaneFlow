@@ -31,8 +31,32 @@ export const modelDescriptor: RegistryDescriptor<'model'> = {
   },
 };
 
+/**
+ * `agent-kind`（v14 A3-2）：出厂清单的视图条目——`name` 就是 kind 原值，`spec.binary` 是探测名。
+ * `label` 只在异名时说话（`antigravity-cli`→`antigravity`），同名时不重复一遍（一屏 18 行里
+ * 十四行「二进制同名」是噪音，不是读数）。
+ */
+export const agentKindDescriptor: RegistryDescriptor<'agent-kind'> = {
+  kind: 'agent-kind',
+  label(entry) {
+    const bin = entry.spec.binary;
+    return bin === entry.name ? '探测名同 kind' : `探测名 ${bin}`;
+  },
+  /**
+   * 现役配置里指向一枚 agent 类型的写法只有两种：kind 原值（`nodes[].config.agentKind`、
+   * `SpaceProfile.defaultAgentKind`、`Role.agentKind` 落册的都是这个裸串）和整枚条目 id。
+   * **`spec.binary` 不是引用写法**——配置里写 `antigravity` 不合法（那是探测名，不是 kind），
+   * 把它算进匹配键就是把「打错的那个名字」读成「正在用」（同 model 那条「中文名不算」一个道理）。
+   */
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return slug ? [entry.id, slug] : [entry.id];
+  },
+};
+
 export const REGISTRY_DESCRIPTORS: { [K in RegistryEntry['kind']]: RegistryDescriptor<K> } = {
   model: modelDescriptor,
+  'agent-kind': agentKindDescriptor,
 };
 
 /** 按条目 kind 查人话标签（读端每条都过这里，所以 `label` 只可能有一份口径） */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeRegistryEntry, type RegistryEntry } from '@paneflow/shared';
 import { capabilitySnapshot } from './registry-snapshot.js';
+import { registryViewEntries } from './registry-view.js';
 import { contentSha } from './harness.js';
 import type { RawReference } from './registry-refs.js';
 
@@ -109,5 +110,44 @@ describe('v14-R5 能力快照', () => {
     const s2 = capabilitySnapshot([b, a], [ref({ target: 'a-model' }), ref({ target: 'b-model' })])!;
     expect(s1.refs.map((r) => r.id)).toEqual(s2.refs.map((r) => r.id));
     expect(s1.sha).toBe(s2.sha);
+  });
+});
+
+/**
+ * v14 A3-2 之后：`agent-kind` 也进快照（它已迁进表，姿态 1 的那把尺过了）。
+ * 这一条同时钉住引擎侧的装配——快照喂的必须是 `readView().entries`：视图条目不落盘，
+ * 只喂 `load()` 的话「这一单实发用了 pi」会静默不进能力面，cap# 就漏掉一次真实的能力面。
+ */
+describe('v14 A3-2 agent-kind 进能力快照', () => {
+  const agentRef = (target: string): RawReference => ({
+    face: 'template',
+    id: 't3',
+    name: 't3',
+    via: 'nodes[0].config.agentKind',
+    kind: 'agent-kind',
+    target,
+  });
+
+  it('出厂视图项能进快照：spec 抄的是现算那一份（binary 探测名，不是 kind 名）', () => {
+    const views = registryViewEntries();
+    const snap = capabilitySnapshot(views, [agentRef('pi')]);
+    expect(snap).not.toBeNull();
+    expect(snap!.refs).toEqual([
+      {
+        kind: 'agent-kind',
+        id: 'agent-kind:pi',
+        specSha: contentSha({ binary: 'pi' }),
+        spec: { binary: 'pi' },
+        via: ['template·nodes[0].config.agentKind'],
+      },
+    ]);
+  });
+
+  it('两枚能力并存时按 kind·id 排序；只喂盘上条目（load）就等于把 agent 那一枚读丢了', () => {
+    const model = modelEntry('gpt-4o-mini');
+    const both = capabilitySnapshot([model, ...registryViewEntries()], [agentRef('pi'), ref({})])!;
+    expect(both.refs.map((r) => r.id)).toEqual(['agent-kind:pi', 'model:gpt-4o-mini']);
+    // 反面对照：盘上没有 agent-kind 条目（出厂清单不落盘，这是事实源所在）
+    expect(capabilitySnapshot([model], [agentRef('pi'), ref({})])!.refs.map((r) => r.id)).toEqual(['model:gpt-4o-mini']);
   });
 });

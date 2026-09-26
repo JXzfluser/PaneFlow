@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeRegistryEntry, type DagGraph, type RegistryEntry } from '@paneflow/shared';
+import { normalizeRegistryEntry, type DagGraph, type ModelRegistrySpec, type RegistryEntry } from '@paneflow/shared';
 import { checkGraphRequirements, requirementGapWhy, requirementKindLabel } from './registry-check.js';
+import { registryViewEntries } from './registry-view.js';
 
 /**
  * v14-T3 起单前预检：模板 `requires` 槽 × 注册表 → 逐槽落点。
  * 钉的是三条姿态，一条都不能漂：
- *  1. 只有已迁进表的 kind 判死活（今天＝`model`），其余 `unjudged` **不拦**；
+ *  1. 只有已迁进表的 kind 判死活（今天＝`model` 与 A3-2 起的 `agent-kind`），其余 `unjudged` **不拦**；
  *  2. 形状不认 → `malformed` 且 `ok=false`（判不了就不放行）；
  *  3. 匹配吃 R2 那把尺（`matchesTarget` → Descriptor `refKeys`），整枚 id / slug / spec 原值三写法同权。
  */
@@ -29,7 +30,8 @@ const model = entry({ model: 'gpt-4o-mini' }, '小4号');
 
 describe('逐槽落点（checkGraphRequirements）', () => {
   it('命中：entryId 给到、why 说用了哪一枚；整枚 id / slug / spec 原值三种写法都算命中', () => {
-    for (const id of [model.id, model.spec.model, 'gpt-4o-mini']) {
+    // A3-2 起 `RegistryEntry['spec']` 是各类 spec 的联合，取值要按这一类的形状收窄（断言一字未改）
+    for (const id of [model.id, (model.spec as ModelRegistrySpec).model, 'gpt-4o-mini']) {
       const r = checkGraphRequirements(graphWith([{ kind: 'model', id }]), [model]);
       expect(r.slots).toEqual([{ kind: 'model', id, verdict: 'ok', why: '用「小4号」', entryId: model.id }]);
       expect(r.ok).toBe(true);
@@ -125,5 +127,53 @@ describe('拒单文案（requirementGapWhy）', () => {
     const why = requirementGapWhy(checkGraphRequirements(graphWith([{ kind: 'model', x: 1 }]), [model]));
     expect(why).toContain('声明形状不认');
     expect(why).toContain('含未知键 x');
+  });
+});
+
+/**
+ * v14 A3-2：`agent-kind` 迁入注册表（视图 kind）之后，那一类槽从「判不了」变成「判死活」。
+ *
+ * 这一条翻转是**有代价的**，所以专测钉住：以前 `{kind:'agent-kind'}` 落 `unjudged` 一律放行，
+ * 现在指不到就是死缺、起单被拒。代价换来的是「模板声明要 pi，本机这张表里没有 pi」当场可辨。
+ * 也正因为判的是**合并视图**，调用方（引擎 `startRun`、`GET /api/registry/check`）必须喂
+ * `readView().entries`——只喂 `load()` 会把整类 agent 读成死缺，那是假红不是 fail-closed。
+ */
+describe('v14 A3-2 agent-kind 槽已判死活（不再落 unjudged）', () => {
+  const views = registryViewEntries();
+
+  it('命中写法两枚同权：整枚 id 与 kind 名；探测名**不是**引用写法（与 R2 同一把尺）', () => {
+    for (const id of ['agent-kind:pi', 'pi']) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'agent-kind', id }]), views);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: 'agent-kind:pi' });
+      expect(r.ok).toBe(true);
+    }
+    // `spec.binary='antigravity'` 与 kind 名 `antigravity-cli` 不同名：refKeys 没挂号它就判不到
+    // （挂号=同一枚能力有两种引用写法，引用账与预检迟早分叉——那枚决议写在 Descriptor 的注释里）
+    const binary = checkGraphRequirements(graphWith([{ kind: 'agent-kind', id: 'antigravity' }]), views);
+    expect(binary.slots[0]!.verdict).toBe('missing');
+  });
+
+  it('不给 id 的槽＝「这一类有可用的就行」：出厂清单在表上就过（一枚都没有才是死缺）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'agent-kind' }]), views);
+    expect(r.slots[0]!.verdict).toBe('ok');
+    expect(checkGraphRequirements(graphWith([{ kind: 'agent-kind' }]), []).slots[0]!.verdict).toBe('missing');
+  });
+
+  it('指不到那一枚 = missing 且不放行（今天这槽是 unjudged 直接放行，翻转要留字为证）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'agent-kind', id: 'gemini-pro' }]), views);
+    expect(r.slots[0]!.verdict).toBe('missing');
+    expect(r.slots[0]!.entryId).toBeUndefined(); // 没命中整键不给（宁缺毋假）
+    expect(r.slots[0]!.why).toContain('指向「gemini-pro」');
+    expect(r.unjudged).toEqual([]);
+    expect(r.ok).toBe(false);
+  });
+
+  it('分组读数里 agent-kind 记 judged（`需要：Agent 引擎 2` 那一行的 judged/gaps 与预检同一把尺）', () => {
+    const r = checkGraphRequirements(
+      graphWith([{ kind: 'agent-kind', id: 'pi' }, { kind: 'agent-kind', id: 'nope' }]),
+      views,
+    );
+    expect(r.need).toEqual([{ kind: 'agent-kind', label: 'Agent 引擎', declared: 2, judged: 2, gaps: 1 }]);
+    expect(requirementKindLabel('agent-kind')).toBe('Agent 引擎');
   });
 });

@@ -772,7 +772,7 @@ export class Engine {
     if (graph.requires?.length) {
       let entries: RegistryEntry[];
       try {
-        entries = this.registry.load().entries;
+        entries = this.registry.readView().entries;
       } catch (err) {
         // 注册表读不出＝这一槽判不了；判不了就不放行（宁拒不错放，与 R2 引用账同姿态）
         throw new Error(
@@ -874,7 +874,7 @@ export class Engine {
     // 不写 `capabilityRefs: []`——那是正断言「扫过、一条没吃」，与「没走到注册消费面」两件事。
     try {
       const snap = capabilitySnapshot(
-        this.registry.load().entries,
+        this.registry.readView().entries,
         this.runRawReferences(run, run.harness?.gwProfile),
       );
       if (snap) {

@@ -28,11 +28,24 @@ export interface ModelRegistrySpec {
 }
 
 /**
- * kind → spec 形状。**A1 只落 `model` 一枚**当形状样板（§十.5）；
+ * `agent-kind`（v14 A3-2）——「本机可跑的 agent 类型」这张**出厂清单**。
+ * 数据原地住在 `api/agent-kinds.ts`（前置-1 合一的那枚白名单），注册表这一侧只是把它渲成条目：
+ *  - 视图 kind（见 `REGISTRY_VIEW_KINDS`）：**不落盘、不可写**，删/禁用都不接（那条路会让出厂清单和用户数据混成一锅）；
+ *  - `binary` 是探测用的二进制名（`antigravity-cli`→`antigravity` 是唯一的异名），不是密钥也不含路径；
+ *  - 装没装**不进 spec**——那是探针读数（每次现探，进 spec 就是把 60 秒前的世界写进台账）。
+ */
+export interface AgentKindRegistrySpec {
+  /** 本机 PATH 上探的那个名字（与 kind 同名时就是 kind） */
+  binary: string;
+}
+
+/**
+ * kind → spec 形状。**A1 落 `model` 当样板，A3-2 加 `agent-kind`（视图 kind）**；
  * 其余 kind 由 A3-x 逐片加成员，每片各带一条「等臂不破」断言。
  */
 export interface RegistrySpecMap {
   model: ModelRegistrySpec;
+  'agent-kind': AgentKindRegistrySpec;
 }
 
 export type RegistryKind = keyof RegistrySpecMap;
@@ -41,7 +54,18 @@ export type RegistryKind = keyof RegistrySpecMap;
  * 认识的 kind 清单（与 `RegistrySpecMap` 双向锁死，见下方 `_checkKindsCovered`）：
  * 加了 spec 成员忘了在这里挂号 = 编译期红，不是运行面「静默不认」。
  */
-export const REGISTRY_KINDS = ['model'] as const;
+export const REGISTRY_KINDS = ['model', 'agent-kind'] as const;
+
+/**
+ * **视图 kind**：条目由别处（代码里的出厂清单）现算出来，`entries.json` 里永远没有它们。
+ * 单列一枚清单而不写死在某个 if 里：写入面拒、UI 收控件、文案说「出厂登记不可删」三处都要用同一个答案
+ * ——三份 if 迟早对不上，那就是第二份判据。
+ */
+export const REGISTRY_VIEW_KINDS = ['agent-kind'] as const;
+
+export function isRegistryViewKind(kind: unknown): boolean {
+  return typeof kind === 'string' && (REGISTRY_VIEW_KINDS as readonly string[]).includes(kind);
+}
 
 type _KindsCovered = [RegistryKind] extends [(typeof REGISTRY_KINDS)[number]]
   ? [(typeof REGISTRY_KINDS)[number]] extends [RegistryKind]
@@ -50,6 +74,11 @@ type _KindsCovered = [RegistryKind] extends [(typeof REGISTRY_KINDS)[number]]
   : never;
 const _checkKindsCovered: _KindsCovered = true;
 void _checkKindsCovered;
+
+// 视图 kind 必须是认识的 kind：挂号挂到不认识的类型上=写入面拒、读取面也不认，那枚清单就是死码
+type _ViewKindsCovered = [(typeof REGISTRY_VIEW_KINDS)[number]] extends [RegistryKind] ? true : never;
+const _checkViewKindsCovered: _ViewKindsCovered = true;
+void _checkViewKindsCovered;
 
 /** 条目来源三态语义（§十.3，不许拿它当「是不是内置模板」这类模糊用途） */
 export const REGISTRY_SOURCES = ['builtin', 'user', 'discovered'] as const;
@@ -96,6 +125,7 @@ export interface RegistryDescriptor<K extends RegistryKind = RegistryKind> {
 }
 
 const MODEL_SPEC_KEYS = ['model', 'gatewayProfile', 'freeModel', 'note'] as const;
+const AGENT_KIND_SPEC_KEYS = ['binary'] as const;
 
 export type RegistryParse<T> = { ok: true; value: T } | { ok: false; why: string };
 
@@ -112,6 +142,7 @@ export function unknownKindWhy(kind: string): string {
  */
 const SPEC_PARSERS: { [K in RegistryKind]: (raw: unknown) => RegistryParse<RegistrySpecMap[K]> } = {
   model: parseModelSpec,
+  'agent-kind': parseAgentKindSpec,
 };
 
 export function parseRegistrySpec(kind: unknown, raw: unknown): RegistryParse<RegistryEntry['spec']> {
@@ -146,6 +177,22 @@ export function parseModelSpec(raw: unknown): RegistryParse<ModelRegistrySpec> {
     if (note) spec.note = note;
   }
   return { ok: true, value: spec };
+}
+
+/**
+ * `agent-kind` 的 spec 机检。这枚形状**只有出厂清单会造**（视图 kind，写入面一律拒），
+ * 但它仍要走同一张 `SPEC_PARSERS` 表：条目从代码现算出来之后，读端与引用账拿的是同一个
+ * `normalizeRegistryEntry`——不复用就得到处开第二份清洗路。
+ */
+export function parseAgentKindSpec(raw: unknown): RegistryParse<AgentKindRegistrySpec> {
+  const SHAPE = 'agent-kind 的配置详情必须是 {binary}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(AGENT_KIND_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  const binary = typeof o.binary === 'string' ? o.binary.trim() : '';
+  if (!binary) return { ok: false, why: `${SHAPE}；binary 必须是非空字符串` };
+  return { ok: true, value: { binary } };
 }
 
 /**
