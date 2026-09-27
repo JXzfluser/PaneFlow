@@ -3,7 +3,7 @@ import type { FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
-import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag, DECLARE_FACES } from '@paneflow/shared';
+import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag, forwardEdges, rejectEdgeNote, DECLARE_FACES } from '@paneflow/shared';
 import type { DagGraph, RunExperimentMeta, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
@@ -1495,7 +1495,7 @@ export async function buildHttpServer(deps: HttpDeps) {
           id: n.id,
           name: n.label ?? n.id,
           type: n.type,
-          dependsOn: graph.edges.filter((e) => e.target === n.id).map((e) => e.source),
+          dependsOn: forwardEdges(graph.edges).filter((e) => e.target === n.id).map((e) => e.source),
         })),
         contract: autofilled
           ? { mode: 'autofilled' as const, assertions: contractAssertions.length }
@@ -1610,7 +1610,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       } catch {
         rootCwd = undefined;
       }
-      const order = topoSort(graph.nodes.map((n) => n.id), graph.edges)!;
+      const order = topoSort(graph.nodes.map((n) => n.id), forwardEdges(graph.edges))!;
       const warnings: string[] = [];
       const nodes = order.map((id) => {
         const n = graph.nodes.find((x) => x.id === id)!;
@@ -1635,12 +1635,17 @@ export async function buildHttpServer(deps: HttpDeps) {
           conventions: rootCwd ?? null,
         };
       });
-      const edges = graph.edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        condition: e.condition ? `${e.condition.field}${e.condition.equals !== undefined ? ` == ${e.condition.equals}` : ''}${e.condition.notEquals !== undefined ? ` != ${e.condition.notEquals}` : ''}${e.condition.exists !== undefined ? (e.condition.exists ? ' 存在' : ' 不存在') : ''}（运行时评估）` : null,
-      }));
+      const edges = graph.edges.map((e) => {
+        const rejectNote = rejectEdgeNote(e);
+        return {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          // v13-K2 回边在预演里单独一句话讲清（它不是依赖，塞进 dependsOn 会被读成「先跑它」）
+          ...(rejectNote ? { rejectNote } : {}),
+          condition: e.condition ? `${e.condition.field}${e.condition.equals !== undefined ? ` == ${e.condition.equals}` : ''}${e.condition.notEquals !== undefined ? ` != ${e.condition.notEquals}` : ''}${e.condition.exists !== undefined ? (e.condition.exists ? ' 存在' : ' 不存在') : ''}（运行时评估）` : null,
+        };
+      });
       return { nodes, edges, warnings, variables: applied.graph.variables ?? [] };
     },
   );

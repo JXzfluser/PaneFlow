@@ -50,6 +50,14 @@ paneflow runs --json            # 原始 API 负载，stdout 干净可直接 | j
 #      注入现场没走到（非 agent 节点/档案不可读）整缺不显——判据全在 server，CLI 只渲染）
 #    + 掐断账行（v13-S2：节点尝试被引擎中途掐断过时出「⚡ 第 N 轮尝试已掐断（触发点 · 掐时状态）」，
 #      触发点取值 settle-timeout/retry/stop/shutdown/agent-gone；一次都没掐过整行不显示）
+#    + 打回账行（v13-K2 否决回边：这一格被审查岗退回来重做过时出
+#      「↩ 打回 N 次（最近：<审查节点> 否决 · 本轮第 K 次尝试 · 已重跑|打回上限已达，未再重跑）」
+#      + 一行「理由: <审查节点写在约定产物 extra.reason 的原话>」（它没写就明说「未写理由」不编）；
+#      N 是整本账的笔数、明细只呈最近一笔（掐断账同款，逐条在 --json 的 rejections[] 里）；
+#      与掐断账分家：重试/掐断是引擎自己再跑一轮，打回是这一格的件被**人画的否决回边**否了——
+#      回边带 condition（与正向条件边同一把尺 edgeActive），审查岗每次都 settle 不等于每次都拒；
+#      封顶那一次没人解决，被拒节点按 failed 收口、整单落 completed-with-failures（不洗绿）；
+#      没被打回过 / K2 前的旧单 → 两行整缺不显（缺≠「零返工」）——判据全在 server，CLI 只渲染）
 #    + 授权行 + 授权对账行（v13-W3：岗 declares 三面（gitPush/prOpen/issueWrite）收口落册 →
 #      「授权: 岗「r-x」gitPush=false …（声明非强制，锁在 agent CLI 侧）」；声明 false 却撞上
 #      副作用账 → 「⚠ 授权对账: 岗「r-x」声明 gitPush=false · 实见「已推送 <时刻>」」——只照不拦，
@@ -183,6 +191,14 @@ curl -s $BASE/api/dispatch -d '{"task":"...","experiment":{"suite":"c4","arm":"a
 #   （读失败或超总预算被跳过的不记），所以 scope=space（角色未配装备槽或没绑角色）时数组就是空间全量；
 #   unknownSkills=装备槽引用了本空间登记清单外、已跳过不注的项（只披露不拦）；
 #   注入现场没走到/档案不可读 → 整键省略（宁缺毋假，不拿空账冒充「吃了零」）；旧 run 无此键；
+#   v13-K2 起被否决回边打回过的节点多 rejections:[{at,attempt,reviewer,reason?,action}]——
+#   账落在**被拒方**（谁被拒谁欠账，与 abandonments 同款卫生，不靠环形事件反推）：reviewer=拒它的
+#   审查节点，reason=它写在约定产物 extra.reason 的原话（没写就没这个键），action=rework 已重跑 /
+#   capped 上限已达（这一次否决没人解决，节点按 failed 收口 → 整单 completed-with-failures）；
+#   attempt 是**本轮**交件时的尝试序号（打回重开让 attempts 从 1 重新起算，累计轮次看本账长度）；
+#   从没被打回 / K2 前旧单 → 整键省略（缺≠「零返工」）。画布侧：连线勾「打回线」+ condition 即回边，
+#   validateDag 按形状 fail-closed（两端都得是 agent 节点、必须指向前置环节、无 condition 即「恒打回」拒），
+#   回边不算环、不算依赖（topoSort/扇入闸/预演步骤/自动布局一律只看前向边）
 #   v13-W3 起收口对账落两枚可选键：declares:[{roleId,faces:{gitPush?,prOpen?,issueWrite?}}]——本单
 #   实绑岗的授权声明账（三面布尔，绑定 precedence 同 W4 能力账），声明入 prompt 但**不进
 #   ctxSha/roleSha 两枚指纹**（声明不是装备）；declareViolations:[{roleId,face,seen}]——声明 false
@@ -239,11 +255,14 @@ curl -s -X PUT $BASE/api/spaces/<id> -d '{"delivery":[{"repo":"my-repo","branchF
 curl -s $BASE/api/roles/<roleId>/profile
 #   → {role:{id,name}, overall:{runs, passRate?:{n,passed}, nodePassRate?:{n,done,failed},
 #      attention?:{n,waitMs,gates:{approve,reject,input}}, tokens?:{n,input,output},
-#      machineCheck?:{n,items,verified,runsAllPassed}}, byRoleSha?:[{roleSha, …同形状}]}
+#      machineCheck?:{n,items,verified,runsAllPassed}, rework?:{rejected,capped}}, byRoleSha?:[{roleSha, …同形状}]}
 #   口径三则：①每个指标自带分母 n，没有支持样本就整键省略（0 是正断言「一条都没过」，
 #   「不知道」不是 0）；②分组吃 roleSha（v13-W2 换装备=换指纹），没落指纹的旧单只进总账
-#   不进组，故「总账 runs ≥ Σ各组 runs」是口径事实；③返工（rework）本版**如实不报**——
-#   没有任何按岗可归因的落册字段忠实度量「这岗的活被打回重做」，造一个 proxy 就是假账。
+#   不进组，故「总账 runs ≥ Σ各组 runs」是口径事实；③返工（rework）自 v13-K2 起**有真账**：
+#   该岗各节点 rejections[] 的笔数合计（rejected）+ 其中封顶那几笔（capped），按岗直接归因
+#   （账落在被拒方节点上，不是 run 级合计，所以不需要分母 n——要分母看 runs/nodePassRate.n）；
+#   **整键缺省有两种读法**：这岗零返工，或它上的单全是 K2 前的旧单，两者在账上同形，
+#   所以绝不报 rework:{rejected:0} 冒充「实测零返工」。
 #   有岗无单 → 200 且 overall.runs:0（「这岗一次没上过」是读数），岗不存在才 404
 
 # 岗位授权声明（v13-W3）：roles PUT 体的可选 declares——三面布尔声明，入库 fail-closed；

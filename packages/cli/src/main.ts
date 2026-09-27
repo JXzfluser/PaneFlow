@@ -350,6 +350,19 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
     // 只呈 server 字段不自造判据——夜跑后看清「哪一轮、为什么、掐时它正干什么」
     const ab = (n.abandonments ?? []).at(-1);
     if (ab) io.out(`    ⚡ 第 ${ab.attempt} 轮尝试已掐断（${ab.trigger} · 掐时状态 ${ab.agentStatus}）`);
+    // v13-K2 打回账：这一格被否决回边拒过几次（次数、谁拒的、理由原话、封顶还是重跑，
+    // 全是 server 落在被拒方节点上的结构化账，这里零判据）。与掐断账分家：
+    // 重试是引擎自己再跑一轮，打回是审查岗把货退回来重做——两本账不混着读。
+    const rj = n.rejections ?? [];
+    if (rj.length) {
+      const last = rj[rj.length - 1]!;
+      const capped = last.action === 'capped';
+      io.out(
+        `    ${paint(io, capped ? '31' : '33', `↩ 打回 ${rj.length} 次（最近：${last.reviewer} 否决 · 本轮第 ${last.attempt} 次尝试 · ${capped ? '打回上限已达，未再重跑' : '已重跑'}）`)}`,
+      );
+      // 理由没写就明说没写，不拿「无」冒充审查岗说了话
+      io.out(`      理由: ${last.reason ? last.reason.slice(0, 120) : '（审查节点未写理由，约定产物 extra.reason）'}`);
+    }
     // v13-W1 装备行：这一岗实发吃进 prompt 的文档数（计数与 scope 都是 server 注入现场
     // 落册的账，这里零判据）；scope=space 且绑了角色=「未配装备正吃空间全量」，按红黄警示显出来
     const eq = n.equip;

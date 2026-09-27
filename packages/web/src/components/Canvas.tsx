@@ -29,6 +29,18 @@ export function Canvas() {
     n.selected === (n.id === selectedNodeId) ? n : { ...n, selected: n.id === selectedNodeId },
   );
   const edges = useStore((s) => s.edges);
+  // 打回线画成「往回走的红线」：虚线 + .err 描边 + 「打回」标签。
+  // 只在渲染派生，不写回 store——持久化的图里只该有语义（reject 标记），不该有样式。
+  const rfEdges = edges.map((e) =>
+    e.data?.reject === true
+      ? {
+          ...e,
+          label: e.label ?? '打回',
+          labelStyle: { fill: 'var(--err)', fontSize: 11, fontWeight: 600, ...e.labelStyle },
+          style: { stroke: 'var(--err)', strokeDasharray: '6 4', ...e.style },
+        }
+      : e,
+  );
   const onNodesChange = useStore((s) => s.onNodesChange);
   const onEdgesChange = useStore((s) => s.onEdgesChange);
   const onConnect = useStore((s) => s.onConnect);
@@ -61,7 +73,7 @@ export function Canvas() {
       )}
       <ReactFlow
         nodes={rfNodes}
-        edges={edges}
+        edges={rfEdges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}

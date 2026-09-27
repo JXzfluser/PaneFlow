@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { DagGraph, NodeEquip, NodeRunRecord, NodeRunState, RunRecord } from '@paneflow/shared';
+import type { DagGraph, NodeEquip, NodeRejection, NodeRunRecord, NodeRunState, RunRecord } from '@paneflow/shared';
 import { buildHttpServer } from './http.js';
 import type { Engine } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
@@ -52,8 +52,8 @@ function graphOf(nodes: { id: string; role?: string; checks?: unknown[] }[]): Da
   } as unknown as DagGraph;
 }
 
-function rec(state: NodeRunState, equip?: NodeEquip): NodeRunRecord {
-  return { nodeId: 'x', state, attempts: 1, ...(equip ? { equip } : {}) } as NodeRunRecord;
+function rec(state: NodeRunState, equip?: NodeEquip, rejections?: NodeRejection[]): NodeRunRecord {
+  return { nodeId: 'x', state, attempts: 1, ...(equip ? { equip } : {}), ...(rejections ? { rejections } : {}) } as NodeRunRecord;
 }
 
 const roleEquip = (role: string): NodeEquip => ({ scope: 'role', role, skills: ['skills/a.md'], rules: [] });
@@ -261,6 +261,41 @@ describe('GET /api/roles/:id/profile（v13-W4 角色能力账，纯读端点）'
     try {
       const { body } = await get(app, 'impl');
       expect(body.overall.machineCheck).toEqual({ n: 1, items: 1, verified: 1, runsAllPassed: 1 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('v13-K2 返工账按岗直接归因（账落在被拒方节点），封顶笔数单列', async () => {
+    const rej = (action: NodeRejection['action']): NodeRejection => ({
+      at: '2026-01-01T00:00:00.000Z',
+      attempt: 1,
+      reviewer: 'verify',
+      action,
+    });
+    const g = graphOf([{ id: 'a', role: 'impl' }]);
+    const runs = [
+      runOf({ runId: 'r-rework', graph: g, nodes: { a: rec('done', undefined, [rej('rework'), rej('capped')]) }, roleSha: 'sha-1' }),
+      runOf({ runId: 'r-clean', graph: g, nodes: { a: rec('done') }, roleSha: 'sha-1' }),
+    ];
+    const { app } = await buildServer(runs, ['impl']);
+    try {
+      const { body } = await get(app, 'impl');
+      expect(body.overall.rework).toEqual({ rejected: 2, capped: 1 });
+      // 分组账同判据：换装备前后的返工率能逐组比
+      expect(body.byRoleSha[0].rework).toEqual({ rejected: 2, capped: 1 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('没打过回 → rework 整键省略而不是 0：K2 前的旧单与「零返工」在账上同形，不拿 0 冒充实测', async () => {
+    const g = graphOf([{ id: 'a', role: 'impl' }]);
+    const { app } = await buildServer([runOf({ runId: 'old', graph: g, nodes: { a: rec('done') } })], ['impl']);
+    try {
+      const { body } = await get(app, 'impl');
+      expect(body.overall.runs).toBe(1);
+      expect(body.overall).not.toHaveProperty('rework');
     } finally {
       await app.close();
     }

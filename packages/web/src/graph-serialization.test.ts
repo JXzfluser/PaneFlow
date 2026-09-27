@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DagGraph } from '@paneflow/shared';
-import { autosaveChanged, graphToRfParts, rfToGraph, type AutosaveFields } from './graph-serialization.js';
+import { autosaveChanged, autoLayout, graphToRfParts, rfToGraph, type AutosaveFields } from './graph-serialization.js';
 
 /** R1 验收：graph → 画布 → graph 往返，字段零丢失（R1.1/R1.2/R1.3） */
 function richGraph(): DagGraph {
@@ -102,6 +102,72 @@ describe('graph round-trip (R1 数据完整性)', () => {
     expect(plain.requires).toEqual([]);
     const round = rfToGraph({ name: 'rich', nodes: plain.nodes, edges: plain.edges, variables: plain.variables, meta: plain.meta });
     expect(round.requires).toBeUndefined();
+  });
+
+  /**
+   * v13-K2 打回线也是「画布画不出来的字段」那一类：UI 不给它一个开关之前，
+   * 先保证「在画布中打开 → 保存」不把作者手写的 reject 洗成普通依赖。
+   */
+  it('reject 回边标记经画布往返零丢失；取消标记回写不落 false', () => {
+    const base = richGraph();
+    const g: DagGraph = {
+      ...base,
+      nodes: [
+        ...base.nodes,
+        { id: 'check', type: 'agent', label: '复核', position: { x: 500, y: 80 }, config: { prompt: '审' } },
+      ],
+      edges: [
+        ...base.edges,
+        { id: 'e4', source: 'dev', target: 'check' },
+        { id: 'e5', source: 'check', target: 'dev', reject: true, condition: { field: 'extra.decision', equals: 'reject' } },
+      ],
+    };
+    const parts = graphToRfParts(g);
+    const line = parts.edges.find((e) => e.id === 'e5')!;
+    expect(line.data?.reject).toBe(true);
+    expect(line.data?.condition).toEqual({ field: 'extra.decision', equals: 'reject' });
+    const back = rfToGraph({ name: g.name, nodes: parts.nodes, edges: parts.edges, variables: parts.variables, meta: parts.meta });
+    expect(back.edges.find((e) => e.id === 'e5')).toEqual({
+      id: 'e5',
+      source: 'check',
+      target: 'dev',
+      condition: { field: 'extra.decision', equals: 'reject' },
+      reject: true,
+    });
+    // 面板上取消勾选 → 回写「没这键」，不是一堆 reject:false 的噪音
+    const off = rfToGraph({
+      name: g.name,
+      nodes: parts.nodes,
+      edges: parts.edges.map((e) => (e.id === 'e5' ? { ...e, data: { ...e.data, reject: undefined } } : e)),
+      variables: parts.variables,
+      meta: parts.meta,
+    });
+    expect('reject' in (off.edges.find((e) => e.id === 'e5') ?? {})).toBe(false);
+  });
+
+  it('autoLayout 遇到回边不死循环（深度只按前向边算；旧写法会把画布卡死）', () => {
+    // 无 position 的图才会走兜底布局；回边构成环，深度取最大值且持续放宽 → 旧实现转不完
+    const g: DagGraph = {
+      version: 1,
+      name: 'loop-layout',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'build', type: 'agent', label: '实现', config: { prompt: '写' } },
+        { id: 'review', type: 'agent', label: '质检', config: { prompt: '审' } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'build' },
+        { id: 'e2', source: 'build', target: 'review' },
+        { id: 'e3', source: 'review', target: 'end' },
+        { id: 'er', source: 'review', target: 'build', reject: true, condition: { field: 'extra.decision', equals: 'reject' } },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    const layout = autoLayout(g);
+    expect(Object.keys(layout)).toHaveLength(4);
+    // build 排在 review 左边：回边没把 build 的深度顶到 review 之后
+    expect(layout.build!.x).toBeLessThan(layout.review!.x);
   });
 
   it('缺少 metadata 的 graph 不抛异常（API 客户端/旧版本落盘的运行）', () => {

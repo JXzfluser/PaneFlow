@@ -419,6 +419,12 @@ export function RunsCenter() {
         const open = openTl === r.runId;
         const eventCount = events?.length ?? liveEvents?.length ?? 0;
         const badge = stateBadge(r.state);
+        // v13-K2 打回账：引擎把每一笔否决落在**被拒方**节点上，这里只做加法和照抄，
+        // 不判「该不该打回」——判据在回边条件与封顶那一侧（server）。
+        const reworked = Object.values(r.nodes)
+          .map((n) => ({ id: n.nodeId, rs: n.rejections ?? [] }))
+          .filter((x) => x.rs.length > 0);
+        const reworkTotal = reworked.reduce((s, x) => s + x.rs.length, 0);
         return (
           <div key={r.runId} className={`run-card state-${r.state}`}>
             <div className="run-card-head">
@@ -434,6 +440,22 @@ export function RunsCenter() {
               {Object.values(r.nodes).some((n) => n.unverified) && (
                 <span className="run-cost-chip" style={{ borderColor: 'var(--warn)', color: 'var(--warn)' }} title="部分节点结果文件缺失，产物取自终端尾部兜底（未经文件验证，结论可信度打折）">
                   <Icon name="alert" size={11} /> 未验证产物
+                </span>
+              )}
+              {reworkTotal > 0 && (
+                <span
+                  className="run-cost-chip"
+                  style={{ borderColor: 'var(--err)', color: 'var(--err)' }}
+                  title={[
+                    `打回账：审查岗经否决回边把货退回重做过 ${reworkTotal} 次（不是引擎重试——重试是超时/报错自己再跑，打回是这一格的件被否了）`,
+                    ...reworked.map((x) => {
+                      const last = x.rs[x.rs.length - 1];
+                      const capped = x.rs.some((rj) => rj.action === 'capped');
+                      return `· ${x.id} 被打回 ${x.rs.length} 次${last ? `（${last.reviewer} 拒 · ${capped ? '上限已达，未再重跑' : '已重跑'}）` : ''}${last?.reason ? `：${last.reason}` : ''}`;
+                    }),
+                  ].join('\n')}
+                >
+                  <Icon name="undo" size={11} /> 打回 {reworkTotal} 次
                 </span>
               )}
               {r.contract && (

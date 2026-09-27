@@ -124,6 +124,8 @@ interface PfStore {
   selectEdge: (id: string | null) => void;
   markDirty: () => void;
   updateEdgeCondition: (edgeId: string, condition: EdgeCondition | undefined) => void;
+  /** v13-K2 把这条连线标成/取消「否决回边」（画布上的打回线） */
+  updateEdgeReject: (edgeId: string, reject: boolean) => void;
   restoreAutosave: () => boolean;
 
   onNodesChange: (changes: NodeChange<PfNode>[]) => void;
@@ -232,6 +234,17 @@ export const useStore = create<PfStore>((set, get) => ({
       edges: s.edges.map((e) =>
         e.id === edgeId
           ? { ...e, data: { ...e.data, condition } }
+          : e,
+      ),
+    })),
+  updateEdgeReject: (edgeId, reject) =>
+    set((s) => ({
+      canvasDirty: true,
+      edges: s.edges.map((e) =>
+        e.id === edgeId
+          ? // 取消标记时落回「没这键」而不是 false：与 DagEdge 的省略语义一致，
+            // 保存下来的 JSON 不会多出一堆 `reject: false` 让作者误以为这键有意义
+            { ...e, data: { ...e.data, reject: reject ? true : undefined } }
           : e,
       ),
     })),

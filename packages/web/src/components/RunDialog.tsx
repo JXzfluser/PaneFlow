@@ -130,9 +130,15 @@ export function RunDialog({
                 </li>
               ))}
             </ol>
-            {preview.edges.filter((e) => e.condition).length > 0 && (
+            {preview.edges.filter((e) => e.condition && !e.rejectNote).length > 0 && (
               <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                条件边：{preview.edges.filter((e) => e.condition).map((e) => `${e.source}→${e.target} [${e.condition}]`).join('；')}
+                条件边：{preview.edges.filter((e) => e.condition && !e.rejectNote).map((e) => `${e.source}→${e.target} [${e.condition}]`).join('；')}
+              </div>
+            )}
+            {/* v13-K2 打回线单独说：它不是「往下走的条件」，是「不满意就退回去」——混进条件边会说反 */}
+            {preview.edges.some((e) => e.rejectNote) && (
+              <div style={{ fontSize: 11, color: 'var(--err)', marginTop: 4 }}>
+                打回线：{preview.edges.filter((e) => e.rejectNote).map((e) => `${e.source}→${e.target} ${e.rejectNote}`).join('；')}
               </div>
             )}
           </div>

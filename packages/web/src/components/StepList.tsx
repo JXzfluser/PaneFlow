@@ -61,6 +61,14 @@ export function StepList() {
                   </div>
                   <div className="step-note">{s.note}</div>
                   {s.condition && <div className="step-cond">满足条件才执行：{s.condition}</div>}
+                  {s.reworkFrom && (
+                    <div className="step-cond rework">
+                      打回线：{s.reworkFrom.join('、')}否决时这一步会带着理由重做
+                    </div>
+                  )}
+                  {!!s.rejectedCount && (
+                    <div className="step-cond rework">本单已打回 {s.rejectedCount} 次</div>
+                  )}
                   {s.blockedPrompt && (
                     <div className="step-cond blocked">等待你处理：{s.blockedPrompt}</div>
                   )}

@@ -93,6 +93,16 @@ export const NODE_TYPE_CATALOG: readonly NodeTypeCatalogEntry[] = DAG_NODE_TYPES
 /** 动态扇出一律有顶：无上限 = 上游产物里 N 条数组无声放大成 N 个并发 agent（烧配额 + 挤爆 pane） */
 export const FANOUT_MAX_ITEMS_LIMIT = 64;
 
+/**
+ * v13-K2 打回回路的封顶：回边是这张图里唯一能让已完成节点重新起跑的机制，
+ * 没有顶就是「质检永远不满意、builder 永远在跑」——夜跑烧穿配额。默认 2 次
+ * （一次改、一次再改还不行就该人来看了），硬顶 5（再多就不是打回是磨洋工）。
+ */
+export const REJECT_LIMIT_DEFAULT = 2;
+export const REJECT_LIMIT_MAX = 5;
+/** 打回理由进 prompt 的字节顶：否决理由写成论文会把本轮上下文挤掉，截断并明示 */
+export const REJECTION_REASON_MAX_CHARS = 1_200;
+
 export interface DagNodeConfig {
   /** 全局角色库的角色 id（继承 agentKind 默认与 prePrompt） */
   role?: string;
@@ -147,6 +157,12 @@ export interface DagNodeConfig {
   clarify?: { maxRounds?: number };
   /** Retries before the node is considered failed (default 0) */
   retryCount?: number;
+  /**
+   * v13-K2 打回上限：本节点最多被否决回边打回几次重跑（1..REJECT_LIMIT_MAX；省略=REJECT_LIMIT_DEFAULT）。
+   * 这是回路的终止保证——每次打回都给被拒方计数 +1，计数只增不减，封顶后回路必然停下。
+   * 上限到了还被打回＝**不是成功**：那一次否决没被解决，被拒节点按 failed 收口（v11-D3 不洗绿）。
+   */
+  rejectLimit?: number;
   /** Hard per-node execution timeout in ms (0 = unlimited) */
   timeoutMs?: number;
   /** Failure policy for this node (default 'abort') */
@@ -220,6 +236,17 @@ export interface DagEdge {
    * field 支持 artifact 深层路径（如 aligned / extra.status）。
    */
   condition?: EdgeCondition;
+  /**
+   * v13-K2 否决回边（打回）：这条边**不是**依赖，而是「本节点产出的东西不合格时，
+   * 把 target 及其下游重新放回待跑」的声明。取值必须是 boolean 且带 `condition`
+   * （`validateDag` 拒无条件回边——恒打回＝无界回路）。
+   * 三条红线：①拓扑序/可达性/成环判定一律看不见它（`forwardEdges` 先剥它），
+   *   所以这张图仍是确定的前向 DAG，`topoSort` 照旧成立；
+   * ②它只由**引擎调度层**消费（`engine.schedule`），任何拿 `graph.edges` 直接算依赖的
+   *   地方都必须先过 `forwardEdges`——漏剥就是「画布看着是回环、校验说没环」的双口径；
+   * ③它不进 `requires`、不进注册表：回边是编排语义，不是能力条目。
+   */
+  reject?: boolean;
 }
 
 export interface EdgeCondition {
@@ -579,6 +606,33 @@ export interface NodeAbandonment {
 }
 
 /**
+ * v13-K2 打回账：每一次「否决回边成立」都结构化落到**被拒方**的节点记录上——
+ * 字段要能回答「谁拒的（reviewer）、第几轮拒的（attempt）、为什么（reason）、
+ * 引擎怎么处置的（action：重跑还是封顶后按失败收口）」。append-only，打回即落册。
+ * 形状复用 [[NodeAbandonment]] 的卫生要求：**不靠环形 events 字符串推导**
+ * （时间线会说谎，账不会）。缺省=本节点从没被打回过，与「打过 0 次」是同一件事的正读数，
+ * 旧记录无此键向后兼容（只增不改）。
+ */
+export interface NodeRejection {
+  at: string;
+  /**
+   * 被拒方**本轮**交件时的尝试序号（与 `NodeRunRecord.attempts` 同一口径）。
+   * 注意口径边界：打回重开让 `attempts` 从 1 重新起算（重试与打回是两本账），
+   * 所以 2 读作「引擎重试过一轮才交出来的件」，不是累计轮次——累计轮次看本账长度。
+   */
+  attempt: number;
+  /** 拒它的节点 id（回边的 source；审查岗） */
+  reviewer: string;
+  /** 审查方给的理由（`rejectionReasonOf` 读出的原话）；缺=它没写理由，明说不编 */
+  reason?: string;
+  /**
+   * 引擎的处置：`rework`=打回重跑（连同下游回到待跑）；`capped`=打回上限已达，
+   * 这一次否决没人解决，被拒节点按 failed 收口（不洗绿）。
+   */
+  action: 'rework' | 'capped';
+}
+
+/**
  * v13-W3 授权声明三面（`Role.declares?` 的合法面值；类型定义在 server roles.ts，这里放正身）。
  * 三面与引擎唯一的副作用账 RunSideEffects 恰一对一可对账：gitPush↔pushedAt、
  * prOpen↔prUrl、issueWrite↔issuesCreated/issuePatched。需求文档省略号里的 **writeScope 刻意不进**：
@@ -719,6 +773,12 @@ export interface NodeRunRecord {
    * 缺省=从未掐断（旧记录同款 JSON 向后兼容，只增不改）。
    */
   abandonments?: NodeAbandonment[];
+  /**
+   * v13-K2 打回账：本节点每次被否决回边打回各落一条（见 NodeRejection）。
+   * 缺省=从没被打回（与「被打回零次」同读，旧记录向后兼容）。
+   * 长度就是 W4 角色账里的 reworkN——按岗可归因的唯一返工度量，所以它是账不是事件。
+   */
+  rejections?: NodeRejection[];
   /**
    * v13-W1 岗位装备账：本节点实发 prompt 的文档取材（见 NodeEquip）。
    * 缺省=注入现场没走到（非 agent 节点/起单前失败/档案不可读）——不拿空账冒充「吃了零」。
@@ -1132,6 +1192,95 @@ export function validateDag(graph: DagGraph): DagIssue[] {
     seen.add(key);
   }
 
+  // v13-K2 否决回边的形状关（写入面 fail-closed，与 v13-V0 同款姿势）：
+  // 回边是这张图里唯一能改动「已完成」状态的机制，一条写歪的边＝一个夜跑里停不下来的回路，
+  // 所以这里宁可拒到作者改三遍，也不放行一张「语义靠运行时碰运气」的图。
+  const rejectEdges = edges.filter((e) => e.reject !== undefined);
+  // 前向可达集（回边不许参与，见 forwardEdges）：判定「target 是不是 source 的祖先」用
+  const fwd = forwardEdges(edges);
+  const isForwardAncestor = (maybeAncestor: string, of: string): boolean => {
+    const seenIds = new Set<string>([of]);
+    const stack = [of];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      for (const e of fwd) {
+        if (e.target !== cur || seenIds.has(e.source)) continue;
+        if (e.source === maybeAncestor) return true;
+        seenIds.add(e.source);
+        stack.push(e.source);
+      }
+    }
+    return false;
+  };
+  // 动态扇出展开时会重写子树里的边（克隆节点换 id）——回边挂在那种边上，运行期就是一张
+  // 谁也没画过的图。本版按形状直接拒，等展开语义想清楚再开。
+  const expandSubtree = new Set<string>();
+  {
+    const roots = nodes.filter((n) => n.type === 'fanout' && n.config.expand).map((n) => n.id);
+    const stack = [...roots];
+    const visited = new Set<string>(roots);
+    while (stack.length) {
+      const cur = stack.pop()!;
+      expandSubtree.add(cur);
+      for (const e of fwd) {
+        if (e.source !== cur || visited.has(e.target)) continue;
+        visited.add(e.target);
+        stack.push(e.target);
+      }
+    }
+  }
+  for (const e of rejectEdges) {
+    const where = `回边 ${e.source} → ${e.target}`;
+    if (!byId.has(e.source) || !byId.has(e.target)) continue; // 悬挂端点上面的循环已经报过
+    if (typeof e.reject !== 'boolean') {
+      // 图可以不走画布直接 POST 进来，`reject: "yes"` 这种破烂值不许靠猜生效
+      issues.push({ level: 'error', message: `${where}：reject 只能是 true 或 false（打回标记没有第三种取值）` });
+      continue;
+    }
+    if (e.reject === false) continue; // 显式 false＝正身声明「这不是回边」，按普通前向边处理
+    const src = byId.get(e.source)!;
+    const tgt = byId.get(e.target)!;
+    if (src.type !== 'agent' || tgt.type !== 'agent') {
+      issues.push({
+        level: 'error',
+        message: `${where}：打回的两端都得是 Agent 节点（否决要有产物可依据、被拒方要能重跑；当前 ${src.type}/${tgt.type}）`,
+        nodeId: tgt.id,
+      });
+    }
+    if (!e.condition) {
+      issues.push({
+        level: 'error',
+        message: `${where}：打回边必须带 condition（对「${e.source}」的产物字段做断言）——没有断言就是恒打回，回路只会靠上限兜住，那是拿封顶当设计`,
+        nodeId: tgt.id,
+      });
+    }
+    if (expandSubtree.has(e.source) || expandSubtree.has(e.target)) {
+      issues.push({
+        level: 'error',
+        message: `${where}：打回边不许挂在动态扇出的展开子树里（展开会重写子树的边，回边到时会指向一个不存在的分支模板节点）`,
+        nodeId: e.target,
+      });
+    }
+    if (src.type === 'agent' && tgt.type === 'agent' && !isForwardAncestor(tgt.id, src.id)) {
+      issues.push({
+        level: 'error',
+        message: `${where}：打回必须指向前置环节（前向图里「${e.target}」得不到「${e.source}」——它不是审查方的上游，拒不动它）`,
+        nodeId: e.target,
+      });
+    }
+  }
+  for (const n of nodes) {
+    const rl = n.config.rejectLimit;
+    if (rl === undefined) continue;
+    if (!Number.isInteger(rl) || rl < 1 || rl > REJECT_LIMIT_MAX) {
+      issues.push({
+        level: 'error',
+        message: `打回上限非法：rejectLimit=${rl}（需 1..${REJECT_LIMIT_MAX} 的整数；省略=默认 ${REJECT_LIMIT_DEFAULT}）：${n.label}`,
+        nodeId: n.id,
+      });
+    }
+  }
+
   // start / end exactly once, agent node sanity
   const starts = nodes.filter((n) => n.type === 'start');
   const ends = nodes.filter((n) => n.type === 'end');
@@ -1209,9 +1358,11 @@ export function validateDag(graph: DagGraph): DagIssue[] {
   }
 
   // cycle detection + reachability via Kahn's algorithm
-  const order = topoSort(nodes.map((n) => n.id), edges);
+  // v13-K2：只对前向边集判——回边天生成环（它就是指向自己上游的），把它们算进来
+  // 等于「允许打回的图一律不合法」。拓扑序因此仍然确定：回边改的是运行期的重跑，不是图的次序。
+  const order = topoSort(nodes.map((n) => n.id), fwd);
   if (order === null) {
-    issues.push({ level: 'error', message: '图中存在环，DAG 必须无环' });
+    issues.push({ level: 'error', message: '图中存在环，DAG 必须无环（打回请用回边 reject 而不是画正向环）' });
   } else if (starts.length === 1) {
     // unreachable-from-start check
     const reach = new Set<string>();
@@ -1220,7 +1371,7 @@ export function validateDag(graph: DagGraph): DagIssue[] {
       const cur = stack.pop()!;
       if (reach.has(cur)) continue;
       reach.add(cur);
-      for (const e of edges) if (e.source === cur && !reach.has(e.target)) stack.push(e.target);
+      for (const e of fwd) if (e.source === cur && !reach.has(e.target)) stack.push(e.target);
     }
     for (const n of nodes) {
       if (!reach.has(n.id)) {
@@ -1258,6 +1409,73 @@ export function topoSort(nodeIds: string[], edges: DagEdge[]): string[] | null {
 /** All nodes that feed into `nodeId` (direct predecessors). */
 export function upstreamOf(nodeId: string, edges: DagEdge[]): string[] {
   return edges.filter((e) => e.target === nodeId).map((e) => e.source);
+}
+
+/** v13-K2 这条连线是不是否决回边（判据只认 `reject === true`，破烂值不算回边也不该算——由校验器当场拒掉） */
+export function isRejectEdge(e: DagEdge): boolean {
+  return e.reject === true;
+}
+
+/**
+ * v13-K2 前向边集：剥掉所有否决回边后的边数组。
+ * **凡是要从 `graph.edges` 推「谁依赖谁」的地方都必须走这里**（拓扑序、可达性、成环、
+ * 深度布局、跑完判定…），漏一处就是两套拓扑口径。回边只由调度层单独消费。
+ */
+export function forwardEdges(edges: readonly DagEdge[]): DagEdge[] {
+  return edges.filter((e) => !isRejectEdge(e));
+}
+
+/**
+ * v13-K2 `nodeId` 的前向下游闭包（不含自身）：打回重跑时，吃了这份产物的节点一个都不能留旧账。
+ * 只沿前向边走（回边不是依赖），遇环自然靠已访问集止住。
+ */
+export function downstreamOf(nodeId: string, edges: readonly DagEdge[]): string[] {
+  const out = new Set<string>();
+  const stack = [nodeId];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    for (const e of forwardEdges(edges)) {
+      if (e.source !== cur || out.has(e.target)) continue;
+      out.add(e.target);
+      stack.push(e.target);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * v13-K2 一条回边说成人话（预演、时间线、CLI 共用这一张嘴——一张词表抄两份迟早对不上）。
+ * 不是回边就给 null，让调用方按「有没有这句话」分支，而不是各自再判一遍 `reject`。
+ */
+export function rejectEdgeNote(e: DagEdge): string | null {
+  if (!isRejectEdge(e)) return null;
+  const c = e.condition;
+  const when = !c
+    ? '无条件（校验面已拒，走到这里说明图是手写的）'
+    : c.equals !== undefined
+      ? `${c.field} = ${c.equals}`
+      : c.notEquals !== undefined
+        ? `${c.field} ≠ ${c.notEquals}`
+        : c.exists === false
+          ? `${c.field} 不存在`
+          : `${c.field} 存在`;
+  return `打回 ${e.target}（判据：产物 ${when}）`;
+}
+
+/**
+ * v13-K2 打回理由的读取约定：审查节点的产物里 `extra.reason`（一句人话）优先，
+ * 没有就退到 `summary`（结论正文，同样是审查者写的），两者都没有就是**真没写**——
+ * 返回 undefined 让上层明说「未给理由」，绝不拿被审方的产物冒充审查方的意见。
+ * 超 `REJECTION_REASON_MAX_CHARS` 截断并标注（进 prompt 的东西要封顶）。
+ */
+export function rejectionReasonOf(artifact: Artifact | undefined): string | undefined {
+  if (!artifact) return undefined;
+  const raw = artifact.extra?.reason;
+  const text =
+    typeof raw === 'string' && raw.trim() ? raw.trim() : artifact.summary?.trim() || undefined;
+  if (!text) return undefined;
+  if (text.length <= REJECTION_REASON_MAX_CHARS) return text;
+  return `${text.slice(0, REJECTION_REASON_MAX_CHARS)}…（理由过长已截断，原文 ${text.length} 字）`;
 }
 
 // ---------------------------------------------------------------------------

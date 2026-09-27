@@ -147,3 +147,88 @@ describe('v14-T3 requires 槽声明形状', () => {
     expect(msgs.every((m) => m.startsWith('requires['))).toBe(true); // 带下标，作者才知道改哪一格
   });
 });
+
+/**
+ * v13-K2 否决回边的形状关（写入面 fail-closed）。
+ * 回边是这张图里唯一能改动「已完成节点」的机制：一条写歪的边＝夜跑里停不下来的回路，
+ * 所以判据全在写入面掐死——放行的图必须「条件说得清、两端都能干、方向指得对、且不跟动态展开打架」。
+ */
+describe('v13-K2 否决回边形状', () => {
+  const GO = { field: 'extra.decision', equals: 'reject' };
+  /** start → build → review → end；回边默认 review → build（合法形状） */
+  const loop = (rejectEdge?: Partial<DagGraph['edges'][number]> | null): DagGraph => ({
+    version: 1,
+    name: 'k2-shape',
+    nodes: [
+      { id: 'start', type: 'start', label: '开始', config: {} },
+      { id: 'build', type: 'agent', label: '实现', config: { prompt: '写' } },
+      { id: 'review', type: 'agent', label: '质检', config: { prompt: '审' } },
+      { id: 'end', type: 'end', label: '结束', config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'build' },
+      { id: 'e2', source: 'build', target: 'review' },
+      { id: 'e3', source: 'review', target: 'end' },
+      ...(rejectEdge === null
+        ? []
+        : [{ id: 'er', source: 'review', target: 'build', reject: true, condition: GO, ...rejectEdge }]),
+    ],
+    metadata: { createdAt: '', updatedAt: '' },
+  });
+
+  it('合法回边=过，而且**不算环**（回边不进环检测，否则这形状永远画不出来）', () => {
+    expect(errors(loop())).toEqual([]);
+  });
+
+  it('不带 condition=拒：没有断言就是恒打回，那是拿封顶当设计', () => {
+    const msgs = errors(loop({ condition: undefined }));
+    expect(msgs.some((m) => m.includes('打回边必须带 condition') && m.includes('恒打回'))).toBe(true);
+  });
+
+  it('reject 破烂值=拒（图可以不走画布直接 POST，`"yes"` 不许靠猜生效）', () => {
+    expect(errors(loop({ reject: 'yes' as unknown as boolean })).some((m) => m.includes('reject 只能是 true 或 false'))).toBe(true);
+  });
+
+  it('reject:false 是正身声明「这不是回边」=按普通前向边放行', () => {
+    expect(errors(loop({ id: 'e4', source: 'build', target: 'end', reject: false, condition: undefined }))).toEqual([]);
+  });
+
+  it('端点不是 Agent=拒（否决要有产物可依据、被拒方要能重跑）', () => {
+    const g = loop();
+    g.nodes = g.nodes.map((n) => (n.id === 'review' ? { ...n, type: 'fanin' as const, config: {} } : n));
+    expect(errors(g).some((m) => m.includes('打回的两端都得是 Agent 节点'))).toBe(true);
+  });
+
+  it('方向指反=拒：打回必须指向前置环节（下游不是审查方的上游，拒不动它）', () => {
+    const msgs = errors({
+      ...loop(),
+      edges: loop().edges.map((e) => (e.id === 'er' ? { ...e, source: 'build', target: 'review' } : e)),
+    });
+    expect(msgs.some((m) => m.includes('打回必须指向前置环节'))).toBe(true);
+  });
+
+  it('挂在动态扇出的展开子树里=拒（展开会重写子树的边，回边届时指向不存在的分支模板节点）', () => {
+    const g = loop();
+    g.nodes = g.nodes.map((n) => (n.id === 'build' ? { ...n, type: 'fanout' as const, config: { expand: { from: 'review', field: 'tasks' } } } : n));
+    expect(errors(g).some((m) => m.includes('动态扇出的展开子树'))).toBe(true);
+  });
+
+  it('rejectLimit 越界=拒并说清值域（1..5；省略=默认 2）', () => {
+    const withLimit = (v: unknown): string[] => {
+      const g = loop();
+      g.nodes = g.nodes.map((n) => (n.id === 'build' ? { ...n, config: { ...n.config, rejectLimit: v as number } } : n));
+      return errors(g);
+    };
+    expect(withLimit(0).some((m) => m.includes('打回上限非法') && m.includes('1..5'))).toBe(true);
+    expect(withLimit(6).some((m) => m.includes('打回上限非法'))).toBe(true);
+    expect(withLimit(1.5).some((m) => m.includes('打回上限非法'))).toBe(true);
+    expect(withLimit(3)).toEqual([]);
+  });
+
+  it('真画成正向环仍然拒，且文案指路改用回边（回边不是「绕开无环要求」的后门）', () => {
+    const g = loop(null);
+    g.edges.push({ id: 'ec', source: 'review', target: 'build' });
+    const msgs = errors(g);
+    expect(msgs.some((m) => m.includes('图中存在环') && m.includes('打回请用回边 reject'))).toBe(true);
+  });
+});

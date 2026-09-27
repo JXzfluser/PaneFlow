@@ -95,6 +95,41 @@ describe('deriveSteps（DAG → 可读步骤）', () => {
     expect(steps.find((s) => s.id === 'verify')!.state).toBeUndefined();
   });
 
+  it('v13-K2 打回回边：不进依赖、不改拓扑序，另立一格说清谁能打回它', () => {
+    // 节点数组刻意打乱顺序：清单顺序必须由**前向图**拓扑出来。
+    // 回边若混进拓扑输入，topoSort 判成环返回 null → 清单退化成这个乱序数组（看得见的错）。
+    const g = deliveryLikeGraph();
+    g.nodes = [g.nodes[0]!, g.nodes[6]!, g.nodes[4]!, g.nodes[1]!, g.nodes[2]!, g.nodes[3]!, g.nodes[5]!, g.nodes[7]!];
+    g.edges.push({
+      id: 'e-rej',
+      source: 'verify',
+      target: 'impl',
+      reject: true,
+      condition: { field: 'extra.decision', equals: 'reject' },
+    });
+    const runNodes: Record<string, NodeRunRecord> = {
+      impl: {
+        nodeId: 'impl',
+        state: 'done',
+        attempts: 1,
+        rejections: [
+          { at: '2026-01-01T00:02:00.000Z', attempt: 1, reviewer: 'verify', reason: '缺回归测试', action: 'rework' },
+        ],
+      },
+    };
+    const steps = deriveSteps(g, runNodes);
+    // 拓扑序仍成立（verify 在 impl 之后）
+    const order = steps.map((s) => s.id);
+    expect(order.indexOf('impl')).toBeLessThan(order.indexOf('verify'));
+    const impl = steps.find((s) => s.id === 'impl')!;
+    // 回边不是依赖：impl 依赖 fork，不依赖验收核对
+    expect(impl.deps).toEqual(['fork']);
+    expect(impl.reworkFrom).toEqual(['验收核对']);
+    expect(impl.rejectedCount).toBe(1);
+    // 没被拒过的步骤不多画东西
+    expect(steps.find((s) => s.id === 'align')!.reworkFrom).toBeUndefined();
+  });
+
   it('空图不炸，返回空清单', () => {
     const empty: DagGraph = {
       version: 1,

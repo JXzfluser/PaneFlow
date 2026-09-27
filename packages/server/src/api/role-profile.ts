@@ -13,16 +13,21 @@ import { machineCheckTally } from '@paneflow/shared';
  *  · 分组 → harness.roleSha（v13-W2 岗位+装备指纹；没落册的单进总账不进任何组，
  *    于是「总账样本数 ≥ 各组样本数之和」是口径而非 bug）；
  *  · 通过率 → run.state / 节点 state；attention → run.attention（v12-V2）；
- *  · token → run.cost.tokens（null=拿不到，绝不估算）；机检 → machineCheckTally(run)。
+ *  · token → run.cost.tokens（null=拿不到，绝不估算）；机检 → machineCheckTally(run)；
+ *  · 返工 → 该岗节点记录的 rejections 账（v13-K2 打回回路，落册在被拒方）。
  *
  * 多角色 run 的诚实边界：attention/tokens/machineCheck 三本账在落册处就是 **run 级聚合**
  * （引擎没有按岗拆账），本模块只把它们记到「上过该岗的单」头上——含该岗即整单入账。
  * 所以这些数对多岗单是**上界归因**，分母 n 如实暴露样本构成，读者据此自行折价；
  * 造一个「看起来是岗位的」拆分数才是假账。
  *
- * 返工（rework）**刻意不聚合**：没有任何按岗可归因的落册字段忠实度量「这岗的活被打回重做」——
- * attention.gates.reject 是 run 级合计（拆不到岗）、节点 attempts 是引擎重试（超时/报错，
- * 语义≠返工）、K2 的 rejections 结构化账本版还不存在。缺一个数是诚实，造一个是假账。
+ * 返工（rework）在 K2 之前**刻意不聚合**：当时没有任何按岗可归因的落册字段忠实度量
+ * 「这岗的活被打回重做」——attention.gates.reject 是 run 级合计（拆不到岗）、节点 attempts
+ * 是引擎重试（超时/报错，语义≠返工）。缺一个数是诚实，造一个是假账。
+ * K2 落地后这字段有了正身：节点记录的 `rejections[]`（谁拒的、第几轮、封顶还是重跑），
+ * 账落在**被拒方**节点上，于是按岗归因是直接的，不需要 proxy。
+ * 仍然守同一口径：只在真有打回条目时报数——K2 前的旧单和「从没被打回」在账上同形
+ * （都是整键缺省），拿 0 冒充实测「零返工」就是造出来的假账。
  */
 
 /** 分母约定（全模块统一）：每个指标对象自带 n=可支持该断言的样本数；
@@ -63,6 +68,15 @@ export interface RoleProfileMetrics {
   tokens?: { n: number; input: number; output: number };
   /** 机检覆盖（v13-V1 tally）：n=tally 推得出的样本 run 数；runsAllPassed=机检全过且真有机检的 run 数 */
   machineCheck?: { n: number; items: number; verified: number; runsAllPassed: number };
+  /**
+   * 返工（v13-K2 打回回路）：该岗节点被否决回边打回的总条目数，按岗直接归因
+   * （账落在被拒方节点上，不是 run 级合计）。
+   * rejected=打回次数（含封顶那一次），capped=其中「上限已达、这次否决没人解决」的笔数
+   * （这批单最后是被拒方 failed 收口的，所以 capped>0 的单 passRate 里必有红）。
+   * 整键缺省=没有任何可支持样本：既可能是这岗零返工，也可能是它上的单全是 K2 前的旧单——
+   * 两种读法在账上同形，所以不报 0 冒充「实测零返工」。
+   */
+  rework?: { rejected: number; capped: number };
 }
 
 /** 按 roleSha（v13-W2 岗位+装备指纹）分组的账：换装备=换指纹=换一行，回退在组间对比里可见 */
@@ -128,6 +142,8 @@ export function computeRoleMetrics(samples: readonly RoleSample[]): RoleProfileM
   let mcItems = 0;
   let mcVerified = 0;
   let mcAllPassedRuns = 0;
+  let reworkRejected = 0;
+  let reworkCapped = 0;
 
   for (const { run, nodeRecords } of samples) {
     const verdict = runVerdict(run.state);
@@ -136,6 +152,12 @@ export function computeRoleMetrics(samples: readonly RoleSample[]): RoleProfileM
       if (verdict === 'pass') runPassed += 1;
     }
     for (const rec of nodeRecords) {
+      // 返工账与该岗节点记录直接对齐（K2 的账落在被拒方），不看 state：
+      // 被打回后节点可能还在跑/被卡住，砍掉非终态就把「正在返工」这一类读数洗掉了。
+      for (const rj of rec.rejections ?? []) {
+        reworkRejected += 1;
+        if (rj?.action === 'capped') reworkCapped += 1;
+      }
       if (!NODE_TERMINAL.has(rec.state)) continue;
       nodeN += 1;
       if (rec.state === 'done') nodeDone += 1;
@@ -172,6 +194,9 @@ export function computeRoleMetrics(samples: readonly RoleSample[]): RoleProfileM
   if (attN > 0) m.attention = { n: attN, waitMs, gates };
   if (tokN > 0) m.tokens = { n: tokN, input: tokIn, output: tokOut };
   if (mcN > 0) m.machineCheck = { n: mcN, items: mcItems, verified: mcVerified, runsAllPassed: mcAllPassedRuns };
+  // 没有 rework 分母可报：被打回零次的节点在账上就是「整键缺省」（与 K2 前的旧单同形），
+  // 硬凑一个 n 只会是 rejected 的同义反复，读者要的分母是 runs / nodePassRate.n。
+  if (reworkRejected > 0) m.rework = { rejected: reworkRejected, capped: reworkCapped };
   return m;
 }
 

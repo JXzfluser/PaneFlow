@@ -501,6 +501,34 @@ describe('runs / status / approve', () => {
     expect(noLedger.lines.join('\n')).not.toContain('已掐断');
   });
 
+  it('v13-K2 status 打回账行：带 rejections 就报笔数+最近一笔（谁拒/理由/封顶还是重跑），无账不显示', async () => {
+    const ledger = (last: { reason?: string; action: string }) => [
+      { at: '2026-09-27T10:00:00.000Z', attempt: 1, reviewer: 'verify', action: 'rework' },
+      { at: '2026-09-27T10:20:00.000Z', attempt: 2, reviewer: 'verify', ...(last.reason ? { reason: last.reason } : {}), action: last.action },
+    ];
+    const node = (rejections: unknown[]) => ({ nodes: { impl: { nodeId: 'impl', state: 'failed', rejections } } });
+    const { fetchImpl } = stubFetch([
+      { body: { runId: 'r-rj', state: 'completed-with-failures', dagName: 'g', ...node(ledger({ reason: '第 2 轮的理由', action: 'rework' })) } },
+      { body: { runId: 'r-rj', state: 'completed-with-failures', dagName: 'g', ...node(ledger({ action: 'capped' })) } },
+      { body: { runId: 'r-rj', state: 'completed', dagName: 'g', nodes: { impl: { nodeId: 'impl', state: 'done' } } } },
+    ]);
+    const withLedger = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-rj'], withLedger.io)).toBe(0);
+    const out = withLedger.lines.join('\n');
+    // 笔数是整本账、明细只呈最近一笔（掐断账同款）；旧轮次的理由在 --json 里逐条可查
+    expect(out).toContain('打回 2 次（最近：verify 否决 · 本轮第 2 次尝试 · 已重跑）');
+    expect(out).toContain('第 2 轮的理由');
+    const capped = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-rj'], capped.io)).toBe(0);
+    const cappedOut = capped.lines.join('\n');
+    expect(cappedOut).toContain('打回 2 次（最近：verify 否决 · 本轮第 2 次尝试 · 打回上限已达，未再重跑）');
+    // 审查节点没写理由就明说没写，不编一句
+    expect(cappedOut).toContain('（审查节点未写理由，约定产物 extra.reason）');
+    const noLedger = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-rj'], noLedger.io)).toBe(0);
+    expect(noLedger.lines.join('\n')).not.toContain('打回');
+  });
+
   it('approve POST 审批端点、体是 {action:"approve"}；409 时把 server 指路原样带出', async () => {
     const { fetchImpl, calls } = stubFetch([{ body: { delivered: true } }]);
     const { io } = makeIo({ fetch: fetchImpl });

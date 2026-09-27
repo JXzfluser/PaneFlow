@@ -611,6 +611,59 @@ describe('Engine (serial DAG)', () => {
     expect(run.nodes['end']!.state).toBe('done');
   });
 
+  it('动态扇出把分支模板上的条件边**原样**带给每个克隆（换 source 不换判据）', async () => {
+    // 旧写法用三个字段重建克隆出边，判据在这一刻被洗成恒通过：画布上写着「只有 decision=go
+    // 才往下走」，跑起来却什么都往下走——双口径。这里用「全停」这一侧做判别：判据若还活着，
+    // 下游一条入边都不成立→skipped 且一次 prompt 不发；判据被洗掉则它照跑。
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-cond-'));
+    const graph: DagGraph = {
+      version: 1,
+      name: 'expand-cond',
+      nodes: [
+        { id: 'start', type: 'start', label: '开始', config: {} },
+        { id: 'plan', type: 'agent', label: '拆分', config: { agentKind: 'fake', prompt: '拆' } },
+        { id: 'fork', type: 'fanout', label: '动态展开', config: { expand: { from: 'plan', field: 'tasks' } } },
+        { id: 'dev', type: 'agent', label: '开发 {{item.name}}', config: { agentKind: 'fake', prompt: '做 {{item.name}}' } },
+        { id: 'judge', type: 'agent', label: '放行', config: { agentKind: 'fake', prompt: '收' } },
+        { id: 'end', type: 'end', label: '结束', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'start', target: 'plan' },
+        { id: 'e2', source: 'plan', target: 'fork' },
+        { id: 'e3', source: 'fork', target: 'dev' },
+        { id: 'e4', source: 'dev', target: 'judge', condition: { field: 'extra.decision', equals: 'go' } },
+        { id: 'e5', source: 'judge', target: 'end' },
+      ],
+      metadata: { createdAt: '', updatedAt: '' },
+    };
+    ops.onPrompt = (target) => {
+      const dir = path.join(cwd, '.herdr/artifacts');
+      if (target.includes('plan')) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'plan.json'),
+          JSON.stringify({ tasks: [{ name: 'a' }, { name: 'b' }] }),
+        );
+        return;
+      }
+      const clone = target.match(/dev__(\d)/)?.[1];
+      if (clone) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, `dev__${clone}.json`), JSON.stringify({ extra: { decision: 'stop' } }));
+      }
+    };
+    const run = await runToCompletion(graph, cwd);
+
+    // 结构：克隆出边的 source 换成了克隆 id（挂在模板节点上=整条分支永不落定），判据仍在
+    const out = run.graph.edges.filter((e) => e.source === 'dev__1');
+    expect(out).toHaveLength(1);
+    expect(out[0]!.target).toBe('judge');
+    expect(out[0]!.condition).toEqual({ field: 'extra.decision', equals: 'go' });
+    // 行为：两条入边都不成立 → judge 一条 prompt 都没收到，按「入边条件均未满足」跳过
+    expect(ops.prompts.filter((p) => p.target.includes('judge'))).toHaveLength(0);
+    expect(run.nodes['judge']!.state).toBe('skipped');
+  });
+
   it('v13-V0 动态扇出有顶：项数超 expand.maxItems → 节点失败并指路，绝不静默截断分支（少交付还报完成）也不无界放大并发', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-cwd-'));
     const graph: DagGraph = {

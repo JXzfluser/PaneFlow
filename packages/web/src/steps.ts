@@ -1,4 +1,5 @@
 import {
+  forwardEdges,
   topoSort,
   type DagGraph,
   type DagNode,
@@ -28,6 +29,13 @@ export interface Step {
   deps: string[];
   /** 入边条件断言（条件边）的人话描述 */
   condition?: string;
+  /**
+   * v13-K2 图上的打回线：哪些节点编了「不满意就把这一步打回重做」的回边（按 label 去重）。
+   * 不是依赖——所以它单列一格，不混进 deps（混了就得改 topoSort 的输入，那是环）。
+   */
+  reworkFrom?: string[];
+  /** 本步实被打回的次数（运行账；0/缺省=没被拒过，不画） */
+  rejectedCount?: number;
   /** 运行态（无运行记录时为 undefined = 待执行） */
   state?: NodeRunState;
   /** 该步产出的结论摘要 */
@@ -103,19 +111,28 @@ export function deriveSteps(graph: DagGraph, runNodes?: Record<string, NodeRunRe
   const nodes = graph.nodes ?? [];
   const edges = graph.edges ?? [];
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const order = topoSort(nodes.map((n) => n.id), edges) ?? nodes.map((n) => n.id);
+  // v13-K2 清单只看前向依赖：回边不是「这一步依赖谁」，而是「谁可以把它打回来重做」——
+  // 算进依赖里，topoSort 会因为「有环」直接返 null，整张清单退化成节点数组的原始顺序
+  const fwd = forwardEdges(edges);
+  const order = topoSort(nodes.map((n) => n.id), fwd) ?? nodes.map((n) => n.id);
 
   const steps: Step[] = [];
   let no = 0;
   for (const id of order) {
     const node = byId.get(id);
     if (!node) continue;
-    const incoming = edges.filter((e) => e.target === id);
+    const incoming = fwd.filter((e) => e.target === id);
     const deps = incoming.map((e) => e.source).filter((s) => byId.has(s));
     const conditioned = incoming.find((e) => e.condition);
     const condition = conditioned?.condition
       ? formatCondition(conditioned.source, conditioned.condition)
       : undefined;
+    // 打回账（只读运行记录，判据在引擎）：回边的 source 不在 deps 里，所以另走图
+    const backEdges = edges.filter((e) => e.reject === true && e.target === id);
+    const reworkBy = backEdges
+      .map((e) => byId.get(e.source)?.label ?? e.source)
+      .filter((name, i, arr) => arr.indexOf(name) === i);
+    const rejected = runNodes?.[id]?.rejections?.length ?? 0;
     const depsNodes = deps.map((d) => byId.get(d)).filter((n): n is DagNode => Boolean(n));
     const { kind, note } = describe(node, depsNodes);
     const rec = runNodes?.[id];
@@ -128,6 +145,8 @@ export function deriveSteps(graph: DagGraph, runNodes?: Record<string, NodeRunRe
       note,
       deps,
       condition,
+      ...(reworkBy.length ? { reworkFrom: reworkBy } : {}),
+      ...(rejected ? { rejectedCount: rejected } : {}),
       state: rec?.state,
       summary: rec?.artifact?.summary,
       blockedPrompt: rec?.blockedPrompt,

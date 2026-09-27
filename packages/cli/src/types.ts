@@ -93,6 +93,19 @@ export interface NodeRunView {
     agentName: string;
   }[];
   /**
+   * v13-K2 打回账（引擎结构化落册，落在这**一岗被否决回边拒过**的节点上）：
+   * reviewer=拒它的审查节点，reason=它写的原话（缺=没写，不编），
+   * action=rework=打回重跑 / capped=上限已达这次没人解决。
+   * 整缺=从没被打回（与 K2 前的旧单同形，不据此断言「零返工」）。
+   */
+  rejections?: {
+    at: string;
+    attempt: number;
+    reviewer: string;
+    reason?: string;
+    action: string;
+  }[];
+  /**
    * v13-W1 岗位装备账（server 在注入现场算好落册，这里零判据只渲染）：
    * scope=space 即「这个岗其实在吃空间全量」——警告行的唯一依据；整缺=注入现场没走到，不猜。
    */

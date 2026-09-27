@@ -24,8 +24,9 @@ import type {
   RunDeliveryViolation,
   RunDeliveryWorktree,
   RegistryEntry,
+  NodeRejection,
 } from '@paneflow/shared';
-import { applyVariables, renderPromptTemplate, renderProductRefs, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT, DECLARE_FACES } from '@paneflow/shared';
+import { applyVariables, renderPromptTemplate, renderProductRefs, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT, DECLARE_FACES, forwardEdges, isRejectEdge, downstreamOf, rejectionReasonOf, REJECT_LIMIT_DEFAULT } from '@paneflow/shared';
 import type { DeclareFace, ProductRef, RunDeclareViolation } from '@paneflow/shared';
 import { appendTemplateFeedback } from './contract-templates.js';
 import type { HerdrOps } from './herdr-ops.js';
@@ -807,7 +808,9 @@ export class Engine {
       resumeSource = source;
     }
 
-    const order = topoSort(graph.nodes.map((n) => n.id), graph.edges)!;
+    // v13-K2：拓扑序只看前向边——回边是指向自己上游的，算进来这张图就「有环」了，
+    // 而那正是回边要表达的东西。确定性没被放弃：次序仍由前向图唯一决定，回边只在运行期改重跑。
+    const order = topoSort(graph.nodes.map((n) => n.id), forwardEdges(graph.edges))!;
     // I2 上次经验自动注入 v0（仅变量层——B1 黑板别名未做前不碰产物层）：
     // 同空间+同模板存在绿 run 时，把其「实填变量+断言清单+成本画像」附入
     // 执行序首个 agent 节点的 prompt；透明性红线——run 事件明示注入了什么
@@ -995,7 +998,7 @@ export class Engine {
     const pending = this.pendingLaunches.get(run.runId);
     this.pendingLaunches.delete(run.runId);
     const order =
-      pending?.order ?? topoSort(run.graph.nodes.map((n) => n.id), run.graph.edges) ?? run.graph.nodes.map((n) => n.id);
+      pending?.order ?? topoSort(run.graph.nodes.map((n) => n.id), forwardEdges(run.graph.edges)) ?? run.graph.nodes.map((n) => n.id);
     void this.execute(run, order, pending?.preload).catch((err) => {
       run.state = 'failed';
       run.finishedAt = new Date().toISOString();
@@ -1705,7 +1708,8 @@ export class Engine {
     };
 
     const predStatus = (id: string): 'ready' | 'wait' | 'skip' | 'nolink' => {
-      const edgesIn = graph.edges.filter((e) => e.target === id);
+      // v13-K2 只看前向入边：回边不是依赖（builder 不等审查岗，是审查岗等 builder）
+      const edgesIn = forwardEdges(graph.edges).filter((e) => e.target === id);
       const activeEdges = edgesIn.filter((e) => edgeActive(e));
       if (edgesIn.length > 0 && activeEdges.length === 0) return 'nolink';
       let anyFailed = false;
@@ -1728,6 +1732,51 @@ export class Engine {
     };
 
     let capacityBlocked = false;
+    // --- v13-K2 打回回路 -------------------------------------------------------
+    // 一次否决的完整生命：落册（账）→ 排队重跑（rework）或封顶后按失败收口（capped）。
+    // 检测与动手分两处：**检测**在审查方 settle 的当场（那时它的产物刚读进黑板，理由取得到原话），
+    // **动手**等到全 run 无在飞尝试（半途重置子树会让正在跑的分支既消费旧产物又要重跑=双跑一台）。
+    const reopenQueue: string[] = [];
+    const rejectCounts = new Map<string, number>();
+    // 计数从台账起：续跑/重启后封顶吃的是**累计**，不是本轮观测到的次数（否则重启即洗白预算）
+    for (const [id, rec] of Object.entries(run.nodes)) {
+      if (rec.rejections?.length) rejectCounts.set(id, rec.rejections.length);
+    }
+    const collectRejections = (reviewerId: string): void => {
+      let fired = false;
+      for (const e of graph.edges) {
+        if (!isRejectEdge(e) || e.source !== reviewerId) continue;
+        // **打回与否由回边条件说了算**，与正向条件边同一把尺（`edgeActive`）：
+        // 审查岗每次都 settle 一次，不代表它每次都否决——把「跑过质检」当成「拒了」，
+        // 封顶就成了唯一的出口，图会被无端改回三次然后红掉。
+        if (!edgeActive(e)) continue;
+        const rec = run.nodes[e.target];
+        if (!rec) continue;
+        const limit = graph.nodes.find((n) => n.id === e.target)?.config.rejectLimit ?? REJECT_LIMIT_DEFAULT;
+        const used = rejectCounts.get(e.target) ?? 0;
+        const capped = used >= limit;
+        const reason = rejectionReasonOf(blackboard.get(reviewerId));
+        (rec.rejections ??= []).push({
+          at: new Date().toISOString(),
+          attempt: rec.attempts,
+          reviewer: reviewerId,
+          ...(reason ? { reason } : {}),
+          action: capped ? 'capped' : 'rework',
+        });
+        rejectCounts.set(e.target, used + 1);
+        fired = true;
+        if (!capped) {
+          this.recordEvent(run, 'node', reviewerId, `否决回边成立：打回「${e.target}」重跑（第 ${used + 1}/${limit} 次）`);
+          if (!reopenQueue.includes(e.target)) reopenQueue.push(e.target);
+          continue;
+        }
+        // 封顶不是「打回没发生」：第 N+1 次否决照样落账，只是没人再回去改——
+        // 那就不是成功，被拒方按 failed 收口（v11-D3 不洗绿）。
+        this.recordEvent(run, 'node', reviewerId, `否决回边成立但打回上限 ${limit} 次已达：「${e.target}」不再重跑`);
+        mark(e.target, 'failed', `打回上限 ${limit} 次已达，第 ${used + 1} 次否决未解决${reason ? `：${reason}` : '（审查节点未写理由，约定产物 extra.reason）'}`);
+      }
+      if (fired) this.persistAndNotify(run);
+    };
     for (;;) {
       if (this.cancels.has(run.runId)) break;
       capacityBlocked = false;
@@ -1739,7 +1788,7 @@ export class Engine {
           let st = predStatus(id);
           if (node.type === 'fanin') {
             // the barrier waits for ALL active branches and then judges failures itself
-            const preds = graph.edges.filter((e) => e.target === id && edgeActive(e)).map((e) => e.source);
+            const preds = forwardEdges(graph.edges).filter((e) => e.target === id && edgeActive(e)).map((e) => e.source);
             st = preds.every((p) => outcomes.get(p)) ? 'ready' : 'wait';
           }
           if (st === 'wait') continue;
@@ -1818,7 +1867,7 @@ export class Engine {
               continue;
             }
             if (node.type === 'fanin') {
-              const preds = graph.edges.filter((e) => e.target === id && edgeActive(e)).map((e) => e.source);
+              const preds = forwardEdges(graph.edges).filter((e) => e.target === id && edgeActive(e)).map((e) => e.source);
               const failedCount = preds.filter((p) => outcomes.get(p) === 'failed').length;
               const requireAll = node.config.requireAll ?? true;
               if (failedCount > 0 && requireAll) {
@@ -1847,6 +1896,8 @@ export class Engine {
                   fail();
                 } else {
                   mark(id, res === 'done' ? 'done' : 'failed', res === 'failed' ? run.nodes[id]!.error : undefined);
+                  // v13-K2 只有交付了产物的收口才谈得上「审完不满意」：done 才有账可断言
+                  if (res === 'done') collectRejections(id);
                 }
               })
               .catch((err) => {
@@ -1866,6 +1917,32 @@ export class Engine {
         pending.clear();
       }
 
+      // 打回动手点（见上文检测/动手分家）：清空队列 = 一次性把整批否决并成一次子树重置，
+      // 同轮多条回边不该各重置一遍。终止性由「每次 rework 都给被拒方计数 +1、计数只增不减、
+      // 上限有限」保证——回路每转一圈必然烧掉一格预算，转到没预算为止。
+      if (!abort && !inflight.size && reopenQueue.length) {
+        const targets = reopenQueue.splice(0);
+        const reopen = new Set<string>();
+        for (const target of targets) {
+          reopen.add(target);
+          // 吃了这份产物的下游一个都不能留旧账：产物已作废，旧结论就是「拿上一版的验收单交差」
+          for (const d of downstreamOf(target, graph.edges)) reopen.add(d);
+        }
+        for (const id of reopen) {
+          outcomes.delete(id);
+          blackboard.delete(id);
+          pending.add(id);
+          const rec = run.nodes[id]!;
+          rec.state = 'pending';
+          rec.error = undefined;
+          rec.finishedAt = undefined;
+          rec.artifact = undefined;
+        }
+        this.recordEvent(run, 'node', targets.join('、'), `打回重跑：${targets.join('、')} 及其下游共 ${reopen.size} 个节点回到待跑`);
+        this.persistAndNotify(run);
+        continue;
+      }
+
       if (inflight.size) {
         await Promise.race(inflight.values());
       } else if (pending.size && !abort && !this.cancels.has(run.runId)) {
@@ -1875,7 +1952,7 @@ export class Engine {
           const node = graph.nodes.find((n) => n.id === id)!;
           let st = predStatus(id);
           if (node.type === 'fanin') {
-            const preds = graph.edges.filter((e) => e.target === id).map((e) => e.source);
+            const preds = forwardEdges(graph.edges).filter((e) => e.target === id).map((e) => e.source);
             st = preds.every((p) => outcomes.get(p)) ? 'ready' : 'wait';
           }
           return st !== 'wait';
@@ -2208,7 +2285,7 @@ export class Engine {
       const { block: ctxBlock, agentKind, ctxFiles, equip } = this.resolveContext(run, cfg, lookupCwd);
       // v13-K1 消费面（结 N1）：上游命名产物清单随注入块进 prompt——硬引用要作者知道有得引、怎么引，
       // 光有机制没有目录等于没有。追加在 ctxBlock 之后：涨 injectedBytes，不进 ctxSha（运行时文本非实读文件）
-      const block = ctxBlock + this.upstreamProductBlock(run, nodeId);
+      const block = ctxBlock + this.upstreamProductBlock(run, nodeId) + this.rejectionBlock(rec);
       // v13-W1 岗位装备账：解析过就结构化落在节点记录上（重试=后一次覆盖前一次，
       // 记的是这一轮实发取材）；status/前端只读这一格，不从环形 events 反推
       if (equip) rec.equip = equip;
@@ -2522,13 +2599,35 @@ export class Engine {
   }
 
   /**
+   * v13-K2 打回理由进 prompt：复用「重试带上下文」那条现路（同一次组 prompt、同一个注入块），
+   * 只多一段人话——被拒方自此知道**是谁拒的、为什么**，而不是闭着眼把上一版重做一遍。
+   * 整篇进 injectedBytes（实打实占了本轮上下文），**不进 ctxSha/roleSha**：运行时文本不是
+   * 实读文件装备（v13-W2 口径，与上游产物清单同一处置），等臂比对因此不受扰动。
+   * 台账有几条就列几条（上限封顶保证了长度有顶），旧否决不因新一轮跑完而消失——
+   * 「你上一版也没解决这条」正是重跑时最该看见的东西。
+   */
+  private rejectionBlock(rec: NodeRunRecord): string {
+    const list = rec.rejections ?? [];
+    if (!list.length) return '';
+    const lines = list.map(
+      (r, i) =>
+        `- 第 ${i + 1} 次（节点「${r.reviewer}」在第 ${r.attempt} 轮拒的）：${r.reason ?? '未写理由（约定审查产物 extra.reason 给一句人话）'}`,
+    );
+    return (
+      `\n\n【打回】本节点已被否决回边拒过 ${list.length} 次（历次理由全列，最新在末行——` +
+      `旧的一条没解决就一直算欠账），本轮必须正面处理：\n${lines.join('\n')}\n`
+    );
+  }
+
+  /**
    * v13-K1 消费面（结 N1）：直接上游的命名产物台账 + 引用写法，拼进注入块。
    * 上游没产过命名产物=空串零新增（不拿空清单占 token）；未上架的件照样列出并标出来——
    * 让下游知道「有这份但取不到」比静默消失诚实（引了会在本节点即时失败，那句 error 就是台账）。
    */
   private upstreamProductBlock(run: RunRecord, nodeId: string): string {
     const lines: string[] = [];
-    for (const e of run.graph.edges) {
+    // 只认前向入边：回边的审查方不是「上游」，把它那轮的产物当上游清单递回去＝让质检替 builder 起草
+    for (const e of forwardEdges(run.graph.edges)) {
       if (e.target !== nodeId) continue;
       const products = run.nodes[e.source]?.products;
       if (!products?.length) continue;
@@ -2929,7 +3028,11 @@ export class Engine {
         run.nodes[cid] = { nodeId: cid, state: 'pending', attempts: 0 };
         run.graph.edges.push({ id: `e-${fanoutId}-${cid}`, source: fanoutId, target: cid });
         for (const e of origOut) {
-          run.graph.edges.push({ id: `e-${cid}-${e.target}`, source: cid, target: e.target });
+          // 整条边原样带过去，只换 id 和 source：旧写法挑了三个字段重建，把分支模板上的
+          // **条件边判据洗成了恒通过**——那正是「画布上写着条件、跑起来不看」的双口径。
+          // source 必须换成克隆 id（否则分支挂在已被标 skipped 的模板节点上，整条分支永不落定）。
+          // （回边进不了这里：validateDag 按形状拒）
+          run.graph.edges.push({ ...e, id: `e-${cid}-${e.target}`, source: cid });
         }
         pending.add(cid);
       });

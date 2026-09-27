@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
 import type { DagNode, EdgeCondition } from '@paneflow/shared';
+import { REJECT_LIMIT_DEFAULT, REJECT_LIMIT_MAX } from '@paneflow/shared';
 
 type NodeConfig = DagNode['config'];
 
@@ -11,6 +12,7 @@ type NodeConfig = DagNode['config'];
 function advancedItems(cfg: NodeConfig): string[] {
   const out: string[] = [];
   if ((cfg.retryCount ?? 0) > 0) out.push('重试');
+  if (cfg.rejectLimit) out.push('打回上限');
   if ((cfg.timeoutMs ?? 0) > 0) out.push('超时');
   if (cfg.clarify) out.push('澄清循环');
   if (cfg.env && Object.keys(cfg.env).length > 0) out.push('环境变量');
@@ -29,16 +31,22 @@ export function PropertyPanel() {
   return <NodePropertyPanel />;
 }
 
-/** 条件边编辑（R2.1）：断言上游 artifact 字段，不满足即剪枝 */
+/** 条件边编辑（R2.1）：断言上游 artifact 字段，不满足即剪枝；v13-K2 同一面板兼作「打回线」开关 */
 function EdgeConditionPanel({ edgeId }: { edgeId: string }) {
   const edges = useStore((s) => s.edges);
+  const nodes = useStore((s) => s.nodes);
   const updateEdgeCondition = useStore((s) => s.updateEdgeCondition);
+  const updateEdgeReject = useStore((s) => s.updateEdgeReject);
   const selectEdge = useStore((s) => s.selectEdge);
   const edge = edges.find((e) => e.id === edgeId);
   if (!edge) {
     return <div className="props"><h3>属性 · 连线</h3><div className="hint">连线不存在。</div></div>;
   }
   const cond = edge?.data?.condition as EdgeCondition | undefined;
+  const isReject = edge.data?.reject === true;
+  // 端点形状提示用的（判据在 server 的 validateDag，这里只提前说人话，不自作拦截）
+  const kindOf = (id: string) => nodes.find((n) => n.id === id)?.data.dagNode.type;
+  const endpointsWrong = isReject && (kindOf(edge.source) !== 'agent' || kindOf(edge.target) !== 'agent');
   const set = (patch: Partial<EdgeCondition>) =>
     updateEdgeCondition(edgeId, {
       field: patch.field ?? cond?.field ?? '',
@@ -48,11 +56,30 @@ function EdgeConditionPanel({ edgeId }: { edgeId: string }) {
     } as EdgeCondition);
   return (
     <div className="props">
-      <h3>条件边 · {edge.source} → {edge.target}</h3>
-      <p className="hint" style={{ margin: '0 0 8px' }}>
-        运行时对「{edge.source}」的产物字段做断言：不满足则此连线被剪枝，下游按依赖缺失跳过。
+      <h3>{isReject ? '打回线' : '条件边'} · {edge.source} → {edge.target}</h3>
+      <label className="flag-row">
+        <input
+          type="checkbox"
+          checked={isReject}
+          onChange={(e) => updateEdgeReject(edgeId, e.target.checked)}
+        />
+        <span>这条线是否决回边（打回）：「{edge.target}」被拒后带理由重跑</span>
+      </label>
+      <p className="hint" style={{ margin: '6px 0 8px' }}>
+        {isReject
+          ? '下面的断言就是「什么时候算否决」——对「' + edge.source + '」的产物字段做判断，成立才打回；不成立这一步就正常往下走。'
+          : '运行时对「' + edge.source + '」的产物字段做断言：不满足则此连线被剪枝，下游按依赖缺失跳过。'}
       </p>
-      <label>artifact 字段（如 aligned / status）</label>
+      {isReject && (
+        <div className={`hint${endpointsWrong || !cond?.field ? ' warn' : ''}`}>
+          {endpointsWrong
+            ? '打回的两端都得是 Agent 节点（否决要有产物可依据、被拒方要能重跑）——保存时会被拒。'
+            : !cond?.field
+              ? '打回线必须带断言：没有断言就是恒打回，回路只会靠上限兜住——保存时会被拒。'
+              : '被拒方重跑的次数上限在它自己的「高级设置 · 打回上限」里（默认 2 次）。'}
+        </div>
+      )}
+      <label>artifact 字段（如 {isReject ? 'extra.decision' : 'aligned / status'}）</label>
       <input
         value={cond?.field ?? ''}
         onChange={(e) => set({ field: e.target.value })}
@@ -188,7 +215,7 @@ function NodePropertyPanel() {
           <button
             className="adv-toggle"
             onClick={() => setAdvOpen((v) => !v)}
-            title="重试 / 超时 / 澄清循环 / 环境变量 / 检查门禁 / 失败策略 / 放行按键 / 独立工作目录"
+            title="重试 / 超时 / 打回上限 / 澄清循环 / 环境变量 / 检查门禁 / 失败策略 / 放行按键 / 独立工作目录"
           >
             <span>{advOpen ? '▾' : '▸'}</span>
             <span>高级设置</span>
@@ -213,6 +240,19 @@ function NodePropertyPanel() {
                 type="number" min={0} max={240} value={cfg.timeoutMs ? Math.round(cfg.timeoutMs / 60000) : 0}
                 onChange={(e) => set({ timeoutMs: (Number(e.target.value) || 0) * 60000 })}
               />
+            </div>
+            <div>
+              {/* v13-K2 打回上限：能被哪些回边拒几次（判据与默认值都取自 shared，不在这里抄一份） */}
+              <label>打回上限</label>
+              <select
+                value={cfg.rejectLimit ?? ''}
+                onChange={(e) => set({ rejectLimit: e.target.value ? Number(e.target.value) : undefined })}
+              >
+                <option value="">默认 {REJECT_LIMIT_DEFAULT} 次</option>
+                {Array.from({ length: REJECT_LIMIT_MAX }, (_, i) => i + 1).map((n) => (
+                  <option key={n} value={n}>{n} 次</option>
+                ))}
+              </select>
             </div>
           </div>
 

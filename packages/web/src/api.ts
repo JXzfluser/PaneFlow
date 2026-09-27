@@ -1,4 +1,5 @@
 import type { DagGraph, NodeRunRecord, RunEvent, RunRecord } from '@paneflow/shared';
+import type { DryRunResult } from './components/dry-run.js';
 import type { RegistryAddPayload, RegistryCheckResponse, RegistryEntryView, RegistryHealthResponse, RegistryListResponse } from './registry-view.js';
 
 const BASE = '';
@@ -125,12 +126,10 @@ export const api = {
   testChannel: (channel: Channel) => json<{ sent: boolean }>('POST', '/api/channels/test', { channel }, { raw: true }),
   syncPush: () => json<{ started: boolean }>('POST', '/api/sync/push'),
   syncPull: () => json<{ imported: string[]; failed: { file: string; error: string }[] }>('POST', '/api/sync/pull'),
+  // 预演结果的形状只有一份（components/dry-run.ts）：这里曾自己抄了一遍，
+  // 于是 server 加一个键就得改两处——漏改的那处让调用方以为字段不存在。
   dryRun: (graph: DagGraph, cwd: string, variables?: Record<string, string>) =>
-    json<{
-      nodes: { id: string; type: string; label: string; role: string | null; agentKind: string | null; cwd: string | null; promptPreview: string | null; checks: string[]; conventions: string | null }[];
-      edges: { id: string; source: string; target: string; condition: string | null }[];
-      warnings: string[];
-    }>('POST', '/api/dry-run', { graph, cwd, ...(variables ? { variables } : {}) }),
+    json<DryRunResult>('POST', '/api/dry-run', { graph, cwd, ...(variables ? { variables } : {}) }),
   dispatch: (task: string, cwd: string, issueId?: string, preview = false) =>
     json<{
       runId: string;

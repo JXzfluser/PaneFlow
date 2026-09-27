@@ -1,4 +1,5 @@
 import type { DagGraph, DagNode, EdgeCondition, GraphRequirement, NodeRunState, TemplateVariable } from '@paneflow/shared';
+import { forwardEdges } from '@paneflow/shared';
 import type { Edge, Node } from '@xyflow/react';
 
 /**
@@ -19,6 +20,8 @@ export type PfNode = Node<PfNodeData>;
 
 export interface PfEdgeData extends Record<string, unknown> {
   condition?: EdgeCondition;
+  /** v13-K2 否决回边标记：画布要认它，否则「打开→保存」把作者画的打回线洗成普通依赖 */
+  reject?: boolean;
 }
 
 export type PfEdge = Edge<PfEdgeData>;
@@ -82,13 +85,16 @@ export function autoLayout(graph: DagGraph): Record<string, { x: number; y: numb
     return out;
   }
   const depth: Record<string, number> = {};
+  // 只按前向边算深度：这里取的是「最大深度」并且持续放宽，回边会把图变成环，
+  // 于是深度可以无限增大——布局直接转不出来（页面卡死）。回边不是依赖，不算层。
+  const fwd = forwardEdges(graph.edges);
   for (const n of graph.nodes) {
     const stack: { id: string; d: number }[] = [{ id: n.id, d: 0 }];
     while (stack.length) {
       const { id, d } = stack.pop()!;
       if ((depth[id] ?? -1) >= d) continue;
       depth[id] = d;
-      for (const e of graph.edges) if (e.source === id) stack.push({ id: e.target, d: d + 1 });
+      for (const e of fwd) if (e.source === id) stack.push({ id: e.target, d: d + 1 });
     }
   }
   const byDepth = new Map<number, string[]>();
@@ -124,7 +130,7 @@ export function graphToRfParts(graph: DagGraph): RfParts {
     source: e.source,
     target: e.target,
     animated: false,
-    ...(e.condition ? { data: { condition: e.condition } } : {}),
+    ...(e.condition || e.reject ? { data: { ...(e.condition ? { condition: e.condition } : {}), ...(e.reject ? { reject: true } : {}) } } : {}),
   }));
   return {
     nodes,
@@ -164,6 +170,8 @@ export function rfToGraph(args: {
       source: e.source,
       target: e.target,
       ...(e.data?.condition ? { condition: e.data.condition } : {}),
+      // 只回写 true：false/缺省都落成「没这键」，与 DagEdge 的省略语义一致
+      ...(e.data?.reject === true ? { reject: true } : {}),
     })),
     metadata: {
       // 保真：createdAt 不因保存重置；description 不丢（R1.3）
