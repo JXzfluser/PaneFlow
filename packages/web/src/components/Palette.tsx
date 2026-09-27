@@ -106,7 +106,14 @@ export function Palette() {
         const next = (name ?? '').trim();
         if (!next || next === g.name) return; // 未改动，直接关闭
         await api.saveGraph({ ...structuredClone(g), name: next });
-        await api.deleteGraph(g.name);
+        try {
+          await api.deleteGraph(g.name);
+        } catch (e) {
+          // 重命名=另存+删旧。旧名还被别的图当子流水线指着时，删除侧的闸（A5-5a）会拦下这一步——
+          // 此刻新模板**已经落盘**，所以先把列表刷出来，再说清「现在是两份」，不拿「重命名失败」冒充整件事没发生。
+          await refresh();
+          throw new Error(`已另存为「${next}」，但旧模板「${g.name}」没删掉（列表里现在两份都在）：${(e as Error).message}`);
+        }
         await refresh();
         log('info', `已重命名为「${next}」`);
       },

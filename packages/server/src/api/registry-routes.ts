@@ -6,6 +6,7 @@ import { viewHomeOf } from '../orchestrate/registry-view.js';
 import { readStoredGraphs, readReferenceIndex, refsForEntry, type ReferenceIndex, type RegistryReferrer } from '../orchestrate/registry-refs.js';
 import { checkGraphRequirements, requirementKindLabel } from '../orchestrate/registry-check.js';
 import { entryHealth, type EntryHealth } from './registry-health.js';
+import { referencedWhy } from '../orchestrate/registry-gate.js';
 
 /**
  * v14 A1+A2（R1+R2）注册内核的 HTTP 面：四动词（`add`/`update`/`delete` + 纯读 `list`/`get`）
@@ -66,13 +67,10 @@ function codeOf(r: RegistryWriteResult): number {
   return r.ok ? 200 : r.schemaTooNew ? 409 : 400;
 }
 
-const FACE_CN: Record<RegistryReferrer['face'], string> = { space: '项目', role: '角色', template: '模板', gateway: '网关档' };
-
-/** 「删不动的原因」必须看得见：逐条列是谁在用、用在哪个键（人按这个位置去改，不用猜） */
-function referencedWhy(action: string, entry: RegistryEntry, refs: RegistryReferrer[]): string {
-  const list = refs.map((r) => `${FACE_CN[r.face]}「${r.name}」的 ${r.via}`).join('、');
-  return `「${entry.name}」还被 ${refs.length} 处引用着（${list}），${action}会把这些引用变成悬挂引用——先改掉那几处再来。`;
-}
+/**
+ * 「被谁在用」这句拒答的画法只有一处（v14 A5-5a 把它收进 `orchestrate/registry-gate.ts`）：
+ * 注册表的删除面与三枚正身自己的删除面问的是同一件事，两份措辞迟早分叉，而没人会去比对两句拒答。
+ */
 
 /**
  * 引用账读端（一处 try/catch，五个动词共用）：**扫不出引用 ≠ 没人在用**——
@@ -99,7 +97,7 @@ function guardReferenced(deps: RegistryRouteDeps, entry: RegistryEntry | undefin
   const r = indexOf(deps, deps.registry.readView().entries);
   if ('why' in r) return { ok: false, code: 500, why: r.why };
   const refs = refsForEntry(r.index, entry.id);
-  return refs.length ? { ok: false, code: 400, why: referencedWhy(action, entry, refs) } : { ok: true };
+  return refs.length ? { ok: false, code: 400, why: referencedWhy(action, entry.name, refs) } : { ok: true };
 }
 
 export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRouteDeps): void {

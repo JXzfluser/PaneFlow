@@ -141,7 +141,10 @@ describe('v11-prep GET /api/gateway/catalog：每档模型清单+缓存', () => 
       expect(ps.map((p) => p.id).sort()).toEqual([a, b].sort());
       expect(ps.find((p) => p.id === a)!.models).toEqual(['m-19001']);
       expect(ps.find((p) => p.id === a)!.isCurrent).toBe(true);
-      expect(JSON.stringify(ps)).not.toContain('ka');
+      // 哨兵与上面 `apiKey: 'kA'` 必须是同一串：这里曾留着小写 `'ka'`，于是它既没测到密钥
+      // （真值是 `kA`，小写串永远不会出现＝假绿），又随时被 `gw-<Date.now().base36>-…` 的 id 段撞红
+      // （同一个时间戳编出 `…kard…` 就整格红——与上一段注释里 CI 那次实撞是同一种红）。
+      expect(JSON.stringify(ps)).not.toContain('kA');
       expect(hits).toBe(2);
       const second = await app.inject({ method: 'GET', url: '/api/gateway/catalog' });
       expect((second.json().profiles as { models: string[] }[])[0]!.models).toEqual(['m-19001']);

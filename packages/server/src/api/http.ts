@@ -81,6 +81,8 @@ import { readSkillIndex } from '../orchestrate/skills.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureStandardRoles, loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
+// v14 A5-5a：三枚「正身在盘上」的视图 kind 的删除闸（角色库 PUT / 画布删图 / 网关删档都吃同一份判据）
+import { guardOnDiskDeletes } from '../orchestrate/registry-gate.js';
 // v14 前置-1：agent kind 清单只有一处真身（此处曾与 env-check 的探测表各写一份，加一种要改两处）
 import { AGENT_KINDS, isAgentKind } from './agent-kinds.js';
 
@@ -326,6 +328,17 @@ export async function buildHttpServer(deps: HttpDeps) {
       }
       ids.add(r.id);
     }
+    // v14 A5-5a：PUT 是整本名册覆写，「删一枚岗」= 这一次没再带上它。`role` 的正身就是这张名册，
+    // 注册表对它没有写动词，所以 R2 的引用闸在注册表那侧管不到这里——闸装在写现场：
+    // 本次被撤下的每一枚，先问一次引用账（班底 `team[i].roleId` 与画布 `nodes[i].config.role` 两处）。
+    // 整本覆写是原子的，所以拦就拦下整次请求，拒句点名第一处删不动的岗和它的引用者（先改掉那几处再来）。
+    const removed = loadRoles(deps.dataDir)
+      .map((r) => r.id)
+      .filter((id) => !ids.has(id));
+    if (removed.length) {
+      const gate = guardOnDiskDeletes(deps.dataDir, 'role', removed);
+      if (!gate.ok) return reply.code(gate.code).send({ error: gate.error });
+    }
     saveRoles(deps.dataDir, roles);
     return { saved: roles.length };
   });
@@ -433,6 +446,11 @@ export async function buildHttpServer(deps: HttpDeps) {
   });
 
   app.delete<{ Params: { id: string } }>('/api/gateway/profile/:id', async (req, reply) => {
+    // v14 A5-5a：这一面是 `gateway-profile` 的正身，注册表对它没有写动词，所以 R2 那道「被引用不许删」
+    // 长在注册表上而管不到这里——闸装在这一格。`via:'current'` 不算引用者（删 current 会顺延，不悬挂），
+    // 真拦的是「某个项目把档钉在这一档上」（`SpaceProfile.gatewayProfile`）。
+    const gate = guardOnDiskDeletes(deps.dataDir, 'gateway-profile', [req.params.id]);
+    if (!gate.ok) return reply.code(gate.code).send({ error: gate.error });
     const r = deleteGatewayProfile(deps.dataDir, req.params.id);
     if (!r.ok) return reply.code(400).send({ error: r.error });
     try {
@@ -1062,7 +1080,13 @@ export async function buildHttpServer(deps: HttpDeps) {
   );
 
   app.delete<{ Params: { id: string }; Querystring: { space?: string } }>('/api/graphs/:id', async (req, reply) => {
-    const ok = spaceStore(deps, req.query.space).deleteGraph(req.params.id);
+    const store = spaceStore(deps, req.query.space);
+    // v14 A5-5a：`template` 的正身是这张 `graphs/` 盘，注册表对它没有写动词，所以引用账的删除闸
+    // 装在画布这一格。自指要剔掉——被删的这张图自己发出的边（referrer 的 id 就是图内 name）随文件
+    // 一起消失，不构成悬挂；真拦的是别的图把它当子流水线/兜底模板指着。**不给文件名**（理由见 gate 的 selfIds）。
+    const gate = guardOnDiskDeletes(deps.dataDir, 'template', [req.params.id], { selfIds: [store.getGraph(req.params.id)?.name ?? ''] });
+    if (!gate.ok) return reply.code(gate.code).send({ error: gate.error });
+    const ok = store.deleteGraph(req.params.id);
     return { deleted: ok };
   });
 
