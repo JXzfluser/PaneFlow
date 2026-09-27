@@ -112,78 +112,83 @@ async function agentKindHealth(entry: RegistryEntry<'agent-kind'>, refresh: bool
 }
 
 /**
- * `skill` 通道（v14 A5-1）：条目说的是「某项目根下有这篇可注入的技能文档」，那就去那个根下实读一次。
+ * 「某个项目根下有没有这篇文档」这一枚判据——`skill`（v14 A5-1）与 `rule`（v14 A5-2）共用。
+ * 两 kind 的探针问的是同一个问题（相对路径 × 空间根 × 实读一次），写成两份迟早有一边改口忘了另一边。
+ * `noun` 只进文案（「这篇技能」/「这篇约定」），不进判据。
+ *
  * 三态的划法与家规一致：
  *  · **读到了=live**（顺带报字节数与改动时刻，人按这个位置判断是不是自己想要的那篇）；
  *  · **确实没有=missing**；越出主仓根也算 missing——注入现场（`orchestrate/skills.ts: safeJoin`）
  *    对这种路径就是跳过，「永远不会被注入」是一条确定结论，不是「没探通」；
  *  · **无从判=unknown**：项目档案里没这枚空间、空间没配 `rootCwd`（相对路径没有基准）、
  *    或 `stat` 抛的是权限/IO 错（读不动不等于不在）。
- * `refresh` 在这一枚是空参数：文件面没有缓存层，每次都是现探（`cached` 恒 false 因此是实话）。
+ * `refresh` 在这一路是空参数：文件面没有缓存层，每次都是现探（`cached` 恒 false 因此是实话）。
  */
-async function skillHealth(dataDir: string, entry: RegistryEntry<'skill'>): Promise<EntryHealth> {
-  const { space, file } = entry.spec;
-  const now = Date.now();
+async function probeSpaceDoc(dataDir: string, space: string, file: string, noun: string): Promise<EntryHealth> {
+  const now = new Date().toISOString();
   const sp = Store.listSpaces(dataDir).find((x) => x.id === space);
   if (!sp) {
-    return {
-      status: 'unknown',
-      detail: `项目档案里没有「${space}」这一枚，相对路径没有基准可比：未探得，不等于这篇技能不存在`,
-      cached: false,
-      at: new Date(now).toISOString(),
-    };
+    return { status: 'unknown', detail: `项目档案里没有「${space}」这一枚，相对路径没有基准可比：未探得，不等于${noun}不存在`, cached: false, at: now };
   }
   const root = typeof sp.rootCwd === 'string' ? sp.rootCwd.trim() : '';
   if (!root) {
-    return {
-      status: 'unknown',
-      detail: `项目「${sp.name}」没配主仓根（rootCwd），「${file}」没有基准可比：未探得`,
-      cached: false,
-      at: new Date(now).toISOString(),
-    };
+    return { status: 'unknown', detail: `项目「${sp.name}」没配主仓根（rootCwd），「${file}」没有基准可比：未探得`, cached: false, at: now };
   }
   if (file.includes('..')) {
-    return {
-      status: 'missing',
-      detail: `「${file}」越出了主仓根「${root}」：注入现场按同一把尺直接跳过，这篇永远不会被注进任何节点`,
-      cached: false,
-      at: new Date(now).toISOString(),
-    };
+    return { status: 'missing', detail: `「${file}」越出了主仓根「${root}」：注入现场按同一把尺直接跳过，${noun}永远不会被注进任何节点`, cached: false, at: now };
   }
   const abs = path.resolve(root, file);
   try {
     const st = fs.statSync(abs);
     if (!st.isFile()) {
-      return {
-        status: 'missing',
-        detail: `「${abs}」在，但它不是文件（是目录或特殊节点）：注入现场读不出整篇内容，等于没有这篇`,
-        cached: false,
-        at: new Date(now).toISOString(),
-      };
+      return { status: 'missing', detail: `「${abs}」在，但它不是文件（是目录或特殊节点）：注入现场读不出整篇内容，等于没有${noun}`, cached: false, at: now };
     }
-    return {
-      status: 'live',
-      detail: `项目「${sp.name}」下读到了「${file}」（${st.size} 字节 · 改动于 ${st.mtime.toISOString()}）`,
-      cached: false,
-      at: new Date(now).toISOString(),
-    };
+    return { status: 'live', detail: `项目「${sp.name}」下读到了「${file}」（${st.size} 字节 · 改动于 ${st.mtime.toISOString()}）`, cached: false, at: now };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ENOTDIR') {
-      return {
-        status: 'missing',
-        detail: `主仓根「${root}」下没有「${file}」这篇文件：登记与盘面已不一致，要么补文件要么停用它`,
-        cached: false,
-        at: new Date(now).toISOString(),
-      };
+      return { status: 'missing', detail: `主仓根「${root}」下没有「${file}」这篇文件：登记与盘面已不一致，要么补文件要么停用它`, cached: false, at: now };
     }
+    return { status: 'unknown', detail: `读不动「${abs}」：${(err as Error).message}（读不动不等于不存在）`, cached: false, at: now };
+  }
+}
+
+async function skillHealth(dataDir: string, entry: RegistryEntry<'skill'>): Promise<EntryHealth> {
+  return probeSpaceDoc(dataDir, entry.spec.space, entry.spec.file, '这篇技能');
+}
+
+/**
+ * `rule` 通道（v14 A5-2）：先问「这篇约定文档在不在」（与技能同一把尺），再问一条本 kind 独有的——
+ * **作用域目录在不在**。`repo` 是这条规则生效的位置：`matchRules` 按「节点工作目录落在该仓内」判定，
+ * 根下没有那个目录时没有任何节点能落进去，「这条约定从此不注入」是确定结论，所以画 `missing`
+ * 而不是 unknown。`pathsGlob` 不判：glob 要对**某个具体节点目录**才有值，探针没有目录可给，
+ * 在这里判死活就是拿空白冒充断言。
+ */
+async function ruleHealth(dataDir: string, entry: RegistryEntry<'rule'>): Promise<EntryHealth> {
+  const base = await probeSpaceDoc(dataDir, entry.spec.space, entry.spec.file, '这篇约定');
+  const repo = entry.spec.repo;
+  if (base.status !== 'live' || !repo) return base;
+  const sp = Store.listSpaces(dataDir).find((x) => x.id === entry.spec.space);
+  const root = typeof sp?.rootCwd === 'string' ? sp.rootCwd.trim() : '';
+  // 越出根的作用域目录是**确定不命中**：`matchRules` 拿 `path.relative(root, nodeCwd)` 比，
+  // 那个相对串永远不以 `../` 开头（仓外节点直接判「不在仓内」）。所以这里跟着 `base.detail` 说 missing，
+  // 也绝不去 stat 根外的目录——替机器在根外找一个「看起来像的目录」就是把越界读成活着。
+  if (repo.includes('..')) {
     return {
-      status: 'unknown',
-      detail: `读不动「${abs}」：${(err as Error).message}（读不动不等于不存在）`,
+      status: 'missing',
+      detail: `${base.detail}；但它的作用域目录「${repo}」越出了主仓根「${root}」——没有节点的工作目录落得进这里，这条约定永远不会被注入`,
       cached: false,
-      at: new Date(now).toISOString(),
+      at: new Date().toISOString(),
     };
   }
+  const repoAbs = path.resolve(root, repo);
+  if (fs.existsSync(repoAbs) && fs.statSync(repoAbs).isDirectory()) return base;
+  return {
+    status: 'missing',
+    detail: `${base.detail}；但它的作用域目录「${repo}」在根「${root}」下不存在——没有节点能落进这个目录，这条约定永远不会被注入`,
+    cached: false,
+    at: new Date().toISOString(),
+  };
 }
 
 /**
@@ -199,6 +204,7 @@ async function skillHealth(dataDir: string, entry: RegistryEntry<'skill'>): Prom
 const CHANNELS: Record<string, (dataDir: string, entry: RegistryEntry, refresh: boolean) => Promise<EntryHealth>> = {
   model: (dataDir, entry, refresh) => modelHealth(dataDir, entry as RegistryEntry<'model'>, refresh),
   skill: (dataDir, entry) => skillHealth(dataDir, entry as RegistryEntry<'skill'>),
+  rule: (dataDir, entry) => ruleHealth(dataDir, entry as RegistryEntry<'rule'>),
   'agent-kind': (_dataDir, entry, refresh) => agentKindHealth(entry as RegistryEntry<'agent-kind'>, refresh),
 };
 

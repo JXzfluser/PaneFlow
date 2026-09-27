@@ -134,9 +134,41 @@ export const skillDescriptor: RegistryDescriptor<'skill'> = {
   },
 };
 
+/**
+ * `rule`（v14 A5-2）：本机上有这么一篇要守的约定文档。label 除「挂在谁家哪条路径」外**必须带作用域**
+ * （`仅 x 仓` / `目录 glob`）——同一空间里 `docs/x.md` 可以登记两条，一条全空间、一条只在甲仓生效，
+ * 不画出来就是界面上两行一模一样，用户没法判断删掉的是哪一条。
+ *
+ * 引用写法与 `skill` 同形三枚（id／slug／`spec.file`）：今天 `SpaceProfile.rules[].file` 与
+ * `Role.rules[]` 落册的正是那枚裸相对路径。`spec.repo`/`pathsGlob` **不算引用写法**：
+ * 没有任何键按「作用域」来指一条规则（`rules[i].repo` 那枚裸串指的是仓库，已由引用账归给 `repo` 那一类），
+ * 把它算进匹配键就是拿「别的条目恰好同仓」冒充「这一枚正在被用」。
+ */
+export const ruleDescriptor: RegistryDescriptor<'rule'> = {
+  kind: 'rule',
+  label(entry) {
+    const { space, file, repo, pathsGlob, note } = entry.spec;
+    const scope = [repo ? `仅 ${repo} 仓` : '', pathsGlob ? `目录 ${pathsGlob}` : ''].filter(Boolean).join(' + ');
+    // 作用域紧跟路径（它修饰的就是这篇文档在哪个范围生效），note 才用 ` · ` 分隔——
+    // 中间再插一个点会把「路径＋它的范围」切成两件事，读起来像两条并列的属性
+    return [`[项目 ${space}] ${file}${scope ? `（${scope}）` : ''}`, note].filter(Boolean).join(' · ');
+  },
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return [entry.id, ...(slug ? [slug] : []), entry.spec.file];
+  },
+  /** 判定序与 `skillDescriptor.matches` 同一条：定点引用无歧义，空间自发的按主人收窄，角色侧不绑空间照实放行 */
+  matches(entry, target, ref) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    if (target === entry.id || (slug !== undefined && target === slug)) return true;
+    return ref.face === 'space' ? entry.spec.space === ref.id : true;
+  },
+};
+
 export const REGISTRY_DESCRIPTORS: { [K in RegistryEntry['kind']]: RegistryDescriptor<K> } = {
   model: modelDescriptor,
   skill: skillDescriptor,
+  rule: ruleDescriptor,
   'agent-kind': agentKindDescriptor,
   'node-type': nodeTypeDescriptor,
   mcp: mcpDescriptor,

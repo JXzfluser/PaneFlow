@@ -132,15 +132,22 @@ describe('引用索引（buildReferenceIndex）', () => {
   it('未迁进表的 kind 只披露计数、绝不判死活（表里没有这一类，判「不存在」就是拿空白冒充断言）', () => {
     const raw = scanRawReferences(fixtureDataDir());
     const index = buildReferenceIndex([], raw);
-    // 改口入账：`agent-kind`（A3-2）、`node-type`（T1）与 `skill`（A5-1）自此不在这份名单里——
-    // 它们进了表（前两枚的成员由出厂清单现算），成员判得了死活
+    // 改口入账：`agent-kind`（A3-2）、`node-type`（T1）、`skill`（A5-1）、`rule`（A5-2）自此不在这份
+    // 名单里——它们进了表（前两枚的成员由出厂清单现算），成员判得了死活
     expect(index.unmigrated.map((u) => u.kind).sort()).toEqual(
-      ['check-type', 'gateway-profile', 'repo', 'role', 'rule', 'template'].sort(),
+      ['check-type', 'gateway-profile', 'repo', 'role', 'template'].sort(),
     );
     const role = index.unmigrated.find((u) => u.kind === 'role');
     expect(role).toEqual({ kind: 'role', targets: ['r-deliver'], refs: 2 }); // 班底名册 + 模板节点绑岗
     expect(index.dangling.every((d) => !index.unmigrated.some((u) => u.kind === d.kind))).toBe(true);
     expect(index.scanned).toBe(raw.length);
+    // A5-2 的代价钉在这里：约定文档路径从今天起是**可断的账**——只喂 model 条目时它落悬挂，
+    // 而迁表之前它连 dangling 都不进（拿空白冒充断言）。引用来自两面（岗位装备槽 `rules[]` 与
+    // 空间目录规则 `rules[i].file`），两面一起翻面：这正是「一条路径两处引用」该有的账，不合并。
+    expect(index.dangling.filter((d) => d.kind === 'rule').map((d) => `${d.kind}:${d.target}`)).toEqual([
+      'rule:docs/convention.md',
+      'rule:docs/rule.md',
+    ]);
   });
 
   it('同一枚目标被多处引用：by 逐条列全（删除时要把人要回去改的位置一次给够）', () => {
@@ -185,9 +192,10 @@ describe('模板声明面 requires（v14-T3）', () => {
         { kind: 'model', id: 'gpt-4o-mini', hint: '要便宜的那枚' },
         { kind: 'model', hint: '任一模型即可，不点名' },
         { kind: 'skill', id: 'skills/y/SKILL.md' },
-        // 留一枚**还没迁进表**的 kind 在这套 fixture 里：A5-1 把 skill 接走之后，
-        // 「未迁的 kind 只披露」这条老账总得有个样本可指（rule 是 A5-2 的下一棒）。
         { kind: 'rule', id: 'docs/always.md' },
+        // 留一枚**还没迁进表**的 kind 在这套 fixture 里：A5-2 把 rule 接走之后，
+        // 「未迁的 kind 只披露」这条老账总得有个样本可指（repo 是 A5-3 的下一棒）。
+        { kind: 'repo', id: 'my-repo' },
       ],
       metadata: { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
     });
@@ -203,6 +211,7 @@ describe('模板声明面 requires（v14-T3）', () => {
       'requires[0].id=model:gpt-4o-mini',
       'requires[2].id=skill:skills/y/SKILL.md',
       'requires[3].id=rule:docs/always.md',
+      'requires[4].id=repo:my-repo',
     ]);
   });
 
@@ -212,6 +221,7 @@ describe('模板声明面 requires（v14-T3）', () => {
       'requires[0].id',
       'requires[2].id',
       'requires[3].id',
+      'requires[4].id',
     ]);
     expect(refsFromGraph(readDecl(dataDir), 'decl').some((r) => r.via.startsWith('requires'))).toBe(false);
   });
@@ -223,9 +233,11 @@ describe('模板声明面 requires（v14-T3）', () => {
     const miss = buildReferenceIndex([entry({ model: '别的型号' })], raw);
     // fixture 的节点还写着 `agentKind: 'pi'`——A3-2 起这一类判得了死活，按 kind 取 model 那格的老账
     expect(miss.dangling.filter((d) => d.kind === 'model').map((d) => `${d.kind}:${d.target}`)).toEqual(['model:gpt-4o-mini']);
-    // 改口入账（A5-1）：`skill` 自此不在 unmigrated 里，点名没登记就是**可断的账**
-    expect(miss.unmigrated.map((u) => u.kind)).toEqual(['rule']);
+    // 改口入账（A5-1 → A5-2）：`skill`、`rule` 自此都不在 unmigrated 里，点名没登记就是**可断的账**；
+    // 这份名单现在只剩 `repo`（A5-3 的下一棒）
+    expect(miss.unmigrated.map((u) => u.kind)).toEqual(['repo']);
     expect(miss.dangling.filter((d) => d.kind === 'skill').map((d) => d.target)).toEqual(['skills/y/SKILL.md']);
+    expect(miss.dangling.filter((d) => d.kind === 'rule').map((d) => d.target)).toEqual(['docs/always.md']);
   });
 
   /**
@@ -351,5 +363,58 @@ describe('node-type 承接后的引用账（v14 T1）', () => {
     // 拿措辞当匹配键会把「写错成界面文案的那一格」读成「正在用某一型」——与 agent-kind 不收 binary 同一把尺
     expect(index.byEntry.some((b) => b.kind === 'node-type' && b.refs.length)).toBe(false);
     expect(index.dangling.map((d) => d.target)).toEqual(['Agent 节点']);
+  });
+});
+
+/**
+ * v14 A5-2 的入账：`rule` 进表之后，「这篇约定文档有人在守」第一次有了反查账。
+ * 这一枚与 skill 同形（作用域在 `spec.space`、引用写法吃 `spec.file`），所以这里**不重讲**
+ * 那套不对称处置（上一格已证），只钉规则多出来的两件事：
+ *  ①引用**来自两面**——岗位装备槽 `rules[]`（face=role，全局名册、不绑空间）与空间目录规则
+ *    `rules[i].file`（face=space，带主人）。同一篇文档被两处引用时逐条记全，删条目前给人两处都要改；
+ *  ②`spec.repo`/`spec.pathsGlob` **不是**引用写法——它们是注入现场的生效条件（判据在 `rules.ts:
+ *    matchRules`，吃节点真实 cwd）。把「别的配置恰好同仓」读成「这一枚正在被用」，就会让一条从没
+ *    被引用过的规则显示成「被 N 处使用」，进而拒掉一次本来安全的删除。
+ */
+describe('rule 承接后的引用账（v14 A5-2）', () => {
+  const rule = (space: string, name: string, specExtra: Record<string, unknown> = {}): RegistryEntry => {
+    const r = normalizeRegistryEntry({ kind: 'rule', name, spec: { space, file: 'docs/x.md', ...specExtra } });
+    if (!r.ok) throw new Error(r.why);
+    return r.value;
+  };
+
+  it('两面引用各得一条出处；同路径跨空间时对 role 面逐条记全', () => {
+    const entries = [rule('a', '甲', { repo: 'packages/web' }), rule('b', '乙')];
+    const index = buildReferenceIndex(entries, [
+      { face: 'role', id: 'r1', name: '岗位', via: 'rules[0]', kind: 'rule', target: 'docs/x.md' },
+      { face: 'space', id: 'a', name: 'A 项目', via: 'rules[0].file', kind: 'rule', target: 'docs/x.md' },
+    ]);
+    expect(index.byEntry.map((b) => b.refs.map((x) => `${x.face}:${x.id}.${x.via}`))).toEqual([
+      ['role:r1.rules[0]', 'space:a.rules[0].file'],
+      ['role:r1.rules[0]'],
+    ]);
+    expect(index.dangling).toEqual([]);
+  });
+
+  it('整枚 id / slug 写法同权命中（与 skill、model 同一把尺）', () => {
+    const r = rule('a', 'x-rule');
+    for (const target of [r.id, 'x-rule', 'docs/x.md']) {
+      const index = buildReferenceIndex([r], [{ face: 'role', id: 'r1', name: '岗位', via: 'rules[0]', kind: 'rule', target }]);
+      expect(index.byEntry[0]!.refs).toHaveLength(1);
+      expect(index.dangling).toEqual([]);
+    }
+  });
+
+  it('作用域收窄键不建引用边：`repo` 面指到同仓目录名时不落 rule 条目（那是 `repo` 那一类的账）', () => {
+    const r = rule('demo', '前端约定', { repo: 'packages/web', pathsGlob: 'src/**' });
+    // 空间档案的 `rules[0].repo` 由 scanner 发成 kind='repo'（A5-3 才接线），这里正是它判不了死活的时期
+    const index = buildReferenceIndex([r], [
+      { face: 'space', id: 'demo', name: '演示项目', via: 'rules[0].repo', kind: 'repo', target: 'packages/web' },
+      { face: 'space', id: 'demo', name: '演示项目', via: 'rules[0].file', kind: 'rule', target: 'src/**' },
+    ]);
+    expect(index.byEntry[0]!.refs).toEqual([]);
+    // 未迁的 `repo` 只披露、不判死活；已迁的 `rule` 认写法，`src/**` 不是它的引用写法 → dangling
+    expect(index.unmigrated.map((u) => u.kind)).toEqual(['repo']);
+    expect(index.dangling.map((d) => `${d.kind}:${d.target}`)).toEqual(['rule:src/**']);
   });
 });

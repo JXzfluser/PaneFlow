@@ -9,6 +9,7 @@ import {
   NODE_TYPE_GROUPS,
   parseNodeTypeSpec,
   parseMcpSpec,
+  parseRuleSpec,
   parseSkillSpec,
   REGISTRY_KINDS,
   REGISTRY_SCHEMA_VERSION,
@@ -250,8 +251,10 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
   it('用户登记的 model 排在前屏（compareEntries 吃 REGISTRY_KINDS 顺序，出厂那几十行不糊住自己的账）', () => {
     const store = storeAt(tmp());
     store.add(MODEL);
-    // 每一类**登记项**都得挂号，否则「序」这条断言会把没登记的那一类静默跳过（A5-1 起有 skill）
+    // 每一类**登记项**都得挂号，否则「序」这条断言会把没登记的那一类静默跳过
+    // （A5-1 起有 skill、A5-2 起有 rule：新迁一类就在这一格多 add 一条）
     store.add({ kind: 'skill', name: '技能 x', spec: { space: 'demo', file: 'skills/x/SKILL.md' } });
+    store.add({ kind: 'rule', name: '约定 x', spec: { space: 'demo', file: 'docs/x.md' } });
     store.add({ kind: 'mcp', name: 'fs-server', spec: { command: 'mcp-fs' } });
     const entries = store.readView().entries;
     expect(entries[0]!.id).toBe('model:gpt-4o-mini');
@@ -597,5 +600,147 @@ describe('v14 A5-1 skill 进表：作用域住在 spec，探针真去那个根�
 
   it('预检词表：`需要：技能` 那一行从此有中文组名（KIND_CN 是全仓唯一一份措辞表）', () => {
     expect(requirementKindLabel('skill')).toBe('技能');
+  });
+});
+
+/**
+ * v14 A5-2：`rule` 进表。形状直接抄 `SpaceRule`（`orchestrate/rules.ts` 的注入侧档案字段）再加一枚
+ * `space`——注册表里写的和档案里写的必须是同一串，两边各造一套词迟早对不上。
+ *
+ * 与 skill 分格写（不是塞进上面那一格）的理由只有两条是这一枚独有的：
+ *  ①作用域那两枚可选键（`repo`/`pathsGlob`）**不进引用写法**：它们是注入现场的生效条件，
+ *    判据住在 `matchRules`；把它们当引用就会让「同仓的另一条」冒领这一条的引用账；
+ *  ②探针多问一句「作用域目录在不在」：根下没有那个目录=没有节点落得进去=这条约定永远不会注入，
+ *    那是确定结论（missing），不是「探不到」（unknown）。`pathsGlob` 不判——没有具体节点目录可喂它。
+ */
+describe('v14 A5-2 rule 进表：作用域住在 spec，探针连作用域目录一起问', () => {
+  const rule = (spec: Record<string, unknown>, name?: string): RegistryEntry<'rule'> => {
+    const e = normalizeRegistryEntry({ kind: 'rule', name: name ?? String(spec.file), spec });
+    if (!e.ok) throw new Error(e.why);
+    return e.value as RegistryEntry<'rule'>;
+  };
+  /** 有根、有文档、也有那枚作用域目录的项目根 */
+  const root = tmp();
+  fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'docs', 'x.md'), '# 约定\n');
+  fs.mkdirSync(path.join(root, 'packages', 'web'), { recursive: true });
+  const dataDir = tmp();
+  const writeSpace = (id: string, rootCwd?: string): void => {
+    fs.mkdirSync(path.join(dataDir, 'spaces', id), { recursive: true });
+    fs.writeFileSync(
+      path.join(dataDir, 'spaces', id, 'profile.json'),
+      JSON.stringify({ id, name: `项目 ${id}`, createdAt: '2026-01-01T00:00:00.000Z', ...(rootCwd ? { rootCwd } : {}) }),
+    );
+  };
+  writeSpace('demo', root);
+  writeSpace('noroot');
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('挂号：认识它（预检自此判得了死活），且它是登记项不是视图项', () => {
+    expect(REGISTRY_KINDS).toContain('rule');
+    expect(REGISTRY_VIEW_KINDS).not.toContain('rule');
+  });
+
+  it('spec 形状：space+file 必填、作用域空串照拒、note 空了整键不发、未知键照拒（pathGlob 拼错=这条从此不缩范围）', () => {
+    expect(
+      parseRuleSpec({ space: 'demo', file: 'docs/x.md', repo: 'packages/web', pathsGlob: 'src/**', note: '只守前端' }),
+    ).toEqual({
+      ok: true,
+      value: { space: 'demo', file: 'docs/x.md', repo: 'packages/web', pathsGlob: 'src/**', note: '只守前端' },
+    });
+    const v = parseRuleSpec({ space: ' demo ', file: ' docs/x.md ', note: '  ' });
+    if (!v.ok) throw new Error(v.why);
+    expect(v.value).toEqual({ space: 'demo', file: 'docs/x.md' }); // note 全空=整键不发（与 model/skill 同一处理）
+    for (const [bad, why] of [
+      [{ space: 'demo' }, 'file'],
+      [{ file: 'docs/x.md' }, 'space'], // 没有主人的约定：相对路径与相对目录都没有基准
+      [{ space: 'demo', flie: 'a.md' }, 'flie'],
+      [{ space: 'demo', file: 'a.md', pathGlob: 'src/**' }, 'pathGlob'],
+      [{ space: 'demo', file: 'a.md', repo: 7 }, 'repo'],
+      [{ space: 'demo', file: 'a.md', note: null }, 'note'],
+      // 作用域空串**不**跟着 note 走：静默丢掉它＝把「只守某仓」悄悄放大成「整个项目都守」
+      [{ space: 'demo', file: 'a.md', repo: '  ' }, 'repo'],
+      [{ space: 'demo', file: 'a.md', pathsGlob: '' }, 'pathsGlob'],
+      ['docs/x.md', '{space, file, repo?, pathsGlob?, note?}'],
+    ] as const) {
+      const r = parseRuleSpec(bad);
+      if (r.ok) throw new Error(`脏形状被认下了：${JSON.stringify(bad)}`);
+      expect(r.why).toContain(why);
+    }
+  });
+
+  it('登记时**不判** space/文档/作用域目录存不存在：那是引用账与探针的账（写入面判存在=先立账后写文被堵死）', () => {
+    const store = storeAt(tmp());
+    const added = store.add({
+      kind: 'rule',
+      name: '约定 y',
+      spec: { space: '没有这个项目', file: '不存在/的约定.md', repo: '没有这个目录' },
+    });
+    expect(added.ok).toBe(true);
+    expect(store.readView().entries.filter((e) => e.kind === 'rule')).toHaveLength(1);
+  });
+
+  it('label 把作用域说在句子里：不收窄的「整个项目都守」与收窄到某仓/某目录，是三条不同的账', () => {
+    expect(REGISTRY_DESCRIPTORS.rule.label(rule({ space: 'demo', file: 'docs/x.md' }))).toBe('[项目 demo] docs/x.md');
+    expect(REGISTRY_DESCRIPTORS.rule.label(rule({ space: 'demo', file: 'docs/x.md', repo: 'packages/web' }))).toBe(
+      '[项目 demo] docs/x.md（仅 packages/web 仓）',
+    );
+    expect(REGISTRY_DESCRIPTORS.rule.label(rule({ space: 'demo', file: 'docs/x.md', pathsGlob: 'src/**' }))).toBe(
+      '[项目 demo] docs/x.md（目录 src/**）',
+    );
+    expect(
+      REGISTRY_DESCRIPTORS.rule.label(rule({ space: 'demo', file: 'docs/x.md', repo: 'packages/web', pathsGlob: 'src/**', note: '前端' })),
+    ).toBe('[项目 demo] docs/x.md（仅 packages/web 仓 + 目录 src/**） · 前端');
+  });
+
+  it('引用写法只有三枚（id/slug/spec.file）：作用域收窄键不进 `refKeys`——同仓的另一条不算引用了这一条', () => {
+    const e = rule({ space: 'demo', file: 'docs/x.md', repo: 'packages/web', pathsGlob: 'src/**' }, 'rule-x');
+    expect(REGISTRY_DESCRIPTORS.rule.refKeys(e)).toEqual(['rule:rule-x', 'rule-x', 'docs/x.md']);
+  });
+
+  it('探针：文档在且作用域目录在=live；没有那篇文档=missing；目录不存在=missing 并说清「永远不会被注入」', async () => {
+    const live = await entryHealth(dataDir, rule({ space: 'demo', file: 'docs/x.md', repo: 'packages/web' }), {});
+    expect(live).toMatchObject({ status: 'live', cached: false });
+    expect(live!.detail).toContain(`${fs.statSync(path.join(root, 'docs', 'x.md')).size} 字节`);
+    // 没有作用域键时不问目录（无收窄=整个项目都守，根在就行）
+    expect((await entryHealth(dataDir, rule({ space: 'demo', file: 'docs/x.md' }), {}))?.status).toBe('live');
+    expect((await entryHealth(dataDir, rule({ space: 'demo', file: 'docs/none.md' }), {}))?.status).toBe('missing');
+    const noRepo = await entryHealth(dataDir, rule({ space: 'demo', file: 'docs/x.md', repo: 'packages/ghost' }), {});
+    expect(noRepo).toMatchObject({ status: 'missing' });
+    expect(noRepo!.detail).toContain('永远不会被注入'); // 文档活着但这条永远不生效——两句都在同一格说清
+    // 越出根的作用域目录同样是确定结论，且绝不去 stat 根外的目录
+    expect((await entryHealth(dataDir, rule({ space: 'demo', file: 'docs/x.md', repo: '../tmp' }), {}))?.status).toBe(
+      'missing',
+    );
+    // pathsGlob 不判：没有具体节点目录可喂它，判了就是拿空白冒充断言
+    expect((await entryHealth(dataDir, rule({ space: 'demo', file: 'docs/x.md', pathsGlob: 'nope/**' }), {}))?.status).toBe(
+      'live',
+    );
+    const noRoot = await entryHealth(dataDir, rule({ space: 'noroot', file: 'docs/x.md' }), {});
+    expect(noRoot).toMatchObject({ status: 'unknown' });
+    expect((await entryHealth(dataDir, rule({ space: 'ghost', file: 'docs/x.md' }), {}))!.detail).toContain(
+      '不等于这篇约定不存在',
+    );
+  });
+
+  it('真落盘 + 启停删除照接（视图 kind 那条拒路不误伤登记项）', () => {
+    const store = storeAt(tmp());
+    const added = store.add({ kind: 'rule', name: '约定 x', spec: { space: 'demo', file: 'docs/x.md' } });
+    expect(added.ok).toBe(true);
+    expect(added.entry?.id.startsWith('rule:')).toBe(true);
+    const stored = store.readView().entries.filter((e) => e.kind === 'rule');
+    expect(stored).toHaveLength(1);
+    const id = stored[0]!.id;
+    expect(store.update(id, { enabled: false }).ok).toBe(true);
+    expect(store.readView().entries.find((e) => e.id === id)!.enabled).toBe(false);
+    expect(store.remove(id).ok).toBe(true);
+    expect(store.readView().entries.filter((e) => e.kind === 'rule')).toEqual([]);
+  });
+
+  it('预检词表：`需要：规则` 那一行有中文组名（KIND_CN 是全仓唯一一份措辞表）', () => {
+    expect(requirementKindLabel('rule')).toBe('规则');
   });
 });

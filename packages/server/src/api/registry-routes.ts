@@ -220,7 +220,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     return {
       space: String(req.query.space ?? '').trim() || 'default',
       spaceNote:
-        '命中的判定只看注册表（已迁 kind 全在一张全局表上：model/skill/mcp 是登记项，agent-kind/node-type 是代码现算的出厂视图项），项目名只影响指路文案。`skill` 条目自 A5-1 起确实带项目作用域，但那一维住在两处：引用账（空间自己发的引用按主人收窄）与探针（去那个项目根实读一次）；预检的槽仍不按项目收窄——本机任一项目登记过这篇技能即算命中，因为 requires 槽里没有写项目名的位置',
+        '命中的判定只看注册表（已迁 kind 全在一张全局表上：model/skill/rule/mcp 是登记项，agent-kind/node-type 是代码现算的出厂视图项），项目名只影响指路文案。`skill`/`rule` 条目确实带项目作用域，但那一维住在两处：引用账（空间自己发的引用按主人收窄）与探针（去那个项目根实读一次）；预检的槽仍不按项目收窄——本机任一项目登记过这篇文档即算命中，因为 requires 槽里没有写项目名的位置',
       at: new Date().toISOString(),
       templates: targets.map((g) => checkGraphRequirements(g, entries)),
     };

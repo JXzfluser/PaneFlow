@@ -18,7 +18,8 @@ import {
   registrableKinds,
   requirementBadge,
   requirementDetail,
-  skillFileCandidates,
+  spaceDocCandidates,
+  spaceRepoCandidates,
   sourceLabel,
   specRows,
   whenLabels,
@@ -97,7 +98,9 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
   it('model 长出四键、model 必填；没挂号的 kind 不临场发明字段', () => {
     expect(formFieldsFor('model')!.map((f) => f.key)).toEqual(['model', 'gatewayProfile', 'freeModel', 'note']);
     expect(formFieldsFor('model')!.find((f) => f.key === 'model')!.required).toBe(true);
-    expect(formFieldsFor('rule')).toBeNull();
+    // `rule` 自 A5-2 起有表单长法了；仍未迁的那一类照旧不猜形状
+    expect(formFieldsFor('rule')!.map((f) => f.key)).toEqual(['space', 'file', 'repo', 'pathsGlob', 'note']);
+    expect(formFieldsFor('repo')).toBeNull();
   });
 
   /**
@@ -106,18 +109,36 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
    *  ②**文档路径是 text 而非 select**——候选只是 datalist，登记一篇「还没进项目清单」的新技能
    *    必须是可达路径（先立账后写文），把候选收成白名单就等于把这条路堵死。
    */
-  it('skill 三键：space 选项目（options=spaces）、file 是自由文本带候选（list=skill-files）', () => {
+  it('skill 三键：space 选项目（options=spaces）、file 是自由文本带候选（list=space-docs）', () => {
     expect(formFieldsFor('skill')!.map((f) => f.key)).toEqual(['space', 'file', 'note']);
     const space = formFieldsFor('skill')!.find((f) => f.key === 'space')!;
     expect(space).toMatchObject({ type: 'select', required: true, options: 'spaces' });
     expect(formFieldsFor('skill')!.find((f) => f.key === 'file')).toMatchObject({
       type: 'text',
       required: true,
-      list: 'skill-files',
+      list: 'space-docs',
     });
     // model 那两枚老候选键也一并挂号——同一条「能选不打」的路，不再各写各的
     expect(formFieldsFor('model')!.find((f) => f.key === 'model')).toMatchObject({ list: 'models' });
     expect(formFieldsFor('model')!.find((f) => f.key === 'gatewayProfile')).toMatchObject({ options: 'gateway-profiles' });
+  });
+
+  /**
+   * v14 A5-2：`rule` 的表单长法。钉的是「作用域那两枚可选键怎么进来」：
+   *  ①`file` 与 skill 共用同一个候选池（`space-docs`）——候选问的是「这个根下有哪些文档路径」，
+   *    不问登记成哪一类，另起一个 `rule-files` 池就是逼同一篇文档在两个清单里各登记一次；
+   *  ②`repo` 的候选是**已登记的仓库目录名**（`space-repos`），但仍是 text 不是 select——目录可以
+   *    还没进 `repos[]`（先克隆后登记是常态），收成白名单就把这条路堵死了。
+   */
+  it('rule 五键：space 选项目、file 与 repo 各自带候选（space-docs / space-repos）、pathsGlob 原样存', () => {
+    expect(formFieldsFor('rule')!.map((f) => f.key)).toEqual(['space', 'file', 'repo', 'pathsGlob', 'note']);
+    expect(formFieldsFor('rule')!.find((f) => f.key === 'space')).toMatchObject({ type: 'select', required: true });
+    expect(formFieldsFor('rule')!.find((f) => f.key === 'file')).toMatchObject({ type: 'text', required: true, list: 'space-docs' });
+    expect(formFieldsFor('rule')!.find((f) => f.key === 'repo')).toMatchObject({ type: 'text', list: 'space-repos' });
+    expect(formFieldsFor('rule')!.find((f) => f.key === 'pathsGlob')).toMatchObject({ type: 'text' });
+    // 必填只有两枚：作用域是可选收窄，把 repo 当必填就会逼出「为了登记而先登记仓」的空动作
+    expect(missingRequiredFields('rule', 'x', { space: 'demo' })).toEqual(['文档路径']);
+    expect(missingRequiredFields('rule', 'x', { space: 'demo', file: ' docs/x.md ' })).toEqual([]);
   });
 
   it('missingRequiredFields 只问必填：没填名字与型号时报出中文名', () => {
@@ -164,6 +185,23 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
     expect(buildRegistryPayload('skill', 'x', { space: '', file: 'a.md' })).toBeNull();
   });
 
+  /**
+   * v14 A5-2：rule 的组装只可能长出 `{space,file,repo?,pathsGlob?,note?}`。这里额外钉的是
+   * 作用域两枚可选键的**原样**语义：pathsGlob 前端不展开也不改写（展开的判据住在 `rules.ts`），
+   * 传过去是什么就是什么——在这儿顺手「规范化」一下，就等于在 web 造了第二把尺。
+   */
+  it('buildRegistryPayload(rule)：作用域键空了整键不发；pathsGlob 原样透传', () => {
+    expect(buildRegistryPayload('rule', 'x', { space: ' demo ', file: ' docs/a.md ', repo: '', pathsGlob: '   ' })).toEqual({
+      kind: 'rule',
+      name: 'x',
+      spec: { space: 'demo', file: 'docs/a.md' },
+    });
+    expect(
+      buildRegistryPayload('rule', 'x', { space: 'demo', file: 'a.md', repo: 'packages/web', pathsGlob: 'src/**', note: '只守前端' })!.spec,
+    ).toEqual({ space: 'demo', file: 'a.md', repo: 'packages/web', pathsGlob: 'src/**', note: '只守前端' });
+    expect(buildRegistryPayload('rule', 'x', { space: 'demo', file: '' })).toBeNull();
+  });
+
   /** v14-T4：`mcp` 是第二类可登记 kind——表单长三键，但**只登记不探测**（没有健康点那一格） */
   it('mcp 长出三键且 command 必填；args 空了整键不发', () => {
     expect(formFieldsFor('mcp')!.map((f) => f.key)).toEqual(['command', 'args', 'note']);
@@ -175,22 +213,21 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
     });
     expect(buildRegistryPayload('mcp', '甲', { command: '' })).toBeNull();
     // 出厂清单类（视图 kind）不进下拉：选了也登记不了，那是假可点。
-    // 名单本身由 server 的 `knownKinds` 给（web 不抄表），A5-1 起 skill 在登记侧占一格
-    expect(registrableKinds(['model', 'skill', 'agent-kind', 'node-type', 'mcp'], ['agent-kind', 'node-type'])).toEqual([
-      'model',
-      'skill',
-      'mcp',
-    ]);
+    // 名单本身由 server 的 `knownKinds` 给（web 不抄表），A5-2 起 skill/rule 都在登记侧占格
+    expect(
+      registrableKinds(['model', 'skill', 'rule', 'agent-kind', 'node-type', 'mcp'], ['agent-kind', 'node-type']),
+    ).toEqual(['model', 'skill', 'rule', 'mcp']);
   });
 });
 
 /**
- * v14 A5-1 的候选来源：路径候选只能从**项目档案实读回来的字段**里并（skills / conventionFiles /
+ * v14 A5-1/A5-2 的候选来源：路径候选只能从**项目档案实读回来的字段**里并（skills / conventionFiles /
  * rules[].file 三源），web 不猜文件名也不扫盘——猜来的候选会让人登记一篇本机根本没有的文档。
+ * 候选池按「这个根下有哪些文档」算，不按登记类别算，所以 `skill` 与 `rule` 共用它。
  */
-describe('v14 A5-1 skillFileCandidates（登记表单的路径候选）', () => {
+describe('v14 A5-1 spaceDocCandidates（登记表单的路径候选）', () => {
   it('三源并集 + 去空去重 + 排序（稳定顺序，不随档案键序抖）', () => {
-    const got = skillFileCandidates(
+    const got = spaceDocCandidates(
       [
         { id: 'demo', skills: ['skills/b/SKILL.md', ' docs/a.md ', 'skills/b/SKILL.md'], conventionFiles: ['AGENTS.md'] },
         { id: 'other', rules: [{ file: 'docs/rule.md' }] },
@@ -201,20 +238,34 @@ describe('v14 A5-1 skillFileCandidates（登记表单的路径候选）', () => 
     // 三源都在账上：约定文档与目录规则的路径同样是「这台机器上真有一篇文档」的出处；
     // 只关联了仓库、没写文档路径的那条规则不贡献候选（它没有路径可候选）
     expect(
-      skillFileCandidates(
+      spaceDocCandidates(
         [{ id: 'demo', conventionFiles: ['AGENTS.md'], rules: [{ file: 'docs/rule.md' }, {}] }],
         'demo',
       ),
     ).toEqual(['AGENTS.md', 'docs/rule.md']);
     // 只给所选项目的：别家的路径不是这一枚的候选
-    expect(skillFileCandidates([{ id: 'other', skills: ['z.md'] }], 'demo')).toEqual([]);
+    expect(spaceDocCandidates([{ id: 'other', skills: ['z.md'] }], 'demo')).toEqual([]);
   });
 
   it('没选项目 / 项目不在册 / 档案一个字段都没配 → 空数组（表单据此说「还没有候选，路径仍可直填」）', () => {
-    expect(skillFileCandidates([{ id: 'demo', skills: ['a.md'] }], '')).toEqual([]);
-    expect(skillFileCandidates([{ id: 'demo', skills: ['a.md'] }], 'ghost')).toEqual([]);
-    expect(skillFileCandidates([{ id: 'demo' }], 'demo')).toEqual([]);
-    expect(skillFileCandidates([], 'demo')).toEqual([]);
+    expect(spaceDocCandidates([{ id: 'demo', skills: ['a.md'] }], '')).toEqual([]);
+    expect(spaceDocCandidates([{ id: 'demo', skills: ['a.md'] }], 'ghost')).toEqual([]);
+    expect(spaceDocCandidates([{ id: 'demo' }], 'demo')).toEqual([]);
+    expect(spaceDocCandidates([], 'demo')).toEqual([]);
+  });
+});
+
+/**
+ * v14 A5-2：`rule.spec.repo` 的候选只吃档案里的 `repos[]`（那是这个空间**已登记**的仓库目录名）。
+ * 档案没配 repos 时给空数组——表单据此说「直接填目录名即可」，绝不拿目录扫盘或猜一个。
+ */
+describe('v14 A5-2 spaceRepoCandidates（规则作用域的仓库候选）', () => {
+  it('去空去重排序；没配 repos 的档案给空数组', () => {
+    expect(
+      spaceRepoCandidates([{ id: 'demo', repos: ['packages/web', ' packages/web ', 'packages/server', ''] }], 'demo'),
+    ).toEqual(['packages/server', 'packages/web']);
+    expect(spaceRepoCandidates([{ id: 'demo', skills: ['a.md'] }], 'demo')).toEqual([]);
+    expect(spaceRepoCandidates([{ id: 'other', repos: ['x'] }], 'demo')).toEqual([]);
   });
 });
 
@@ -296,19 +347,19 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
           ok: false,
           need: [
             { kind: 'model', label: '模型', declared: 1, judged: 1, gaps: 1 },
-            { kind: 'skill', label: '技能', declared: 2, judged: 0, gaps: 0 },
+            { kind: 'repo', label: '仓库', declared: 2, judged: 0, gaps: 0 },
           ],
         }),
         3,
       ),
-    ).toEqual({ text: '需要：模型 1 · 技能 2', tone: 'gap' });
+    ).toEqual({ text: '需要：模型 1 · 仓库 2', tone: 'gap' });
   });
 
   it('整组都判不了 = pending（画问号）：它既不是缺口也不是命中，红绿都不对', () => {
     const r = row({
-      slots: [{ kind: 'skill', id: 'skills/x/SKILL.md', verdict: 'unjudged', why: '还没迁进注册表' }],
-      need: [{ kind: 'skill', label: '技能', declared: 1, judged: 0, gaps: 0 }],
-      unjudged: [{ kind: 'skill', id: 'skills/x/SKILL.md', verdict: 'unjudged', why: '还没迁进注册表' }],
+      slots: [{ kind: 'repo', id: 'my-repo', verdict: 'unjudged', why: '还没迁进注册表' }],
+      need: [{ kind: 'repo', label: '仓库', declared: 1, judged: 0, gaps: 0 }],
+      unjudged: [{ kind: 'repo', id: 'my-repo', verdict: 'unjudged', why: '还没迁进注册表' }],
     });
     expect(requirementBadge(r, 1).tone).toBe('pending');
     // 一半命中一半判不了 → 按命中说（有真读数就别挂问号）

@@ -197,3 +197,58 @@ describe('v14 A5-1 skill 进能力快照', () => {
     expect(both.refs.map((r) => [r.id, r.via])).toEqual([['skill:a-doc', ['space·skills[0]']]]);
   });
 });
+
+/**
+ * v14 A5-2：`rule` 进表后能力快照多了一类，但它**不是新机制**——同一份收窄判据、同一条歧义跳过路。
+ * 这一格只钉规则独有的那一件事：它的 `spec` 里带作用域，而快照抄的是**整份** spec，
+ * 所以「同一条约定、不同生效范围」在两枚 specSha 上是两条不同的账。
+ *
+ * 为什么这值得单独钉：能力快照（cap#）存在的理由是「replay 时能比出这一单吃的东西变了没有」。
+ * 若这里只抄 `{file}`，把一条全局约定改成「只守 packages/web」就不会动指纹——那正是最该被看见的
+ * 变化（注入现场少读了一格目录规则）。多抄两枚键的代价是改注释也会动指纹，那笔账本来就该算。
+ */
+describe('v14 A5-2 rule 进能力快照', () => {
+  const rule = (space: string, name: string, scope: Record<string, unknown> = {}): RegistryEntry => {
+    const r = normalizeRegistryEntry({ kind: 'rule', name, spec: { space, file: 'docs/x.md', ...scope } });
+    if (!r.ok) throw new Error(r.why);
+    return r.value;
+  };
+  const bySpace = (space: string): RawReference => ({
+    face: 'space',
+    id: space,
+    name: `项目 ${space}`,
+    via: 'rules[0].file',
+    kind: 'rule',
+    target: 'docs/x.md',
+  });
+
+  it('整份 spec 进账：作用域两枚键跟着走，改收窄=改 specSha（cap# 要能比出「这条约定少守了一格」）', () => {
+    const scoped = rule('demo', 'x-rule', { repo: 'packages/web', pathsGlob: 'src/**' });
+    const snap = capabilitySnapshot([scoped], [bySpace('demo')])!;
+    expect(snap.refs[0]).toMatchObject({
+      kind: 'rule',
+      id: 'rule:x-rule',
+      spec: { space: 'demo', file: 'docs/x.md', repo: 'packages/web', pathsGlob: 'src/**' },
+      via: ['space·rules[0].file'],
+    });
+    // 同一枚条目去掉作用域后指纹必变（两枚条目各记各的，不并成一条）
+    const widened = rule('demo', 'x-rule');
+    const other = capabilitySnapshot([widened], [bySpace('demo')])!;
+    expect(other.refs[0]!.specSha).not.toBe(snap.refs[0]!.specSha);
+  });
+
+  it('作用域键不是引用写法，所以它在账上只有一处出现：`spec` 里（不进 `via`，也不参与命中判定）', () => {
+    const scoped = rule('demo', '约定 x', { repo: 'packages/web' });
+    // 拿同仓那枚目录名当 target 指不到这一枚——与 `agent-kind` 不收 binary 同一把尺
+    const byRepo: RawReference = {
+      face: 'space',
+      id: 'demo',
+      name: '项目 demo',
+      via: 'rules[0].repo',
+      kind: 'repo',
+      target: 'packages/web',
+    };
+    expect(capabilitySnapshot([scoped], [byRepo])).toBeNull();
+    expect(capabilitySnapshot([scoped], [byRepo, bySpace('demo')])!.refs.map((r) => r.via)).toEqual([['space·rules[0].file']]);
+  });
+});

@@ -67,12 +67,13 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(body.entries.filter((e) => !e.view)).toEqual([]); // 盘上真的一条没登记——这格还是正读数零
       expect(body.rejected).toEqual([]);
       expect(body.schema).toBeNull();
-      expect(body.knownKinds).toEqual(['model', 'skill', 'agent-kind', 'node-type', 'mcp']);
+      // 挂号序＝注册中心的分组序：登记项在前、视图 kind 穿插在其注册位（A5-2 起 `rule` 进表）
+      expect(body.knownKinds).toEqual(['model', 'skill', 'rule', 'agent-kind', 'node-type', 'mcp']);
       expect(body.viewKinds).toEqual(['agent-kind', 'node-type']);
       // 组名只有一处措辞表（`registry-check.ts` 的 `KIND_CN`）：网页拿这张外发表的标签画分组，
       // 前端不再自己抄一份——抄了迟早分叉，而分叉的代价是「同一个 kind 两处两个名字」。
       expect(Object.keys(body.kindLabels).sort()).toEqual([...body.knownKinds].sort());
-      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', mcp: 'MCP 服务' });
+      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', rule: '规则', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', mcp: 'MCP 服务' });
       expect(requirementKindLabel('agent-kind')).toBe(body.kindLabels['agent-kind']);
       expect(body.refSummary).toEqual({ scanned: 0, dangling: [], unmigrated: [] });
       // 视图项=出厂清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
@@ -326,6 +327,52 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(dirty.statusCode).toBe(400);
       expect(dirty.json().error).toContain('flie');
       expect(registry.list('skill')).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * v14 A5-2 的对外读数：`rule` 与 skill 同侧（登记项），写路径照开，label 里带作用域。
+   * 这一格额外钉 HTTP 面才有的两件事：①**收窄进 label**（一条只守某仓的约定与一条全项目都守的同名
+   * 文档不能在同一张列表里长得一样，否则启停时按名字点是点不准的）；②未知键在这条路上同样 400
+   * （`pathGlob` 少个 s 若被放过，这条约定就静默从「只守某仓」放大成「全项目都守」）。
+   * 「项目有根而那枚作用域目录不在 → missing」是探针通道的账，判据已在 `registry.test.ts` 钉过；
+   * 这里喂的 dataDir 没有真项目根，硬造一份只为走另一条分支就是重复挂号。
+   */
+  it('POST kind=rule：label 带作用域；项目没根/没这枚项目=unknown（不判死），拼错的键照拒', async () => {
+    const { app, registry } = await build();
+    try {
+      const ok = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'rule', name: 'x', spec: { space: 'ghost', file: 'docs/x.md', repo: 'packages/web', note: '只守前端' } },
+      });
+      expect(ok.statusCode).toBe(200);
+      const id = (ok.json() as { entry: { id: string } }).entry.id;
+      expect(id).toBe('rule:x');
+      const one = await app.inject({ method: 'GET', url: `/api/registry/${id}`, headers: { host: HOST } });
+      expect(one.json()).toMatchObject({
+        entry: { kind: 'rule', view: false, label: '[项目 ghost] docs/x.md（仅 packages/web 仓） · 只守前端' },
+      });
+      // 项目不存在 → 无从判（unknown），这里不问作用域目录：根都没有，目录更无从谈起
+      const health = await app.inject({ method: 'GET', url: '/api/registry/health', headers: { host: HOST } });
+      const row = (health.json() as { entries: { id: string; health: { status: string; detail: string } }[] }).entries.find(
+        (e) => e.id === id,
+      );
+      expect(row?.health?.status).toBe('unknown');
+      expect(row?.health?.detail).toContain('不等于这篇约定不存在');
+      expect(registry.list('rule').map((e) => e.id)).toEqual([id]);
+      const dirty = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'rule', name: 'y', spec: { space: 'demo', file: 'a.md', pathGlob: 'src/**' } },
+      });
+      expect(dirty.statusCode).toBe(400);
+      expect(dirty.json().error).toContain('pathGlob');
+      expect(registry.list('rule')).toHaveLength(1);
     } finally {
       await app.close();
     }

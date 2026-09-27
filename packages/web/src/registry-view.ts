@@ -105,7 +105,7 @@ export interface RegistryFormField {
   /** 下拉选项的来源（渲染侧按这一枚去取候选，不再写死 `key === 'gatewayProfile'`） */
   options?: 'gateway-profiles' | 'spaces';
   /** 直接给 datalist 候选集（可选也可填——候选是省手的，不是白名单） */
-  list?: 'models' | 'skill-files';
+  list?: 'models' | 'space-docs' | 'space-repos';
 }
 
 /** 信封层的显示名（POST 体的 name，所有 kind 共用） */
@@ -132,8 +132,22 @@ const MODEL_FIELDS: RegistryFormField[] = [
  */
 const SKILL_FIELDS: RegistryFormField[] = [
   { key: 'space', label: '所属项目', type: 'select', required: true, options: 'spaces', hint: '相对路径以这个项目的根为基准，换项目=换文件' },
-  { key: 'file', label: '文档路径', type: 'text', required: true, list: 'skill-files', hint: '相对项目根；可从该项目已登记的清单里选，也可直接填' },
+  { key: 'file', label: '文档路径', type: 'text', required: true, list: 'space-docs', hint: '相对项目根；可从该项目已登记的清单里选，也可直接填' },
   { key: 'note', label: '备注', type: 'text', hint: '这篇是干什么的（选填）' },
+];
+
+/**
+ * `rule`（v14 A5-2）：形状照 server 的 `parseRuleSpec`（{space,file,repo?,pathsGlob?,note?}）。
+ * 两枚作用域键**原样存**（`repo` 是目录名、`pathsGlob` 是 glob 串），页面不解析也不校验能否展开——
+ * 命中判定只住在注入现场那一把尺里（`rules.ts: matchRules`），这里再算一遍就是两处判据。
+ * 两枚都不填=全空间规则（旧 `conventionFiles` 的等价形），所以不是必填。
+ */
+const RULE_FIELDS: RegistryFormField[] = [
+  { key: 'space', label: '所属项目', type: 'select', required: true, options: 'spaces', hint: '约定文档以这个项目的根为基准' },
+  { key: 'file', label: '文档路径', type: 'text', required: true, list: 'space-docs', hint: '相对项目根；候选来自该项目已登记的文档路径，也可直接填' },
+  { key: 'repo', label: '只在某仓生效', type: 'text', list: 'space-repos', hint: '填仓库目录名（相对主仓根）；留空=整个项目都守这条' },
+  { key: 'pathsGlob', label: '只在某目录生效', type: 'text', hint: '对节点工作目录的 glob，如 packages/**；原样存，PaneFlow 不在这一步展开' },
+  { key: 'note', label: '备注', type: 'text', hint: '为什么/什么时候守这条（会随文档注入给 agent）' },
 ];
 
 const MCP_FIELDS: RegistryFormField[] = [
@@ -145,6 +159,7 @@ const MCP_FIELDS: RegistryFormField[] = [
 export function formFieldsFor(kind: string): RegistryFormField[] | null {
   if (kind === 'model') return MODEL_FIELDS;
   if (kind === 'skill') return SKILL_FIELDS;
+  if (kind === 'rule') return RULE_FIELDS;
   if (kind === 'mcp') return MCP_FIELDS;
   return null;
 }
@@ -154,20 +169,22 @@ export function formFieldsFor(kind: string): RegistryFormField[] | null {
  * 这里抄全表就是把「档案加字段」变成页面的破坏性变更）。字段全可选：`GET /api/spaces/:id`
  * 对没配过的键整缺不造默认，这里也不拿 `undefined` 当空数组用。
  */
-export interface SkillCandidateSource {
+export interface SpaceDocCandidateSource {
   id: string;
   skills?: string[];
   conventionFiles?: string[];
   rules?: { file?: string }[];
+  repos?: string[];
 }
 
 /**
- * 一枚项目档案里「像技能文档的东西」的候选集：`skills[]` ∪ `conventionFiles[]` ∪ `rules[].file`。
+ * 一枚项目档案里「像约定/技能文档的东西」的候选集：`skills[]` ∪ `conventionFiles[]` ∪ `rules[].file`。
  * 为什么三处并起来：注入现场吃的就是这三类路径（作用域规则与约定文档同一条通道），
  * 只列 `skills[]` 会让「把一篇已在用的规则登记成能力条目」这一路必须手打。
  * 只读给出、不改任何档案：这里是候选池，不是第二个登记面。
+ * `skill` 与 `rule` 两 kind 共用它（候选池问的是「这个根下有哪些文档路径」，不问登记成哪一类）。
  */
-export function skillFileCandidates(spaces: SkillCandidateSource[], spaceId: string): string[] {
+export function spaceDocCandidates(spaces: SpaceDocCandidateSource[], spaceId: string): string[] {
   const sp = spaces.find((x) => x.id === spaceId);
   if (!sp) return [];
   const files = [
@@ -176,6 +193,14 @@ export function skillFileCandidates(spaces: SkillCandidateSource[], spaceId: str
     ...(Array.isArray(sp.rules) ? sp.rules.map((r) => r?.file) : []),
   ];
   return [...new Set(files.filter((f): f is string => typeof f === 'string' && f.trim() !== '').map((f) => f.trim()))].sort();
+}
+
+/** `rule.spec.repo` 的候选：该项目**已登记的仓库目录名**（`repos[]`）。仍可直填——目录名可以还没登记 */
+export function spaceRepoCandidates(spaces: SpaceDocCandidateSource[], spaceId: string): string[] {
+  const sp = spaces.find((x) => x.id === spaceId);
+  if (!sp) return [];
+  const repos = Array.isArray(sp.repos) ? sp.repos : [];
+  return [...new Set(repos.filter((r): r is string => typeof r === 'string' && r.trim() !== '').map((r) => r.trim()))].sort();
 }
 
 export type RegistryFormValues = Record<string, string | boolean>;
@@ -247,6 +272,9 @@ const SPEC_FIELD_LABELS: Record<string, string> = {
   // skill（v14 A5-1，用户登记项）：作用域住在 spec 里，所以「所属项目」也得画出来
   space: '所属项目',
   file: '文档路径',
+  // rule（v14 A5-2）：两枚作用域键，原样存原样画——页面不展开 glob，也不判目录在不在
+  repo: '生效仓库',
+  pathsGlob: '作用域 glob',
 };
 
 export interface SpecRow {

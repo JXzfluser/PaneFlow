@@ -103,12 +103,36 @@ export interface SkillRegistrySpec {
 }
 
 /**
+ * `rule`（v14 A5-2）——「本机上有这么一篇要守的约定文档」。数据原身今天住在
+ * `SpaceProfile.rules[]`（`orchestrate/rules.ts: SpaceRule`，消费在注入现场 `matchRules`），
+ * 信封与 `skill` 同形再加两枚作用域键：`repo`/`pathsGlob` **照 SpaceRule 的形状存**，不重命名、
+ * 不合并——注册表里写的和档案里写的必须是同一串，否则 A5-5 迁移片得到处对账。
+ *
+ * `repo` 与 `pathsGlob` 是可缺省的作用域面（都没给=全空间规则，等价于旧 `conventionFiles` 那条），
+ * 所以它们进 spec 是「这条规则自己说它在哪儿生效」，不是注册表替注入现场做决定：
+ * 真正的命中判定仍只有一处（`rules.ts: matchRules` 那把 glob 尺）。注册表这边再算一遍就是两份判据。
+ */
+export interface RuleRegistrySpec {
+  /** 所属空间的 id 裸串引用（`SpaceProfile.id`） */
+  space: string;
+  /** 相对该空间主仓根的约定文档路径（今天 `rules[].file` 写的正是这一串） */
+  file: string;
+  /** 只在该仓库目录内生效（相对主仓根的目录名；原样存，包含判定归 `matchRules`） */
+  repo?: string;
+  /** 对节点工作目录（相对主仓根、`/` 分隔）的 glob；原样存，展开归 `globToRegExp` */
+  pathsGlob?: string;
+  /** 为什么/什么时候守这条——随约定文档注入给 Agent 的那句提示 */
+  note?: string;
+}
+
+/**
  * kind → spec 形状。**A1 落 `model` 当样板，A3-2 加 `agent-kind`（视图 kind）**；
  * 其余 kind 由 A3-x 逐片加成员，每片各带一条「等臂不破」断言。
  */
 export interface RegistrySpecMap {
   model: ModelRegistrySpec;
   skill: SkillRegistrySpec;
+  rule: RuleRegistrySpec;
   'agent-kind': AgentKindRegistrySpec;
   'node-type': NodeTypeRegistrySpec;
   mcp: McpRegistrySpec;
@@ -121,7 +145,7 @@ export type RegistryKind = keyof RegistrySpecMap;
  * 加了 spec 成员忘了在这里挂号 = 编译期红，不是运行面「静默不认」。
  * 顺序即注册中心的分组序（用户自己登记的东西排前，出厂那几十行不糊住自己的账）。
  */
-export const REGISTRY_KINDS = ['model', 'skill', 'agent-kind', 'node-type', 'mcp'] as const;
+export const REGISTRY_KINDS = ['model', 'skill', 'rule', 'agent-kind', 'node-type', 'mcp'] as const;
 
 /**
  * **视图 kind**：条目由别处（代码里的出厂清单）现算出来，`entries.json` 里永远没有它们。
@@ -211,6 +235,7 @@ export interface RegistryDescriptor<K extends RegistryKind = RegistryKind> {
 
 const MODEL_SPEC_KEYS = ['model', 'gatewayProfile', 'freeModel', 'note'] as const;
 const SKILL_SPEC_KEYS = ['space', 'file', 'note'] as const;
+const RULE_SPEC_KEYS = ['space', 'file', 'repo', 'pathsGlob', 'note'] as const;
 const AGENT_KIND_SPEC_KEYS = ['binary'] as const;
 const NODE_TYPE_SPEC_KEYS = ['label', 'icon', 'group', 'order', 'hint'] as const;
 const MCP_SPEC_KEYS = ['command', 'args', 'note'] as const;
@@ -231,6 +256,7 @@ export function unknownKindWhy(kind: string): string {
 const SPEC_PARSERS: { [K in RegistryKind]: (raw: unknown) => RegistryParse<RegistrySpecMap[K]> } = {
   model: parseModelSpec,
   skill: parseSkillSpec,
+  rule: parseRuleSpec,
   'agent-kind': parseAgentKindSpec,
   'node-type': parseNodeTypeSpec,
   mcp: parseMcpSpec,
@@ -288,6 +314,45 @@ export function parseSkillSpec(raw: unknown): RegistryParse<SkillRegistrySpec> {
   const file = typeof o.file === 'string' ? o.file.trim() : '';
   if (!file) return { ok: false, why: `${SHAPE}；file 必须是非空字符串（相对该空间主仓根的技能文档路径）` };
   const spec: SkillRegistrySpec = { space, file };
+  if (o.note !== undefined) {
+    if (typeof o.note !== 'string') return { ok: false, why: 'note 必须是字符串' };
+    const note = o.note.trim();
+    if (note) spec.note = note;
+  }
+  return { ok: true, value: spec };
+}
+
+/**
+ * `rule` 的 spec 机检（v14 A5-2）。姿态同 `skill`：未知键即拒（`pathGlob` 少写一个 s＝这条规则从此
+ * 不作用域化，静默降级成全空间规则，那是最坏的一种「看起来存成功了」）；`space`/`file` 必填；
+ * `repo`/`pathsGlob` 给了就得是非空串（同 `model.gatewayProfile`：空串被丢掉＝作用域静默放大），
+ * `note` 空了整键不发（同 `model`/`skill`：注释不承载判据，别让同一个可选注释键两种脾气）。
+ *
+ * **不判存在性、也不判 glob 能否展开**：登记时刻文档可以还没落（先立账后写文是常态），而 glob 的语义
+ * 只有注入现场那一把尺说得清（`rules.ts: globToRegExp`）——这里再算一遍就是两处判据，迟早对不上。
+ * 死活归探针通道（R4）说。
+ */
+export function parseRuleSpec(raw: unknown): RegistryParse<RuleRegistrySpec> {
+  const SHAPE = 'rule 的配置详情必须是 {space, file, repo?, pathsGlob?, note?}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(RULE_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  const space = typeof o.space === 'string' ? o.space.trim() : '';
+  if (!space) return { ok: false, why: `${SHAPE}；space 必须是非空字符串（这篇约定属于哪个项目根，没有默认空间可猜）` };
+  const file = typeof o.file === 'string' ? o.file.trim() : '';
+  if (!file) return { ok: false, why: `${SHAPE}；file 必须是非空字符串（相对该空间主仓根的约定文档路径）` };
+  const spec: RuleRegistrySpec = { space, file };
+  // 两枚作用域键与 `note` 分家处理，不是手滑：`repo: ''` 若被静默丢掉，这条约定就从「只守某仓」**悄悄
+  // 放大**成「整个项目都守」——那是最坏的一种「看起来存成功了」，所以照 `model.gatewayProfile` 拒；
+  // `note` 只是给人看的注释，空了就整键不发（照 `model`/`skill` 同一处理，别让同一个可选注释键两种脾气）。
+  for (const key of ['repo', 'pathsGlob'] as const) {
+    if (o[key] === undefined) continue;
+    if (typeof o[key] !== 'string') return { ok: false, why: `${key} 必须是字符串` };
+    const v = (o[key] as string).trim();
+    if (!v) return { ok: false, why: `${key} 给了就得是非空字符串（不留空串占位）` };
+    spec[key] = v;
+  }
   if (o.note !== undefined) {
     if (typeof o.note !== 'string') return { ok: false, why: 'note 必须是字符串' };
     const note = o.note.trim();

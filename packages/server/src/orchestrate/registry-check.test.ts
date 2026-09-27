@@ -4,6 +4,7 @@ import {
   type DagGraph,
   type ModelRegistrySpec,
   type RegistryEntry,
+  type RuleRegistrySpec,
   type SkillRegistrySpec,
 } from '@paneflow/shared';
 import { checkGraphRequirements, requirementGapWhy, requirementKindLabel } from './registry-check.js';
@@ -12,7 +13,7 @@ import { registryViewEntries } from './registry-view.js';
 /**
  * v14-T3 起单前预检：模板 `requires` 槽 × 注册表 → 逐槽落点。
  * 钉的是三条姿态，一条都不能漂：
- *  1. 只有已迁进表的 kind 判死活（今天＝`model`/`skill`(A5-1)/`mcp`(T4) 与内置清单
+ *  1. 只有已迁进表的 kind 判死活（今天＝`model`/`skill`(A5-1)/`rule`(A5-2)/`mcp`(T4) 与内置清单
  *     `agent-kind`(A3-2)/`node-type`(T1)），其余 `unjudged` **不拦**；
  *  2. 形状不认 → `malformed` 且 `ok=false`（判不了就不放行）；
  *  3. 匹配吃 R2 那把尺（`matchesTarget` → Descriptor `refKeys`），整枚 id / slug / spec 原值三写法同权。
@@ -26,6 +27,12 @@ const entry = (spec: Record<string, unknown>, name = 'm', enabled = true): Regis
 
 const skillEntry = (spec: Record<string, unknown>, name = 's', enabled = true): RegistryEntry => {
   const r = normalizeRegistryEntry({ kind: 'skill', name, spec, enabled });
+  if (!r.ok) throw new Error(r.why);
+  return r.value;
+};
+
+const ruleEntry = (spec: Record<string, unknown>, name = 'r', enabled = true): RegistryEntry => {
+  const r = normalizeRegistryEntry({ kind: 'rule', name, spec, enabled });
   if (!r.ok) throw new Error(r.why);
   return r.value;
 };
@@ -80,10 +87,10 @@ describe('逐槽落点（checkGraphRequirements）', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('未迁进表的 kind 只披露不判死活（表里压根没有 rule 这一类，判「不存在」= 拿空白冒充断言）', () => {
-    const r = checkGraphRequirements(graphWith([{ kind: 'rule', id: 'docs/x.md' }]), [model]);
+  it('未迁进表的 kind 只披露不判死活（表里压根没有 repo 这一类，判「不存在」= 拿空白冒充断言）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'repo', id: 'packages/web' }]), [model]);
     expect(r.unjudged).toEqual([
-      { kind: 'rule', id: 'docs/x.md', verdict: 'unjudged', why: '「规则」这一类还没迁进注册表，判不了死活（只披露不拦）' },
+      { kind: 'repo', id: 'packages/web', verdict: 'unjudged', why: '「仓库」这一类还没迁进注册表，判不了死活（只披露不拦）' },
     ]);
     expect(r.ok).toBe(true); // 起单放行：unjudged 不是闸
   });
@@ -107,15 +114,15 @@ describe('分组读数（模板卡那一行「需要：模型 1 · 技能 2」�
     const r = checkGraphRequirements(
       graphWith([
         { kind: 'model', id: model.id },
-        { kind: 'rule', id: 'a' },
+        { kind: 'repo', id: 'a' },
         { kind: 'model', id: 'nope' },
-        { kind: 'rule', id: 'b' },
+        { kind: 'repo', id: 'b' },
       ]),
       [model],
     );
     expect(r.need).toEqual([
       { kind: 'model', label: '模型', declared: 2, judged: 2, gaps: 1 },
-      { kind: 'rule', label: '规则', declared: 2, judged: 0, gaps: 0 },
+      { kind: 'repo', label: '仓库', declared: 2, judged: 0, gaps: 0 },
     ]);
   });
 
@@ -276,5 +283,55 @@ describe('v14 A5-1 skill 槽已判死活', () => {
     );
     expect(r.need).toEqual([{ kind: 'skill', label: '技能', declared: 2, judged: 2, gaps: 1 }]);
     expect(requirementKindLabel('skill')).toBe('技能');
+  });
+});
+
+/**
+ * v14 A5-2：`rule` 进表之后，「这单要守哪篇约定」也判得了死活——翻面代价与 skill 同款
+ * （以前整类落 `unjudged` 一律放行，现在点名没登记的文档会**拦起单**），所以钉成专块。
+ *
+ * 与 skill 的差别只在多出来的两枚可选收窄键（`repo`/`pathsGlob`）：它们是**注入现场**的
+ * 生效条件（判据住在 `rules.ts: matchRules`，吃的是节点的真实 cwd），不是引用写法。
+ * 预检在这里没有能收窄的东西——槽里既没项目名也没节点目录——所以命中只看「这篇文档登记过」。
+ */
+describe('v14 A5-2 rule 槽已判死活', () => {
+  const rule = ruleEntry({ space: 'demo', file: 'docs/x.md', repo: 'packages/web' }, '前端约定');
+
+  it('三种写法同权命中：整枚 id、slug 段、`spec.file` 原值（今天盘面 `rules[i].file` 落册的就是最后这一枚）', () => {
+    const targets = [rule.id, rule.id.slice('rule:'.length), (rule.spec as RuleRegistrySpec).file];
+    for (const id of targets) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'rule', id }]), [rule]);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', why: '用「前端约定」', entryId: rule.id });
+      expect(r.ok).toBe(true);
+    }
+  });
+
+  it('作用域收窄键不是引用写法：`repo`/`pathsGlob` 都不落 `refKeys`（拿「别的条目恰好同仓」冒充「这一枚正在被用」就是两把尺）', () => {
+    expect(checkGraphRequirements(graphWith([{ kind: 'rule', id: 'packages/web' }]), [rule]).slots[0]!.verdict).toBe(
+      'missing',
+    );
+    expect(checkGraphRequirements(graphWith([{ kind: 'rule', id: 'src/**' }]), [rule]).slots[0]!.verdict).toBe('missing');
+  });
+
+  it('相对路径同样**不**按项目收窄（与 skill 同一处理：槽里没写项目名，收窄=替作者编约束）', () => {
+    const otherSpace = ruleEntry({ space: 'other', file: 'docs/x.md' }, '别家的约定');
+    const r = checkGraphRequirements(graphWith([{ kind: 'rule', id: 'docs/x.md' }]), [otherSpace]);
+    expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: otherSpace.id });
+  });
+
+  it('死缺会拦起单，且分组记 judged（`需要：规则 1` 从此有死活读数）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'rule', id: 'docs/never.md' }]), [rule]);
+    expect(r.slots[0]!.verdict).toBe('missing');
+    expect(r.ok).toBe(false);
+    expect(requirementGapWhy(r)).toContain('rule → docs/never.md');
+    expect(r.need).toEqual([{ kind: 'rule', label: '规则', declared: 1, judged: 1, gaps: 1 }]);
+  });
+
+  it('宽槽（不点名）在表上就过；禁用中的不凑槽', () => {
+    expect(checkGraphRequirements(graphWith([{ kind: 'rule', hint: '有条规矩即可' }]), [rule]).slots[0]!.verdict).toBe('ok');
+    expect(
+      checkGraphRequirements(graphWith([{ kind: 'rule' }]), [ruleEntry({ space: 'demo', file: 'a.md' }, 'a', false)]).slots[0]!
+        .verdict,
+    ).toBe('missing');
   });
 });

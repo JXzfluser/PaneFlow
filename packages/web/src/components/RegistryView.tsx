@@ -19,7 +19,8 @@ import {
   refRows,
   rejectedSummary,
   registrableKinds,
-  skillFileCandidates,
+  spaceDocCandidates,
+  spaceRepoCandidates,
   REGISTRY_NAME_FIELD,
   sourceLabel,
   specRows,
@@ -30,7 +31,7 @@ import {
   type RegistryHealthReadout,
   type RegistryListResponse,
   type RegistryProbeResponse,
-  type SkillCandidateSource,
+  type SpaceDocCandidateSource,
 } from '../registry-view.js';
 
 /**
@@ -69,13 +70,15 @@ export function RegistryView() {
   const [modelCandidates, setModelCandidates] = useState<string[]>([]);
   const [catalogNote, setCatalogNote] = useState<string | null>(null);
   /**
-   * skill 表单的两枚候选（v14 A5-1）：项目下拉读 `/api/spaces`，文档路径读**所选项目档案里已有的路径**
-   * （`GET /api/spaces/:id`）。前端不拼路径、不猜目录：候选读不出来就直接填那一格照旧可走。
+   * `skill`/`rule` 表单的候选（v14 A5-1/A5-2）：项目下拉读 `/api/spaces`，文档路径与仓库目录名读
+   * **所选项目档案里已有的值**（`GET /api/spaces/:id`）。前端不拼路径、不猜目录：候选读不出来时，
+   * 直填那一格照旧可走——候选是省手的，不是白名单。
    */
   const [spaces, setSpaces] = useState<{ id: string; name: string }[]>([]);
   const [spacesNote, setSpacesNote] = useState<string | null>(null);
-  const [skillFiles, setSkillFiles] = useState<string[]>([]);
-  const [skillFilesNote, setSkillFilesNote] = useState<string | null>(null);
+  const [docCandidates, setDocCandidates] = useState<string[]>([]);
+  const [repoCandidates, setRepoCandidates] = useState<string[]>([]);
+  const [candidatesNote, setCandidatesNote] = useState<string | null>(null);
   const selectedSpace = typeof formValues.space === 'string' ? formValues.space : '';
 
   const loadHealth = useCallback((refresh: boolean) => {
@@ -128,21 +131,26 @@ export function RegistryView() {
 
   /** 选了项目才去读那一枚档案拿路径候选（不选就不请求；读不出只说候选这一格，直填那条路不受影响） */
   useEffect(() => {
-    if (!formOpen || formKind !== 'skill' || !selectedSpace) {
-      setSkillFiles([]);
+    const wantsCandidates = formKind === 'skill' || formKind === 'rule';
+    if (!formOpen || !wantsCandidates || !selectedSpace) {
+      setDocCandidates([]);
+      setRepoCandidates([]);
       return;
     }
     let dead = false;
-    fetchJson<SkillCandidateSource>('GET', `/api/spaces/${encodeURIComponent(selectedSpace)}`)
+    fetchJson<SpaceDocCandidateSource>('GET', `/api/spaces/${encodeURIComponent(selectedSpace)}`)
       .then((p) => {
         if (dead) return;
-        setSkillFiles(skillFileCandidates([p], p?.id || selectedSpace));
-        setSkillFilesNote(null);
+        const id = p?.id || selectedSpace;
+        setDocCandidates(spaceDocCandidates([p], id));
+        setRepoCandidates(spaceRepoCandidates([p], id));
+        setCandidatesNote(null);
       })
       .catch((e: Error) => {
         if (dead) return;
-        setSkillFiles([]);
-        setSkillFilesNote(`这个项目的文档清单读不出：${e.message}（路径仍可直填）`);
+        setDocCandidates([]);
+        setRepoCandidates([]);
+        setCandidatesNote(`这个项目的文档与仓库清单读不出：${e.message}（路径仍可直填）`);
       });
     return () => {
       dead = true;
@@ -278,15 +286,20 @@ export function RegistryView() {
     if (f.options === 'spaces') return spaces;
     if (f.options === 'gateway-profiles') return gwProfiles;
     if (f.list === 'models') return modelCandidates.map((m) => ({ id: m, name: m }));
-    if (f.list === 'skill-files') return skillFiles.map((p) => ({ id: p, name: p }));
+    if (f.list === 'space-docs') return docCandidates.map((p) => ({ id: p, name: p }));
+    if (f.list === 'space-repos') return repoCandidates.map((r) => ({ id: r, name: r }));
     return [];
   };
 
   const listIdFor = (list: NonNullable<RegistryFormField['list']>): string =>
-    list === 'models' ? 'pf-registry-model-candidates' : 'pf-registry-skill-files';
+    list === 'models'
+      ? 'pf-registry-model-candidates'
+      : list === 'space-docs'
+        ? 'pf-registry-space-docs'
+        : 'pf-registry-space-repos';
 
-
-  const groups = data ? groupEntriesByKind(data.entries, data.knownKinds, data.viewKinds ?? [], data.kindLabels) : [];  const rejectedText = data ? rejectedSummary(data.rejected) : null;
+  const groups = data ? groupEntriesByKind(data.entries, data.knownKinds, data.viewKinds ?? [], data.kindLabels) : [];
+  const rejectedText = data ? rejectedSummary(data.rejected) : null;
   // 表单只问能登记的那几类：出厂清单类（agent-kind）没有表单形状，选它必被 server 拒，不在这里挂出来
   const kinds = registrableKinds(data?.knownKinds ?? [], data?.viewKinds ?? []);
 
@@ -429,11 +442,18 @@ export function RegistryView() {
                                 刷新型号清单
                               </button>
                             )}
-                            {f.list === 'skill-files' && !skillFiles.length && (
+                            {f.list === 'space-docs' && !docCandidates.length && (
                               <p className="settings-hint">
                                 {selectedSpace
-                                  ? skillFilesNote ?? '这个项目档案里还没有登记过文档路径——直接填相对路径即可。'
+                                  ? candidatesNote ?? '这个项目档案里还没有登记过文档路径——直接填相对路径即可。'
                                   : '先选项目，这里会列出它档案里已有的路径。'}
+                              </p>
+                            )}
+                            {f.list === 'space-repos' && !repoCandidates.length && (
+                              <p className="settings-hint">
+                                {selectedSpace
+                                  ? candidatesNote ?? '这个项目还没登记过仓库目录——直接填目录名即可（留空=全空间都守这条）。'
+                                  : '先选项目，这里会列出它档案里已登记的仓库目录。'}
                               </p>
                             )}
                           </>

@@ -65,7 +65,7 @@ describe('GET /api/registry/check', () => {
     try {
       expect(registry.add({ kind: 'model', name: 'gpt-4o-mini', spec: { model: 'gpt-4o-mini' } }).ok).toBe(true);
       writeGraphs(dataDir, [
-        graph('flow', [{ kind: 'model' }, { kind: 'model', id: 'nope' }, { kind: 'rule', id: 'docs/x.md' }]),
+        graph('flow', [{ kind: 'model' }, { kind: 'model', id: 'nope' }, { kind: 'repo', id: 'packages/web' }]),
         graph('bare'),
       ]);
       const res = await get(app, '/api/registry/check');
@@ -78,7 +78,7 @@ describe('GET /api/registry/check', () => {
       expect(flow.ok).toBe(false);
       expect(flow.need).toEqual([
         { kind: 'model', label: '模型', declared: 2, judged: 2, gaps: 1 },
-        { kind: 'rule', label: '规则', declared: 1, judged: 0, gaps: 0 },
+        { kind: 'repo', label: '仓库', declared: 1, judged: 0, gaps: 0 },
       ]);
       expect(body.templates[0]).toMatchObject({ template: 'bare', slots: [], need: [], ok: true });
     } finally {
@@ -96,6 +96,31 @@ describe('GET /api/registry/check', () => {
       expect(registry.add({ kind: 'skill', name: 'x', spec: { space: 'demo', file: 'skills/x/SKILL.md' } }).ok).toBe(true);
       const after = await get(app, '/api/registry/check?template=flow');
       expect(after.json().templates[0].slots[0]).toMatchObject({ verdict: 'ok', entryId: 'skill:x' });
+      expect(after.json().templates[0].ok).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * v14 A5-2：`rule` 的翻面在 HTTP 面同样是「missing ⇔ ok」的二值读数。
+   * 这里额外钉一枚纯函数块不好说的东西：**跨 kind 不串味**——同一篇文档既登记成技能又登记成规则时，
+   * `rule` 槽只认 rule 那条（注入现场两类都吃这条路径，但「这单要守的规矩」和「这单要读的技能」
+   * 是两条账；拿一条命中另一条会让停用其中一条后预检仍报绿）。
+   */
+  it('v14 A5-2：约定文档路径自此判得出死活，且同路径的 skill 条目不算 rule 命中', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      writeGraphs(dataDir, [graph('flow', [{ kind: 'rule', id: 'docs/x.md' }])]);
+      const before = await get(app, '/api/registry/check?template=flow');
+      expect(before.json().templates[0].slots[0].verdict).toBe('missing');
+      // 只登记成技能：路径一样也不是「规则」这一类的命中
+      expect(registry.add({ kind: 'skill', name: 'x', spec: { space: 'demo', file: 'docs/x.md' } }).ok).toBe(true);
+      const skillOnly = await get(app, '/api/registry/check?template=flow');
+      expect(skillOnly.json().templates[0].slots[0].verdict).toBe('missing');
+      expect(registry.add({ kind: 'rule', name: 'x', spec: { space: 'demo', file: 'docs/x.md' } }).ok).toBe(true);
+      const after = await get(app, '/api/registry/check?template=flow');
+      expect(after.json().templates[0].slots[0]).toMatchObject({ verdict: 'ok', entryId: 'rule:x' });
       expect(after.json().templates[0].ok).toBe(true);
     } finally {
       await app.close();
