@@ -1,7 +1,7 @@
 {
   "name": "paneflow",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "PaneFlow — deterministic multi-agent DAG orchestration on Herdr terminal panes",
   "license": "MIT",
   "scripts": {

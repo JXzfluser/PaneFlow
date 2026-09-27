@@ -168,7 +168,7 @@ pnpm typecheck   # TS 全量类型检查
 `install.sh` 与 `npm i -g <release-url>` 即刻可用：
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 ## 边界（明确不做）
