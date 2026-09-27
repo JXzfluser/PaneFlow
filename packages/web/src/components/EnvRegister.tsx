@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { api, type EnvProbeItem, type EnvProbeResult } from '../api.js';
 
@@ -38,6 +38,17 @@ export function EnvRegister({ spaceId, onClose, onRegistered }: { spaceId: strin
   const [error, setError] = useState<string | null>(null);
 
   const stepIdx = STEPS.findIndex((s) => s.id === step);
+
+  // Esc 关掉向导（与 PromptModal/RunsCenter 同一把手势）。登记已在飞时不关：
+  // 服务端那一笔事务照旧落盘，此刻收掉界面等于让人以为「取消了」而档案其实改了。
+  useEffect(() => {
+    if (registering) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, registering]);
 
   const mappableCount = useMemo(() => {
     if (!probe) return 0;
@@ -104,7 +115,7 @@ export function EnvRegister({ spaceId, onClose, onRegistered }: { spaceId: strin
   };
 
   return (
-    <div className="modal-mask" onClick={onClose}>
+    <div className="modal-mask" onClick={() => { if (!registering) onClose(); }}>
       <div className="modal env-register" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="发现环境并登记">
         <div className="er-head">
           <h2>发现环境并登记</h2>
