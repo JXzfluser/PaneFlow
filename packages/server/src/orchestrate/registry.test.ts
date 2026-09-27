@@ -4,9 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   normalizeRegistryEntry,
+  CHECK_SPEC_TYPES,
+  CHECK_TYPE_CATALOG,
   DAG_NODE_TYPES,
+  MACHINE_CHECK_TYPES,
   NODE_TYPE_CATALOG,
   NODE_TYPE_GROUPS,
+  parseCheckTypeSpec,
   parseNodeTypeSpec,
   parseMcpSpec,
   parseRepoSpec,
@@ -373,6 +377,102 @@ describe('v14 T1 节点类型清单进表（node-type 视图条目）', () => {
     // 拒得干净：一个字节没落盘，出厂项一枚不少（假开关一个也不给）
     expect(nodeRows(store.readView().entries)).toHaveLength(NODE_TYPE_CATALOG.length);
     expect(fs.existsSync(path.join(dir, 'registry'))).toBe(false);
+  });
+});
+
+/**
+ * v14 A5-4：`check-type` 是第三枚视图 kind——引擎认得哪几型机检那张清单（`shared/dag.ts: CHECK_TYPE_CATALOG`）
+ * 套上注册表信封。与 `node-type` 同形，所以这里**不重讲**那三条通用账（清单锁值域 / 条目只是信封 / 三动词拒），
+ * 只钉机检多出来的两件事：
+ *  1. `machine` 一枚键同时是**机检账的分母**（v13-V1「机检实跑」只数引擎跑得了的），所以
+ *     `MACHINE_CHECK_TYPES` 必须由清单派生——两处手抄同一件事，迟早有一边改了另一边没改；
+ *  2. 这一型**怎么跑**不进 spec（红线七：登记形状不登记执行体），注册表发的是画法，执行体留在引擎分派段。
+ */
+describe('v14 A5-4 机检类型清单进表（check-type 视图条目）', () => {
+  const checkRows = (entries: RegistryEntry[]): RegistryEntry[] => entries.filter((e) => e.kind === 'check-type');
+  const value = (raw: unknown) => {
+    const r = parseCheckTypeSpec(raw);
+    if (!r.ok) throw new Error(r.why);
+    return r.value;
+  };
+
+  it('清单锁住值域：每一型一枚、机器值与措辞都不重名，机检账分母由它派生', () => {
+    expect(CHECK_TYPE_CATALOG.map((r) => r.type).sort()).toEqual([...CHECK_SPEC_TYPES].sort());
+    expect(new Set(CHECK_TYPE_CATALOG.map((r) => r.type)).size).toBe(CHECK_TYPE_CATALOG.length);
+    expect(new Set(CHECK_TYPE_CATALOG.map((r) => r.label)).size).toBe(CHECK_TYPE_CATALOG.length);
+    for (const row of CHECK_TYPE_CATALOG) {
+      expect(row.label.trim()).toBe(row.label);
+      expect(row.hint.trim()).toBe(row.hint);
+      expect(typeof row.machine).toBe('boolean');
+    }
+    // 单一事实源：`MACHINE_CHECK_TYPES` 就是清单里 `machine:true` 的那几枚，不多不少不另起第三份序
+    expect([...MACHINE_CHECK_TYPES].sort()).toEqual(
+      CHECK_TYPE_CATALOG.filter((r) => r.machine).map((r) => r.type).sort(),
+    );
+    expect(MACHINE_CHECK_TYPES).not.toContain('manual');
+    expect(REGISTRY_VIEW_KINDS).toContain('check-type');
+  });
+
+  it('check-type 的 spec 形状：三键白名单，label/hint/machine 少一个都不放行', () => {
+    const good = { label: '跑命令', hint: '在节点工作目录里跑一条命令，退出码 0 才算过', machine: true };
+    expect(parseCheckTypeSpec(good)).toEqual({ ok: true, value: good });
+    expect(value({ ...good, machine: false })).toEqual({ ...good, machine: false });
+    for (const [bad, why] of [
+      [{ ...good, mchine: true }, 'mchine'], // 拼错的键静默收下＝这一型的 machine 读数是猜的
+      [{ hint: '问一句', machine: true }, 'label'],
+      [{ label: '', hint: '问一句', machine: true }, 'label'],
+      [{ label: '跑命令', machine: true }, 'hint'],
+      [{ label: '跑命令', hint: '  ', machine: true }, 'hint'],
+      [{ label: '跑命令', hint: '问一句' }, 'machine'],
+      [{ label: '跑命令', hint: '问一句', machine: 'true' }, 'machine'],
+    ] as const) {
+      const r = parseCheckTypeSpec(bad);
+      if (r.ok) throw new Error(`脏形状被认下了：${JSON.stringify(bad)}`);
+      expect(r.why).toContain(why);
+    }
+  });
+
+  it('一条没登记：出厂六型全在表上、画法原样取自清单、盘上无文件', () => {
+    const dir = tmp();
+    const store = storeAt(dir);
+    const rows = checkRows(store.readView().entries);
+    expect(rows).toHaveLength(CHECK_TYPE_CATALOG.length);
+    expect(rows.every((e) => e.source === 'builtin' && e.enabled && e.name === e.id.split(':')[1])).toBe(true);
+    for (const row of CHECK_TYPE_CATALOG) {
+      expect(rows.find((e) => e.name === row.type)?.spec).toEqual({
+        label: row.label,
+        hint: row.hint,
+        machine: row.machine,
+      });
+    }
+    expect(store.list('check-type')).toEqual([]);
+    expect(fs.existsSync(path.join(dir, 'registry', 'entries.json'))).toBe(false);
+  });
+
+  it('三动词对 check-type 全拒：加一型机检=改引擎，注册表不代造跑不了的检查', () => {
+    const dir = tmp();
+    const store = storeAt(dir);
+    const add = store.add({ kind: 'check-type', name: 'my-check', spec: { label: '我的检查', hint: '问一句', machine: true } });
+    expect(add.ok).toBe(false);
+    expect(add.why).toContain('内置能力清单');
+    expect(store.update('check-type:command', { enabled: false }).ok).toBe(false);
+    expect(store.remove('check-type:command').ok).toBe(false);
+    expect(checkRows(store.readView().entries)).toHaveLength(CHECK_TYPE_CATALOG.length);
+    expect(fs.existsSync(path.join(dir, 'registry'))).toBe(false);
+  });
+
+  it('引用写法两枚同权（整枚 id / `checks[].type` 原值）；中文 label 与机检口径都不算引用', () => {
+    const made = normalizeRegistryEntry({ kind: 'check-type', name: 'command', spec: { label: '跑命令', hint: '跑一条命令', machine: true } });
+    if (!made.ok) throw new Error(made.why);
+    const entry = made.value;
+    const hit = (target: string): number =>
+      buildReferenceIndex([entry], [
+        { face: 'template', id: 'flow', name: 'flow', via: 'nodes[0].config.checks[0].type', kind: 'check-type', target },
+      ]).byEntry[0]!.refs.length;
+    expect(hit('command')).toBe(1);
+    expect(hit('check-type:command')).toBe(1);
+    expect(hit('跑命令')).toBe(0); // 拿措辞当匹配键＝把写错成界面文案的那一格读成「正在用这一型」
+    expect(hit('true')).toBe(0); // `machine` 是画法，不是引用写法
   });
 });
 

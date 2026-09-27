@@ -147,6 +147,23 @@ export interface RepoRegistrySpec {
 }
 
 /**
+ * `check-type`（v14 A5-4）——「引擎认识哪些机检类型」这张**出厂清单**，与 `node-type` 完全同形：
+ *  - 数据原地住在 `dag.ts: CHECK_TYPE_CATALOG`（值域 `CHECK_SPEC_TYPES` 与机检账 `MACHINE_CHECK_TYPES` 都由它派生），
+ *    注册表这一侧只把它渲成条目；
+ *  - 机器值就是条目的 `name`（`command`/`manual`…，graph 里 `checks[].type` 写的正是这枚裸串），所以 spec 里**不再存一遍 type**；
+ *  - spec 存的是**画法与口径**（中文名 / 一句解释 / 引擎实跑还是人看一眼）。**怎么跑不在这里**（红线七）：
+ *    `file-exists` 读哪个键、`command` 怎么起子进程，全住在引擎的 checks 分派段。
+ */
+export interface CheckTypeRegistrySpec {
+  /** 人话名（画布按钮文字，也是清单里唯一一处这一型的中文措辞） */
+  label: string;
+  /** 这一型问的是什么问题（六枚各有各的要解释，因此必填——不给就等于详情行少一句） */
+  hint: string;
+  /** 引擎实跑得动＝进 v13-V1 机检账；`false`＝这一型拦的是人，不是机器 */
+  machine: boolean;
+}
+
+/**
  * kind → spec 形状。**A1 落 `model` 当样板，A3-2 加 `agent-kind`（视图 kind）**；
  * 其余 kind 由 A3-x 逐片加成员，每片各带一条「等臂不破」断言。
  */
@@ -157,6 +174,7 @@ export interface RegistrySpecMap {
   repo: RepoRegistrySpec;
   'agent-kind': AgentKindRegistrySpec;
   'node-type': NodeTypeRegistrySpec;
+  'check-type': CheckTypeRegistrySpec;
   mcp: McpRegistrySpec;
 }
 
@@ -167,14 +185,14 @@ export type RegistryKind = keyof RegistrySpecMap;
  * 加了 spec 成员忘了在这里挂号 = 编译期红，不是运行面「静默不认」。
  * 顺序即注册中心的分组序（用户自己登记的东西排前，出厂那几十行不糊住自己的账）。
  */
-export const REGISTRY_KINDS = ['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'mcp'] as const;
+export const REGISTRY_KINDS = ['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'check-type', 'mcp'] as const;
 
 /**
  * **视图 kind**：条目由别处（代码里的出厂清单）现算出来，`entries.json` 里永远没有它们。
  * 单列一枚清单而不写死在某个 if 里：写入面拒、UI 收控件、文案说「出厂登记不可删」三处都要用同一个答案
  * ——三份 if 迟早对不上，那就是第二份判据。
  */
-export const REGISTRY_VIEW_KINDS = ['agent-kind', 'node-type'] as const;
+export const REGISTRY_VIEW_KINDS = ['agent-kind', 'node-type', 'check-type'] as const;
 
 export function isRegistryViewKind(kind: unknown): boolean {
   return typeof kind === 'string' && (REGISTRY_VIEW_KINDS as readonly string[]).includes(kind);
@@ -270,6 +288,7 @@ const RULE_SPEC_KEYS = ['space', 'file', 'repo', 'pathsGlob', 'note'] as const;
 const REPO_SPEC_KEYS = ['space', 'dir', 'origin', 'note'] as const;
 const AGENT_KIND_SPEC_KEYS = ['binary'] as const;
 const NODE_TYPE_SPEC_KEYS = ['label', 'icon', 'group', 'order', 'hint'] as const;
+const CHECK_TYPE_SPEC_KEYS = ['label', 'hint', 'machine'] as const;
 const MCP_SPEC_KEYS = ['command', 'args', 'note'] as const;
 
 export type RegistryParse<T> = { ok: true; value: T } | { ok: false; why: string };
@@ -292,6 +311,7 @@ const SPEC_PARSERS: { [K in RegistryKind]: (raw: unknown) => RegistryParse<Regis
   repo: parseRepoSpec,
   'agent-kind': parseAgentKindSpec,
   'node-type': parseNodeTypeSpec,
+  'check-type': parseCheckTypeSpec,
   mcp: parseMcpSpec,
 };
 
@@ -474,6 +494,27 @@ export function parseNodeTypeSpec(raw: unknown): RegistryParse<NodeTypeRegistryS
     if (hint) spec.hint = hint;
   }
   return { ok: true, value: spec };
+}
+
+/**
+ * `check-type` 的 spec 机检（v14 A5-4）。与 `node-type` 同理：**只有出厂清单会造这一形状**（视图 kind，
+ * 写入面一律拒），但仍走同一张分派表清洗。`machine` 必填且不猜默认值——它决定这一型进不进 v13-V1 机检账，
+ * 「没给就当引擎实跑」会把 `manual` 静默算进机器证的分子（那是最坏方向的假绿）。
+ */
+export function parseCheckTypeSpec(raw: unknown): RegistryParse<CheckTypeRegistrySpec> {
+  const SHAPE = 'check-type 的配置详情必须是 {label, hint, machine}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(CHECK_TYPE_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  const label = typeof o.label === 'string' ? o.label.trim() : '';
+  if (!label) return { ok: false, why: `${SHAPE}；label 必须是非空字符串（这一型在界面上叫什么，没有默认名可猜）` };
+  const hint = typeof o.hint === 'string' ? o.hint.trim() : '';
+  if (!hint) return { ok: false, why: `${SHAPE}；hint 必须是非空字符串（这一型问的是什么，注册中心那一行没有解释可猜）` };
+  if (typeof o.machine !== 'boolean') {
+    return { ok: false, why: `${SHAPE}；machine 必须是布尔（引擎实跑得动与否是机检账的分母，没有默认值可猜）` };
+  }
+  return { ok: true, value: { label, hint, machine: o.machine } };
 }
 
 /**

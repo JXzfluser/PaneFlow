@@ -9,7 +9,7 @@ import type { Store } from '../orchestrate/store.js';
 import { RegistryStore } from '../orchestrate/registry.js';
 import { registryViewEntries } from '../orchestrate/registry-view.js';
 import type { RegistryEntry } from '@paneflow/shared';
-import { NODE_TYPE_CATALOG, REGISTRY_VIEW_KINDS } from '@paneflow/shared';
+import { CHECK_TYPE_CATALOG, NODE_TYPE_CATALOG, REGISTRY_VIEW_KINDS } from '@paneflow/shared';
 import { AGENT_KINDS } from './agent-kinds.js';
 import { clearAgentProbeCache } from './env-check.js';
 import { buildHttpServer } from './http.js';
@@ -303,7 +303,7 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
       // 静态段 vs 参数段的优先级：`/api/registry/health` 不能被 `:id` 吞成「探 id 叫 health 的条目」
       const batch = (await get(app, '/api/registry/health')).json();
       const roleRow = batch.entries.find((e: { id: string }) => e.id === 'role:r-x');
-      expect(batch.entries).toHaveLength(2 + AGENT_KINDS.length + NODE_TYPE_CATALOG.length); // 桩的两条 + 出厂视图项（并进去了才算生产形状）
+      expect(batch.entries).toHaveLength(2 + AGENT_KINDS.length + NODE_TYPE_CATALOG.length + CHECK_TYPE_CATALOG.length); // 桩的两条 + 出厂视图项（并进去了才算生产形状）
       expect('health' in roleRow).toBe(false);
       // 视图 kind 有通道：probed 只数出厂项（桩那两条 role/mcp 仍算「没通道」）
       expect(batch.summary).toMatchObject({ scanned: 0, probed: AGENT_KINDS.length });
@@ -311,6 +311,11 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
       // 界面上据此天然没有那个点（缺键 ≠ 灰点 ≠ 红点，三件事各画各的）。
       const nodeRow = batch.entries.find((e: { kind: string }) => e.kind === 'node-type');
       expect('health' in nodeRow).toBe(false);
+      // A5-4 的 `check-type` 同款**刻意不开**：机检型由引擎自己跑，「这一型不在本机」从来不是一种可能，
+      // 给它画红点＝替人判死六型好检（钉在这里而不是只写在注释里：加通道是个会被顺手做掉的动作）。
+      const checkRow = batch.entries.find((e: { kind: string }) => e.kind === 'check-type');
+      expect(checkRow).toBeDefined();
+      expect('health' in checkRow).toBe(false);
       // T4 的 `mcp` 值得单独钉：它是**用户登记项却没有探针通道**，和上面两枚视图 kind 的拒法不同路。
       // 探一台 MCP server 活不活要真客户端握手，而 v13:285 判死了不自实现客户端——于是「登记过」与
       // 「探得活不活」是两件事：画红点是替人判死，画灰点（unknown）更是谎称探过。
@@ -337,7 +342,7 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {
       ]);
       // 一条用户登记项都没有：被探到的只有出厂视图项（A3-2 起 agent 通道有货，probed 不再恒 0）
       // `unused` 是「出厂视图项全数没人用」（agent 18 + 节点类型 6）：T1 起了第二枚视图 kind，这里加一行而不是数死。
-      const factoryRows = AGENT_KINDS.length + NODE_TYPE_CATALOG.length;
+      const factoryRows = AGENT_KINDS.length + NODE_TYPE_CATALOG.length + CHECK_TYPE_CATALOG.length;
       expect(before.summary).toMatchObject({
         scanned: 2,
         dangling: 1,

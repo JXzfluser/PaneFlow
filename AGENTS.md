@@ -125,6 +125,14 @@ paneflow registry probe <id> [--refresh]     # 单枚探针，与批量面同一
 #   （整表健康逐条目跑，为一句核对起 N 次 `git` 子进程不值；派发现场的候选仓解析才是它的正身），
 #   有 origin 时 detail 明说「按登记原样存，这一版探针不实读核对」——没核 ≠ 不符，不拿猜测冒充实测
 #  改和删只有网页「注册中心」有（写端拒悬挂引用、拒删被引用条目，中文解释由 server 给）
+#   `check-type`（v14-A5-4）是第三枚**视图 kind**：六枚机检型由代码里的 `shared/dag.ts: CHECK_TYPE_CATALOG` 现算，
+#   `list --kind check-type` 画得出「被 N 处使用」（引用写法=整枚 id 或 `checks[].type` 原值，中文 label 不算），
+#   但这一类**没有探针通道**（与 `node-type` 同一条裁决）：它的正身就是代码，引擎跑得了就跑得了，
+#   给它画红点＝替人判死六型好检。`spec.machine` 是 v13-V1「机检账只数引擎实跑得了的」那枚口径，
+#   所以 `MACHINE_CHECK_TYPES` 由清单派生，不再手抄第二份。起单口同步翻面：
+#   `requires: [{kind:"check-type",id:"command"}]` 从今天起判死活（红槽拦起单），能力快照 `cap#`
+#   也从此把这一单要跑的机检型记进去——**同一张图在 A5-4 前后起单会有两个 cap#**（历史单吃自己落册的副本，
+#   等臂跨这一刀对照时要记得差在版本，不在这一单）
 
 # 8) 起单前预检（v14-T3）：模板声明「这单要吃哪几项能力」，派活之前先对着注册表解析
 paneflow registry check [--template x] [--space S]   # 逐槽画 ✓命中 / ✗死缺 / ?还判不了 / ⚠形状不认
@@ -132,7 +140,7 @@ paneflow registry check [--template x] [--space S]   # 逐槽画 ✓命中 / ✗
 #   不给 --template = 普查全部在册模板，恒 0（普查不是闸，拦是起单口的事）
 paneflow registry check --template x --json  # → 那一行的原样负载：{slots,need,missing,unjudged,malformed,ok}
 #   模板侧声明（画布 JSON）：graph 顶层 `requires: [{kind, id?, hint?}]`——今天判死活的 kind 是
-#   `model`、`skill`（v14-A5-1）、`rule`（v14-A5-2）、`repo`（v14-A5-3）、`mcp` 与两枚视图 kind `agent-kind`/`node-type`（后者的引用写法=整枚 id 或 kind 名；
+#   `model`、`skill`（v14-A5-1）、`rule`（v14-A5-2）、`repo`（v14-A5-3）、`mcp` 与三枚视图 kind `agent-kind`/`node-type`/`check-type`（v14-A5-4；后两枚的引用写法=整枚 id 或 kind 名；
 #   探测名 `antigravity` 那种异名**不算**引用写法，与 R2 引用账同一把尺——两把尺就会出现「预检说缺、引用账说在用」）。
 #   `skill`/`rule` 槽的引用写法多一枚 **`spec.file` 原值**（相对项目根的路径，就是今天 `profile.skills` /
 #   `profile.rules[i].file` 落册的那串），且**不**按 `--space` 收窄：`requires` 里没有写项目名的位置，本机任一项目登记过这篇即算命中
@@ -207,7 +215,8 @@ curl -s $BASE/api/dispatch -d '{"task":"...","experiment":{"suite":"c4","arm":"a
 #   v12-V2 起批过门的单多 attention:{waitMs,gates:{approve,reject,input}}——人介入「验证税」落册账，
 #   放门即结算（不靠环形 events 推导；进门时刻不可考的存量轮次只计次不加时长，宁缺毋假）；
 #   v13-V1 起有机检项的单多 machineCheckTally:{items,nodes,verified,allPassed}——「机检实跑」侧的账，
-#   从 graph 各节点 checks[]（file-exists/command/regex/contract/delivery-branch；manual 引擎实跑不了不进账）
+#   从 graph 各节点 checks[]（file-exists/command/regex/contract/delivery-branch；manual 引擎实跑不了不进账——
+#   这份名单自 v14-A5-4 起是注册表 `check-type` 清单里 `machine:true` 的那几枚，`MACHINE_CHECK_TYPES` 由它派生，不再手抄）
 #   × 节点 state 纯读时推导（done⇒该节点机检全过），零新写路径：机检成功历史上没落过册，
 #   写端方案对旧 run 永远缺账。图与账对不上/拿不到 state 时**整键省略**——0 是正断言，「不知道」不是 0）
 #   v13-W1 起 agent 节点的运行记录多 equip:{scope:'role'|'space',role?,skills[],rules[],unknownSkills?}——

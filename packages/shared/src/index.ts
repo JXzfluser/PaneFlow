@@ -43,6 +43,7 @@ export type {
   CheckSpec,
   NodeTypeCatalogEntry,
   NodeTypeGroup,
+  CheckTypeCatalogEntry,
 } from './dag.js';
 export {
   DAG_NODE_TYPES,
@@ -51,6 +52,7 @@ export {
   NODE_TYPE_GROUP_LABELS,
   DECLARE_FACES,
   CHECK_SPEC_TYPES,
+  CHECK_TYPE_CATALOG,
   FANOUT_MAX_ITEMS_LIMIT,
   REJECT_LIMIT_DEFAULT,
   REJECT_LIMIT_MAX,
@@ -96,6 +98,7 @@ export {
   parseRepoSpec,
   parseAgentKindSpec,
   parseNodeTypeSpec,
+  parseCheckTypeSpec,
   parseMcpSpec,
   normalizeRegistryEntry,
   registryId,
@@ -107,6 +110,7 @@ export {
   type RepoRegistrySpec,
   type AgentKindRegistrySpec,
   type NodeTypeRegistrySpec,
+  type CheckTypeRegistrySpec,
   type McpRegistrySpec,
   type RegistrySpecMap,
   type RegistryKind,

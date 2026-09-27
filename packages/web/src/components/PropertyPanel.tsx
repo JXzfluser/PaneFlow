@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
+import { api } from '../api.js';
 import { useStore } from '../store.js';
-import type { DagNode, EdgeCondition } from '@paneflow/shared';
+import type { CheckSpec, DagNode, EdgeCondition } from '@paneflow/shared';
 import { REJECT_LIMIT_DEFAULT, REJECT_LIMIT_MAX } from '@paneflow/shared';
+import { checkTypeButtons, blankCheck } from '../check-types.js';
+import type { RegistryEntryView } from '../registry-view.js';
 
 type NodeConfig = DagNode['config'];
 
@@ -137,8 +140,28 @@ function NodePropertyPanel() {
   const templateList = useStore((s) => s.templateList);
   const [roles, setRoles] = useState<{ id: string; name: string }[]>([]);
   const [advOpen, setAdvOpen] = useState(false);
+  /**
+   * v14-A5-4 机检类型清单（`GET /api/registry?kind=check-type`）。`null` = 还没读到/读失败——
+   * 那时「检查门禁」这一节画一句指路而**不画加号**，与侧栏「节点类型」同款：
+   * 这里绝不拿本 bundle 的硬编码四枚兜底，那份第二事实源正是本片要拆掉的东西
+   * （而且它一直少着 `contract` 与 `delivery-branch`——两型引擎认得、画布上加不出来）。
+   */
+  const [checkTypes, setCheckTypes] = useState<RegistryEntryView[] | null>(null);
+  const [checkTypesError, setCheckTypesError] = useState<string | null>(null);
+  const loadCheckTypes = () => {
+    setCheckTypes(null);
+    setCheckTypesError(null);
+    api
+      .registryList('check-type')
+      .then((r) => setCheckTypes(r.entries))
+      .catch((e: Error) => {
+        setCheckTypes(null);
+        setCheckTypesError(e.message || '服务端没答上');
+      });
+  };
   useEffect(() => {
     void fetch('/api/roles').then((r) => r.json()).then((d) => setRoles(d.roles ?? []));
+    loadCheckTypes();
   }, []);
   // 切换选中节点时重置折叠态：已配过高级项就展开，否则默认收起（B1）
   useEffect(() => {
@@ -162,6 +185,9 @@ function NodePropertyPanel() {
   const isFanout = node.data.dagNode.type === 'fanout';
   const set = (patch: Parameters<typeof updateNodeConfig>[1]) => updateNodeConfig(node.id, patch);
   const advItems = advancedItems(cfg);
+  /** 清单没读到就是 `null`（不是空读数）——上面那一格区分「还没读到」与「读出来是零」 */
+  const checkBtns = checkTypes === null ? null : checkTypeButtons(checkTypes);
+  const labelOf = (t: string) => checkBtns?.buttons.find((b) => b.type === t);
 
   return (
     <div className="props">
@@ -303,7 +329,12 @@ function NodePropertyPanel() {
           {(cfg.checks ?? []).map((c, i) => (
             <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 6, marginBottom: 6 }}>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span style={{ color: 'var(--accent)', fontSize: 11 }}>{c.type}</span>
+                <span style={{ color: 'var(--accent)', fontSize: 11 }} title={labelOf(c.type)?.hint}>
+                  {labelOf(c.type)?.label ?? c.type}
+                </span>
+                {labelOf(c.type) && (
+                  <span className="hint" style={{ fontSize: 10 }}>{labelOf(c.type)?.machine ? '引擎实跑' : '人看一眼'}</span>
+                )}
                 <button
                   className="danger"
                   style={{ marginLeft: 'auto', padding: '0 6px', fontSize: 10 }}
@@ -327,15 +358,65 @@ function NodePropertyPanel() {
               {c.type === 'manual' && (
                 <input value={c.prompt} onChange={(e) => set({ checks: (cfg.checks ?? []).map((x, j) => (j === i ? { ...x, prompt: e.target.value } : x)) })} placeholder="冒烟通过？" />
               )}
+              {c.type === 'contract' && (
+                <input
+                  value={c.template ?? ''}
+                  onChange={(e) => set({ checks: (cfg.checks ?? []).map((x, j) => (j === i ? { ...x, template: e.target.value || undefined } : x)) })}
+                  placeholder="契约骨架戳 template=id@sha（可空）"
+                />
+              )}
+              {c.type === 'delivery-branch' && (
+                <input
+                  value={c.expectBranch ?? ''}
+                  onChange={(e) => set({ checks: (cfg.checks ?? []).map((x, j) => (j === i ? { ...x, expectBranch: e.target.value || undefined } : x)) })}
+                  placeholder="期望分支（留空=按家规渲染，再空则 pf/<runId>）"
+                />
+              )}
             </div>
           ))}
-          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-            {(['file-exists', 'command', 'regex', 'manual'] as const).map((t) => (
-              <button key={t} style={{ fontSize: 11 }} onClick={() => set({ checks: [...(cfg.checks ?? []), t === 'file-exists' ? { type: t, path: '' } : t === 'command' ? { type: t, run: '' } : t === 'regex' ? { type: t, file: '', pattern: '' } : { type: t, prompt: '' }] })}>
-                +{t === 'file-exists' ? '文件' : t === 'command' ? '命令' : t === 'regex' ? '正则' : '人工'}
-              </button>
-            ))}
-          </div>
+          {checkBtns === null ? (
+            <div className="hint" style={{ marginBottom: 6 }}>
+              机检类型清单没读到{checkTypesError ? `：${checkTypesError}` : ''}。
+              <br />
+              这一版面板只画服务端注册表里的机检类型，不在这里留一份兜底清单。
+              <br />
+              <button style={{ fontSize: 11 }} onClick={loadCheckTypes}>重新读取清单</button>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                {checkBtns.buttons.map((b) => (
+                  <button
+                    key={b.type}
+                    style={{ fontSize: 11 }}
+                    title={`${b.hint}（${b.machine ? '引擎实跑' : '人看一眼'}）`}
+                    onClick={() => {
+                      const blank = blankCheck(b.type);
+                      if (!blank) return;
+                      set({ checks: [...(cfg.checks ?? []), blank as CheckSpec] });
+                    }}
+                  >
+                    +{b.label}
+                  </button>
+                ))}
+              </div>
+              {checkBtns.unusable.length > 0 && (
+                <div className="hint" style={{ marginBottom: 6 }}>
+                  {checkBtns.unusable.length} 项读不出画法，不加：
+                  {checkBtns.unusable.map((u) => (
+                    <div key={u.name} title={u.why}>
+                      · {u.name}：{u.why}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {checkBtns.buttons.length === 0 && checkBtns.unusable.length === 0 && (
+                <div className="hint" style={{ marginBottom: 6 }}>
+                  服务端这一版没交出机检类型（清单是空的）——不是你这里坏了，去注册中心那一页看读数。
+                </div>
+              )}
+            </>
+          )}
 
           <label>失败策略</label>
           <select value={cfg.onFail ?? 'abort'} onChange={(e) => set({ onFail: e.target.value as 'abort' | 'continue' })}>

@@ -252,3 +252,51 @@ describe('v14 A5-2 rule 进能力快照', () => {
     expect(capabilitySnapshot([scoped], [byRepo, bySpace('demo')])!.refs.map((r) => r.via)).toEqual([['space·rules[0].file']]);
   });
 });
+
+/**
+ * v14 A5-4：`check-type` 进表之后，「这一单实跑要过哪几道检」第一次进得了能力快照。
+ * 这一格真正要钉的不是「能进」——是**它是三枚视图 kind 里最后一枚走通这条路的**：
+ * 快照器只认 `REGISTRY_KINDS`，所以「进表」与「进快照」之间没有第二处开关，漏掉一处就会静默少记一类。
+ * 副作用也写实：从此同一张图在 A5-4 前后起单会有两个 cap#（等臂对照跨这一刀时要记得差在版本，不在这一单）。
+ */
+describe('v14 A5-4 check-type 进能力快照', () => {
+  const checkRef = (target: string, via: string): RawReference => ({
+    face: 'template',
+    id: 'flow',
+    name: 'flow',
+    via,
+    kind: 'check-type',
+    target,
+  });
+
+  it('三道不同的检＝三条账，spec 抄现算那一份（label/hint/machine 整份，不只挑一枚）', () => {
+    const snap = capabilitySnapshot(registryViewEntries(), [
+      checkRef('command', 'nodes[0].config.checks[0].type'),
+      checkRef('file-exists', 'nodes[1].config.checks[0].type'),
+      checkRef('manual', 'nodes[1].config.checks[1].type'),
+    ])!;
+    expect(snap.refs.map((r) => r.id)).toEqual([
+      'check-type:command',
+      'check-type:file-exists',
+      'check-type:manual',
+    ]);
+    expect(snap.refs[2]!.spec).toEqual({ label: '人工确认', hint: '引擎不判：把这一格拦成等人点头', machine: false });
+    // 同一型画在两格＝一条账、via 合并（能力面问「吃了哪几枚」，不问吃了几回）
+    const twice = capabilitySnapshot(registryViewEntries(), [
+      checkRef('regex', 'nodes[0].config.checks[0].type'),
+      checkRef('regex', 'nodes[3].config.checks[0].type'),
+    ])!;
+    expect(twice.refs).toHaveLength(1);
+    expect(twice.refs[0]!.via).toEqual(['template·nodes[0].config.checks[0].type', 'template·nodes[3].config.checks[0].type']);
+  });
+
+  it('不喂出厂项（只喂盘上登记项）时机检那一枚整个丢掉——所以调用方必须喂 readView().entries', () => {
+    const onDiskOnly = normalizeRegistryEntry({ kind: 'model', name: 'm', spec: { model: 'm' } });
+    if (!onDiskOnly.ok) throw new Error(onDiskOnly.why);
+    expect(capabilitySnapshot([onDiskOnly.value], [checkRef('command', 'nodes[0].config.checks[0].type')])).toBeNull();
+  });
+
+  it('清单外的型（悬挂）不进快照：那是预检的账，不在这里重复一份判据', () => {
+    expect(capabilitySnapshot(registryViewEntries(), [checkRef('file-exis', 'nodes[0].config.checks[0].type')])).toBeNull();
+  });
+});

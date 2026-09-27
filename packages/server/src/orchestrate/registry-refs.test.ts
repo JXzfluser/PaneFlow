@@ -132,10 +132,10 @@ describe('引用索引（buildReferenceIndex）', () => {
   it('未迁进表的 kind 只披露计数、绝不判死活（表里没有这一类，判「不存在」就是拿空白冒充断言）', () => {
     const raw = scanRawReferences(fixtureDataDir());
     const index = buildReferenceIndex([], raw);
-    // 改口入账：`agent-kind`（A3-2）、`node-type`（T1）、`skill`（A5-1）、`rule`（A5-2）、`repo`（A5-3）
-    // 自此不在这份名单里——它们进了表（前两枚的成员由出厂清单现算），成员判得了死活
+    // 改口入账：`agent-kind`（A3-2）、`node-type`（T1）、`skill`（A5-1）、`rule`（A5-2）、`repo`（A5-3）、
+    // `check-type`（A5-4）自此不在这份名单里——它们进了表（视图那几枚的成员由出厂清单现算），成员判得了死活
     expect(index.unmigrated.map((u) => u.kind).sort()).toEqual(
-      ['check-type', 'gateway-profile', 'role', 'template'].sort(),
+      ['gateway-profile', 'role', 'template'].sort(),
     );
     const role = index.unmigrated.find((u) => u.kind === 'role');
     expect(role).toEqual({ kind: 'role', targets: ['r-deliver'], refs: 2 }); // 班底名册 + 模板节点绑岗
@@ -152,6 +152,11 @@ describe('引用索引（buildReferenceIndex）', () => {
     // （`repos[0]` 与 `rules[0].repo`；本套 fixture 没配 delivery，故两处）——三处都翻面，不合并成一条。
     expect(index.dangling.filter((d) => d.kind === 'repo').map((d) => `${d.kind}:${d.target}·${d.by.length}`)).toEqual([
       'repo:my-repo·2',
+    ]);
+    // A5-4 同款代价：`checks[].type` 从今天起也是可断的账。本套 fixture 那一格吃了 `file-exists`——
+    // 不喂出厂项时它落悬挂（以前连 dangling 都不进）。喂了清单即归零，见下面「check-type 承接后的引用账」。
+    expect(index.dangling.filter((d) => d.kind === 'check-type').map((d) => `${d.kind}:${d.target}`)).toEqual([
+      'check-type:file-exists',
     ]);
   });
 
@@ -368,6 +373,57 @@ describe('node-type 承接后的引用账（v14 T1）', () => {
     // 拿措辞当匹配键会把「写错成界面文案的那一格」读成「正在用某一型」——与 agent-kind 不收 binary 同一把尺
     expect(index.byEntry.some((b) => b.kind === 'node-type' && b.refs.length)).toBe(false);
     expect(index.dangling.map((d) => d.target)).toEqual(['Agent 节点']);
+  });
+});
+
+/**
+ * v14 A5-4 的入账：`check-type` 进表（视图 kind）之后，「这一型机检有人在画」第一次有了反查账。
+ * 形状与 `node-type` 同形（成员由 `shared/dag.ts: CHECK_TYPE_CATALOG` 现算、不落盘），所以这里
+ * 只钉机检多出来的那一件事：注册中心那一行说的「引擎实跑 / 人看一眼」与引用写法是**两枚键**——
+ * 前者是画法（`spec.machine`），后者只有整枚 id 与 `checks[].type` 原值两种。
+ */
+describe('check-type 承接后的引用账（v14 A5-4）', () => {
+  const view = registryViewEntries();
+  const raw = () => scanRawReferences(fixtureDataDir());
+
+  it('每一枚 `checks[].type` 都挂到出厂条目：出处指得到第几格第几项', () => {
+    const index = buildReferenceIndex(view, raw());
+    expect(index.unmigrated.find((u) => u.kind === 'check-type')).toBeUndefined();
+    expect(index.dangling.filter((d) => d.kind === 'check-type')).toEqual([]);
+    const slot = (type: string) => index.byEntry.find((b) => b.entryId === `check-type:${type}`);
+    expect(slot('file-exists')!.refs).toEqual([
+      { face: 'template', id: 'flow', name: 'flow', via: 'nodes[0].config.checks[0].type' },
+    ]);
+    // 出厂清单里没被任何模板跑过的型：refs=[] 是正读数（「这一型今天没人画」），不是「扫不出」
+    expect(slot('delivery-branch')!.refs).toEqual([]);
+  });
+
+  it('整枚 id 与机器值同权命中（迁移后的 `{kind,id}` 写法今天就该认）', () => {
+    const index = buildReferenceIndex(view, [
+      { face: 'template', id: 'flow', name: 'flow', via: 'requires[0].id', kind: 'check-type', target: 'check-type:regex' },
+    ]);
+    expect(index.dangling).toEqual([]);
+    expect(index.byEntry.find((b) => b.entryId === 'check-type:regex')!.refs).toHaveLength(1);
+  });
+
+  it('清单外的型判得出死活＝dangling（以前只数不判）：改错一个字母的 `file-exis` 点名到第几格', () => {
+    const index = buildReferenceIndex(view, [
+      ...raw(),
+      { face: 'template', id: 'flow', name: 'flow', via: 'nodes[0].config.checks[1].type', kind: 'check-type', target: 'file-exis' },
+    ]);
+    expect(index.dangling.find((d) => d.target === 'file-exis')).toMatchObject({
+      kind: 'check-type',
+      by: [{ face: 'template', id: 'flow', via: 'nodes[0].config.checks[1].type' }],
+    });
+  });
+
+  it('中文名不是引用写法：模板里写「文件存在」（画布上的措辞）不指向 `file-exists` 这一型', () => {
+    const index = buildReferenceIndex(view, [
+      { face: 'template', id: 'flow', name: 'flow', via: 'nodes[0].config.checks[0].type', kind: 'check-type', target: '文件存在' },
+    ]);
+    // 与 `node-type`/`agent-kind` 同一把尺：拿措辞当匹配键，就会把写错成界面文案的那一格读成「正在用某一型」
+    expect(index.byEntry.some((b) => b.kind === 'check-type' && b.refs.length)).toBe(false);
+    expect(index.dangling.map((d) => d.target)).toEqual(['文件存在']);
   });
 });
 

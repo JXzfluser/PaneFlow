@@ -82,6 +82,24 @@ export const nodeTypeDescriptor: RegistryDescriptor<'node-type'> = {
 };
 
 /**
+ * `check-type`（v14 A5-4）：引擎认识哪些机检类型——出厂清单（`shared/dag.ts: CHECK_TYPE_CATALOG`）的视图条目。
+ * 与 `node-type` 同形：`name` 就是 `checks[].type` 写的那枚裸串，label 说的是**人看的名字**，不重复 name。
+ * 但这一枚多一句必说的话：**引擎实跑还是人看一眼**（`spec.machine`）——它决定这一型进不进 v13-V1 的机检账，
+ * 界面上把「人工确认」和「跑命令」画成同一类，就是拿人签字冒充机器证。
+ */
+export const checkTypeDescriptor: RegistryDescriptor<'check-type'> = {
+  kind: 'check-type',
+  label(entry) {
+    return `「${entry.spec.label}」· ${entry.spec.machine ? '引擎实跑' : '人看一眼'}`;
+  },
+  /** 引用写法只有两种：整枚 id 或 `checks[].type` 原值（中文 label 不是引用写法，同 node-type 那把尺） */
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return slug ? [entry.id, slug] : [entry.id];
+  },
+};
+
+/**
  * `mcp`（v14 T4）：本机登记了哪台 MCP server。**只有声明账**——今天没有客户端去 `tools/list`，
  * 所以 label 说的就是登记时那行启动命令本身，不含任何「探到几个工具」的读数（那是 v13:285 判死不做的东西）。
  */
@@ -225,6 +243,7 @@ export const REGISTRY_DESCRIPTORS: { [K in RegistryEntry['kind']]: RegistryDescr
   repo: repoDescriptor,
   'agent-kind': agentKindDescriptor,
   'node-type': nodeTypeDescriptor,
+  'check-type': checkTypeDescriptor,
   mcp: mcpDescriptor,
 };
 

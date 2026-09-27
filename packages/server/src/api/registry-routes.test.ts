@@ -7,7 +7,7 @@ import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import type { Store } from '../orchestrate/store.js';
 import { RegistryStore } from '../orchestrate/registry.js';
 import { requirementKindLabel } from '../orchestrate/registry-check.js';
-import { DAG_NODE_TYPES, NODE_TYPE_CATALOG } from '@paneflow/shared';
+import { CHECK_SPEC_TYPES, CHECK_TYPE_CATALOG, DAG_NODE_TYPES, MACHINE_CHECK_TYPES, NODE_TYPE_CATALOG } from '@paneflow/shared';
 import { AGENT_KINDS } from './agent-kinds.js';
 import { buildHttpServer } from './http.js';
 import { registerRegistryRoutes } from './registry-routes.js';
@@ -67,13 +67,13 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(body.entries.filter((e) => !e.view)).toEqual([]); // 盘上真的一条没登记——这格还是正读数零
       expect(body.rejected).toEqual([]);
       expect(body.schema).toBeNull();
-      // 挂号序＝注册中心的分组序：登记项在前、视图 kind 穿插在其注册位（A5-3 起 `repo` 进表）
-      expect(body.knownKinds).toEqual(['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'mcp']);
-      expect(body.viewKinds).toEqual(['agent-kind', 'node-type']);
+      // 挂号序＝注册中心的分组序：登记项在前、视图 kind 穿插在其注册位（A5-4 起 `check-type` 进表）
+      expect(body.knownKinds).toEqual(['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'check-type', 'mcp']);
+      expect(body.viewKinds).toEqual(['agent-kind', 'node-type', 'check-type']);
       // 组名只有一处措辞表（`registry-check.ts` 的 `KIND_CN`）：网页拿这张外发表的标签画分组，
       // 前端不再自己抄一份——抄了迟早分叉，而分叉的代价是「同一个 kind 两处两个名字」。
       expect(Object.keys(body.kindLabels).sort()).toEqual([...body.knownKinds].sort());
-      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', rule: '规则', repo: '仓库', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', mcp: 'MCP 服务' });
+      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', rule: '规则', repo: '仓库', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', 'check-type': '机检', mcp: 'MCP 服务' });
       expect(requirementKindLabel('agent-kind')).toBe(body.kindLabels['agent-kind']);
       expect(body.refSummary).toEqual({ scanned: 0, dangling: [], unmigrated: [] });
       // 视图项=出厂清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
@@ -158,7 +158,9 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(del.json().deleted).toMatchObject({ id: 'agent-kind:pi', view: true });
       const after = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
       expect(after.json().rejected).toEqual([]);
-      expect(after.json().entries).toHaveLength(AGENT_KINDS.length + NODE_TYPE_CATALOG.length); // 清的是盘上残条，出厂项一条没少
+      expect(after.json().entries).toHaveLength(
+        AGENT_KINDS.length + NODE_TYPE_CATALOG.length + CHECK_TYPE_CATALOG.length,
+      ); // 清的是盘上残条，出厂项一条没少
     } finally {
       await app.close();
     }
@@ -249,6 +251,46 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(add.statusCode).toBe(400);
       expect(add.json().error).toContain('内置能力清单');
       expect(registry.list('node-type')).toEqual([]);
+      expect(fs.existsSync(path.join(dataDir, 'registry', 'entries.json'))).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * v14 A5-4 的对外读数：属性面板「检查门禁」那一节的加号从此只问这一刀
+   * （`PropertyPanel.tsx` 那份硬编码四枚已拆掉——顺带把 `contract`/`delivery-branch` 两型接上了线，
+   * 它们引擎认得、画布上却一直加不出来）。画法怎么渲成按钮是 web 的纯函数判据（`check-types.test.ts`）。
+   */
+  it('GET ?kind=check-type：出厂六型上架，画法字段齐（label/hint/machine），写入面照拒', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/registry?kind=check-type', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { entries: { id: string; name: string; view: boolean; label: string; spec: Record<string, unknown> }[] };
+      expect(body.entries.map((e) => e.name).sort()).toEqual([...CHECK_SPEC_TYPES].sort());
+      expect(body.entries.every((e) => e.view && e.spec.label && e.spec.hint && typeof e.spec.machine === 'boolean')).toBe(true);
+      // 人话标签说的是「这一型谁来判断」，不把机器值重念一遍
+      expect(body.entries.find((e) => e.name === 'file-exists')).toMatchObject({
+        id: 'check-type:file-exists',
+        label: '「文件存在」· 引擎实跑',
+        spec: { machine: true, hint: '节点工作目录下要有这个文件，没有就没过' },
+      });
+      expect(body.entries.find((e) => e.name === 'manual')).toMatchObject({ label: '「人工确认」· 人看一眼', spec: { machine: false } });
+      // 机检账的分母从这一枚派生（`MACHINE_CHECK_TYPES` 不再手抄）：线上传的 machine 与账本口径必须同源
+      expect(body.entries.filter((e) => e.spec.machine === true).map((e) => e.name).sort()).toEqual(
+        [...MACHINE_CHECK_TYPES].sort(),
+      );
+      // 写入面对这一类同样全关（与 node-type 同一扇拒路）
+      const add = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'check-type', name: 'my-check', spec: { label: '我的检查', hint: '问一句', machine: true } },
+      });
+      expect(add.statusCode).toBe(400);
+      expect(add.json().error).toContain('内置能力清单');
+      expect(registry.list('check-type')).toEqual([]);
       expect(fs.existsSync(path.join(dataDir, 'registry', 'entries.json'))).toBe(false);
     } finally {
       await app.close();
@@ -492,7 +534,7 @@ describe('注册内核四动词（/api/registry）', () => {
       // 读面照读：盘上那条 + 出厂清单的视图项都在表上（视图项本来就不落盘，版本戳管不着它）
       expect(list.json().entries.filter((e: { view: boolean }) => !e.view)).toHaveLength(1);
       expect(list.json().entries.filter((e: { view: boolean }) => e.view)).toHaveLength(
-        AGENT_KINDS.length + NODE_TYPE_CATALOG.length,
+        AGENT_KINDS.length + NODE_TYPE_CATALOG.length + CHECK_TYPE_CATALOG.length,
       );
       expect(list.json().schema).toEqual({ version: 99, writtenBy: '9.0.0' });
     } finally {

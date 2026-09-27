@@ -14,7 +14,7 @@ import { registryViewEntries } from './registry-view.js';
  * v14-T3 起单前预检：模板 `requires` 槽 × 注册表 → 逐槽落点。
  * 钉的是三条姿态，一条都不能漂：
  *  1. 只有已迁进表的 kind 判死活（今天＝`model`/`skill`(A5-1)/`rule`(A5-2)/`repo`(A5-3)/`mcp`(T4) 与内置清单
- *     `agent-kind`(A3-2)/`node-type`(T1)），其余 `unjudged` **不拦**；
+ *     `agent-kind`(A3-2)/`node-type`(T1)/`check-type`(A5-4)），其余 `unjudged` **不拦**；
  *  2. 形状不认 → `malformed` 且 `ok=false`（判不了就不放行）；
  *  3. 匹配吃 R2 那把尺（`matchesTarget` → Descriptor `refKeys`），整枚 id / slug / spec 原值三写法同权。
  */
@@ -236,6 +236,41 @@ describe('v14 T1 node-type 槽已判死活', () => {
     expect(checkGraphRequirements(graphWith([{ kind: 'node-type', hint: '要能并行' }]), views).slots[0]!.verdict).toBe('ok');
     const r = checkGraphRequirements(graphWith([{ kind: 'node-type', id: 'agent' }]), views);
     expect(r.need).toEqual([{ kind: 'node-type', label: '节点类型', declared: 1, judged: 1, gaps: 0 }]);
+  });
+});
+
+/**
+ * v14 A5-4：`check-type` 是第三枚视图 kind（成员＝`shared/dag.ts: CHECK_TYPE_CATALOG`），于是
+ * 「这单要跑一道分支守卫」第一次判得了死活。判据仍是一行没新写（`isJudged` 吃 `REGISTRY_KINDS`、
+ * 匹配吃 Descriptor 的 `refKeys`）——这一格顺带钉住那条**跨面的同一把尺**：预检认的引用写法与
+ * 引用账认的必须一致，否则「预检说缺、引用账说在用」就有两处各说一遍的余地。
+ *
+ * 翻面代价与 `node-type` 同款：以前这一类整落 `unjudged` 一律放行，今天红槽会拦起单（fail-closed）。
+ */
+describe('v14 A5-4 check-type 槽已判死活', () => {
+  const views = registryViewEntries();
+
+  it('清单里的型命中即过；写错一型＝missing 且拒单（以前整类落 unjudged 一律放行）', () => {
+    for (const id of ['check-type:delivery-branch', 'delivery-branch']) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'check-type', id }]), views);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: 'check-type:delivery-branch' });
+      expect(r.ok).toBe(true);
+    }
+    const typo = checkGraphRequirements(graphWith([{ kind: 'check-type', id: 'file-exis' }]), views);
+    expect(typo.slots[0]!.verdict).toBe('missing');
+    expect(typo.ok).toBe(false);
+    expect(requirementGapWhy(typo)).toContain('check-type → file-exis');
+  });
+
+  it('画法的中文措辞与机检口径都不是引用写法：`{kind:check-type, id:"跑命令"}` 指不到 command', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'check-type', id: '跑命令' }]), views);
+    expect(r.slots[0]!.verdict).toBe('missing');
+  });
+
+  it('宽槽（不点名）在表上就过；分组记的是中文组名「机检」', () => {
+    expect(checkGraphRequirements(graphWith([{ kind: 'check-type', hint: '要一道守卫' }]), views).slots[0]!.verdict).toBe('ok');
+    const r = checkGraphRequirements(graphWith([{ kind: 'check-type', id: 'contract' }]), views);
+    expect(r.need).toEqual([{ kind: 'check-type', label: '机检', declared: 1, judged: 1, gaps: 0 }]);
   });
 });
 

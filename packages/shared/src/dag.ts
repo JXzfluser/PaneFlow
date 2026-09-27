@@ -218,6 +218,44 @@ export type CheckSpecType = (typeof CHECK_SPEC_TYPES)[number];
 const _checkSpecTypesCovered: Record<Exclude<CheckSpec['type'], CheckSpecType>, never> = {};
 void _checkSpecTypesCovered;
 
+/**
+ * v14 A5-4「机检类型清单」——`CHECK_SPEC_TYPES` 那枚值域套上**画法**后的出厂清单（与 `NODE_TYPE_CATALOG` 同形：
+ * 值域住代码、画法住这一枚，注册表只是把它渲成条目，所以 `check-type` 是**视图 kind**（不落盘、三写动词全拒）。
+ *
+ * 全键 `Record<CheckSpecType, …>`：联合里加一类而这里不补一行 = 编译期红，不靠单测兜「忘了挂号」。
+ * `machine` 是这里唯一一枚带判据味的键——它说的就是 v13-V1 那条「机检账只数引擎实跑得了的」，
+ * 所以 `MACHINE_CHECK_TYPES` 由这一枚**派生**（同一件事两处存，迟早有一边改了另一边没改）。
+ * 反过来，**这一型怎么跑**（读哪个键、跑什么命令、卡哪道门）不在这里：那是执行体，留在引擎分派段（红线七）。
+ */
+export interface CheckTypeCatalogEntry {
+  type: CheckSpecType;
+  /** 人话名：画布按钮与注册中心那一行共用这一句（措辞只有一处） */
+  label: string;
+  /** 这一型问的是什么问题（注册中心详情行；六枚各有各的要说，所以它是必填） */
+  hint: string;
+  /** 引擎实跑得动＝进机检账；`false`＝那一型要人看一眼（`manual`） */
+  machine: boolean;
+}
+
+const CHECK_TYPE_CATALOG_BY_TYPE: Record<CheckSpecType, CheckTypeCatalogEntry> = {
+  'file-exists': { type: 'file-exists', label: '文件存在', hint: '节点工作目录下要有这个文件，没有就没过', machine: true },
+  command: { type: 'command', label: '跑命令', hint: '在节点工作目录里跑一条命令，退出码 0 才算过', machine: true },
+  regex: { type: 'regex', label: '正则匹配', hint: '某个文件里要能匹配到这段内容', machine: true },
+  manual: { type: 'manual', label: '人工确认', hint: '引擎不判：把这一格拦成等人点头', machine: false },
+  contract: { type: 'contract', label: '契约门', hint: '产物里的候选断言与澄清提问，人批过才放下游', machine: true },
+  'delivery-branch': {
+    type: 'delivery-branch',
+    label: '分支守卫',
+    hint: '推送前核验工作区 HEAD 就在交付分支上（在 main/master 直接失败）',
+    machine: true,
+  },
+};
+
+/** 按值域顺序展开的清单（注册表视图条目与画布机检按钮都吃这一枚，不再各排一次） */
+export const CHECK_TYPE_CATALOG: readonly CheckTypeCatalogEntry[] = CHECK_SPEC_TYPES.map(
+  (type) => CHECK_TYPE_CATALOG_BY_TYPE[type],
+);
+
 export interface DagNode {
   id: string;
   type: DagNodeType;
@@ -1658,18 +1696,15 @@ export function validateRoleRefs(graph: DagGraph, rosterRoleIds: readonly string
 // ---------------------------------------------------------------------------
 
 /**
- * checks[] 里引擎实跑得动的机检类（值域全集见 CHECK_SPEC_TYPES）：manual 是「人看一眼」，
- * 引擎实跑不了，不进机检账。过去为什么没有这笔账：跑成功的机检从不落册（没有写端字段可数），
+ * checks[] 里引擎实跑得动的机检类：**由 `CHECK_TYPE_CATALOG` 的 `machine` 派生**（v14 A5-4 起），
+ * 不再单列一份名单——同一件事两处存，迟早有一边加了类型另一边没改。
+ * manual 是「人看一眼」，引擎实跑不了，不进机检账。过去为什么没有这笔账：跑成功的机检从不落册（没有写端字段可数），
  * 而「上线日之后才开始计数」的写端方案对历史 run 永远缺账——裁决改走纯读端：
  * 分母今天就在 graph 里（每个节点的 checks[]），done 与否就在 state 里。
  */
-export const MACHINE_CHECK_TYPES = [
-  'file-exists',
-  'command',
-  'regex',
-  'delivery-branch',
-  'contract',
-] as const satisfies readonly CheckSpecType[];
+export const MACHINE_CHECK_TYPES: readonly CheckSpecType[] = CHECK_TYPE_CATALOG.filter(
+  (c) => c.machine,
+).map((c) => c.type);
 
 /** machineCheckTally 的输出：本单「机检实跑」侧的账（与自报断言口径对照着看） */
 export interface MachineCheckTally {

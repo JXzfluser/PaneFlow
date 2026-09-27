@@ -325,6 +325,13 @@ describe('v14-X1 只读 spec 与前向兼容读数', () => {
       { key: 'dir', label: '仓库目录', text: 'packages/web' },
       { key: 'origin', label: '远端仓', text: 'my-org/web' },
     ]);
+    // A5-4：spec 里的第一枚布尔。布尔渲染成「是/否」是这里既有的口径，但**列名必须是人话**——
+    // 详情里画一行 `machine: false` 等于把 server 的字段名当措辞甩给用户。
+    expect(specRows({ label: '人工确认', hint: '引擎不判', machine: false })).toEqual([
+      { key: 'label', label: '显示名', text: '人工确认' },
+      { key: 'hint', label: '说明', text: '引擎不判' },
+      { key: 'machine', label: '引擎实跑', text: '否' },
+    ]);
   });
 
   it('refs：键不在就什么都不画——缺 ≠ 0（引用账没读出来不是「没人用」）', () => {

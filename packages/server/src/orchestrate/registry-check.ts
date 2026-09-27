@@ -15,7 +15,7 @@ import { matchesTarget } from './registry-refs.js';
  *
  * 三条姿态，与 R2 引用索引同形：
  *  1. **只有已迁进注册表的 kind 才判死活**（今天＝`REGISTRY_KINDS`：登记项 `model`/`skill`（A5-1）/`rule`（A5-2）/`repo`（A5-3）/`mcp`（T4），
- *     加两枚视图 kind `agent-kind`（A3-2）、`node-type`（T1））。指向 `role`/`check-type`/`template`/… 的槽落 `unjudged` 只披露：
+ *     加三枚视图 kind `agent-kind`（A3-2）、`node-type`（T1）、`check-type`（A5-4））。指向 `role`/`template`/… 的槽落 `unjudged` 只披露：
  *     表里压根没有这一类，判「不存在」＝拿空白冒充断言。
  *  2. **形状不认的槽落 `malformed` 且 `ok=false`**——判不了就不放行。脏形状正常走不到这里
  *     （`validateDag` 在写入面就拒），但盘面手改得动，读端不能因为脏项而假绿。

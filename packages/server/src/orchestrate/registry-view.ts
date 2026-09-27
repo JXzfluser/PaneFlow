@@ -3,6 +3,7 @@ import {
   registryId,
   REGISTRY_VIEW_KINDS,
   NODE_TYPE_CATALOG,
+  CHECK_TYPE_CATALOG,
   type RegistryEntry,
 } from '@paneflow/shared';
 import { AGENT_KINDS, agentBinaryName } from '../api/agent-kinds.js';
@@ -75,12 +76,36 @@ function nodeTypeEntries(): RegistryEntry[] {
 }
 
 /**
+ * `check-type`（v14 A5-4）：机检值域那张清单的渲版，与 `node-type` 同一条边界——
+ * 这里**不新增事实**：`type/label/hint/machine` 全原样取自 `CHECK_TYPE_CATALOG`
+ * （`machine` 也不是这里判的，它就是 v13-V1 机检账用的同一枚派生值）。
+ */
+function checkTypeEntries(): RegistryEntry[] {
+  return CHECK_TYPE_CATALOG.map((row) => {
+    const raw = {
+      id: registryId('check-type', row.type),
+      kind: 'check-type' as const,
+      name: row.type,
+      source: 'builtin' as const,
+      enabled: true,
+      createdAt: BOOT_AT,
+      updatedAt: BOOT_AT,
+      spec: { label: row.label, hint: row.hint, machine: row.machine },
+    };
+    const norm = normalizeRegistryEntry(raw);
+    if (!norm.ok) throw new Error(`出厂机检清单算出了不合法的条目（${row.type}）：${norm.why}`);
+    return norm.value;
+  });
+}
+
+/**
  * kind → 现算函数。表本身 mapped over `REGISTRY_VIEW_KINDS`：**挂号了却没 builders = 编译期红，
  * 反之多写了没挂号的 builder 也是**（shared 的 `SPEC_PARSERS`/`REGISTRY_DESCRIPTORS` 同一招）。
  */
 const VIEW_BUILDERS: { [K in (typeof REGISTRY_VIEW_KINDS)[number]]: ViewBuilder } = {
   'agent-kind': agentKindEntries,
   'node-type': nodeTypeEntries,
+  'check-type': checkTypeEntries,
 };
 
 /** 全部视图条目（本次调用现算，不缓存：出厂清单是编译期常量，重算一次 18 个对象比缓存判据便宜） */

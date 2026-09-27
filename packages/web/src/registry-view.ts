@@ -293,6 +293,8 @@ const SPEC_FIELD_LABELS: Record<string, string> = {
   // repo（v14 A5-3）：本地目录名与远端仓是两套命名空间，两枚都得单独画出来
   dir: '仓库目录',
   origin: '远端仓',
+  // check-type（v14 A5-4）：spec 里第一枚布尔——`false` 说的是「人看一眼」，与行首那句 label 同源
+  machine: '引擎实跑',
 };
 
 export interface SpecRow {
