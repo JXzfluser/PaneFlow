@@ -133,7 +133,8 @@ export function EnvRegister({ spaceId, onClose, onRegistered }: { spaceId: strin
           </div>
         </div>
 
-        {error && <div className="er-error" role="alert">✘ {error}</div>}
+        {/* key=报错原文：换一条消息才重挂一次，淡入才跟得上「又填错了一处」 */}
+        {error && <div key={error} className="er-error" role="alert">✘ {error}</div>}
 
         {step === 'pick' && (
           <div className="er-body">
