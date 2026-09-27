@@ -65,7 +65,7 @@ describe('GET /api/registry/check', () => {
     try {
       expect(registry.add({ kind: 'model', name: 'gpt-4o-mini', spec: { model: 'gpt-4o-mini' } }).ok).toBe(true);
       writeGraphs(dataDir, [
-        graph('flow', [{ kind: 'model' }, { kind: 'model', id: 'nope' }, { kind: 'skill', id: 'skills/x/SKILL.md' }]),
+        graph('flow', [{ kind: 'model' }, { kind: 'model', id: 'nope' }, { kind: 'rule', id: 'docs/x.md' }]),
         graph('bare'),
       ]);
       const res = await get(app, '/api/registry/check');
@@ -78,9 +78,25 @@ describe('GET /api/registry/check', () => {
       expect(flow.ok).toBe(false);
       expect(flow.need).toEqual([
         { kind: 'model', label: '模型', declared: 2, judged: 2, gaps: 1 },
-        { kind: 'skill', label: '技能', declared: 1, judged: 0, gaps: 0 },
+        { kind: 'rule', label: '规则', declared: 1, judged: 0, gaps: 0 },
       ]);
       expect(body.templates[0]).toMatchObject({ template: 'bare', slots: [], need: [], ok: true });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('v14 A5-1：登记过的技能路径自此判得出命中（没登记时它是第三类 `unjudged`，现在按死缺/命中二值走）', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      writeGraphs(dataDir, [graph('flow', [{ kind: 'skill', id: 'skills/x/SKILL.md' }])]);
+      const before = await get(app, '/api/registry/check?template=flow');
+      expect(before.json().templates[0].slots[0].verdict).toBe('missing'); // 表上没这枚 → 真缺，不再是「判不了」
+      expect(before.json().templates[0].ok).toBe(false);
+      expect(registry.add({ kind: 'skill', name: 'x', spec: { space: 'demo', file: 'skills/x/SKILL.md' } }).ok).toBe(true);
+      const after = await get(app, '/api/registry/check?template=flow');
+      expect(after.json().templates[0].slots[0]).toMatchObject({ verdict: 'ok', entryId: 'skill:x' });
+      expect(after.json().templates[0].ok).toBe(true);
     } finally {
       await app.close();
     }
@@ -101,12 +117,14 @@ describe('GET /api/registry/check', () => {
     }
   });
 
-  it('?space= 原样回显并带诚实标注：本版项目名不参与死活判定（等带作用域的 kind 迁入才接线）', async () => {
+  it('?space= 原样回显并带诚实标注：带作用域的 kind 已进表，但预检的槽仍不按项目收窄（作用域住在引用账与探针）', async () => {
     const { app } = await build();
     try {
       const res = await get(app, '/api/registry/check?space=demo');
       expect(res.json().space).toBe('demo');
       expect(res.json().spaceNote).toContain('项目名只影响指路文案');
+      // 这句话是 A5-1 之后新增的边界：不再含糊承诺「等迁入才接线」，而是明写为什么不接线
+      expect(res.json().spaceNote).toContain('预检的槽仍不按项目收窄');
     } finally {
       await app.close();
     }

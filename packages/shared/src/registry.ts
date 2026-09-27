@@ -82,11 +82,33 @@ export interface McpRegistrySpec {
 }
 
 /**
+ * `skill`（v14 A5-1）——「本机上有这么一篇可注入的技能文档」。数据原身今天住在
+ * `SpaceProfile.skills[]`（相对该空间 `rootCwd` 的裸路径串，消费在 `orchestrate/skills.ts`），
+ * 本片把它渲成可登记、可实探、可被引用账指着的能力条目（注入消费点仍在档案侧，切换正身是 A5-5 的迁移片）。
+ *
+ * 作用域为什么进 spec 而不进信封：技能天生属于某一个项目根（同一相对路径在两个空间是两个文件），
+ * 而信封加了 `scope` 就是把落盘 schema bump 到 v2、背上整表迁移的债（§十.2 给搬数据定的三条硬前置）。
+ * `model.spec.gatewayProfile` 是同一形状的先行例——「指向别处的一枚裸串」本来就是 spec 的语义。
+ * `space` 与 `gatewayProfile` 同一条边界：写入面**不判它在不在**，那是 R2 引用账的账（判了就等于
+ * 拿「我此刻扫到的名册」冒充「永远不会有的历史」）。`file` 也不判存在性：登记时刻文件可以还没落，
+ * 死活归探针通道（R4）说。
+ */
+export interface SkillRegistrySpec {
+  /** 所属空间的 id 裸串引用（`SpaceProfile.id`） */
+  space: string;
+  /** 相对该空间 `rootCwd` 的技能文档路径（今天 `skills[]` 里写的正是这一串，两面对得上才谈得上迁移） */
+  file: string;
+  /** 人写的备注（这篇是干什么的、为什么留这一枚） */
+  note?: string;
+}
+
+/**
  * kind → spec 形状。**A1 落 `model` 当样板，A3-2 加 `agent-kind`（视图 kind）**；
  * 其余 kind 由 A3-x 逐片加成员，每片各带一条「等臂不破」断言。
  */
 export interface RegistrySpecMap {
   model: ModelRegistrySpec;
+  skill: SkillRegistrySpec;
   'agent-kind': AgentKindRegistrySpec;
   'node-type': NodeTypeRegistrySpec;
   mcp: McpRegistrySpec;
@@ -97,8 +119,9 @@ export type RegistryKind = keyof RegistrySpecMap;
 /**
  * 认识的 kind 清单（与 `RegistrySpecMap` 双向锁死，见下方 `_checkKindsCovered`）：
  * 加了 spec 成员忘了在这里挂号 = 编译期红，不是运行面「静默不认」。
+ * 顺序即注册中心的分组序（用户自己登记的东西排前，出厂那几十行不糊住自己的账）。
  */
-export const REGISTRY_KINDS = ['model', 'agent-kind', 'node-type', 'mcp'] as const;
+export const REGISTRY_KINDS = ['model', 'skill', 'agent-kind', 'node-type', 'mcp'] as const;
 
 /**
  * **视图 kind**：条目由别处（代码里的出厂清单）现算出来，`entries.json` 里永远没有它们。
@@ -150,6 +173,16 @@ export interface RegistrySchemaDoc {
 }
 
 /**
+ * 一条引用的出出处（`matches` 的判定上下文）。只有两枚键：谁发的、发的原文是什么不在这里（那是 `target` 参数）。
+ * 单列一枚类型而不是让 server 侧传自己的 `RegistryReferrer`：内核不许认识引用扫描器的形状，
+ * 而 `face`/`id` 这两个词的含义（哪一面、哪一枚条目发的）两边本来就一致。
+ */
+export interface RegistryRefContext {
+  face: string;
+  id: string;
+}
+
+/**
  * Descriptor（§十.5）：一 kind 一枚，把「这一类能力怎么读、怎么跟人说话」收在一处。
  * `label` 用**方法语法**声明（不是属性函数）：TS 对方法参数按双变放宽，
  * 于是 `RegistryDescriptor<'model'>` 能原样进 `RegistryDescriptor<RegistryKind>[]` 分派表，
@@ -166,9 +199,18 @@ export interface RegistryDescriptor<K extends RegistryKind = RegistryKind> {
    * 两者不是一回事，只按 id 匹配会把「其实正在用」读成「没人用」（那是最危险方向的一次假读数）。
    */
   refKeys(entry: RegistryEntry<K>): string[];
+  /**
+   * **可选**的第二把判据：光看裸串判不准的 kind，自己按「这条引用从哪一面发来」收窄匹配。
+   * 存在的理由只有一个——跨条目撞键。`skill` 的 `spec.file` 是相对路径，同名文件在两个项目根下是两个文件，
+   * 而空间侧的引用（`SpaceProfile.skills[i]`）自带空间 id，能判准；角色侧的引用（`Role.skills[i]`）天生不绑空间，
+   * 判不准就照实返回 false 之外的答案（见 server 侧多重命中的两处不同处置）。
+   * 缺省＝不声明＝只看 `refKeys`（今天绝大多数 kind 都是这一路，不逼每个 kind 写它用不上的分支）。
+   */
+  matches?(entry: RegistryEntry<K>, target: string, ref: RegistryRefContext): boolean;
 }
 
 const MODEL_SPEC_KEYS = ['model', 'gatewayProfile', 'freeModel', 'note'] as const;
+const SKILL_SPEC_KEYS = ['space', 'file', 'note'] as const;
 const AGENT_KIND_SPEC_KEYS = ['binary'] as const;
 const NODE_TYPE_SPEC_KEYS = ['label', 'icon', 'group', 'order', 'hint'] as const;
 const MCP_SPEC_KEYS = ['command', 'args', 'note'] as const;
@@ -188,6 +230,7 @@ export function unknownKindWhy(kind: string): string {
  */
 const SPEC_PARSERS: { [K in RegistryKind]: (raw: unknown) => RegistryParse<RegistrySpecMap[K]> } = {
   model: parseModelSpec,
+  skill: parseSkillSpec,
   'agent-kind': parseAgentKindSpec,
   'node-type': parseNodeTypeSpec,
   mcp: parseMcpSpec,
@@ -219,6 +262,32 @@ export function parseModelSpec(raw: unknown): RegistryParse<ModelRegistrySpec> {
     if (typeof o.freeModel !== 'boolean') return { ok: false, why: 'freeModel 必须是布尔值' };
     spec.freeModel = o.freeModel;
   }
+  if (o.note !== undefined) {
+    if (typeof o.note !== 'string') return { ok: false, why: 'note 必须是字符串' };
+    const note = o.note.trim();
+    if (note) spec.note = note;
+  }
+  return { ok: true, value: spec };
+}
+
+/**
+ * `skill` 的 spec 机检（v14 A5-1）。姿态同 `model`：未知键即拒（`flie` 拼错=这篇技能从此探不到也注不进，
+ * 宁拒不错放），`space`/`file` 都要非空——「登记了一篇没有主人的技能」没有任何后续能兑现。
+ * `file` **不判存在性也不判越界**：登记时刻文件可以还没落盘（先立账后写文是常态），
+ * 而相对路径越不越出 `rootCwd` 是**消费现场**的判据（`skills.ts: safeJoin` 那一把尺）——
+ * 在这里再算第二把尺，就会出现「注册中心说它在、注入现场把它跳过」两处对不上。死活归探针通道说。
+ */
+export function parseSkillSpec(raw: unknown): RegistryParse<SkillRegistrySpec> {
+  const SHAPE = 'skill 的配置详情必须是 {space, file, note?}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(SKILL_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  const space = typeof o.space === 'string' ? o.space.trim() : '';
+  if (!space) return { ok: false, why: `${SHAPE}；space 必须是非空字符串（这篇技能属于哪个项目根，没有默认空间可猜）` };
+  const file = typeof o.file === 'string' ? o.file.trim() : '';
+  if (!file) return { ok: false, why: `${SHAPE}；file 必须是非空字符串（相对该空间主仓根的技能文档路径）` };
+  const spec: SkillRegistrySpec = { space, file };
   if (o.note !== undefined) {
     if (typeof o.note !== 'string') return { ok: false, why: 'note 必须是字符串' };
     const note = o.note.trim();

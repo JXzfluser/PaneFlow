@@ -18,6 +18,7 @@ import {
   registrableKinds,
   requirementBadge,
   requirementDetail,
+  skillFileCandidates,
   sourceLabel,
   specRows,
   whenLabels,
@@ -69,11 +70,11 @@ describe('v14-X1 注册中心分组与文案（判据全在 server，这里只�
   });
 
   it('未知 kind 不静默吞：条目里有 knownKinds 之外的 kind 时追加成组并标明未知', () => {
-    const groups = groupEntriesByKind([entry({ kind: 'skill' as never })], ['model'], [], LABELS);
-    expect(groups.map((g) => g.kind)).toEqual(['model', 'skill']);
-    expect(kindGroupLabel('skill', LABELS)).toContain('未知类型');
-    expect(kindGroupLabel('skill', LABELS)).toContain('skill');
-    expect(groups[1]!.label).toBe('未知类型：skill');
+    const groups = groupEntriesByKind([entry({ kind: 'rule' as never })], ['model'], [], LABELS);
+    expect(groups.map((g) => g.kind)).toEqual(['model', 'rule']);
+    expect(kindGroupLabel('rule', LABELS)).toContain('未知类型');
+    expect(kindGroupLabel('rule', LABELS)).toContain('rule');
+    expect(groups[1]!.label).toBe('未知类型：rule');
   });
 
   it('source 三态中文定死；没挂号的来源值原样披露而不是画成空', () => {
@@ -96,12 +97,33 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
   it('model 长出四键、model 必填；没挂号的 kind 不临场发明字段', () => {
     expect(formFieldsFor('model')!.map((f) => f.key)).toEqual(['model', 'gatewayProfile', 'freeModel', 'note']);
     expect(formFieldsFor('model')!.find((f) => f.key === 'model')!.required).toBe(true);
-    expect(formFieldsFor('skill')).toBeNull();
+    expect(formFieldsFor('rule')).toBeNull();
+  });
+
+  /**
+   * v14 A5-1：`skill` 自此有表单长法了。钉两件事：
+   *  ①**所属项目是 select**（作用域是这一枚 spec 的立命之本，让人手打项目 id 就是等错账）；
+   *  ②**文档路径是 text 而非 select**——候选只是 datalist，登记一篇「还没进项目清单」的新技能
+   *    必须是可达路径（先立账后写文），把候选收成白名单就等于把这条路堵死。
+   */
+  it('skill 三键：space 选项目（options=spaces）、file 是自由文本带候选（list=skill-files）', () => {
+    expect(formFieldsFor('skill')!.map((f) => f.key)).toEqual(['space', 'file', 'note']);
+    const space = formFieldsFor('skill')!.find((f) => f.key === 'space')!;
+    expect(space).toMatchObject({ type: 'select', required: true, options: 'spaces' });
+    expect(formFieldsFor('skill')!.find((f) => f.key === 'file')).toMatchObject({
+      type: 'text',
+      required: true,
+      list: 'skill-files',
+    });
+    // model 那两枚老候选键也一并挂号——同一条「能选不打」的路，不再各写各的
+    expect(formFieldsFor('model')!.find((f) => f.key === 'model')).toMatchObject({ list: 'models' });
+    expect(formFieldsFor('model')!.find((f) => f.key === 'gatewayProfile')).toMatchObject({ options: 'gateway-profiles' });
   });
 
   it('missingRequiredFields 只问必填：没填名字与型号时报出中文名', () => {
     expect(missingRequiredFields('model', '', {})).toEqual(['显示名', '型号']);
     expect(missingRequiredFields('model', ' 甲 ', { model: 'gpt-4o' })).toEqual([]);
+    expect(missingRequiredFields('skill', 'x', { space: 'demo' })).toEqual(['文档路径']);
   });
 
   it('buildRegistryPayload：可选键空了整键不发（宁缺键不空键），只会长出 spec 四键里的', () => {
@@ -124,7 +146,22 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
 
   it('必填没填时拒组装（返回 null），未知 kind 也拒（不猜形状）', () => {
     expect(buildRegistryPayload('model', '甲', { model: '  ' })).toBeNull();
-    expect(buildRegistryPayload('skill', '甲', {})).toBeNull();
+    expect(buildRegistryPayload('rule', '甲', {})).toBeNull();
+  });
+
+  /** A5-1：skill 的组装只可能长出 `{space,file,note?}` 那一形状（多一发就是 server 400） */
+  it('buildRegistryPayload(skill)：note 空则整键不发，填了才跟着走', () => {
+    expect(buildRegistryPayload('skill', 'x', { space: ' demo ', file: ' skills/x/SKILL.md ', note: '  ' })).toEqual({
+      kind: 'skill',
+      name: 'x',
+      spec: { space: 'demo', file: 'skills/x/SKILL.md' },
+    });
+    expect(buildRegistryPayload('skill', 'x', { space: 'demo', file: 'a.md', note: '还没写正文' })!.spec).toEqual({
+      space: 'demo',
+      file: 'a.md',
+      note: '还没写正文',
+    });
+    expect(buildRegistryPayload('skill', 'x', { space: '', file: 'a.md' })).toBeNull();
   });
 
   /** v14-T4：`mcp` 是第二类可登记 kind——表单长三键，但**只登记不探测**（没有健康点那一格） */
@@ -137,11 +174,47 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
       spec: { command: 'npx' },
     });
     expect(buildRegistryPayload('mcp', '甲', { command: '' })).toBeNull();
-    // 出厂清单类（视图 kind）不进下拉：选了也登记不了，那是假可点
-    expect(registrableKinds(['model', 'agent-kind', 'node-type', 'mcp'], ['agent-kind', 'node-type'])).toEqual([
+    // 出厂清单类（视图 kind）不进下拉：选了也登记不了，那是假可点。
+    // 名单本身由 server 的 `knownKinds` 给（web 不抄表），A5-1 起 skill 在登记侧占一格
+    expect(registrableKinds(['model', 'skill', 'agent-kind', 'node-type', 'mcp'], ['agent-kind', 'node-type'])).toEqual([
       'model',
+      'skill',
       'mcp',
     ]);
+  });
+});
+
+/**
+ * v14 A5-1 的候选来源：路径候选只能从**项目档案实读回来的字段**里并（skills / conventionFiles /
+ * rules[].file 三源），web 不猜文件名也不扫盘——猜来的候选会让人登记一篇本机根本没有的文档。
+ */
+describe('v14 A5-1 skillFileCandidates（登记表单的路径候选）', () => {
+  it('三源并集 + 去空去重 + 排序（稳定顺序，不随档案键序抖）', () => {
+    const got = skillFileCandidates(
+      [
+        { id: 'demo', skills: ['skills/b/SKILL.md', ' docs/a.md ', 'skills/b/SKILL.md'], conventionFiles: ['AGENTS.md'] },
+        { id: 'other', rules: [{ file: 'docs/rule.md' }] },
+      ],
+      'demo',
+    );
+    expect(got).toEqual(['AGENTS.md', 'docs/a.md', 'skills/b/SKILL.md']);
+    // 三源都在账上：约定文档与目录规则的路径同样是「这台机器上真有一篇文档」的出处；
+    // 只关联了仓库、没写文档路径的那条规则不贡献候选（它没有路径可候选）
+    expect(
+      skillFileCandidates(
+        [{ id: 'demo', conventionFiles: ['AGENTS.md'], rules: [{ file: 'docs/rule.md' }, {}] }],
+        'demo',
+      ),
+    ).toEqual(['AGENTS.md', 'docs/rule.md']);
+    // 只给所选项目的：别家的路径不是这一枚的候选
+    expect(skillFileCandidates([{ id: 'other', skills: ['z.md'] }], 'demo')).toEqual([]);
+  });
+
+  it('没选项目 / 项目不在册 / 档案一个字段都没配 → 空数组（表单据此说「还没有候选，路径仍可直填」）', () => {
+    expect(skillFileCandidates([{ id: 'demo', skills: ['a.md'] }], '')).toEqual([]);
+    expect(skillFileCandidates([{ id: 'demo', skills: ['a.md'] }], 'ghost')).toEqual([]);
+    expect(skillFileCandidates([{ id: 'demo' }], 'demo')).toEqual([]);
+    expect(skillFileCandidates([], 'demo')).toEqual([]);
   });
 });
 

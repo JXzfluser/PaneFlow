@@ -1,18 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeRegistryEntry, type DagGraph, type ModelRegistrySpec, type RegistryEntry } from '@paneflow/shared';
+import {
+  normalizeRegistryEntry,
+  type DagGraph,
+  type ModelRegistrySpec,
+  type RegistryEntry,
+  type SkillRegistrySpec,
+} from '@paneflow/shared';
 import { checkGraphRequirements, requirementGapWhy, requirementKindLabel } from './registry-check.js';
 import { registryViewEntries } from './registry-view.js';
 
 /**
  * v14-T3 起单前预检：模板 `requires` 槽 × 注册表 → 逐槽落点。
  * 钉的是三条姿态，一条都不能漂：
- *  1. 只有已迁进表的 kind 判死活（今天＝`model` 与 A3-2 起的 `agent-kind`），其余 `unjudged` **不拦**；
+ *  1. 只有已迁进表的 kind 判死活（今天＝`model`/`skill`(A5-1)/`mcp`(T4) 与内置清单
+ *     `agent-kind`(A3-2)/`node-type`(T1)），其余 `unjudged` **不拦**；
  *  2. 形状不认 → `malformed` 且 `ok=false`（判不了就不放行）；
  *  3. 匹配吃 R2 那把尺（`matchesTarget` → Descriptor `refKeys`），整枚 id / slug / spec 原值三写法同权。
  */
 
 const entry = (spec: Record<string, unknown>, name = 'm', enabled = true): RegistryEntry => {
   const r = normalizeRegistryEntry({ kind: 'model', name, spec, enabled });
+  if (!r.ok) throw new Error(r.why);
+  return r.value;
+};
+
+const skillEntry = (spec: Record<string, unknown>, name = 's', enabled = true): RegistryEntry => {
+  const r = normalizeRegistryEntry({ kind: 'skill', name, spec, enabled });
   if (!r.ok) throw new Error(r.why);
   return r.value;
 };
@@ -67,10 +80,10 @@ describe('逐槽落点（checkGraphRequirements）', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('未迁进表的 kind 只披露不判死活（表里压根没有 skill 这一类，判「不存在」= 拿空白冒充断言）', () => {
-    const r = checkGraphRequirements(graphWith([{ kind: 'skill', id: 'skills/x/SKILL.md' }]), [model]);
+  it('未迁进表的 kind 只披露不判死活（表里压根没有 rule 这一类，判「不存在」= 拿空白冒充断言）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'rule', id: 'docs/x.md' }]), [model]);
     expect(r.unjudged).toEqual([
-      { kind: 'skill', id: 'skills/x/SKILL.md', verdict: 'unjudged', why: '「技能」这一类还没迁进注册表，判不了死活（只披露不拦）' },
+      { kind: 'rule', id: 'docs/x.md', verdict: 'unjudged', why: '「规则」这一类还没迁进注册表，判不了死活（只披露不拦）' },
     ]);
     expect(r.ok).toBe(true); // 起单放行：unjudged 不是闸
   });
@@ -94,15 +107,15 @@ describe('分组读数（模板卡那一行「需要：模型 1 · 技能 2」�
     const r = checkGraphRequirements(
       graphWith([
         { kind: 'model', id: model.id },
-        { kind: 'skill', id: 'a' },
+        { kind: 'rule', id: 'a' },
         { kind: 'model', id: 'nope' },
-        { kind: 'skill', id: 'b' },
+        { kind: 'rule', id: 'b' },
       ]),
       [model],
     );
     expect(r.need).toEqual([
       { kind: 'model', label: '模型', declared: 2, judged: 2, gaps: 1 },
-      { kind: 'skill', label: '技能', declared: 2, judged: 0, gaps: 0 },
+      { kind: 'rule', label: '规则', declared: 2, judged: 0, gaps: 0 },
     ]);
   });
 
@@ -208,5 +221,60 @@ describe('v14 T1 node-type 槽已判死活', () => {
     expect(checkGraphRequirements(graphWith([{ kind: 'node-type', hint: '要能并行' }]), views).slots[0]!.verdict).toBe('ok');
     const r = checkGraphRequirements(graphWith([{ kind: 'node-type', id: 'agent' }]), views);
     expect(r.need).toEqual([{ kind: 'node-type', label: '节点类型', declared: 1, judged: 1, gaps: 0 }]);
+  });
+});
+
+/**
+ * v14 A5-1：`skill` 是第三枚进表的用户登记 kind，于是「这单要读那篇技能文档」第一次判得了死活。
+ * 翻转同样**有代价**（以前整类落 `unjudged` 一律放行），所以钉成专块。
+ *
+ * 这一枚的特别处在**作用域**：`spec = {space, file}`，相对路径离开项目根没有意义。
+ * 预检对此的处理是刻意的宽松——`requires` 槽里没有写项目名的位置，所以「本机任一项目登记过这篇」
+ * 即算命中（拿当前空间去收窄会替作者编一条他没写的约束）。作用域真正的落点在引用账
+ * （空间自己发的引用按主人收窄）与探针（去那个根实读一次），两处各有专测。
+ */
+describe('v14 A5-1 skill 槽已判死活', () => {
+  const x = skillEntry({ space: 'demo', file: 'skills/x/SKILL.md' }, 'x 技能');
+
+  it('三种写法同权命中：整枚 id、slug 段、`spec.file` 原值（今天盘面落册的就是最后这一枚）', () => {
+    const targets = [x.id, x.id.slice('skill:'.length), (x.spec as SkillRegistrySpec).file];
+    for (const id of targets) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'skill', id }]), [x]);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', why: '用「x 技能」', entryId: x.id });
+      expect(r.ok).toBe(true);
+    }
+  });
+
+  it('登记时起的中文名不是引用写法（与 model 同一把尺）；没登记的路径就是死缺', () => {
+    // slug 段只可能来自 ASCII 名；中文名登记的条目 id 是散列形，所以中文名在这把尺下判不到
+    const named = skillEntry({ space: 'demo', file: 'skills/y/SKILL.md' }, '中文的名字');
+    expect(checkGraphRequirements(graphWith([{ kind: 'skill', id: '中文的名字' }]), [named]).slots[0]!.verdict).toBe(
+      'missing',
+    );
+    const r = checkGraphRequirements(graphWith([{ kind: 'skill', id: 'skills/never/SKILL.md' }]), [x]);
+    expect(r.slots[0]!.verdict).toBe('missing');
+    expect(r.slots[0]!.why).toContain('指向「skills/never/SKILL.md」');
+    expect(requirementGapWhy(r)).toContain('skill → skills/never/SKILL.md');
+    expect(r.ok).toBe(false);
+  });
+
+  it('相对路径**不**按项目收窄：别的空间登记过同一篇也算命中（槽里没写项目名，收窄=替作者编约束）', () => {
+    const otherSpace = skillEntry({ space: 'other', file: 'skills/x/SKILL.md' }, '别家的 x');
+    const r = checkGraphRequirements(graphWith([{ kind: 'skill', id: 'skills/x/SKILL.md' }]), [otherSpace]);
+    expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: otherSpace.id });
+  });
+
+  it('宽槽（不点名）只要表上有一枚启用中的技能就过；禁用的不凑槽', () => {
+    expect(checkGraphRequirements(graphWith([{ kind: 'skill', hint: '有篇做法文档即可' }]), [x]).slots[0]!.verdict).toBe('ok');
+    expect(checkGraphRequirements(graphWith([{ kind: 'skill' }]), [skillEntry({ space: 'demo', file: 'a.md' }, 'a', false)]).slots[0]!.verdict).toBe('missing');
+  });
+
+  it('分组读数记 judged（`需要：技能 2` 那行的 judged/gaps 与预检同一把尺）', () => {
+    const r = checkGraphRequirements(
+      graphWith([{ kind: 'skill', id: x.id }, { kind: 'skill', id: 'skills/nope.md' }]),
+      [x],
+    );
+    expect(r.need).toEqual([{ kind: 'skill', label: '技能', declared: 2, judged: 2, gaps: 1 }]);
+    expect(requirementKindLabel('skill')).toBe('技能');
   });
 });

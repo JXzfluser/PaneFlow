@@ -108,6 +108,10 @@ paneflow registry refs <id>                  # 只问引用账：删之前先看
 paneflow registry add --from draft.json      # 草案文件原样 POST，CLI 不预校验不补 kind；脏形状 400 一句指路
 paneflow registry health [--refresh]         # 整表实探三态：live/missing/unknown（探通不通 ≠ 条目好不好）
 paneflow registry probe <id> [--refresh]     # 单枚探针，与批量面同一套画法
+#   `skill`（v14-A5-1）那一枚探的是文件面：条目说的是「某项目根下有这篇可注入的技能文档」，
+#   于是去那个项目的 `rootCwd` 下实读一次——读到=live（detail 带字节数与改动时刻）、
+#   确实没有或路径越出主仓根=missing（越界是注入现场同一把尺的确定结论：这篇永远不会被注进节点）、
+#   项目档案没这枚空间或没配 rootCwd=unknown（未探得不等于不存在）。`--refresh` 在这枚是空参数：没有缓存层，每次都现探
 #  改和删只有网页「注册中心」有（写端拒悬挂引用、拒删被引用条目，中文解释由 server 给）
 
 # 8) 起单前预检（v14-T3）：模板声明「这单要吃哪几项能力」，派活之前先对着注册表解析
@@ -116,8 +120,12 @@ paneflow registry check [--template x] [--space S]   # 逐槽画 ✓命中 / ✗
 #   不给 --template = 普查全部在册模板，恒 0（普查不是闸，拦是起单口的事）
 paneflow registry check --template x --json  # → 那一行的原样负载：{slots,need,missing,unjudged,malformed,ok}
 #   模板侧声明（画布 JSON）：graph 顶层 `requires: [{kind, id?, hint?}]`——今天判死活的 kind 是
-#   `model` 与 `agent-kind`（后者的引用写法=整枚 id 或 kind 名；探测名 `antigravity` 那种异名**不算**引用写法，
-#   与 R2 引用账同一把尺——两把尺就会出现「预检说缺、引用账说在用」），指向 skill/rule/repo/… 的槽落 `?`（表里没这一类，判「不存在」= 拿空白冒充断言）
+#   `model`、`skill`（v14-A5-1）、`mcp` 与两枚视图 kind `agent-kind`/`node-type`（后者的引用写法=整枚 id 或 kind 名；
+#   探测名 `antigravity` 那种异名**不算**引用写法，与 R2 引用账同一把尺——两把尺就会出现「预检说缺、引用账说在用」）。
+#   `skill` 槽的引用写法多一枚 **`spec.file` 原值**（相对项目根的路径，就是今天 `profile.skills` 落册的那串），
+#   且**不**按 `--space` 收窄：`requires` 里没有写项目名的位置，本机任一项目登记过这篇即算命中
+#   （作用域住在引用账与探针，不在预检；`--json` 的 `spaceNote` 那句就是这个划界）；
+#   指向 rule/repo/role/… 的槽仍落 `?`（表里没这一类，判「不存在」= 拿空白冒充断言）
 paneflow env probe <绝对路径>                 # 只读环境发现器（v14-E1）：这台机器有什么可登记的，给的是草案不是断言
 paneflow env add <绝对路径> --space <id>      # 一次事务登记（v14-E2）：probe → map → 原子写档案，失败整体回滚
 #   四类入档：repo→repos / doc→conventionFiles / skill→skills / rule→rules（rule 带 repo 关联）；

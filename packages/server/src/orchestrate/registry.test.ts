@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import {
   NODE_TYPE_GROUPS,
   parseNodeTypeSpec,
   parseMcpSpec,
+  parseSkillSpec,
   REGISTRY_KINDS,
   REGISTRY_SCHEMA_VERSION,
   REGISTRY_VIEW_KINDS,
@@ -249,7 +250,8 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
   it('用户登记的 model 排在前屏（compareEntries 吃 REGISTRY_KINDS 顺序，出厂那几十行不糊住自己的账）', () => {
     const store = storeAt(tmp());
     store.add(MODEL);
-    // T4 起有第二类用户登记项：两枚都登记上，这一格才真把「四类全在表上时按挂号序排」钉住
+    // 每一类**登记项**都得挂号，否则「序」这条断言会把没登记的那一类静默跳过（A5-1 起有 skill）
+    store.add({ kind: 'skill', name: '技能 x', spec: { space: 'demo', file: 'skills/x/SKILL.md' } });
     store.add({ kind: 'mcp', name: 'fs-server', spec: { command: 'mcp-fs' } });
     const entries = store.readView().entries;
     expect(entries[0]!.id).toBe('model:gpt-4o-mini');
@@ -450,5 +452,150 @@ describe('v14 T4 mcp 进表：只有声明账，探针刻意不做', () => {
     expect(idx.byEntry.find((b) => b.entryId === 'mcp:other')?.refs).toEqual([]);
     expect(idx.dangling).toEqual([]);
     expect(requirementKindLabel('mcp')).toBe('MCP 服务');
+  });
+});
+
+/**
+ * v14 A5-1：`skill` 进表。这一类与前几枚的不同处只有一件——**它的身份离不开作用域**：
+ * 同一枚相对路径在两个项目根下是两个文件。三条判据各有专测：作用域住在 spec（信封没动，schema 不 bump）、
+ * 探针真去那个根读一次（三态各归各，读不动≠不存在）、跨条目撞键时反向账记全而正向账不猜。
+ */
+describe('v14 A5-1 skill 进表：作用域住在 spec，探针真去那个根读一次', () => {
+  const skill = (spec: Record<string, unknown>, name?: string): RegistryEntry<'skill'> => {
+    const e = normalizeRegistryEntry({ kind: 'skill', name: name ?? String(spec.file), spec });
+    if (!e.ok) throw new Error(e.why);
+    return e.value as RegistryEntry<'skill'>;
+  };
+  /** 一枚「有根、且有货」的项目：rootCwd 指向真临时目录，里面真放一篇 `skills/x/SKILL.md` */
+  const root = tmp();
+  fs.mkdirSync(path.join(root, 'skills/x'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'skills/x/SKILL.md'), '# 技能\n');
+  /** 探针通道要吃项目档案，就按 `store.ts` 的盘面形状真写（不桩：桩了就只证了自己的假设） */
+  const dataDir = tmp();
+  const writeSpace = (id: string, rootCwd?: string): void => {
+    fs.mkdirSync(path.join(dataDir, 'spaces', id), { recursive: true });
+    fs.writeFileSync(
+      path.join(dataDir, 'spaces', id, 'profile.json'),
+      JSON.stringify({ id, name: `项目 ${id}`, createdAt: '2026-01-01T00:00:00.000Z', ...(rootCwd ? { rootCwd } : {}) }),
+    );
+  };
+  writeSpace('demo', root);
+  writeSpace('noroot');
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('挂号：认识它（预检自此判得了死活），且它是登记项不是视图项', () => {
+    expect(REGISTRY_KINDS).toContain('skill');
+    expect(REGISTRY_VIEW_KINDS).not.toContain('skill');
+  });
+
+  it('spec 形状：space+file 都得非空，note 空串整键不发，未知键照拒（flie 拼错=这篇从此探不到）', () => {
+    expect(parseSkillSpec({ space: 'demo', file: 'skills/x/SKILL.md', note: '写作规范' })).toEqual({
+      ok: true,
+      value: { space: 'demo', file: 'skills/x/SKILL.md', note: '写作规范' },
+    });
+    const v = parseSkillSpec({ space: ' demo ', file: ' a/b.md ', note: '  ' });
+    if (!v.ok) throw new Error(v.why);
+    expect(v.value).toEqual({ space: 'demo', file: 'a/b.md' }); // note 全空=整键不发（宁缺键不空键）
+    for (const [bad, why] of [
+      [{ space: 'demo' }, 'file'],
+      [{ file: 'a.md' }, 'space'], // 「没有主人的技能」：相对路径没有基准，后续一条都兑现不了
+      [{ space: '  ', file: 'a.md' }, 'space'],
+      [{ space: 'demo', file: '  ' }, 'file'],
+      [{ space: 'demo', flie: 'a.md' }, 'flie'],
+      [{ space: 'demo', file: 'a.md', note: 7 }, 'note'],
+      ['skills/a.md', '{space, file, note?}'],
+    ] as const) {
+      const r = parseSkillSpec(bad);
+      if (r.ok) throw new Error(`脏形状被认下了：${JSON.stringify(bad)}`);
+      expect(r.why).toContain(why);
+    }
+  });
+
+  it('登记时**不判** space 在不在、file 有没有：那是引用账与探针的账（写入面判存在=先立账后写文那条常态路被堵死）', () => {
+    const store = storeAt(tmp());
+    const added = store.add({ kind: 'skill', name: '技能 x', spec: { space: '没有这个项目', file: '不存在/的路径.md' } });
+    expect(added.ok).toBe(true);
+    expect(store.readView().entries.filter((e) => e.kind === 'skill')).toHaveLength(1);
+  });
+
+  it('label 把作用域说在句子里：只画相对路径会让两个空间的两篇同名文件在界面上长得一模一样', () => {
+    expect(REGISTRY_DESCRIPTORS.skill.label(skill({ space: 'demo', file: 'skills/x/SKILL.md' }))).toBe(
+      '[项目 demo] skills/x/SKILL.md',
+    );
+    expect(
+      REGISTRY_DESCRIPTORS.skill.label(skill({ space: 'demo', file: 'skills/x/SKILL.md', note: '写作规范' })),
+    ).toBe('[项目 demo] skills/x/SKILL.md · 写作规范');
+  });
+
+  it('引用写法三枚同权：整枚 id、slug、`spec.file` 原值（今天档案里落册的正是第三枚）', () => {
+    const e = skill({ space: 'demo', file: 'skills/x/SKILL.md' }, 'skill-x');
+    expect(REGISTRY_DESCRIPTORS.skill.refKeys(e)).toEqual(['skill:skill-x', 'skill-x', 'skills/x/SKILL.md']);
+    expect(splitRegistryId(e.id)?.slug).toBe('skill-x'); // 拉丁名不散列：档案里那串路径从此有反查
+  });
+
+  it('探针三态各归各：读得到=live（报字节数）、根下没有=missing、没配根/没有那枚项目=unknown', async () => {
+    const live = await entryHealth(dataDir, skill({ space: 'demo', file: 'skills/x/SKILL.md' }), {});
+    expect(live).toMatchObject({ status: 'live', cached: false });
+    // 字节数是探针**实读**算的（同 v13-K1 机检口径：读原文算，不信登记时自报）
+    expect(live!.detail).toContain(`${fs.statSync(path.join(root, 'skills/x/SKILL.md')).size} 字节`);
+
+    expect((await entryHealth(dataDir, skill({ space: 'demo', file: 'skills/none.md' }), {}))?.status).toBe('missing');
+    // 越出主仓根=确定结论：注入现场（skills.ts 的 safeJoin）同一把尺，这种路径永远不会被注进节点
+    expect((await entryHealth(dataDir, skill({ space: 'demo', file: '../escape.md' }), {}))?.status).toBe('missing');
+    // 目录不是文件：注入现场读不出整篇内容，等于没有这篇
+    expect((await entryHealth(dataDir, skill({ space: 'demo', file: 'skills/x' }), {}))?.status).toBe('missing');
+
+    const noRoot = await entryHealth(dataDir, skill({ space: 'noroot', file: 'skills/x/SKILL.md' }), {});
+    expect(noRoot).toMatchObject({ status: 'unknown' });
+    expect(noRoot!.detail).toContain('rootCwd'); // 无从判就说无从判，绝不画成红点
+    const noSpace = await entryHealth(dataDir, skill({ space: 'ghost', file: 'skills/x/SKILL.md' }), {});
+    expect(noSpace).toMatchObject({ status: 'unknown' });
+    expect(noSpace!.detail).toContain('不等于这篇技能不存在');
+  });
+
+  it('角色侧的撞键裸串记在**每一枚**条目上（多报只是多挡一次删除，漏报是静默剪断现役配置）', () => {
+    const a = skill({ space: 'demo', file: 'shared/x.md' }, '甲');
+    const b = skill({ space: 'other', file: 'shared/x.md' }, '乙');
+    const idx = buildReferenceIndex([a, b], [
+      // 角色是全局名册，它发的 `skills[i]` 不绑空间——这一路判不准是哪一枚，于是两枚都记
+      { face: 'role', id: 'r-1', name: '岗', via: 'skills[0]', kind: 'skill', target: 'shared/x.md' },
+    ]);
+    expect(idx.byEntry.map((e) => e.refs.length)).toEqual([1, 1]);
+    expect(idx.dangling).toEqual([]);
+  });
+
+  it('空间自己发的引用按主人收窄：A 项目那一格不算指着 B 项目的同名条目（判得准时不扩大多报）', () => {
+    const mine = skill({ space: 'demo', file: 'shared/x.md' }, '甲');
+    const theirs = skill({ space: 'other', file: 'shared/x.md' }, '乙');
+    const idx = buildReferenceIndex([mine, theirs], [
+      { face: 'space', id: 'demo', name: '演示项目', via: 'skills[0]', kind: 'skill', target: 'shared/x.md' },
+    ]);
+    expect(idx.byEntry.find((e) => e.entryId === mine.id)!.refs.map((r) => `${r.face}·${r.via}`)).toEqual([
+      'space·skills[0]',
+    ]);
+    expect(idx.byEntry.find((e) => e.entryId === theirs.id)!.refs).toEqual([]);
+    // 乙没被记上≠悬挂：悬挂账只收「一处都没指着」的裸串
+    expect(idx.dangling).toEqual([]);
+  });
+
+  it('真落盘 + 启停删除照接（视图 kind 那条拒路不误伤登记项）', () => {
+    const store = storeAt(tmp());
+    const added = store.add({ kind: 'skill', name: '技能 x', spec: { space: 'demo', file: 'skills/x/SKILL.md' } });
+    expect(added.ok).toBe(true);
+    expect(added.entry?.id.startsWith('skill:')).toBe(true);
+    const stored = store.readView().entries.filter((e) => e.kind === 'skill');
+    expect(stored).toHaveLength(1);
+    const id = stored[0]!.id;
+    expect(store.update(id, { enabled: false }).ok).toBe(true);
+    expect(store.readView().entries.find((e) => e.id === id)!.enabled).toBe(false);
+    expect(store.remove(id).ok).toBe(true);
+    expect(store.readView().entries.filter((e) => e.kind === 'skill')).toEqual([]);
+  });
+
+  it('预检词表：`需要：技能` 那一行从此有中文组名（KIND_CN 是全仓唯一一份措辞表）', () => {
+    expect(requirementKindLabel('skill')).toBe('技能');
   });
 });

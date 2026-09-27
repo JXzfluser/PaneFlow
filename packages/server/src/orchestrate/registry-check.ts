@@ -69,9 +69,14 @@ export interface TemplateRequirementCheck {
 }
 
 export interface RequirementCheckView {
-  /** 回显：这一份读数按哪个项目算（缺省=default）。本版不参与死活判定，见 `spaceNote` */
+  /** 回显：这一份读数按哪个项目算（缺省=default）。**不参与命中判定**，见 `spaceNote` */
   space: string;
-  /** 诚实标注：项目维目前只影响指路文案，等带作用域的 kind 迁入才真参与判定 */
+  /**
+   * 诚实标注：槽命中只看注册表全局，项目名只用于指路文案。
+   * 带作用域的 kind 已经进表了（`skill` 自 A5-1），所以这一枚**不是**「等迁入」的空头支票，
+   * 而是一条划界：作用域住在引用账与探针，不在预检——`requires` 槽没有写项目名的位置，
+   * 拿当前空间去收窄会把「本机有这篇能力」判成「本项目没登记」，那是替作者编约束。
+   */
   spaceNote: string;
   at: string;
   templates: TemplateRequirementCheck[];

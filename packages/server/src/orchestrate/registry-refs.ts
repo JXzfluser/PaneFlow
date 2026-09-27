@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { REGISTRY_KINDS, type DagGraph, type DagNodeConfig, type RegistryEntry } from '@paneflow/shared';
+import { REGISTRY_KINDS, type DagGraph, type DagNodeConfig, type RegistryDescriptor, type RegistryEntry, type RegistryRefContext } from '@paneflow/shared';
 import { Store, type SpaceProfile } from './store.js';
 import { loadRoles, type Role } from './roles.js';
 import { readGatewayDoc, type GatewayDoc } from '../api/gateway.js';
@@ -183,12 +183,25 @@ export function scanRawReferences(dataDir: string): RawReference[] {
 
 /**
  * 一条裸串是不是指向我这一枚条目（由 Descriptor 自报口径；未挂号的 kind 不匹配任何条目）。
+ * `ref` 给的是引用出处（哪一面、哪一枚档案发的）——只有声明了 `matches` 的 kind 用得上它，
+ * 用途见 `registry-descriptors.ts` 里 `skill` 那一枚的注释。
  * **导出给 R5 的快照器共用**：反向引用账与正向快照必须是同一把匹配尺，两份迟早给出两个答案。
  */
-export function matchesTarget(entry: RegistryEntry, target: string): boolean {
-  const descriptor = (REGISTRY_DESCRIPTORS as Record<string, { refKeys(e: RegistryEntry): string[] } | undefined>)[entry.kind];
+export function matchesTarget(entry: RegistryEntry, target: string, ref?: RegistryRefContext): boolean {
+  const descriptor = (REGISTRY_DESCRIPTORS as unknown as Record<string, RegistryDescriptor | undefined>)[entry.kind];
   if (!descriptor) return false;
-  return descriptor.refKeys(entry).includes(target);
+  if (!descriptor.refKeys(entry).includes(target)) return false;
+  return descriptor.matches ? descriptor.matches(entry, target, ref ?? { face: '', id: '' }) : true;
+}
+
+/**
+ * 一条裸串的**全部**命中条目（`matchesTarget` 的复数版，反向账用它）。
+ * 为什么反向要"全都算"而正向快照只取一枚（`registry-snapshot.ts`）：两边问的不是一个问题——
+ * 反向问「删了会断谁」，多报只是多挡一次删除（可绕：先改引用再删），漏报则是静默把现役配置剪断；
+ * 正向问「这一单实发吃了哪枚」，两枚都记就是宣称它读了两个文件，那是**多出来的一个结论**，不是保守。
+ */
+export function matchedEntries(entries: RegistryEntry[], ref: RawReference): RegistryEntry[] {
+  return entries.filter((e) => e.kind === ref.kind && matchesTarget(e, ref.target, { face: ref.face, id: ref.id }));
 }
 
 /**
@@ -211,9 +224,11 @@ export function buildReferenceIndex(entries: RegistryEntry[], raw: RawReference[
       unmigratedByKey.set(ref.kind, cur);
       continue;
     }
-    const hit = entries.find((e) => e.kind === ref.kind && matchesTarget(e, ref.target));
-    if (hit) {
-      slot.get(hit.id)?.refs.push({ face: ref.face, id: ref.id, name: ref.name, via: ref.via });
+    const hits = matchedEntries(entries, ref);
+    if (hits.length) {
+      // 一枚裸串命中多枚条目（`skill` 的相对路径跨空间可撞）时**逐条记全**：见 `matchedEntries` 那段
+      // 「反向多报只是多挡一次删除，漏报才是静默剪断现役配置」。宁可不漂亮，不放过一条真引用。
+      for (const hit of hits) slot.get(hit.id)?.refs.push({ face: ref.face, id: ref.id, name: ref.name, via: ref.via });
       continue;
     }
     const key = `${ref.kind}\u0000${ref.target}`;

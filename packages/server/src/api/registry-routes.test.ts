@@ -67,12 +67,12 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(body.entries.filter((e) => !e.view)).toEqual([]); // 盘上真的一条没登记——这格还是正读数零
       expect(body.rejected).toEqual([]);
       expect(body.schema).toBeNull();
-      expect(body.knownKinds).toEqual(['model', 'agent-kind', 'node-type', 'mcp']);
+      expect(body.knownKinds).toEqual(['model', 'skill', 'agent-kind', 'node-type', 'mcp']);
       expect(body.viewKinds).toEqual(['agent-kind', 'node-type']);
       // 组名只有一处措辞表（`registry-check.ts` 的 `KIND_CN`）：网页拿这张外发表的标签画分组，
       // 前端不再自己抄一份——抄了迟早分叉，而分叉的代价是「同一个 kind 两处两个名字」。
       expect(Object.keys(body.kindLabels).sort()).toEqual([...body.knownKinds].sort());
-      expect(body.kindLabels).toMatchObject({ model: '模型', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', mcp: 'MCP 服务' });
+      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', mcp: 'MCP 服务' });
       expect(requirementKindLabel('agent-kind')).toBe(body.kindLabels['agent-kind']);
       expect(body.refSummary).toEqual({ scanned: 0, dangling: [], unmigrated: [] });
       // 视图项=出厂清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
@@ -287,7 +287,52 @@ describe('注册内核四动词（/api/registry）', () => {
     }
   });
 
+  /**
+   * v14 A5-1 的对外读数：`skill` 与 `model`/`mcp` 同侧（用户登记项），所以写路径照开。
+   * 这一格额外钉两件 HTTP 面才有的事：①label 里必须出现**所属项目**（相对路径离开项目根没有意义，
+   * 两枚不同项目的同名路径不能在界面上长得一样）；②写入面**不判**那个项目存不存在——
+   * 「先立账后写文」是正常路径，存在性是 R4 探针的账（探到 unknown 会明说「未探得不等于不存在」）。
+   */
+  it('POST kind=skill：登记得进、label 带项目作用域；不存在的 space 照登记（存在性不是写入面的账）', async () => {
+    const { app, registry } = await build();
+    try {
+      const ok = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'skill', name: 'x', spec: { space: 'ghost', file: 'skills/x/SKILL.md', note: '还没写' } },
+      });
+      expect(ok.statusCode).toBe(200);
+      const id = (ok.json() as { entry: { id: string } }).entry.id;
+      expect(id).toBe('skill:x');
+      const one = await app.inject({ method: 'GET', url: `/api/registry/${id}`, headers: { host: HOST } });
+      expect(one.json()).toMatchObject({
+        entry: { kind: 'skill', view: false, label: '[项目 ghost] skills/x/SKILL.md · 还没写' },
+      });
+      // 探针在这一枚上是空参数没有缓存：项目档案里没有 ghost → unknown（未探得），不是 missing
+      const health = await app.inject({ method: 'GET', url: '/api/registry/health', headers: { host: HOST } });
+      const row = (health.json() as { entries: { id: string; health: { status: string; detail: string } }[] }).entries.find(
+        (e) => e.id === id,
+      );
+      expect(row?.health?.status).toBe('unknown');
+      expect(row?.health?.detail).toContain('不等于这篇技能不存在');
+      expect(registry.list('skill').map((e) => e.id)).toEqual([id]);
+      const dirty = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'skill', name: 'y', spec: { space: 'demo', flie: 'skills/y.md' } },
+      });
+      expect(dirty.statusCode).toBe(400);
+      expect(dirty.json().error).toContain('flie');
+      expect(registry.list('skill')).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('PATCH 只改三键、DELETE 删一条；未知 id 一律 404 指路', async () => {
+
     const { app } = await build();
     try {
       await app.inject({ method: 'POST', url: '/api/registry', headers: { host: HOST }, payload: MODEL });

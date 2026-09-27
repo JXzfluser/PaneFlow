@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, fetchJson } from '../api.js';
 import { useStore } from '../store.js';
 import { Icon } from './Icon.js';
 import {
@@ -19,15 +19,18 @@ import {
   refRows,
   rejectedSummary,
   registrableKinds,
+  skillFileCandidates,
   REGISTRY_NAME_FIELD,
   sourceLabel,
   specRows,
   whenLabels,
   type RegistryEntryView,
+  type RegistryFormField,
   type RegistryFormValues,
   type RegistryHealthReadout,
   type RegistryListResponse,
   type RegistryProbeResponse,
+  type SkillCandidateSource,
 } from '../registry-view.js';
 
 /**
@@ -65,6 +68,15 @@ export function RegistryView() {
   const [gwProfiles, setGwProfiles] = useState<{ id: string; name: string }[]>([]);
   const [modelCandidates, setModelCandidates] = useState<string[]>([]);
   const [catalogNote, setCatalogNote] = useState<string | null>(null);
+  /**
+   * skill 表单的两枚候选（v14 A5-1）：项目下拉读 `/api/spaces`，文档路径读**所选项目档案里已有的路径**
+   * （`GET /api/spaces/:id`）。前端不拼路径、不猜目录：候选读不出来就直接填那一格照旧可走。
+   */
+  const [spaces, setSpaces] = useState<{ id: string; name: string }[]>([]);
+  const [spacesNote, setSpacesNote] = useState<string | null>(null);
+  const [skillFiles, setSkillFiles] = useState<string[]>([]);
+  const [skillFilesNote, setSkillFilesNote] = useState<string | null>(null);
+  const selectedSpace = typeof formValues.space === 'string' ? formValues.space : '';
 
   const loadHealth = useCallback((refresh: boolean) => {
     void api
@@ -98,6 +110,13 @@ export function RegistryView() {
       .then((r) => setGwProfiles(r.profiles.map((p) => ({ id: p.id, name: p.name }))))
       .catch((e: Error) => setCatalogNote(`网关档清单读不出：${e.message}`));
     api
+      .listSpaces()
+      .then((r) => {
+        setSpaces(r.spaces.map((s) => ({ id: s.id, name: s.name })));
+        setSpacesNote(null);
+      })
+      .catch((e: Error) => setSpacesNote(`项目清单读不出：${e.message}`));
+    api
       .gatewayCatalog()
       .then((r) => {
         setModelCandidates([...new Set(r.profiles.flatMap((p) => p.models))]);
@@ -106,6 +125,29 @@ export function RegistryView() {
       })
       .catch((e: Error) => setCatalogNote(`型号清单探读失败：${e.message}`));
   }, []);
+
+  /** 选了项目才去读那一枚档案拿路径候选（不选就不请求；读不出只说候选这一格，直填那条路不受影响） */
+  useEffect(() => {
+    if (!formOpen || formKind !== 'skill' || !selectedSpace) {
+      setSkillFiles([]);
+      return;
+    }
+    let dead = false;
+    fetchJson<SkillCandidateSource>('GET', `/api/spaces/${encodeURIComponent(selectedSpace)}`)
+      .then((p) => {
+        if (dead) return;
+        setSkillFiles(skillFileCandidates([p], p?.id || selectedSpace));
+        setSkillFilesNote(null);
+      })
+      .catch((e: Error) => {
+        if (dead) return;
+        setSkillFiles([]);
+        setSkillFilesNote(`这个项目的文档清单读不出：${e.message}（路径仍可直填）`);
+      });
+    return () => {
+      dead = true;
+    };
+  }, [formOpen, formKind, selectedSpace]);
 
   const refreshCatalog = () => {
     setCatalogNote('型号清单刷新中…');
@@ -122,8 +164,16 @@ export function RegistryView() {
   const openForm = () => {
     const next = !formOpen;
     setFormOpen(next);
-    // 表单选项（网关档/型号候选）只在首次打开时探一次；失败文案是 server 原话，不拦登记
-    if (next && gwProfiles.length === 0 && modelCandidates.length === 0 && catalogNote === null) ensureFormOptions();
+    // 表单选项（网关档/型号候选/项目清单）只在首次打开时各探一次；失败文案是 server 原话，不拦登记
+    if (
+      next &&
+      gwProfiles.length === 0 &&
+      modelCandidates.length === 0 &&
+      spaces.length === 0 &&
+      catalogNote === null &&
+      spacesNote === null
+    )
+      ensureFormOptions();
   };
 
   const switchKind = (kind: string) => {
@@ -219,8 +269,24 @@ export function RegistryView() {
     }
   };
 
-  const groups = data ? groupEntriesByKind(data.entries, data.knownKinds, data.viewKinds ?? [], data.kindLabels) : [];
-  const rejectedText = data ? rejectedSummary(data.rejected) : null;
+  /**
+   * 字段的候选集，按字段自己声明的源取（`options`=下拉、`list`=datalist）。
+   * 渲染侧不再写死 `key === 'gatewayProfile'` / `key === 'model'`——那种字符串比对加一类字段就得改一处画法。
+   * 返回统一 {id,name}：id 是提交值，name 是显示值（型号与路径两样都是自身）。
+   */
+  const fieldChoices = (f: RegistryFormField): { id: string; name: string }[] => {
+    if (f.options === 'spaces') return spaces;
+    if (f.options === 'gateway-profiles') return gwProfiles;
+    if (f.list === 'models') return modelCandidates.map((m) => ({ id: m, name: m }));
+    if (f.list === 'skill-files') return skillFiles.map((p) => ({ id: p, name: p }));
+    return [];
+  };
+
+  const listIdFor = (list: NonNullable<RegistryFormField['list']>): string =>
+    list === 'models' ? 'pf-registry-model-candidates' : 'pf-registry-skill-files';
+
+
+  const groups = data ? groupEntriesByKind(data.entries, data.knownKinds, data.viewKinds ?? [], data.kindLabels) : [];  const rejectedText = data ? rejectedSummary(data.rejected) : null;
   // 表单只问能登记的那几类：出厂清单类（agent-kind）没有表单形状，选它必被 server 拒，不在这里挂出来
   const kinds = registrableKinds(data?.knownKinds ?? [], data?.viewKinds ?? []);
 
@@ -316,6 +382,7 @@ export function RegistryView() {
                     </label>
                   );
                 }
+                const lid = f.list ? listIdFor(f.list) : undefined;
                 return (
                   <div className="registry-form-field" key={f.key}>
                     <label htmlFor={`reg-${f.key}`}>
@@ -323,37 +390,52 @@ export function RegistryView() {
                       {f.required ? ' *' : ''}
                     </label>
                     {f.type === 'select' ? (
-                      <select
-                        id={`reg-${f.key}`}
-                        value={typeof formValues[f.key] === 'string' ? (formValues[f.key] as string) : ''}
-                        onChange={(ev) => setValue(f.key, ev.target.value)}
-                      >
-                        <option value="">不指定</option>
-                        {gwProfiles.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
+                      <>
+                        <select
+                          id={`reg-${f.key}`}
+                          value={typeof formValues[f.key] === 'string' ? (formValues[f.key] as string) : ''}
+                          onChange={(ev) => setValue(f.key, ev.target.value)}
+                        >
+                          <option value="">{f.options === 'spaces' ? '选一个项目' : '不指定'}</option>
+                          {fieldChoices(f).map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        {/* 空下拉有两种读法（清单没读到 / 这个项目下真一个候选都没有），分开说，别拿「不指定」糊过去 */}
+                        {f.options === 'spaces' && !spaces.length && (
+                          <p className="settings-hint">{spacesNote ?? '还没有项目档案可列（先去「项目」里建一个，或直接提交）。'}</p>
+                        )}
+                      </>
                     ) : (
                       <>
                         <input
                           id={`reg-${f.key}`}
-                          list={f.key === 'model' ? 'pf-registry-model-candidates' : undefined}
+                          list={lid}
                           value={typeof formValues[f.key] === 'string' ? (formValues[f.key] as string) : ''}
                           placeholder={f.hint}
                           onChange={(ev) => setValue(f.key, ev.target.value)}
                         />
-                        {f.key === 'model' && (
+                        {lid && (
                           <>
-                            <datalist id="pf-registry-model-candidates">
-                              {modelCandidates.map((m) => (
-                                <option key={m} value={m} />
+                            <datalist id={lid}>
+                              {fieldChoices(f).map((c) => (
+                                <option key={c.id} value={c.id} />
                               ))}
                             </datalist>
-                            <button className="link" type="button" onClick={refreshCatalog}>
-                              刷新型号清单
-                            </button>
+                            {f.list === 'models' && (
+                              <button className="link" type="button" onClick={refreshCatalog}>
+                                刷新型号清单
+                              </button>
+                            )}
+                            {f.list === 'skill-files' && !skillFiles.length && (
+                              <p className="settings-hint">
+                                {selectedSpace
+                                  ? skillFilesNote ?? '这个项目档案里还没有登记过文档路径——直接填相对路径即可。'
+                                  : '先选项目，这里会列出它档案里已有的路径。'}
+                              </p>
+                            )}
                           </>
                         )}
                       </>

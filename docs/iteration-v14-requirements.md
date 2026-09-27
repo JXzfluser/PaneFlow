@@ -342,7 +342,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 
 ## 七、裁决问题（要用户点头，不代答）
 
-> **2026-09-26 状态刷新**：用户令「按需求走」＝按本文件推荐取值推进。Q2 已单独结掉（前置-1，见 §十二）；
+> **2026-09-26 状态刷新**：用户令「按需求走」＝按本文件推荐取值推进。Q2 已单独结掉（前置-1，见 §十三）；
 > Q1/Q5/Q7 按推荐落地（只读聚合先行、只准**一个**新视图=注册中心、K1 已收口故 A 系可开）；
 > Q3（`roleShaV:2` 破历史可比）与 Q4（MCP/插件进 v14＝明示改判 v13:285）**仍不动**——
 > 这两条各自要推翻一笔既有裁决或毁掉既有可比性，推荐值也不是免费的，等点名再改。
@@ -383,7 +383,7 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   `RunProduct` 类型并**在架上手放同一串原文实算 sha**，端点返回形状若与 shared 类型分叉则编译期即红。
 - v13-Z 收口（全量复验 + 状态表 + AGENTS.md + 记忆）已办；**唯一余项=一次去临时 env 的重启仪式**
   （撤 `PF_DIRTY_CHECK=0` / `PF_PROMPT_CONFIRM_MS=180000`，需队列空 + 用户令，属共享状态变更不代做）。
-- 未开工：**v14 的 R/T/W/E/X 五系代码面已全部落地**（逐片见 §十二；唯一挂着的是 W6 `roleShaV:2`，判据是「现在做不出诚实版本」，
+- 未开工：**v14 的 R/T/W/E/X 五系代码面已全部落地**（逐片见 §十三；唯一挂着的是 W6 `roleShaV:2`，判据是「现在做不出诚实版本」，
   前置=W5′ 装备槽指向注册项，见 §七 二次刷新）。此后欠的三类账不在 agent 能代做的范围里：
   ①M0 机证① 的 10 条 replay 等臂复验（要 run 预算）；③X3 实机首驾（真项目上手敲一遍）。
   ~~②X2 的版本 bump / tag / Release~~——**已办**：五枚 `package.json` 0.2.0→0.3.0、本地产物冒烟 17/17、`v0.3.0` 标签推送后由
@@ -391,11 +391,20 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   `36315427746` 绿 → 推 `v0.3.0` 标签 → Release run `36315598843` 绿 → `gh release view v0.3.0` 四枚资产齐
   （`paneflow-0.3.0.tgz` + `.sha256`、`paneflow-latest.tgz` + `.sha256`）；从公开 URL 重下的 `paneflow-latest.tgz` 实算 sha256
   与 sidecar 逐字节相符（`dfc05d59…8ffd4d`），解包后 `package.json` 读回 `paneflow 0.3.0`。装机侧回执（用户机 `install.sh` 升级后跑一次）仍在用户手里。
+- **上面那句「五系代码面已全部落地」报小了账，此处更正（2026-09-27，用户点破「怎么连一个注册模块现在都还没完成啊」）**：
+  五系**流程**确实都通了，但 slogan 的**底座**只通了一小半——§一 那张清单里该有正身的 kind 有 13 枚，
+  `REGISTRY_KINDS` 当时只有 4 枚（登记项 `model`、`mcp` ＋ 视图两枚 `agent-kind`、`node-type`）：
+  项目规则、技能、仓库、角色、模板、网关档、机检类型…六枚以上今天仍住在各自的老写入语义里，
+  §一 读数①那「12 套登记语义」**没被收成一套**。所以 R 系的真实账是「内核通了、kind 没迁完」，
+  而我把内核通说成了全部落地——这是可感面口径上的漏报，不是措辞差异。
+  处置：按 §一 那张表拆成 **A5-x 逐枚进表**（形状决议见 §十二），A5-1 `skill` 已落（见 §十三 那一行），其余照表推进；
+  每片的回归面都是同一件事——预检里这一 kind 从 `?` 翻成 `✓/✗`（起单口自此 fail-closed 拦），
+  凡此前拿未迁 kind 举例的断言逐片改口，不闷声放宽。
 - **X3 的机器前置（本片新增的账，不是 X3 本身）**：本机在跑的 server 是 09-26 起的 dev 实例（PID 54817，`tsx packages/server/src/index.ts`），
-  它前端的 `packages/web/dist` 已是我 `pnpm build` 出的 HEAD——于是**前后端版本错配**：`GET /api/registry?kind=node-type` 与 `?kind=mcp`
-  在这台实例上回 400「这版只登记：model/agent-kind」（T1/T4 后端不在它身上），`/api/env/probe` 直接 404（E1/E2 不在），
+  它前端的 `packages/web/dist` 已是我 `pnpm build` 出的 HEAD——于是**前后端版本错配**：`GET /api/registry?kind=node-type`、`?kind=mcp`
+  与 `?kind=skill` 在这台实例上回 400「这版只登记：model/agent-kind」（T1/T4/A5-1 后端不在它身上），`/api/env/probe` 直接 404（E1/E2 不在），
   而注册表列表、批量健康、`registry check`、单枚 `:id/health` 全 200（R1-R4/T3 在）。后果很具体：画布 Palette 读不到节点类型清单、
-  E2 向导按了没货。解法只有那条既定路：**队列空时的一次重启仪式**（与上面 v13-Z 那条余项是同一次），属共享状态变更，需用户令，不代做。
+  E2 向导按了没货、注册中心「新增」里没有技能这一型。解法只有那条既定路：**队列空时的一次重启仪式**（与上面 v13-Z 那条余项是同一次），属共享状态变更，需用户令，不代做。
 - 基线读数（2026-09-26 实跑）：server **721/721**（50 文件）、cli **43/43**、web **57/57**、`pnpm typecheck` 四包净
   + `tsc -b packages/web` 净。
 
@@ -485,7 +494,45 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 8. **规则候选设上限 20 篇**（只取仓根与 `docs/` 一层）：不设上限时一个大仓会把草案刷成垃圾，
    超过只报计数不逐项列——被探目录的规模不是我们的账，但把人的注意力刷没是。
 
-## 十二、实施状态表（v14 开工前全空；K1 未收口则 A 系不开）
+## 十二、A5（把 §一 剩下的登记面逐枚进表）落盘形状决议——写码前定死
+
+§八 那条更正背后是这一系：R1–R5 建的是**内核**（信封＋引用账＋快照），内核今天认得的 kind 只有 4 枚；
+§一 清单上该有正身的登记面有 13 枚。A5 就是把这个差一块块补平，一片一枚 kind，**每片各带一条「预检自此拦起单」断言**。
+下面这些取值是开工令附件，实施时不许临场发明第二套；实测推翻就改这一节并留证据。
+
+1. **两类 kind，判据一句话**：「这张表能不能被用户增删」。
+   **登记项**（用户可写、落 `entries.json`、三写动词全通）：`model`(A1) · `mcp`(T4) · `skill`(A5-1) · `rule`(A5-2) · `repo`(A5-3)；
+   **视图 kind**（条目由代码或现盘**现算**、不落盘、三写动词全拒）：`agent-kind`(A3-2) · `node-type`(T1) ·
+   `check-type`(A5-4) · `role` / `template` / `gateway-profile`(A5-4b)。
+   视图 kind 迁的是「引用有正身可指」这件事，不是搬数据——与 §五「不搬 graphs」不冲突，且它天然满足 R3 的「只读聚合」。
+2. **作用域住在 spec，不动信封**（A5-1 定形，后续同例）：`skill.spec = {space, file, note?}`。
+   **不**在信封上插 `space` 键，也**不**升 `schema.json` 到 v2——作用域是这一 kind 的事实，不是所有条目的事实；
+   往统一信封塞 per-kind 维度＝用 schema 版本换一次形状错误，两样都赔。先例是 `model.spec.gatewayProfile`。
+3. **引用写法逐 kind 定死，且必须覆盖今天盘上真在写的那几种**。`skill` 认三枚：整 id、slug、`spec.file`（相对路径）。
+   第三枚不是省事——今天 `role.skills[]` 与 `space.skills[]` 存的就是路径串，不认它则 A5-1 落地当场把现网引用洗成悬挂，
+   R2 写端会拿着一份 400 拒掉所有存量角色的 PUT。**中文名/显示名一律不算引用写法**（与 model、agent-kind 同一把尺）；
+   中文 name 的 slug 会回落成 `e<8位随机>`，所以人写的中文名在引用账里什么都指不到——这条有测试钉住，防止下一片顺手放宽。
+4. **写入面不判存在性**。登记一条指向不存在的项目或还没写出来的技能文件都合法：
+   space 存在＝R2 的引用账（那个项目被删时这条会亮引用者清单）；file 存在＝R4 的探针。
+   「先立账、后写文」是正常使用路径；写入面拦存在性等于逼用户先去编辑器里建一个空文件再回来点保存。
+5. **预检不按 `--space` 收窄**（本片唯一的主动不做事）。`graph.requires` 的槽里没有写项目名的位置，
+   拿当前空间去收窄＝替模板作者编一个他根本没画的约束。于是命中口径是「本机任一项目登记过这篇技能即算命中」，
+   作用域那一维住在**引用账**（空间自己发的引用按主人收窄）与**探针**（去那个项目根实读一次）。
+   `spaceNote` 文案已照这条改写，并有断言钉住（`预检的槽仍不按项目收窄` 这句在测试里被 `toContain`），文案腐不回去。
+6. **跨面同键冲突 → 不对称处置**（A5-1 的形状，A5-2/A5-3 沿用）。两条 `skill` 条目允许各自写同一个 `file`（不同项目里同名相对路径）。
+   反向引用账**逐条记全**——多报的代价是「删的时候多拦一次」，人能绕过去；
+   正向能力快照**跳过歧义项**——记两条等于谎称这一单读了两篇文件，历史 run 的账不可恢复，宁可少记。
+   全被跳过时快照给 `null`（整键不给），不是 `[]`（`[]` 是正断言「这一单没吃任何注册能力」，「不确定」不能冒充正断言）。
+7. **探针三态各有各的正身**：`live`=去那个项目 `rootCwd` 实读到文件（带字节数与改动时刻）；
+   `missing`=`..` 越界／不是文件／ENOENT；`unknown`=空间档案读不到或没配 `rootCwd`，
+   文案明写「不等于这篇技能不存在」（未探得≠不存在，R4 那条老账）。
+   `skill` 探针**不进缓存层**——`stat` 一次即结论，所以 `--refresh` 对它是 no-op；这一条要在 CLI 回执里如实，不让旗标撒谎。
+8. **「进表」这个动作本身就是回归面**：`isJudged` 由 `REGISTRY_KINDS` 派生，所以一枚 kind 落表即自动把预检读数
+   从 `?`（非阻塞）翻成 `✓/✗`（阻塞，起单口 fail-closed 拒）。于是每片必须做同一件改口入账：
+   凡此前拿「未迁 kind」当例子的断言，把例子换成**仍未迁**的那一枚（A5-1 用的替身是 `rule`），
+   并把翻面本身钉成一条 before/after 断言。这不是测试噪音，是这一片唯一用户可感的语义变化。
+
+## 十三、实施状态表（v14 开工前全空；K1 未收口则 A 系不开）
 
 | 片 | 名称 | 状态 | 提交 | 可感面已实跑 |
 |---|---|---|---|---|
@@ -507,9 +554,10 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | E2 | 一次事务登记 + 向导四步 | **已完成（本片）** | 本片 | `POST /api/env/register` 一次事务：probe → map → write 全绿才落档案（原子写），任一步失败整体不落盘。CLI `paneflow env add <目录> --space <id>` 一行回执；网页「项目」页头「🔍 发现环境并登记」开四步向导（选目录 → 看发现 → 勾选 → 登记回执）。判据在 `env-probe.mapProbeToProfilePatch` 纯函数：四类可登记（repo/doc/skill/rule 各自映射档案字段，rule 带 repo 关联），三类只披露（check/workflow/worktree 无字段，向导里勾选框置灰）。机证：单测 6 条（四类映射/三类披露/selected 越界与负索引忽略/existing 与同批去重/rule 按 file 去重/空 selected 全不选）+ 端到端 27 条（env-probe.test.ts 全绿）；`panelflow typecheck` 净 + web `tsc -b` 净 + server 61/890 绿 + web 12/90 绿。诚实边界：向导不装任何软件，只登记「本机/本仓确实有这些东西」 |
 | X1 | 注册中心视图（现役控件对照） | **全量已完成**（首屏 `10bc315` + 详情抽屉两件本片） | `10bc315` 本片 | 网页「注册中心」= 一张表（分组/label/来源/启停/删除）+ 健康点 ●/○/? + 被引用数 + 表单登记（不写 JSON）；**对照「现役家产」清点后缺的只有两件，本片补齐**：①**引用者清单**——详情抽屉「谁在用」逐条列 server 随条目发下的 `refs`（`face · 「名字」（id） · via`，与 CLI `registry refs` 同一份账同一把尺；`face` 原样画，中文对照表住在 server 的 400 文案里，不抄第二份），三种读数三句话：`refs` 缺键＝「这次没扫出来，不是没人用」（琥珀色，不给删除开绿灯）／`[]`＝「没人用（正读数）」／有货＝「被 N 处引用，删除时 server 拿这份清单拒你」；②**行内「探一次／现探」**——接既有 `GET /api/registry/:id/health`（CLI `registry probe` 的同一落点、同一份 5min 实探缓存，`?refresh=1` 才绕开），读数回来顺手并进批量那张 health map，于是表上那颗点与详情行不会画成两样；回执句只说它那一格说不出来的三件事（失败原话／这一类没有探针通道／刚探过一次，读数见上一格）。机证：web 单测 +9 条（`refRows` 三段排版与字段缺失、形状不认也不吞、缺键 vs 空数组分家、数值型 `refs` 不画清单但计数照读；`probeNote` 四态＋失败优先＋不重复贴人话），web **12 文件 / 100** 全绿 + `tsc -b` 净 + 根 typecheck 净。**M0 样张③ 的「肉眼看到」：截图仍取不到（应用内视口不可用），但现网 DOM 断言已实跑到**（2026-09-27，见下一行「现网取证」）。**更正一笔**：`ba7622c` 的提交说明把「`api.dryRun` 返回形状并入单一事实源」记成本片改动，实际那半在 `1098285` 就落了（见上一行 K2）；提交已推故不改历史，账在这里对平 |
 | X2 | CLI 三处必动 + AGENTS/README + 发行 v0.3.0 | **已完成**（代码面 `e8f1fb6` 一片 + 发行本片） | 本片 | 三处：①`CLI_SUBCOMMANDS` 已含 `env/registry`（前片完成，本片无需增枚）；②`VALUE_FLAGS` 已含 `kind/from/path/space/template`（本片不新增）；③USAGE 补 `env add` 一行（含 --json）；`paneflow env add <目录> --space <id> [--json]` 与网页向导同一 API、同一判据（stdout 干净可 `| jq`）；AGENTS.md 补 `env add` 命令块（四类入档 / 三类只披露 / 一行回执 / 不装任何软件）。机证：CLI 单测 4 条（人读一行 + `--json` 直出 + `body.error` 双语义退 1 + 脏输入不发请求与 USAGE 覆盖），CLI **3 文件 / 74** 全绿 + `pnpm typecheck` 净。**发行（本片）**：五枚 `package.json` 0.2.0→0.3.0（根 `name: paneflow` 的版本即注册表 `schema.json` 的 `writtenBy` 来源，无需另改代码）+ README 的 tag 示例那行照改；`node scripts/build-release.mjs` 本地产 `paneflow-0.3.0.tgz`（378.9KB／9 文件，带 `.sha256` sidecar 与 `LICENSE`——v0.2.0 包内缺许可那条已还）；`node scripts/smoke-release.mjs` 对**真产物** **17/17 通过**（含 E1/E2/E3「新起服务上 `runs`/`experiments --suite c4` 真打得通」与 E4/E6 自起实例不留孤儿）。打 `v0.3.0` 标签推 `origin/main` 后由 `release.yml` 自动发 GitHub Release（CI 里冒烟不过则不发）。**Release 与装机的肉眼回执仍是 X3 的事**——本仓在 agent 侧只能证到产物冒烟这一层 |
-| X3 | 实机首驾（零手填路径全程） | 待用户实机跑 | — | 代码路径已通：`paneflow env add <绝对路径> --space <id>` → `paneflow registry check --template x` → `paneflow dispatch "..." --repo ... --issue ...` → `paneflow status <runId>` 见「能力: N 项 · cap#xxx」一行；向导四步（网页）同路。欠的是真项目上跑一遍：本机装 v0.3.0 之后手敲一次；agent 侧无可代做的部分。**机器前置在 §八 末一条**：本机在跑的 server 是 09-26 的 dev 实例，T1/T4/E1/E2 的后端不在它身上（`?kind=node-type` 400、`/api/env/probe` 404），不先做那次队列空重启，X3 的第一笔就撞这两处 |
+| A5-1 | `skill` 进注册表（登记项第三枚；§十二 形状决议的第一片） | **已完成（本片）** | 本片 | **可感面**：`paneflow registry list` 多出「技能」分组；`paneflow registry probe skill:&lt;id&gt;` 三态人话（`live`＝去那个项目 `rootCwd` 实读到「N 字节 · 改动于 …」／`missing`＝越界·不是文件·没有这篇／`unknown`＝项目档案读不到或没配根目录，明说「不等于这篇技能不存在」）；**语义变化一处**：`registry check --template x` 里 `kind:'skill'` 的槽自此从 `?`（不拦）翻成 `✓/✗`，起单口同尺 fail-closed；网页「注册中心·新增」长出 skill 三键——`所属项目` 是下拉（数据源 `GET /api/spaces`），`文档路径` 是文本框+datalist（候选=所选空间 `skills`/`conventionFiles`/`rules[].file` 三源并集去重排序，仍可直填，候选不是白名单）。**形状**：`spec={space,file,note?}`——作用域住 spec 不动信封、不升 schema v2（§十二-2）；引用写法三枚 `id`/`slug`/`spec.file`（第三枚是盘上今天真在写的那串路径，不认它则本片当场把现网角色引用洗成悬挂）；写入面不判存在性（space 归 R2 引用账、file 归 R4 探针，§十二-4）；预检不按 `--space` 收窄，`spaceNote` 文案已改口并被断言 `toContain` 钉住。**跨面同键的不对称处置**（§十二-6）：反向引用账把同一 `file` 的两枚条目**逐条记全**（多报=删被拒，可绕），正向能力快照**跳过歧义项**（记两条=谎称这一单读了两篇文件，不可恢复），全跳过给 `null` 不给 `[]`。机证：server **62 文件 / 937**（新增判据 24 条——`registry` 10／`registry-check` 单元 3／路由 2／引用账歧义双记 2／快照跳过 3／起单拦截 1／词表 1 类）+ web **12 文件 / 104**（skill 三键与候选并集 6 条）+ cli **3 文件 / 75**；根 `typecheck` 净 + web `tsc -b` 净。**改口入账**（§十二-8）：7 条既有断言里拿未迁 kind 举例的位换成 `rule`（`api/registry-check` fixture 槽、`registry-refs` 未迁清单与 `requires[3].id`、CLI `?` 槽与「需要：模型 3 · 规则 1」行、web 未知类型示例、`registry.test` 分组序）——**只换例子，没放宽任何判据**，`git diff` 里 `it(` 行零删除。**诚实边界两条**：①表单的实机浏览器核对欠着——本机 4310 跑的是 09-26 dev 实例（v13-S6 单实例锁），这一版前端不在它身上，`?kind=skill` 在那台实例上照旧 400，与 X3 前置是同一次重启；②`skill` 探针不进缓存层，`--refresh` 对它是 no-op（CLI 不拿旗标撒谎） |
+| X3 | 实机首驾（零手填路径全程） | 待用户实机跑 | — | 代码路径已通：`paneflow env add <绝对路径> --space <id>` → `paneflow registry check --template x` → `paneflow dispatch "..." --repo ... --issue ...` → `paneflow status <runId>` 见「能力: N 项 · cap#xxx」一行；向导四步（网页）同路。欠的是真项目上跑一遍：本机装 v0.3.0 之后手敲一次；agent 侧无可代做的部分。**机器前置在 §八 末一条**：本机在跑的 server 是 09-26 的 dev 实例，T1/T4/E1/E2/A5-1 的后端不在它身上（`?kind=node-type` 与 `?kind=skill` 400、`/api/env/probe` 404），不先做那次队列空重启，X3 的第一笔就撞这两处 |
 
-**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（A3-2 片收口实跑：server **61 文件 / 872** 绿、web 11/**82**、cli 3/**70**，`pnpm typecheck` 净 + web `tsc -b` 净；T3 片时是 61/852、web 77、cli 69，R5 片收口时 57/817、web 71、cli 63——**只加不减**，且加的全是新片的判据断言，既有断言一条没放宽。X1 全量片收口时（K2 已在账）：**server 918 · web 12/100 · cli 75**，根 `typecheck` 净 + web `tsc -b` 净）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉半证**（A3-2 后 `pnpm build` 刷新了 server 一键模式挂的前端，实机页面读回 `Agent 引擎 18 项 内置清单` 分组与「出厂行无启停/删除」；截图仍未取到——应用内视口不可用，见 X1 行）。
+**M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（A3-2 片收口实跑：server **61 文件 / 872** 绿、web 11/**82**、cli 3/**70**，`pnpm typecheck` 净 + web `tsc -b` 净；T3 片时是 61/852、web 77、cli 69，R5 片收口时 57/817、web 71、cli 63——**只加不减**，且加的全是新片的判据断言，既有断言一条没放宽。X1 全量片收口时（K2 已在账）：**server 918 · web 12/100 · cli 75**，根 `typecheck` 净 + web `tsc -b` 净；**A5-1 片收口时：server 62 文件 / 937 · web 12/104 · cli 75**，两枚净照旧）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉半证**（A3-2 后 `pnpm build` 刷新了 server 一键模式挂的前端，实机页面读回 `Agent 引擎 18 项 内置清单` 分组与「出厂行无启停/删除」；截图仍未取到——应用内视口不可用，见 X1 行）。
    **X1 两件的现网取证（2026-09-27，`http://127.0.0.1:4310/` 注册中心，dist 为 HEAD）走 DOM 断言，原话照抄**：
    模型条目详情抽屉「谁在用」两行——`gateway · 「默认档」（default） · freeModel` 与
    `template · 「t3-demo」（t3-demo） · requires[0].id`（T3 的 `graph.requires` 引用真的进了引用账），

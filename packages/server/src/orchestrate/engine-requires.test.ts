@@ -84,6 +84,21 @@ describe('startRun 的能力槽预检', () => {
   });
 
   it('未迁进注册表的 kind 不拦起单（判不了死活就只披露，拿空白当断言=误杀存量模板）', async () => {
+    const run = await engine.startRun(graph([{ kind: 'rule', id: 'docs/x.md' }]), cwd);
+    expect((await settle(run.runId)).state).toBe('completed');
+  });
+
+  /**
+   * v14 A5-1 把 `skill` 接进表之后，这一类槽在**起单口**也跟着翻成 fail-closed。
+   * 单独钉一格的理由：预检判据在 `registry-check.test.ts` 已证，这里要证的是引擎喂给判据的
+   * 是合并视图（含用户登记的 skill 条目）——只证判据的话，「表里有这条但引擎读不到」这种
+   * 接线断点会一路静默到实机。
+   */
+  it('skill 槽自此拦起单：没登记即拒，登记后同一张图放行', async () => {
+    await expect(engine.startRun(graph([{ kind: 'skill', id: 'skills/x/SKILL.md' }]), cwd)).rejects.toThrow(
+      /skill → skills\/x\/SKILL\.md/,
+    );
+    expect(new RegistryStore(dataDir).add({ kind: 'skill', name: 'x', spec: { space: 'demo', file: 'skills/x/SKILL.md' } }).ok).toBe(true);
     const run = await engine.startRun(graph([{ kind: 'skill', id: 'skills/x/SKILL.md' }]), cwd);
     expect((await settle(run.runId)).state).toBe('completed');
   });

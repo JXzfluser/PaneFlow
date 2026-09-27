@@ -91,7 +91,7 @@ export function sourceLabel(source: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 表单字段：从 kind 的 spec 形状「长」出来。今天只有 model 一枚（shared RegistrySpecMap 同款四键）。
+// 表单字段：从 kind 的 spec 形状「长」出来（与 shared 的 `RegistrySpecMap` 逐 kind 对齐）。
 // 没定义字段的 kind 返回 null——界面对它明说「不登记不认识的形状」，绝不临场发明字段。
 // ---------------------------------------------------------------------------
 
@@ -102,6 +102,10 @@ export interface RegistryFormField {
   type: 'text' | 'select' | 'checkbox';
   required?: boolean;
   hint?: string;
+  /** 下拉选项的来源（渲染侧按这一枚去取候选，不再写死 `key === 'gatewayProfile'`） */
+  options?: 'gateway-profiles' | 'spaces';
+  /** 直接给 datalist 候选集（可选也可填——候选是省手的，不是白名单） */
+  list?: 'models' | 'skill-files';
 }
 
 /** 信封层的显示名（POST 体的 name，所有 kind 共用） */
@@ -114,10 +118,22 @@ export const REGISTRY_NAME_FIELD: RegistryFormField = {
 };
 
 const MODEL_FIELDS: RegistryFormField[] = [
-  { key: 'model', label: '型号', type: 'text', required: true, hint: '可从网关探得的清单里选，也可直接填' },
-  { key: 'gatewayProfile', label: '归属网关档', type: 'select', hint: '只是裸 id 引用；档在不在由服务端的引用账说' },
+  { key: 'model', label: '型号', type: 'text', required: true, list: 'models', hint: '可从网关探得的清单里选，也可直接填' },
+  { key: 'gatewayProfile', label: '归属网关档', type: 'select', options: 'gateway-profiles', hint: '只是裸 id 引用；档在不在由服务端的引用账说' },
   { key: 'freeModel', label: '免费位', type: 'checkbox', hint: '登记时它挂在网关的免费位上才勾' },
   { key: 'note', label: '备注', type: 'text', hint: '为什么留这一枚' },
+];
+
+/**
+ * `skill`（v14 A5-1）：形状照 server 的 `parseSkillSpec`（{space,file,note?}）。
+ * 「所属项目」是下拉（读自 `/api/spaces`，能选不打）；「文档路径」给候选但仍可直填——
+ * 候选出自那个项目**已经登记过的**技能/规则/约定文档，而「登记一篇新技能」恰恰可能不在里面，
+ * 把候选当白名单就是把表单路堵回「先去项目档案里加路径」那一趟。
+ */
+const SKILL_FIELDS: RegistryFormField[] = [
+  { key: 'space', label: '所属项目', type: 'select', required: true, options: 'spaces', hint: '相对路径以这个项目的根为基准，换项目=换文件' },
+  { key: 'file', label: '文档路径', type: 'text', required: true, list: 'skill-files', hint: '相对项目根；可从该项目已登记的清单里选，也可直接填' },
+  { key: 'note', label: '备注', type: 'text', hint: '这篇是干什么的（选填）' },
 ];
 
 const MCP_FIELDS: RegistryFormField[] = [
@@ -128,8 +144,38 @@ const MCP_FIELDS: RegistryFormField[] = [
 
 export function formFieldsFor(kind: string): RegistryFormField[] | null {
   if (kind === 'model') return MODEL_FIELDS;
+  if (kind === 'skill') return SKILL_FIELDS;
   if (kind === 'mcp') return MCP_FIELDS;
   return null;
+}
+
+/**
+ * 候选池只吃档案里那三条路径列表，所以按**结构**收（server 的 `SpaceProfile` 不在 shared 里，
+ * 这里抄全表就是把「档案加字段」变成页面的破坏性变更）。字段全可选：`GET /api/spaces/:id`
+ * 对没配过的键整缺不造默认，这里也不拿 `undefined` 当空数组用。
+ */
+export interface SkillCandidateSource {
+  id: string;
+  skills?: string[];
+  conventionFiles?: string[];
+  rules?: { file?: string }[];
+}
+
+/**
+ * 一枚项目档案里「像技能文档的东西」的候选集：`skills[]` ∪ `conventionFiles[]` ∪ `rules[].file`。
+ * 为什么三处并起来：注入现场吃的就是这三类路径（作用域规则与约定文档同一条通道），
+ * 只列 `skills[]` 会让「把一篇已在用的规则登记成能力条目」这一路必须手打。
+ * 只读给出、不改任何档案：这里是候选池，不是第二个登记面。
+ */
+export function skillFileCandidates(spaces: SkillCandidateSource[], spaceId: string): string[] {
+  const sp = spaces.find((x) => x.id === spaceId);
+  if (!sp) return [];
+  const files = [
+    ...(Array.isArray(sp.skills) ? sp.skills : []),
+    ...(Array.isArray(sp.conventionFiles) ? sp.conventionFiles : []),
+    ...(Array.isArray(sp.rules) ? sp.rules.map((r) => r?.file) : []),
+  ];
+  return [...new Set(files.filter((f): f is string => typeof f === 'string' && f.trim() !== '').map((f) => f.trim()))].sort();
 }
 
 export type RegistryFormValues = Record<string, string | boolean>;
@@ -198,6 +244,9 @@ const SPEC_FIELD_LABELS: Record<string, string> = {
   // mcp（v14 T4，用户登记项）：启动命令 + 参数 + 备注
   command: '启动命令',
   args: '参数',
+  // skill（v14 A5-1，用户登记项）：作用域住在 spec 里，所以「所属项目」也得画出来
+  space: '所属项目',
+  file: '文档路径',
 };
 
 export interface SpecRow {

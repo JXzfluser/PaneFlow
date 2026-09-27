@@ -132,9 +132,10 @@ describe('引用索引（buildReferenceIndex）', () => {
   it('未迁进表的 kind 只披露计数、绝不判死活（表里没有这一类，判「不存在」就是拿空白冒充断言）', () => {
     const raw = scanRawReferences(fixtureDataDir());
     const index = buildReferenceIndex([], raw);
-    // 改口入账：`agent-kind`（A3-2）与 `node-type`（T1）自此不在这份名单里——它们进了表，成员由出厂清单现算
+    // 改口入账：`agent-kind`（A3-2）、`node-type`（T1）与 `skill`（A5-1）自此不在这份名单里——
+    // 它们进了表（前两枚的成员由出厂清单现算），成员判得了死活
     expect(index.unmigrated.map((u) => u.kind).sort()).toEqual(
-      ['check-type', 'gateway-profile', 'repo', 'role', 'rule', 'skill', 'template'].sort(),
+      ['check-type', 'gateway-profile', 'repo', 'role', 'rule', 'template'].sort(),
     );
     const role = index.unmigrated.find((u) => u.kind === 'role');
     expect(role).toEqual({ kind: 'role', targets: ['r-deliver'], refs: 2 }); // 班底名册 + 模板节点绑岗
@@ -184,6 +185,9 @@ describe('模板声明面 requires（v14-T3）', () => {
         { kind: 'model', id: 'gpt-4o-mini', hint: '要便宜的那枚' },
         { kind: 'model', hint: '任一模型即可，不点名' },
         { kind: 'skill', id: 'skills/y/SKILL.md' },
+        // 留一枚**还没迁进表**的 kind 在这套 fixture 里：A5-1 把 skill 接走之后，
+        // 「未迁的 kind 只披露」这条老账总得有个样本可指（rule 是 A5-2 的下一棒）。
+        { kind: 'rule', id: 'docs/always.md' },
       ],
       metadata: { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
     });
@@ -198,12 +202,17 @@ describe('模板声明面 requires（v14-T3）', () => {
     expect(raw.filter((r) => r.via.startsWith('requires')).map((r) => `${r.via}=${r.kind}:${r.target}`)).toEqual([
       'requires[0].id=model:gpt-4o-mini',
       'requires[2].id=skill:skills/y/SKILL.md',
+      'requires[3].id=rule:docs/always.md',
     ]);
   });
 
   it('声明面与实发面分家：requires 不进 refsFromGraph（R5 的 cap# 只记这单实发吃进的能力）', () => {
     const dataDir = requiresFixture();
-    expect(refsFromRequires(readDecl(dataDir), 'decl').map((r) => r.via)).toEqual(['requires[0].id', 'requires[2].id']);
+    expect(refsFromRequires(readDecl(dataDir), 'decl').map((r) => r.via)).toEqual([
+      'requires[0].id',
+      'requires[2].id',
+      'requires[3].id',
+    ]);
     expect(refsFromGraph(readDecl(dataDir), 'decl').some((r) => r.via.startsWith('requires'))).toBe(false);
   });
 
@@ -214,7 +223,41 @@ describe('模板声明面 requires（v14-T3）', () => {
     const miss = buildReferenceIndex([entry({ model: '别的型号' })], raw);
     // fixture 的节点还写着 `agentKind: 'pi'`——A3-2 起这一类判得了死活，按 kind 取 model 那格的老账
     expect(miss.dangling.filter((d) => d.kind === 'model').map((d) => `${d.kind}:${d.target}`)).toEqual(['model:gpt-4o-mini']);
-    expect(miss.unmigrated.find((u) => u.kind === 'skill')).toMatchObject({ targets: ['skills/y/SKILL.md'], refs: 1 });
+    // 改口入账（A5-1）：`skill` 自此不在 unmigrated 里，点名没登记就是**可断的账**
+    expect(miss.unmigrated.map((u) => u.kind)).toEqual(['rule']);
+    expect(miss.dangling.filter((d) => d.kind === 'skill').map((d) => d.target)).toEqual(['skills/y/SKILL.md']);
+  });
+
+  /**
+   * A5-1 在引用面上的形状：一枚裸相对路径命中两枚条目（两个项目根下各有一篇同名文档）时
+   * **逐条记全**，而不是挑一枚。反向账问的是「删了会断谁」，漏报等于静默剪断现役配置；
+   * 多报只是多挡一次删除（先改引用再删即可）。而**空间自己发的**引用带主人 id，按主人收窄——
+   * 这一路判得准，所以 B 项目登记的那篇不会冒领 A 项目的引用。
+   */
+  it('同一枚相对路径命中两枚条目：反向逐条记全（不挑一枚），空间自发的引用按主人收窄', () => {
+    const skill = (space: string, name: string): RegistryEntry => {
+      const r = normalizeRegistryEntry({ kind: 'skill', name, spec: { space, file: 'docs/x.md' } });
+      if (!r.ok) throw new Error(r.why);
+      return r.value;
+    };
+    const entries = [skill('a', '甲'), skill('b', '乙')];
+    // 角色（全局名册）发的引用不绑空间：两枚都认领，各得一条出处
+    const byRole = buildReferenceIndex(entries, [
+      { face: 'role', id: 'r1', name: '岗位', via: 'skills[0]', kind: 'skill', target: 'docs/x.md' },
+    ]);
+    expect(byRole.byEntry.map((b) => b.refs.length)).toEqual([1, 1]);
+    expect(byRole.dangling).toEqual([]);
+    // 空间发的引用带主人：只有主人那一枚认领
+    const bySpace = buildReferenceIndex(entries, [
+      { face: 'space', id: 'a', name: 'A 项目', via: 'skills[0]', kind: 'skill', target: 'docs/x.md' },
+    ]);
+    expect(bySpace.byEntry.map((b) => b.refs.map((x) => `${x.face}:${x.id}`))).toEqual([['space:a'], []]);
+    expect(bySpace.dangling).toEqual([]);
+    // 指到没登记的路径才是 dangling（这一枚自此判得了死活）
+    const none = buildReferenceIndex(entries, [
+      { face: 'space', id: 'a', name: 'A 项目', via: 'skills[0]', kind: 'skill', target: 'docs/nope.md' },
+    ]);
+    expect(none.dangling.map((d) => `${d.kind}:${d.target}`)).toEqual(['skill:docs/nope.md']);
   });
 });
 

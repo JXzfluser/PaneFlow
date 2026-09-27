@@ -1,6 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { probeCatalogProfiles } from './gateway-catalog.js';
 import { readGatewayDoc } from './gateway.js';
 import { probeBinaryPresence } from './env-check.js';
+import { Store } from '../orchestrate/store.js';
 import type { RegistryEntry } from '@paneflow/shared';
 
 /**
@@ -109,6 +112,81 @@ async function agentKindHealth(entry: RegistryEntry<'agent-kind'>, refresh: bool
 }
 
 /**
+ * `skill` 通道（v14 A5-1）：条目说的是「某项目根下有这篇可注入的技能文档」，那就去那个根下实读一次。
+ * 三态的划法与家规一致：
+ *  · **读到了=live**（顺带报字节数与改动时刻，人按这个位置判断是不是自己想要的那篇）；
+ *  · **确实没有=missing**；越出主仓根也算 missing——注入现场（`orchestrate/skills.ts: safeJoin`）
+ *    对这种路径就是跳过，「永远不会被注入」是一条确定结论，不是「没探通」；
+ *  · **无从判=unknown**：项目档案里没这枚空间、空间没配 `rootCwd`（相对路径没有基准）、
+ *    或 `stat` 抛的是权限/IO 错（读不动不等于不在）。
+ * `refresh` 在这一枚是空参数：文件面没有缓存层，每次都是现探（`cached` 恒 false 因此是实话）。
+ */
+async function skillHealth(dataDir: string, entry: RegistryEntry<'skill'>): Promise<EntryHealth> {
+  const { space, file } = entry.spec;
+  const now = Date.now();
+  const sp = Store.listSpaces(dataDir).find((x) => x.id === space);
+  if (!sp) {
+    return {
+      status: 'unknown',
+      detail: `项目档案里没有「${space}」这一枚，相对路径没有基准可比：未探得，不等于这篇技能不存在`,
+      cached: false,
+      at: new Date(now).toISOString(),
+    };
+  }
+  const root = typeof sp.rootCwd === 'string' ? sp.rootCwd.trim() : '';
+  if (!root) {
+    return {
+      status: 'unknown',
+      detail: `项目「${sp.name}」没配主仓根（rootCwd），「${file}」没有基准可比：未探得`,
+      cached: false,
+      at: new Date(now).toISOString(),
+    };
+  }
+  if (file.includes('..')) {
+    return {
+      status: 'missing',
+      detail: `「${file}」越出了主仓根「${root}」：注入现场按同一把尺直接跳过，这篇永远不会被注进任何节点`,
+      cached: false,
+      at: new Date(now).toISOString(),
+    };
+  }
+  const abs = path.resolve(root, file);
+  try {
+    const st = fs.statSync(abs);
+    if (!st.isFile()) {
+      return {
+        status: 'missing',
+        detail: `「${abs}」在，但它不是文件（是目录或特殊节点）：注入现场读不出整篇内容，等于没有这篇`,
+        cached: false,
+        at: new Date(now).toISOString(),
+      };
+    }
+    return {
+      status: 'live',
+      detail: `项目「${sp.name}」下读到了「${file}」（${st.size} 字节 · 改动于 ${st.mtime.toISOString()}）`,
+      cached: false,
+      at: new Date(now).toISOString(),
+    };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return {
+        status: 'missing',
+        detail: `主仓根「${root}」下没有「${file}」这篇文件：登记与盘面已不一致，要么补文件要么停用它`,
+        cached: false,
+        at: new Date(now).toISOString(),
+      };
+    }
+    return {
+      status: 'unknown',
+      detail: `读不动「${abs}」：${(err as Error).message}（读不动不等于不存在）`,
+      cached: false,
+      at: new Date(now).toISOString(),
+    };
+  }
+}
+
+/**
  * kind → 探针通道。没有条目的 kind 一律没有健康读数（整键不给，不画成未知）。
  *
  * **`mcp`（v14 T4）刻意不在这里**：探一台 MCP server 活着没有、有几个工具，需要一个真客户端去
@@ -120,6 +198,7 @@ async function agentKindHealth(entry: RegistryEntry<'agent-kind'>, refresh: bool
  */
 const CHANNELS: Record<string, (dataDir: string, entry: RegistryEntry, refresh: boolean) => Promise<EntryHealth>> = {
   model: (dataDir, entry, refresh) => modelHealth(dataDir, entry as RegistryEntry<'model'>, refresh),
+  skill: (dataDir, entry) => skillHealth(dataDir, entry as RegistryEntry<'skill'>),
   'agent-kind': (_dataDir, entry, refresh) => agentKindHealth(entry as RegistryEntry<'agent-kind'>, refresh),
 };
 

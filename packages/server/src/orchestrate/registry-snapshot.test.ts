@@ -151,3 +151,49 @@ describe('v14 A3-2 agent-kind 进能力快照', () => {
     expect(capabilitySnapshot([model], [agentRef('pi'), ref({})])!.refs.map((r) => r.id)).toEqual(['model:gpt-4o-mini']);
   });
 });
+
+/**
+ * v14 A5-1：`skill` 进表后第一次有了「这一单实发吃了哪篇技能文档」的账。
+ * 这一枚独有的形状问题是**跨空间可撞**（相对路径在两个项目根下各有一篇同名文档），
+ * 而正向快照与反向引用账对此的处理**刻意相反**——两格钉的就是这个不对称：
+ * 反向多报只是多挡一次删除，正向多记则是宣称这一单读了它没读的文件。
+ */
+describe('v14 A5-1 skill 进能力快照', () => {
+  const skill = (space: string, name: string): RegistryEntry => {
+    const r = normalizeRegistryEntry({ kind: 'skill', name, spec: { space, file: 'docs/x.md' } });
+    if (!r.ok) throw new Error(r.why);
+    return r.value;
+  };
+  const bySpace = (space: string): RawReference => ({
+    face: 'space',
+    id: space,
+    name: `项目 ${space}`,
+    via: 'skills[0]',
+    kind: 'skill',
+    target: 'docs/x.md',
+  });
+
+  it('空间自己发的引用按主人收窄：快照里是主人那一枚，spec 抄整份（含 space）', () => {
+    const jia = skill('a', 'a-doc');
+    const yi = skill('b', 'b-doc');
+    const snap = capabilitySnapshot([jia, yi], [bySpace('b')])!;
+    expect(snap.refs).toEqual([
+      {
+        kind: 'skill',
+        id: 'skill:b-doc',
+        specSha: contentSha({ space: 'b', file: 'docs/x.md' }),
+        spec: { space: 'b', file: 'docs/x.md' },
+        via: ['space·skills[0]'],
+      },
+    ]);
+  });
+
+  it('命中多枚（角色发的引用不绑空间）时整条跳过不猜；跳过全部则整键不给而非空数组', () => {
+    const entries = [skill('a', 'a-doc'), skill('b', 'b-doc')];
+    const byRole: RawReference = { face: 'role', id: 'r1', name: '岗', via: 'skills[0]', kind: 'skill', target: 'docs/x.md' };
+    expect(capabilitySnapshot(entries, [byRole])).toBeNull(); // 全被跳过＝没有正读数，不报 `[]`
+    // 同一单里另有判得准的引用：那一条照记，歧义那条不连带污染
+    const both = capabilitySnapshot(entries, [byRole, bySpace('a')])!;
+    expect(both.refs.map((r) => [r.id, r.via])).toEqual([['skill:a-doc', ['space·skills[0]']]]);
+  });
+});

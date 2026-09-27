@@ -101,8 +101,42 @@ export const mcpDescriptor: RegistryDescriptor<'mcp'> = {
   },
 };
 
+/**
+ * `skill`（v14 A5-1）：本机上有这么一篇可注入的技能文档。label 说的是**它挂在谁家的哪条路径**——
+ * 相对路径离开项目根就没有意义，所以空间 id 必须出现在句子里（只画 `docs/x.md` 会让两个空间的两篇
+ * 同名文件在界面上长得一模一样）。
+ *
+ * 引用写法有三种：整枚 id、slug 段、以及 **`spec.file` 原值**——今天 `SpaceProfile.skills[]` 与
+ * `Role.skills[]` 落册的正是那枚裸相对路径，把它算进匹配键才能让「其实正在用」读成「在用」
+ * （同 `model` 那枚 `spec.model` 的理由）。它因此是**跨空间可撞**的一枚键——消歧不在这里做，
+ * 见 `registry-refs.ts` 的多重命中处置。
+ */
+export const skillDescriptor: RegistryDescriptor<'skill'> = {
+  kind: 'skill',
+  label(entry) {
+    const { space, file, note } = entry.spec;
+    return [`[项目 ${space}] ${file}`, note].filter(Boolean).join(' · ');
+  },
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return [entry.id, ...(slug ? [slug] : []), entry.spec.file];
+  },
+  /**
+   * `spec.file` 是相对路径，**跨空间可撞**（两个项目根下各有一篇 `docs/x.md` 时，一枚裸串对两枚条目）。
+   * 三条判序：①整枚 id 或 slug 段=**定点引用**，天然无歧义；②空间自己发的引用（`skills[i]`）带主人 id，
+   * 照主人收窄——这一路判得准，所以 R5 快照不会把「A 项目的这篇」记成「B 项目的这篇」；
+   * ③角色/模板发的引用不绑空间（角色是全局名册），这里不硬判，交给调用方的多重命中处置。
+   */
+  matches(entry, target, ref) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    if (target === entry.id || (slug !== undefined && target === slug)) return true;
+    return ref.face === 'space' ? entry.spec.space === ref.id : true;
+  },
+};
+
 export const REGISTRY_DESCRIPTORS: { [K in RegistryEntry['kind']]: RegistryDescriptor<K> } = {
   model: modelDescriptor,
+  skill: skillDescriptor,
   'agent-kind': agentKindDescriptor,
   'node-type': nodeTypeDescriptor,
   mcp: mcpDescriptor,

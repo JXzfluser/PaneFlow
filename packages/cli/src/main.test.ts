@@ -1072,12 +1072,14 @@ describe('registry check（v14-T3 起单前预检：判定全在 server，CLI �
     slots: [
       { kind: 'model', id: 'gpt-4o-mini', verdict: 'ok', why: '用「小4号」', entryId: 'model:gpt-4o-mini' },
       { kind: 'model', id: 'gpt-9', verdict: 'missing', why: '注册表里没有可用的「模型」条目指向「gpt-9」' },
-      { kind: 'skill', id: 'skills/x/SKILL.md', verdict: 'unjudged', why: '「技能」这一类还没迁进注册表' },
+      // `?` 那一格换 kind=`rule`：A5-1 起 server 再也不会对 skill 发这句（判得了死活了就只剩二值），
+      // 拿一张发不出去的读数测渲染等于把 CLI 的桩当预言用
+      { kind: 'rule', id: 'docs/x.md', verdict: 'unjudged', why: '「规则」这一类还没迁进注册表' },
       { kind: 'model', verdict: 'malformed', why: '声明形状不认：含未知键 knd' },
     ],
     need: [
       { kind: 'model', label: '模型', declared: 3, judged: 3, gaps: 2 },
-      { kind: 'skill', label: '技能', declared: 1, judged: 0, gaps: 0 },
+      { kind: 'rule', label: '规则', declared: 1, judged: 0, gaps: 0 },
     ],
     missing: [],
     unjudged: [],
@@ -1092,11 +1094,11 @@ describe('registry check（v14-T3 起单前预检：判定全在 server，CLI �
     expect(await main(['registry', 'check', '--template', 'flow', '--space', 'demo'], io)).toBe(1);
     expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/registry/check?template=flow&space=demo');
     const out = lines.join('\n');
-    expect(out).toContain('模板「flow」· 项目「demo」· 需要：模型 3 · 技能 1');
+    expect(out).toContain('模板「flow」· 项目「demo」· 需要：模型 3 · 规则 1');
     expect(out).toContain('← 有缺口');
     expect(out).toContain('✓ model → gpt-4o-mini  用「小4号」');
     expect(out).toContain('✗ model → gpt-9');
-    expect(out).toContain('? skill → skills/x/SKILL.md');
+    expect(out).toContain('? rule → docs/x.md');
     expect(out).toContain('⚠ model  声明形状不认');
   });
 
