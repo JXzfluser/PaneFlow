@@ -190,7 +190,14 @@ export function scanRawReferences(dataDir: string): RawReference[] {
 export function matchesTarget(entry: RegistryEntry, target: string, ref?: RegistryRefContext): boolean {
   const descriptor = (REGISTRY_DESCRIPTORS as unknown as Record<string, RegistryDescriptor | undefined>)[entry.kind];
   if (!descriptor) return false;
-  if (!descriptor.refKeys(entry).includes(target)) return false;
+  const keys = descriptor.refKeys(entry);
+  if (!keys.includes(target)) {
+    // 这一 kind 声明了 target 的归一写法（今天只有 `repo`：远端仓既可能是 URL 也可能是 `owner/repo`）：
+    // 原样对不上时再拿归一名试一次。归一只在这一处发生、只按 kind 自己报的那把尺，
+    // 且**不放宽**任何判据——它对不上的还是对不上，只是不再把同一枚仓的两种拼法当成两回事。
+    const norm = descriptor.normalizeTarget?.(target);
+    if (norm === undefined || norm === target || !keys.includes(norm)) return false;
+  }
   return descriptor.matches ? descriptor.matches(entry, target, ref ?? { face: '', id: '' }) : true;
 }
 

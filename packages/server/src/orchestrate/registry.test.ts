@@ -9,6 +9,7 @@ import {
   NODE_TYPE_GROUPS,
   parseNodeTypeSpec,
   parseMcpSpec,
+  parseRepoSpec,
   parseRuleSpec,
   parseSkillSpec,
   REGISTRY_KINDS,
@@ -25,7 +26,7 @@ import { AGENT_KINDS } from '../api/agent-kinds.js';
 import { entryHealth } from '../api/registry-health.js';
 import { REGISTRY_DESCRIPTORS } from './registry-descriptors.js';
 import { requirementKindLabel } from './registry-check.js';
-import { buildReferenceIndex, type RawReference } from './registry-refs.js';
+import { matchesTarget, buildReferenceIndex, type RawReference } from './registry-refs.js';
 import { detectAppVersion, RegistryStore } from './registry.js';
 
 /**
@@ -252,9 +253,10 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
     const store = storeAt(tmp());
     store.add(MODEL);
     // 每一类**登记项**都得挂号，否则「序」这条断言会把没登记的那一类静默跳过
-    // （A5-1 起有 skill、A5-2 起有 rule：新迁一类就在这一格多 add 一条）
+    // （A5-1 起有 skill、A5-2 起有 rule、A5-3 起有 repo：新迁一类就在这一格多 add 一条）
     store.add({ kind: 'skill', name: '技能 x', spec: { space: 'demo', file: 'skills/x/SKILL.md' } });
     store.add({ kind: 'rule', name: '约定 x', spec: { space: 'demo', file: 'docs/x.md' } });
+    store.add({ kind: 'repo', name: '前端仓', spec: { space: 'demo', dir: 'packages/web' } });
     store.add({ kind: 'mcp', name: 'fs-server', spec: { command: 'mcp-fs' } });
     const entries = store.readView().entries;
     expect(entries[0]!.id).toBe('model:gpt-4o-mini');
@@ -742,5 +744,238 @@ describe('v14 A5-2 rule 进表：作用域住在 spec，探针连作用域目录
 
   it('预检词表：`需要：规则` 那一行有中文组名（KIND_CN 是全仓唯一一份措辞表）', () => {
     expect(requirementKindLabel('rule')).toBe('规则');
+  });
+});
+
+/**
+ * v14 A5-3：`repo` 进表。这一类独有的毛病只有一件——**一盘两制**：
+ * 档案侧（`repos[]`／`rules[].repo`／`delivery[].repo`）写的是相对主仓根的**目录名**，
+ * 派活侧（`contract.repo`／`dispatch --repo`）写的是 GitHub 的 **`owner/repo`**。
+ * 两枚命名空间都得住进一条账：只认目录名，则按 `owner/repo` 点名的声明永远判不到条目；
+ * 只认 origin，则现网那三处裸串当场全洗成悬挂。所以 `refKeys` 四枚起步、origin 还额外归一出一枚，
+ * 而**归一绝不写回数据**（条目里存的就是用户敲的那串）。
+ *
+ * 探针只问一件事：「这台机器上这个目录在不在」。**不实读 `.git/config` 核对 origin**——
+ * 整表健康读数是一枚条目一次 subprocess 的话，注册中心首屏就成了 `git` 调用放大器；
+ * 而 remote 的实读本来就归派发现场（`dispatch.ts: candidateRepos`），这里再读一遍是第二处判据。
+ * 「没核」不等于「不符」，所以这一条只在 detail 里说一句，不进三态。
+ */
+describe('v14 A5-3 repo 进表：一盘两制两套写法，探针只问目录在不在', () => {
+  const repo = (spec: Record<string, unknown>, name?: string): RegistryEntry<'repo'> => {
+    const e = normalizeRegistryEntry({ kind: 'repo', name: name ?? String(spec.dir), spec });
+    if (!e.ok) throw new Error(e.why);
+    return e.value as RegistryEntry<'repo'>;
+  };
+  /** 有根的项目：`repos/app` 是个真仓（有 .git），`repos/plain` 只是目录，`repos/file` 是文件 */
+  const root = tmp();
+  fs.mkdirSync(path.join(root, 'repos', 'app', '.git'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'repos', 'plain'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'repos', 'file'), '不是目录\n');
+  const dataDir = tmp();
+  const writeSpace = (id: string, rootCwd?: string): void => {
+    fs.mkdirSync(path.join(dataDir, 'spaces', id), { recursive: true });
+    fs.writeFileSync(
+      path.join(dataDir, 'spaces', id, 'profile.json'),
+      JSON.stringify({ id, name: `项目 ${id}`, createdAt: '2026-01-01T00:00:00.000Z', ...(rootCwd ? { rootCwd } : {}) }),
+    );
+  };
+  writeSpace('demo', root);
+  writeSpace('noroot');
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('挂号：认识它（预检自此判得了仓库槽的死活），且它是登记项不是视图项', () => {
+    expect(REGISTRY_KINDS).toContain('repo');
+    expect(REGISTRY_VIEW_KINDS).not.toContain('repo');
+  });
+
+  it('spec 形状：space+dir 必填、origin 空串照拒、note 空了整键不发、未知键照拒（dire 拼错=这枚仓从此探不到）', () => {
+    expect(
+      parseRepoSpec({ space: 'demo', dir: 'repos/app', origin: 'git@github.com:my-org/my-repo.git', note: '主仓' }),
+    ).toEqual({
+      ok: true,
+      value: { space: 'demo', dir: 'repos/app', origin: 'git@github.com:my-org/my-repo.git', note: '主仓' },
+    });
+    const v = parseRepoSpec({ space: ' demo ', dir: ' repos/app ', note: '  ' });
+    if (!v.ok) throw new Error(v.why);
+    expect(v.value).toEqual({ space: 'demo', dir: 'repos/app' }); // note 全空=整键不发（与 model/skill/rule 同一处理）
+    for (const [bad, why] of [
+      [{ space: 'demo' }, 'dir'],
+      [{ dir: 'repos/app' }, 'space'], // 没有主人的仓：相对目录名没有基准，探针连往哪找都不知道
+      [{ space: '  ', dir: 'repos/app' }, 'space'],
+      [{ space: 'demo', dir: '  ' }, 'dir'],
+      [{ space: 'demo', dire: 'repos/app' }, 'dire'],
+      [{ space: 'demo', dir: 'a', origin: 7 }, 'origin'],
+      // origin 空串**不**跟着 note 走：它是引用写法之一，塞进引用账就是一条永远指不到的裸串
+      [{ space: 'demo', dir: 'a', origin: '  ' }, 'origin'],
+      [{ space: 'demo', dir: 'a', note: null }, 'note'],
+      ['repos/app', '{space, dir, origin?, note?}'],
+    ] as const) {
+      const r = parseRepoSpec(bad);
+      if (r.ok) throw new Error(`脏形状被认下了：${JSON.stringify(bad)}`);
+      expect(r.why).toContain(why);
+    }
+  });
+
+  it('登记时**不判**目录在不在、也不判 origin 与真仓符不符：先立账后克隆是常态（写入面判存在=把这条路堵死）', () => {
+    const store = storeAt(tmp());
+    const added = store.add({
+      kind: 'repo',
+      name: '还没克隆的仓',
+      spec: { space: '没有这个项目', dir: '../../越界', origin: 'my-org/not-exist' },
+    });
+    expect(added.ok).toBe(true);
+    expect(store.readView().entries.filter((e) => e.kind === 'repo')).toHaveLength(1);
+  });
+
+  it('label 两套命名空间都画：只画目录名时，派活写的 owner/repo 在界面上指认不出是同一枚仓', () => {
+    expect(REGISTRY_DESCRIPTORS.repo.label(repo({ space: 'demo', dir: 'repos/app' }))).toBe('[项目 demo] repos/app');
+    expect(
+      REGISTRY_DESCRIPTORS.repo.label(repo({ space: 'demo', dir: 'repos/app', origin: 'my-org/my-repo' })),
+    ).toBe('[项目 demo] repos/app（my-org/my-repo）');
+    expect(
+      REGISTRY_DESCRIPTORS.repo.label(repo({ space: 'demo', dir: 'repos/app', origin: 'my-org/my-repo', note: '主仓' })),
+    ).toBe('[项目 demo] repos/app（my-org/my-repo） · 主仓');
+  });
+
+  it('引用写法：id/slug/目录名/origin 四枚同权，且 origin 存 URL 时归一名也算（一把尺，两种写法，零数据改写）', () => {
+    const e = repo({ space: 'demo', dir: 'repos/app', origin: 'https://github.com/my-org/my-repo.git' }, 'main-app');
+    expect(REGISTRY_DESCRIPTORS.repo.refKeys(e)).toEqual([
+      'repo:main-app',
+      'main-app',
+      'repos/app',
+      'https://github.com/my-org/my-repo.git',
+      'my-org/my-repo',
+    ]);
+    // 归一只多列一枚键，条目里存的仍是原样（快照抄的是 spec，不是猜来的规范形）
+    expect(e.spec.origin).toBe('https://github.com/my-org/my-repo.git');
+  });
+
+  /**
+   * 反方向那一趟：条目登记的是 `owner/repo`（`candidateRepos` 外发给用户的正是这一形），
+   * 而引用那头发来的是表单明写允许的完整 clone URL。只归一登记值、不归一 target，这一趟就悄悄指不到——
+   * 预检画 `✗ 死缺` 拦下一次本来安全的起单，引用账把它算成 dangling 后又放行删除。
+   * 假绿更狠的一种形态在最后一句：归一**认错了域**（自建 Gitea 的 URL 不是 GitHub 的尺能归的）时
+   * 不许把它折进任何一枚 GitHub 仓，宁可指不到。
+   */
+  it('origin 存 `owner/repo` 时，发来的完整 URL 按同一把尺归一后照样指得到（两写法同权，非只单侧）', () => {
+    const e = repo({ space: 'demo', dir: 'repos/app', origin: 'my-org/my-repo' }, 'main-app');
+    const urls = ['https://github.com/my-org/my-repo.git', 'git@github.com:my-org/my-repo.git'];
+    for (const target of [...urls, 'my-org/my-repo']) {
+      expect(matchesTarget(e, target)).toBe(true);
+    }
+    // URL 那两枚**不在** `refKeys` 里：命中的路走的是 target 归一，不是把每种拼法都多存一份键
+    // （否则登记面就得替用户改写数据，快照抄的也不再是用户写的那串字节）
+    for (const target of urls) expect(REGISTRY_DESCRIPTORS.repo.refKeys(e).includes(target)).toBe(false);
+    // 存原样这条不动：归一只发生在比对的一瞬间，条目与快照里的字节还是用户写的那串
+    expect(e.spec.origin).toBe('my-org/my-repo');
+    // 归一认错域 ⇒ 不指：自建域的 URL 与 GitHub 那枚仓不是同一个东西，硬折就是拿空白冒认
+    expect(matchesTarget(e, 'https://git.internal.example.com/my-org/my-repo.git')).toBe(false);
+    // 别的仓也不许借这趟归一路过：owner 不同就是不同仓
+    expect(matchesTarget(e, 'https://github.com/other/my-repo.git')).toBe(false);
+  });
+
+  it('没有 origin 时不硬造归一名；origin 认不出 owner/repo（自建 Gitea 域）时只有原串那一枚', () => {
+    expect(REGISTRY_DESCRIPTORS.repo.refKeys(repo({ space: 'demo', dir: 'repos/app' }, 'alpha'))).toEqual([
+      'repo:alpha',
+      'alpha',
+      'repos/app',
+    ]);
+    expect(
+      REGISTRY_DESCRIPTORS.repo
+        .refKeys(repo({ space: 'demo', dir: 'x', origin: 'git@git.internal:g/r.git' }, 'beta'))
+        .filter((k) => k.includes('git.internal')),
+    ).toEqual(['git@git.internal:g/r.git']); // 认不出就不归一：`parseGithubRemote` 那一把尺不外扩
+  });
+
+  it('探针三态：目录在且见 .git=live；目录在但没 .git=live 并说清「登记的是目录不是仓」；没有=missing；没根/没项目=unknown', async () => {
+    const live = await entryHealth(dataDir, repo({ space: 'demo', dir: 'repos/app' }), {});
+    expect(live).toMatchObject({ status: 'live', cached: false });
+    expect(live!.detail).toContain('是 git 工作区');
+
+    const plain = await entryHealth(dataDir, repo({ space: 'demo', dir: 'repos/plain' }), {});
+    expect(plain).toMatchObject({ status: 'live' }); // 目录确实在——是不是仓是另一句读数，不改三态
+    expect(plain!.detail).toContain('没看到 .git');
+
+    const gone = await entryHealth(dataDir, repo({ space: 'demo', dir: 'repos/ghost' }), {});
+    expect(gone).toMatchObject({ status: 'missing' });
+    expect(gone!.detail).toContain('要么还没克隆');
+
+    // 越出主仓根=确定结论：派发与机检按同一把尺拿不到根外的目录，且绝不去 stat 根外
+    expect((await entryHealth(dataDir, repo({ space: 'demo', dir: '../outside' }), {}))?.status).toBe('missing');
+    // 是文件不是目录：节点进不去，等于没有这个仓
+    expect((await entryHealth(dataDir, repo({ space: 'demo', dir: 'repos/file' }), {}))?.status).toBe('missing');
+
+    const noRoot = await entryHealth(dataDir, repo({ space: 'noroot', dir: 'repos/app' }), {});
+    expect(noRoot).toMatchObject({ status: 'unknown' });
+    expect(noRoot!.detail).toContain('rootCwd');
+    const noSpace = await entryHealth(dataDir, repo({ space: 'ghost', dir: 'repos/app' }), {});
+    expect(noSpace).toMatchObject({ status: 'unknown' });
+    expect(noSpace!.detail).toContain('不等于这个仓不存在'); // 未探得不是不可用
+  });
+
+  it('origin 只说「不实读核对」，绝不因为它对不上就画红：remote 的实读归派发现场那一把尺', async () => {
+    const withOrigin = await entryHealth(
+      dataDir,
+      repo({ space: 'demo', dir: 'repos/app', origin: 'my-org/never-checked' }),
+      {},
+    );
+    expect(withOrigin).toMatchObject({ status: 'live' });
+    expect(withOrigin!.detail).toContain('origin「my-org/never-checked」按登记原样存，这一版探针不实读核对');
+  });
+
+  it('目录名跨空间可撞：空间自己发的按主人收窄（判得准），点名叫 origin 的不按空间收窄（那本来就是全局标识）', () => {
+    const a = repo({ space: 'demo', dir: 'shared', origin: 'my-org/alpha' }, '甲');
+    const b = repo({ space: 'other', dir: 'shared', origin: 'my-org/beta' }, '乙');
+    const idx = buildReferenceIndex([a, b], [
+      { face: 'space', id: 'demo', name: '项目 demo', via: 'repos[0]', kind: 'repo', target: 'shared' },
+      // 角色/模板侧不绑空间：这一路判不准是哪一枚，于是两枚都记（多报只是多挡一次删除）
+      { face: 'template', id: 'flow', name: 'flow', via: 'requires[0].id', kind: 'repo', target: 'shared' },
+    ]);
+    const refsOf = (entry: RegistryEntry) => idx.byEntry.find((x) => x.entryId === entry.id)?.refs.map((r) => r.via);
+    expect(refsOf(a)).toEqual(['repos[0]', 'requires[0].id']);
+    expect(refsOf(b)).toEqual(['requires[0].id']);
+    expect(idx.dangling).toEqual([]);
+    expect(idx.unmigrated).toEqual([]); // 自此「仓库」这一类不再是只披露计数的账
+  });
+
+  it('三处裸串（repos[]／rules[].repo／delivery[].repo）与按 origin 点名的声明都指得到条目，认不出的写法照进 dangling', () => {
+    const e = repo({ space: 'demo', dir: 'packages/web', origin: 'my-org/web' }, '前端仓');
+    const idx = buildReferenceIndex([e], [
+      { face: 'space', id: 'demo', name: '项目', via: 'repos[0]', kind: 'repo', target: 'packages/web' },
+      { face: 'space', id: 'demo', name: '项目', via: 'rules[0].repo', kind: 'repo', target: 'packages/web' },
+      { face: 'space', id: 'demo', name: '项目', via: 'delivery[0].repo', kind: 'repo', target: 'packages/web' },
+      { face: 'template', id: 'flow', name: 'flow', via: 'requires[0].id', kind: 'repo', target: 'my-org/web' },
+      // 目录名不是 origin 的写法：空间侧按主人对得上，但仍不能拿它冒认另一枚仓
+      { face: 'space', id: 'demo', name: '项目', via: 'repos[1]', kind: 'repo', target: 'packages/api' },
+    ]);
+    // 这一格要钉的是「四处都归到了这枚条目」，不是服务器内部那套排序（排序本身另有上面那格守）
+    expect(idx.byEntry[0]!.refs.map((r) => r.via).sort()).toEqual([
+      'delivery[0].repo',
+      'repos[0]',
+      'requires[0].id',
+      'rules[0].repo',
+    ]);
+    expect(idx.dangling.map((d) => `${d.kind}:${d.target}`)).toEqual(['repo:packages/api']);
+  });
+
+  it('真落盘 + 启停删除照接（视图 kind 那条拒路不误伤登记项）', () => {
+    const store = storeAt(tmp());
+    const added = store.add({ kind: 'repo', name: '主仓', spec: { space: 'demo', dir: 'repos/app' } });
+    expect(added.ok).toBe(true);
+    expect(added.entry?.id.startsWith('repo:')).toBe(true);
+    const stored = store.readView().entries.filter((x) => x.kind === 'repo');
+    expect(stored).toHaveLength(1);
+    const id = stored[0]!.id;
+    expect(store.update(id, { enabled: false }).ok).toBe(true);
+    expect(store.readView().entries.find((x) => x.id === id)!.enabled).toBe(false);
+    expect(store.remove(id).ok).toBe(true);
+    expect(store.readView().entries.filter((x) => x.kind === 'repo')).toEqual([]);
+  });
+
+  it('预检词表：`需要：仓库` 那一行有中文组名（KIND_CN 是全仓唯一一份措辞表）', () => {
+    expect(requirementKindLabel('repo')).toBe('仓库');
   });
 });

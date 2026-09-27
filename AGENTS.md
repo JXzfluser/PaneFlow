@@ -118,6 +118,12 @@ paneflow registry probe <id> [--refresh]     # 单枚探针，与批量面同一
 #   `spec.pathsGlob` **不判**（glob 语义只有注入现场那一把尺说得清，这里再算一遍就是两处判据）；
 #   作用域是引用之外的信息：`refKeys` 只到 space/名/slug/文档路径，repo 与 glob 不进引用账也不进快照的引用侧
 #   （但快照抄整份 spec，改作用域=改 `specSha`）
+#   `repo`（v14-A5-3）探的是**目录面**，且只问「这台机器上这个目录在不在」：条目说的是「某项目根下有这么个仓」，
+#   于是去 `spec.space` 的 `rootCwd` 下 `stat` 一次 `spec.dir`——是目录=live（detail 带改动时刻，顺带报
+#   有没有 `.git`：目录在但不是工作区时家规真拉分支会撞，那是人要看懂的读数而**不是**「不存在」，状态仍 live）、
+#   没有或越出主仓根=missing、项目没这枚档案或没配 rootCwd=unknown。**`spec.origin` 不实读核对**
+#   （整表健康逐条目跑，为一句核对起 N 次 `git` 子进程不值；派发现场的候选仓解析才是它的正身），
+#   有 origin 时 detail 明说「按登记原样存，这一版探针不实读核对」——没核 ≠ 不符，不拿猜测冒充实测
 #  改和删只有网页「注册中心」有（写端拒悬挂引用、拒删被引用条目，中文解释由 server 给）
 
 # 8) 起单前预检（v14-T3）：模板声明「这单要吃哪几项能力」，派活之前先对着注册表解析
@@ -126,12 +132,16 @@ paneflow registry check [--template x] [--space S]   # 逐槽画 ✓命中 / ✗
 #   不给 --template = 普查全部在册模板，恒 0（普查不是闸，拦是起单口的事）
 paneflow registry check --template x --json  # → 那一行的原样负载：{slots,need,missing,unjudged,malformed,ok}
 #   模板侧声明（画布 JSON）：graph 顶层 `requires: [{kind, id?, hint?}]`——今天判死活的 kind 是
-#   `model`、`skill`（v14-A5-1）、`rule`（v14-A5-2）、`mcp` 与两枚视图 kind `agent-kind`/`node-type`（后者的引用写法=整枚 id 或 kind 名；
+#   `model`、`skill`（v14-A5-1）、`rule`（v14-A5-2）、`repo`（v14-A5-3）、`mcp` 与两枚视图 kind `agent-kind`/`node-type`（后者的引用写法=整枚 id 或 kind 名；
 #   探测名 `antigravity` 那种异名**不算**引用写法，与 R2 引用账同一把尺——两把尺就会出现「预检说缺、引用账说在用」）。
 #   `skill`/`rule` 槽的引用写法多一枚 **`spec.file` 原值**（相对项目根的路径，就是今天 `profile.skills` /
 #   `profile.rules[i].file` 落册的那串），且**不**按 `--space` 收窄：`requires` 里没有写项目名的位置，本机任一项目登记过这篇即算命中
 #   （作用域住在引用账与探针，不在预检；`--json` 的 `spaceNote` 那句就是这个划界）；
-#   指向 repo/role/check-type/… 的槽仍落 `?`（表里没这一类，判「不存在」= 拿空白冒充断言）
+#   `repo` 槽同理但**两套命名空间都认**：`spec.dir`（相对项目根的目录名，`profile.repos`/`rules[i].repo`/
+#   `delivery[i].repo` 落册的就是它）与 `spec.origin`（`owner/repo` 或完整 remote URL，派活 `--repo` 写的也是它；
+#   两种拼法**互指**——条目存 URL 则 `owner/repo` 指得到，条目存 `owner/repo` 则 URL 也指得到，
+#   两侧都过 `parseGithubRemote` 那一把尺、只在比对那一瞬间归一，存的字节仍是用户写的原样）。
+#   指向 role/check-type/template/… 的槽仍落 `?`（表里没这一类，判「不存在」= 拿空白冒充断言）
 paneflow env probe <绝对路径>                 # 只读环境发现器（v14-E1）：这台机器有什么可登记的，给的是草案不是断言
 paneflow env add <绝对路径> --space <id>      # 一次事务登记（v14-E2）：probe → map → 原子写档案，失败整体回滚
 #   四类入档：repo→repos / doc→conventionFiles / skill→skills / rule→rules（rule 带 repo 关联）；

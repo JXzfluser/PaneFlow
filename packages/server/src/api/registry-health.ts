@@ -192,6 +192,57 @@ async function ruleHealth(dataDir: string, entry: RegistryEntry<'rule'>): Promis
 }
 
 /**
+ * `repo` 通道（v14 A5-3）：只回答**「这台机器上这个目录在不在」**。
+ * 为什么不顺手核一句 origin：整表健康是逐条目跑的，为一句核对去起 N 次 `git` 子进程不值，
+ * 而派发现场的候选仓解析（`dispatch.ts: candidateRepos`）每一次都实读远端——那一处才是它的正身。
+ * 于是登记值与盘面是否相符这一问在本通道**明说不核**（「没核 ≠ 不符」，不拿一句猜测冒充实读）。
+ *
+ * `live` 顺带报有没有 `.git`：目录在但不是 git 工作区时，家规拉分支/派单会撞，那是人要看懂的读数，
+ * 而它确实**不是**「不存在」——所以状态仍是 `live`，落差只进 detail（只说，不判死）。
+ */
+async function repoHealth(dataDir: string, entry: RegistryEntry<'repo'>): Promise<EntryHealth> {
+  const now = new Date().toISOString();
+  const { space, dir, origin } = entry.spec;
+  const sp = Store.listSpaces(dataDir).find((x) => x.id === space);
+  if (!sp) {
+    return { status: 'unknown', detail: `项目档案里没有「${space}」这一枚，目录名没有基准可比：未探得，不等于这个仓不存在`, cached: false, at: now };
+  }
+  const root = typeof sp.rootCwd === 'string' ? sp.rootCwd.trim() : '';
+  if (!root) {
+    return { status: 'unknown', detail: `项目「${sp.name}」没配主仓根（rootCwd），「${dir}」没有基准可比：未探得`, cached: false, at: now };
+  }
+  const checked = origin ? `；origin「${origin}」按登记原样存，这一版探针不实读核对` : '';
+  if (dir.includes('..')) {
+    return {
+      status: 'missing',
+      detail: `「${dir}」越出了主仓根「${root}」：节点的工作目录落不进根外，派发与机检按同一把尺拿不到这个仓${checked}`,
+      cached: false,
+      at: now,
+    };
+  }
+  const abs = path.resolve(root, dir);
+  try {
+    const st = fs.statSync(abs);
+    if (!st.isDirectory()) {
+      return { status: 'missing', detail: `「${abs}」在，但它不是目录：仓得是一个可进出的工作目录${checked}`, cached: false, at: now };
+    }
+    const isWorktree = fs.existsSync(path.join(abs, '.git'));
+    return {
+      status: 'live',
+      detail: `项目「${sp.name}」下有这个目录（改动于 ${st.mtime.toISOString()}）· ${isWorktree ? '是 git 工作区（看到 .git）' : '没看到 .git——登记的是目录不是仓，家规真拉分支时会撞'}${checked}`,
+      cached: false,
+      at: now,
+    };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return { status: 'missing', detail: `主仓根「${root}」下没有「${dir}」这个目录：要么还没克隆，要么这条登记该停用了${checked}`, cached: false, at: now };
+    }
+    return { status: 'unknown', detail: `读不动「${abs}」：${(err as Error).message}（读不动不等于不存在）`, cached: false, at: now };
+  }
+}
+
+/**
  * kind → 探针通道。没有条目的 kind 一律没有健康读数（整键不给，不画成未知）。
  *
  * **`mcp`（v14 T4）刻意不在这里**：探一台 MCP server 活着没有、有几个工具，需要一个真客户端去
@@ -205,6 +256,7 @@ const CHANNELS: Record<string, (dataDir: string, entry: RegistryEntry, refresh: 
   model: (dataDir, entry, refresh) => modelHealth(dataDir, entry as RegistryEntry<'model'>, refresh),
   skill: (dataDir, entry) => skillHealth(dataDir, entry as RegistryEntry<'skill'>),
   rule: (dataDir, entry) => ruleHealth(dataDir, entry as RegistryEntry<'rule'>),
+  repo: (dataDir, entry) => repoHealth(dataDir, entry as RegistryEntry<'repo'>),
   'agent-kind': (_dataDir, entry, refresh) => agentKindHealth(entry as RegistryEntry<'agent-kind'>, refresh),
 };
 

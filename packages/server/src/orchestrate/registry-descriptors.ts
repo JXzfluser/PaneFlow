@@ -5,6 +5,7 @@ import {
   type RegistryEntry,
   type RegistryKind,
 } from '@paneflow/shared';
+import { parseGithubRemote } from '../api/dispatch.js';
 
 /**
  * v14 A1（R1）Descriptor 表：**一 kind 一模块**的落地处（决议 §十.5）。
@@ -165,10 +166,63 @@ export const ruleDescriptor: RegistryDescriptor<'rule'> = {
   },
 };
 
+/**
+ * `repo`（v14 A5-3）：这台机器上有这么个仓目录。label 与 skill/rule 同一句式（`[项目 x] 目录名`），
+ * 但**多一枚命名空间就得多种画法**：登记了 `origin` 就把它括在目录名后面——
+ * 派活时人写的是 `my-org/my-repo`，界面上只画 `my-repo` 的话，这两枚名字看起来毫无关系，
+ * 而它们指的确实是同一个仓（§十二-9 那套「一盘两制」）。
+ *
+ * 引用写法**四枚**（id／slug／`spec.dir`／`spec.origin`，外加 origin 归一出的 `owner/repo`）：
+ * 前两枚是条目自己的名字；`dir` 让 `repos[]`／`rules[].repo`／`delivery[].repo` 三处今天的裸目录名
+ * 有正身可指（不认则本片当场把现网引用洗成悬挂）；`origin` 让派活侧那套 `owner/repo` 写法同样指得到。
+ * **归一只发生在匹配键这一侧**：条目里 `origin` 原样存（用户写 URL 就是 URL），但 `matchesTarget` 吃的是
+ * `refKeys` 的精确串包含，所以这里把 `parseGithubRemote` 归一出的那枚也列进键里——
+ * 一把尺（`dispatch.ts` 那一把，候选仓解析用的就是它），两种写法，零数据改写。
+ */
+export const repoDescriptor: RegistryDescriptor<'repo'> = {
+  kind: 'repo',
+  label(entry) {
+    const { space, dir, origin, note } = entry.spec;
+    return [`[项目 ${space}] ${dir}${origin ? `（${origin}）` : ''}`, note].filter(Boolean).join(' · ');
+  },
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    const { dir, origin } = entry.spec;
+    const keys = [entry.id, ...(slug ? [slug] : []), dir];
+    if (origin) {
+      keys.push(origin);
+      const ownerRepo = parseGithubRemote(origin);
+      if (ownerRepo && ownerRepo !== origin) keys.push(ownerRepo);
+    }
+    return keys;
+  },
+  /** 判定序同 `skill`/`rule`：定点引用（id/slug/origin）无歧义；目录名跨空间可撞，空间自发的按主人收窄 */
+  matches(entry, target, ref) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    if (target === entry.id || (slug !== undefined && target === slug)) return true;
+    const { dir, origin } = entry.spec;
+    // 按 origin（或其归一名）点名的引用指的是那枚全局仓标识，不是目录名——所以**不按空间收窄**。
+    // 两侧都过一次同一把尺：登记值可能写成 `owner/repo`（`candidateRepos` 外发的就是这一形），
+    // 而引用那头发来的可能是完整 clone URL（表单明写允许），只归一登记值就是把其中一种写法当没看见。
+    if (origin) {
+      const originKey = parseGithubRemote(origin) ?? origin;
+      if (target === origin || (parseGithubRemote(target) ?? target) === originKey) return true;
+    }
+    // 剩下的可能写法只有 `spec.dir`（`matchesTarget` 先按 refKeys 精确串拦过一道，
+    // 这里回 false 不是行为而是护栏：真进来一枚认不出的写法，宁可说「指不到这枚」，
+    // 也不在预检那一侧画成命中——预检误判绿比引用账多报一笔危险得多）
+    if (target !== dir) return false;
+    return ref.face === 'space' ? entry.spec.space === ref.id : true;
+  },
+  /** 发来的裸串先按那唯一一把 remote 尺归一一次，再进 `refKeys` 那道精确串闸门（详见 `registry-refs.ts:matchesTarget`） */
+  normalizeTarget: (target) => parseGithubRemote(target) ?? target,
+};
+
 export const REGISTRY_DESCRIPTORS: { [K in RegistryEntry['kind']]: RegistryDescriptor<K> } = {
   model: modelDescriptor,
   skill: skillDescriptor,
   rule: ruleDescriptor,
+  repo: repoDescriptor,
   'agent-kind': agentKindDescriptor,
   'node-type': nodeTypeDescriptor,
   mcp: mcpDescriptor,

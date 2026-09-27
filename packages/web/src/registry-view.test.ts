@@ -98,9 +98,10 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
   it('model 长出四键、model 必填；没挂号的 kind 不临场发明字段', () => {
     expect(formFieldsFor('model')!.map((f) => f.key)).toEqual(['model', 'gatewayProfile', 'freeModel', 'note']);
     expect(formFieldsFor('model')!.find((f) => f.key === 'model')!.required).toBe(true);
-    // `rule` 自 A5-2 起有表单长法了；仍未迁的那一类照旧不猜形状
+    // `rule`/`repo` 自 A5-2/A5-3 起有表单长法了；仍未迁的那一类照旧不猜形状
     expect(formFieldsFor('rule')!.map((f) => f.key)).toEqual(['space', 'file', 'repo', 'pathsGlob', 'note']);
-    expect(formFieldsFor('repo')).toBeNull();
+    expect(formFieldsFor('repo')!.map((f) => f.key)).toEqual(['space', 'dir', 'origin', 'note']);
+    expect(formFieldsFor('role')).toBeNull();
   });
 
   /**
@@ -141,6 +142,21 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
     expect(missingRequiredFields('rule', 'x', { space: 'demo', file: ' docs/x.md ' })).toEqual([]);
   });
 
+  /**
+   * v14 A5-3：`repo` 的表单长法。这一格要钉的是**两枚标识分开放**：
+   *  ①`dir`（相对项目根的目录名，`repos[]`／作用域收窄／家规三处写的都是它）必填，候选来自档案
+   *    已登记的 `repos[]`——但仍是 text 不是 select，理由与 `rule.repo` 同一条：先克隆后登记是常态；
+   *  ②`origin`（`owner/repo` 或完整 remote URL，派活时 `--repo` 认的就是它）选填。
+   * 把两枚塞进一个框，`repos[]` 那套引用或 `--repo` 那套引用就会有一半从此指不到条目。
+   */
+  it('repo 四键：dir 必填带 space-repos 候选、origin 选填（两套命名空间各占一格）', () => {
+    expect(formFieldsFor('repo')!.find((f) => f.key === 'space')).toMatchObject({ type: 'select', required: true, options: 'spaces' });
+    expect(formFieldsFor('repo')!.find((f) => f.key === 'dir')).toMatchObject({ type: 'text', required: true, list: 'space-repos' });
+    expect(formFieldsFor('repo')!.find((f) => f.key === 'origin')).toMatchObject({ type: 'text' });
+    expect(missingRequiredFields('repo', 'x', { space: 'demo' })).toEqual(['仓库目录']);
+    expect(missingRequiredFields('repo', 'x', { space: 'demo', dir: 'packages/web' })).toEqual([]);
+  });
+
   it('missingRequiredFields 只问必填：没填名字与型号时报出中文名', () => {
     expect(missingRequiredFields('model', '', {})).toEqual(['显示名', '型号']);
     expect(missingRequiredFields('model', ' 甲 ', { model: 'gpt-4o' })).toEqual([]);
@@ -168,6 +184,8 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
   it('必填没填时拒组装（返回 null），未知 kind 也拒（不猜形状）', () => {
     expect(buildRegistryPayload('model', '甲', { model: '  ' })).toBeNull();
     expect(buildRegistryPayload('rule', '甲', {})).toBeNull();
+    // `role` 是 A5-4 那一棒的替身（今天还没进表）：不猜形状就不该长出任何 spec 键
+    expect(buildRegistryPayload('role', '甲', { dir: 'x' })).toBeNull();
   });
 
   /** A5-1：skill 的组装只可能长出 `{space,file,note?}` 那一形状（多一发就是 server 400） */
@@ -202,6 +220,28 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
     expect(buildRegistryPayload('rule', 'x', { space: 'demo', file: '' })).toBeNull();
   });
 
+  /**
+   * v14 A5-3：repo 的组装只可能长出 `{space,dir,origin?,note?}`。这里钉的是 `origin` 的
+   * **原样**语义：完整 remote URL 不在前端剪成 `owner/repo`——归一只有 server 那一把尺
+   * （`parseGithubRemote`），这里顺手剪一下就是第二处判据，两处迟早给出两个答案。
+   */
+  it('buildRegistryPayload(repo)：origin 原样透传（不剪 URL），空了整键不发', () => {
+    expect(buildRegistryPayload('repo', 'x', { space: ' demo ', dir: ' packages/web ', origin: '', note: '  ' })).toEqual({
+      kind: 'repo',
+      name: 'x',
+      spec: { space: 'demo', dir: 'packages/web' },
+    });
+    expect(
+      buildRegistryPayload('repo', 'x', {
+        space: 'demo',
+        dir: 'packages/web',
+        origin: 'https://github.com/my-org/web.git',
+        note: '前端仓',
+      })!.spec,
+    ).toEqual({ space: 'demo', dir: 'packages/web', origin: 'https://github.com/my-org/web.git', note: '前端仓' });
+    expect(buildRegistryPayload('repo', 'x', { space: 'demo', dir: '' })).toBeNull();
+  });
+
   /** v14-T4：`mcp` 是第二类可登记 kind——表单长三键，但**只登记不探测**（没有健康点那一格） */
   it('mcp 长出三键且 command 必填；args 空了整键不发', () => {
     expect(formFieldsFor('mcp')!.map((f) => f.key)).toEqual(['command', 'args', 'note']);
@@ -213,10 +253,10 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
     });
     expect(buildRegistryPayload('mcp', '甲', { command: '' })).toBeNull();
     // 出厂清单类（视图 kind）不进下拉：选了也登记不了，那是假可点。
-    // 名单本身由 server 的 `knownKinds` 给（web 不抄表），A5-2 起 skill/rule 都在登记侧占格
+    // 名单本身由 server 的 `knownKinds` 给（web 不抄表），A5-3 起 model/skill/rule/repo/mcp 都在登记侧占格
     expect(
-      registrableKinds(['model', 'skill', 'rule', 'agent-kind', 'node-type', 'mcp'], ['agent-kind', 'node-type']),
-    ).toEqual(['model', 'skill', 'rule', 'mcp']);
+      registrableKinds(['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'mcp'], ['agent-kind', 'node-type']),
+    ).toEqual(['model', 'skill', 'rule', 'repo', 'mcp']);
   });
 });
 
@@ -256,10 +296,11 @@ describe('v14 A5-1 spaceDocCandidates（登记表单的路径候选）', () => {
 });
 
 /**
- * v14 A5-2：`rule.spec.repo` 的候选只吃档案里的 `repos[]`（那是这个空间**已登记**的仓库目录名）。
+ * v14 A5-2/A5-3：仓库目录名候选只吃档案里的 `repos[]`（那是这个空间**已登记**的目录名）。
+ * 两个使用方共用它：`rule.spec.repo`（作用域收窄）与 `repo.spec.dir`（登记一枚仓本身）。
  * 档案没配 repos 时给空数组——表单据此说「直接填目录名即可」，绝不拿目录扫盘或猜一个。
  */
-describe('v14 A5-2 spaceRepoCandidates（规则作用域的仓库候选）', () => {
+describe('v14 A5-2/A5-3 spaceRepoCandidates（规则作用域与仓库登记的目录候选）', () => {
   it('去空去重排序；没配 repos 的档案给空数组', () => {
     expect(
       spaceRepoCandidates([{ id: 'demo', repos: ['packages/web', ' packages/web ', 'packages/server', ''] }], 'demo'),
@@ -278,6 +319,12 @@ describe('v14-X1 只读 spec 与前向兼容读数', () => {
       { key: 'custom', label: 'custom', text: '7' },
     ]);
     expect(specRows('怪形状')[0]!.text).toBe('怪形状');
+    // A5-3：`dir` 与 `origin` 各有各的中文名——两枚混成一个标签，详情里就看不出这枚条目说的是本地目录还是远端仓
+    expect(specRows({ space: 'demo', dir: 'packages/web', origin: 'my-org/web' })).toEqual([
+      { key: 'space', label: '所属项目', text: 'demo' },
+      { key: 'dir', label: '仓库目录', text: 'packages/web' },
+      { key: 'origin', label: '远端仓', text: 'my-org/web' },
+    ]);
   });
 
   it('refs：键不在就什么都不画——缺 ≠ 0（引用账没读出来不是「没人用」）', () => {
@@ -345,21 +392,22 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
       requirementBadge(
         row({
           ok: false,
+          // 「判不了的那一组」今天只能用 `role` 喂（`repo` 自 A5-3 起有探针、有判定，`judged: 0` 是它发不出的读数）
           need: [
             { kind: 'model', label: '模型', declared: 1, judged: 1, gaps: 1 },
-            { kind: 'repo', label: '仓库', declared: 2, judged: 0, gaps: 0 },
+            { kind: 'role', label: '角色', declared: 2, judged: 0, gaps: 0 },
           ],
         }),
         3,
       ),
-    ).toEqual({ text: '需要：模型 1 · 仓库 2', tone: 'gap' });
+    ).toEqual({ text: '需要：模型 1 · 角色 2', tone: 'gap' });
   });
 
   it('整组都判不了 = pending（画问号）：它既不是缺口也不是命中，红绿都不对', () => {
     const r = row({
-      slots: [{ kind: 'repo', id: 'my-repo', verdict: 'unjudged', why: '还没迁进注册表' }],
-      need: [{ kind: 'repo', label: '仓库', declared: 1, judged: 0, gaps: 0 }],
-      unjudged: [{ kind: 'repo', id: 'my-repo', verdict: 'unjudged', why: '还没迁进注册表' }],
+      slots: [{ kind: 'role', id: 'r-deliver', verdict: 'unjudged', why: '还没迁进注册表' }],
+      need: [{ kind: 'role', label: '角色', declared: 1, judged: 0, gaps: 0 }],
+      unjudged: [{ kind: 'role', id: 'r-deliver', verdict: 'unjudged', why: '还没迁进注册表' }],
     });
     expect(requirementBadge(r, 1).tone).toBe('pending');
     // 一半命中一半判不了 → 按命中说（有真读数就别挂问号）
@@ -384,7 +432,7 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
         slots: [
           { kind: 'model', id: 'gpt-4o-mini', verdict: 'ok', why: '用「小4号」' },
           { kind: 'model', id: 'gpt-9', verdict: 'missing', why: '注册表里没有' },
-          { kind: 'skill', verdict: 'unjudged', why: '这一类还判不了' },
+          { kind: 'role', verdict: 'unjudged', why: '这一类还判不了' },
           { kind: 'model', verdict: 'malformed', why: '声明形状不认' },
           { kind: 'model', verdict: 'probed-elsewhere', why: '未来新值' },
         ],
@@ -393,7 +441,7 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
     expect(detail.split('\n')).toEqual([
       '✓ model → gpt-4o-mini：用「小4号」',
       '✗ model → gpt-9：注册表里没有',
-      '? skill：这一类还判不了',
+      '? role：这一类还判不了',
       '⚠ model：声明形状不认',
       'probed-elsewhere model：未来新值',
     ]);

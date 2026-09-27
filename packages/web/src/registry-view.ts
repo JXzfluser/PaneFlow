@@ -150,6 +150,20 @@ const RULE_FIELDS: RegistryFormField[] = [
   { key: 'note', label: '备注', type: 'text', hint: '为什么/什么时候守这条（会随文档注入给 agent）' },
 ];
 
+/**
+ * `repo`（v14 A5-3）：形状照 server 的 `parseRepoSpec`（{space,dir,origin?,note?}）。
+ * 两枚标识**分开放**不是偷懒：`dir` 是本地目录名（`repos[]`／作用域／家规三处写的都是它），
+ * `origin` 是 GitHub 的 `owner/repo`（派活时写的是它）——今天盘上两套命名空间同时存在，
+ * 页面把它们塞进一个框就会让其中一套引用从此指不到条目。
+ * `origin` 可填完整 remote URL：归一只在 server 那一侧做一次，这里不预处理（两处归一=两处判据）。
+ */
+const REPO_FIELDS: RegistryFormField[] = [
+  { key: 'space', label: '所属项目', type: 'select', required: true, options: 'spaces', hint: '目录名以这个项目的根为基准，换项目=换目录' },
+  { key: 'dir', label: '仓库目录', type: 'text', required: true, list: 'space-repos', hint: '相对项目根的目录名；可从该项目已登记的仓库里选，也可直接填' },
+  { key: 'origin', label: '远端仓', type: 'text', hint: 'owner/repo 或完整 remote URL（选填）；派活时 --repo 认的就是这一枚' },
+  { key: 'note', label: '备注', type: 'text', hint: '这个仓是干什么的（选填）' },
+];
+
 const MCP_FIELDS: RegistryFormField[] = [
   { key: 'command', label: '启动命令', type: 'text', required: true, hint: '本机可执行文件（绝对路径或 PATH 上的名字）' },
   { key: 'args', label: '参数', type: 'text', hint: '原样存一行，PaneFlow 不解析、不拆词' },
@@ -160,6 +174,7 @@ export function formFieldsFor(kind: string): RegistryFormField[] | null {
   if (kind === 'model') return MODEL_FIELDS;
   if (kind === 'skill') return SKILL_FIELDS;
   if (kind === 'rule') return RULE_FIELDS;
+  if (kind === 'repo') return REPO_FIELDS;
   if (kind === 'mcp') return MCP_FIELDS;
   return null;
 }
@@ -275,6 +290,9 @@ const SPEC_FIELD_LABELS: Record<string, string> = {
   // rule（v14 A5-2）：两枚作用域键，原样存原样画——页面不展开 glob，也不判目录在不在
   repo: '生效仓库',
   pathsGlob: '作用域 glob',
+  // repo（v14 A5-3）：本地目录名与远端仓是两套命名空间，两枚都得单独画出来
+  dir: '仓库目录',
+  origin: '远端仓',
 };
 
 export interface SpecRow {

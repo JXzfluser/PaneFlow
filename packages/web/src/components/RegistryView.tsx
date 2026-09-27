@@ -131,7 +131,7 @@ export function RegistryView() {
 
   /** 选了项目才去读那一枚档案拿路径候选（不选就不请求；读不出只说候选这一格，直填那条路不受影响） */
   useEffect(() => {
-    const wantsCandidates = formKind === 'skill' || formKind === 'rule';
+    const wantsCandidates = formKind === 'skill' || formKind === 'rule' || formKind === 'repo';
     if (!formOpen || !wantsCandidates || !selectedSpace) {
       setDocCandidates([]);
       setRepoCandidates([]);

@@ -74,13 +74,29 @@ describe('GET /api/registry/check', () => {
       expect(body.space).toBe('default');
       expect(body.templates.map((t: { template: string }) => t.template)).toEqual(['bare', 'flow']); // 文件名排序=稳定顺序
       const flow = body.templates[1];
-      expect(flow.slots.map((s: { verdict: string }) => s.verdict)).toEqual(['ok', 'missing', 'unjudged']);
+      // 第三枚槽自 A5-3 起是**死缺**而不是「还判不了」：`repo` 进了表，预检就有资格拦起单了。
+      // 这不是回归而是本片的立命之处——翻面前这一格画 `?`（放行），翻面后画 `✗`（拦）。
+      expect(flow.slots.map((s: { verdict: string }) => s.verdict)).toEqual(['ok', 'missing', 'missing']);
       expect(flow.ok).toBe(false);
       expect(flow.need).toEqual([
         { kind: 'model', label: '模型', declared: 2, judged: 2, gaps: 1 },
-        { kind: 'repo', label: '仓库', declared: 1, judged: 0, gaps: 0 },
+        { kind: 'repo', label: '仓库', declared: 1, judged: 1, gaps: 1 },
       ]);
       expect(body.templates[0]).toMatchObject({ template: 'bare', slots: [], need: [], ok: true });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('v14 A5-3：登记那枚仓之后同一张模板的预检由拦变放（引用写法=目录名，槽里写的正是它）', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      writeGraphs(dataDir, [graph('flow', [{ kind: 'repo', id: 'packages/web' }])]);
+      expect((await get(app, '/api/registry/check')).json().templates[0].ok).toBe(false);
+      expect(registry.add({ kind: 'repo', name: '前端仓', spec: { space: 'default', dir: 'packages/web' } }).ok).toBe(true);
+      const row = (await get(app, '/api/registry/check')).json().templates[0];
+      expect(row.slots[0]).toMatchObject({ verdict: 'ok', why: '用「前端仓」' });
+      expect(row.ok).toBe(true);
     } finally {
       await app.close();
     }

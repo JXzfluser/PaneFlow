@@ -67,13 +67,13 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(body.entries.filter((e) => !e.view)).toEqual([]); // 盘上真的一条没登记——这格还是正读数零
       expect(body.rejected).toEqual([]);
       expect(body.schema).toBeNull();
-      // 挂号序＝注册中心的分组序：登记项在前、视图 kind 穿插在其注册位（A5-2 起 `rule` 进表）
-      expect(body.knownKinds).toEqual(['model', 'skill', 'rule', 'agent-kind', 'node-type', 'mcp']);
+      // 挂号序＝注册中心的分组序：登记项在前、视图 kind 穿插在其注册位（A5-3 起 `repo` 进表）
+      expect(body.knownKinds).toEqual(['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'mcp']);
       expect(body.viewKinds).toEqual(['agent-kind', 'node-type']);
       // 组名只有一处措辞表（`registry-check.ts` 的 `KIND_CN`）：网页拿这张外发表的标签画分组，
       // 前端不再自己抄一份——抄了迟早分叉，而分叉的代价是「同一个 kind 两处两个名字」。
       expect(Object.keys(body.kindLabels).sort()).toEqual([...body.knownKinds].sort());
-      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', rule: '规则', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', mcp: 'MCP 服务' });
+      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', rule: '规则', repo: '仓库', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', mcp: 'MCP 服务' });
       expect(requirementKindLabel('agent-kind')).toBe(body.kindLabels['agent-kind']);
       expect(body.refSummary).toEqual({ scanned: 0, dangling: [], unmigrated: [] });
       // 视图项=出厂清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
@@ -373,6 +373,73 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(dirty.statusCode).toBe(400);
       expect(dirty.json().error).toContain('pathGlob');
       expect(registry.list('rule')).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * v14 A5-3 的对外读数：一枚登记走完「上架 → 探针 live → 被档案引用 → 拒删」整条路。
+   * 为什么在路由面再走一遍（探针判据已在 `registry.test.ts` 逐分支钉过）：这一格证的是**接线**——
+   * `?kind=repo` 从此不 400、`CHANNELS.repo` 真被 `/health` 调到、`repos[i]` 那条裸串从此进引用账
+   * （A5-3 之前它是 `unmigrated` 只报计数，删掉条目没人拦）。三件事都只在 HTTP 面才看得见。
+   * `origin` 那枚远端标识在这儿只进 label 与 detail 的「不实读核对」——探针不起 `git` 子进程。
+   */
+  it('POST kind=repo：探针按项目根问目录在不在；被档案的 repos 引用后拒删', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-reg-repo-'));
+      fs.mkdirSync(path.join(root, 'app', '.git'), { recursive: true });
+      const put = await app.inject({
+        method: 'PUT',
+        url: '/api/spaces/demo',
+        headers: { host: HOST },
+        payload: { rootCwd: root, repos: ['app'] },
+      });
+      expect(put.statusCode).toBe(200);
+      const add = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'repo', name: 'app', spec: { space: 'demo', dir: 'app', origin: 'https://github.com/my-org/app.git', note: '主仓' } },
+      });
+      expect(add.statusCode).toBe(200);
+      expect((add.json() as { entry: { id: string } }).entry.id).toBe('repo:app');
+      // 值域面从此认这一类（没进表时 `?kind=repo` 是 400「不认的能力类型」）
+      const grouped = await app.inject({ method: 'GET', url: '/api/registry?kind=repo', headers: { host: HOST } });
+      expect(grouped.statusCode).toBe(200);
+      expect(grouped.json().entries.map((e: { label: string }) => e.label)).toEqual([
+        '[项目 demo] app（https://github.com/my-org/app.git） · 主仓',
+      ]);
+      const health = await app.inject({ method: 'GET', url: '/api/registry/health', headers: { host: HOST } });
+      const row = (health.json() as { entries: { id: string; health?: { status: string; detail: string } }[] }).entries.find(
+        (e) => e.id === 'repo:app',
+      );
+      expect(row?.health?.status).toBe('live');
+      expect(row?.health?.detail).toContain('是 git 工作区（看到 .git）');
+      expect(row?.health?.detail).toContain('这一版探针不实读核对');
+      // 引用账：项目档案的 `repos[0]` 自此是一条**边**（不再只进 unmigrated 计数）
+      const list = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
+      const listed = (list.json() as { entries: { id: string; refs?: { face: string; via: string }[] }[] }).entries.find(
+        (e) => e.id === 'repo:app',
+      );
+      expect(listed?.refs?.map((r) => `${r.face}.${r.via}`)).toEqual(['space.repos[0]']);
+      expect(list.json().refSummary.unmigrated.map((u: { kind: string }) => u.kind)).not.toContain('repo');
+      const del = await app.inject({ method: 'DELETE', url: '/api/registry/repo:app', headers: { host: HOST } });
+      expect(del.statusCode).toBe(400);
+      expect(del.json().error).toContain('还被 1 处引用着');
+      expect(del.json().error).toContain('repos[0]');
+      expect(registry.list('repo').map((e) => e.id)).toEqual(['repo:app']);
+      // 拼错的键照拒：`originu` 若被放过，这枚仓的远端标识就是空的，派活时 --repo 指不到它
+      const dirty = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'repo', name: 'x', spec: { space: 'demo', dir: 'x', originu: 'my-org/x' } },
+      });
+      expect(dirty.statusCode).toBe(400);
+      expect(dirty.json().error).toContain('originu');
+      expect(registry.list('repo')).toHaveLength(1);
     } finally {
       await app.close();
     }

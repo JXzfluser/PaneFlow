@@ -126,6 +126,27 @@ export interface RuleRegistrySpec {
 }
 
 /**
+ * `repo`（v14 A5-3）——「这台机器上有这么个仓目录」。数据原身今天住在 `SpaceProfile.repos[]`
+ * （相对主仓根的目录名字符串；消费在 `dispatch.ts: candidateRepos` 的候选仓解析与 `rules.ts`/家规的作用域键），
+ * 本片同样只把它渲成可登记、可实探、可被引用账指着的能力条目（切换正身是 A5-5 的迁移片）。
+ *
+ * **这一枚与前两枚的差别：今天「仓库」在盘上有两套命名空间**，塞进一枚键就是假账——
+ * `dir` 是相对主仓根的目录名（`repos[]`／`rules[].repo`／`delivery[].repo` 三处写的都是这一形），
+ * `origin` 是 GitHub 的 `owner/repo`（`contract.repo`／`dispatch --repo` 那一形）。所以两枚都得是引用写法，
+ * 否则要么现网裸串全洗成悬挂，要么派活时写的 `my-org/my-repo` 从此指不到任何条目。
+ */
+export interface RepoRegistrySpec {
+  /** 所属空间的 id 裸串引用（`SpaceProfile.id`；探针去它的 `rootCwd` 下看这个目录） */
+  space: string;
+  /** 相对该空间主仓根的仓库目录名（今天 `repos[]` 里写的正是这一串） */
+  dir: string;
+  /** GitHub 的 `owner/repo` 或完整 remote URL（**原样存**；归一只发生在匹配时，用 `parseGithubRemote` 那一把尺） */
+  origin?: string;
+  /** 人写的备注（这个仓是干什么的、为什么留这一枚） */
+  note?: string;
+}
+
+/**
  * kind → spec 形状。**A1 落 `model` 当样板，A3-2 加 `agent-kind`（视图 kind）**；
  * 其余 kind 由 A3-x 逐片加成员，每片各带一条「等臂不破」断言。
  */
@@ -133,6 +154,7 @@ export interface RegistrySpecMap {
   model: ModelRegistrySpec;
   skill: SkillRegistrySpec;
   rule: RuleRegistrySpec;
+  repo: RepoRegistrySpec;
   'agent-kind': AgentKindRegistrySpec;
   'node-type': NodeTypeRegistrySpec;
   mcp: McpRegistrySpec;
@@ -145,7 +167,7 @@ export type RegistryKind = keyof RegistrySpecMap;
  * 加了 spec 成员忘了在这里挂号 = 编译期红，不是运行面「静默不认」。
  * 顺序即注册中心的分组序（用户自己登记的东西排前，出厂那几十行不糊住自己的账）。
  */
-export const REGISTRY_KINDS = ['model', 'skill', 'rule', 'agent-kind', 'node-type', 'mcp'] as const;
+export const REGISTRY_KINDS = ['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'mcp'] as const;
 
 /**
  * **视图 kind**：条目由别处（代码里的出厂清单）现算出来，`entries.json` 里永远没有它们。
@@ -224,6 +246,15 @@ export interface RegistryDescriptor<K extends RegistryKind = RegistryKind> {
    */
   refKeys(entry: RegistryEntry<K>): string[];
   /**
+   * **可选**：引用面那枚裸串该怎么归一，才和 `refKeys` 比。
+   * 只有「同一枚标识在盘上有好几种写法」的 kind 用得上——`repo` 的远端仓既可能登记成完整 clone URL、
+   * 也可能登记成 `owner/repo`，而 `refKeys` 只能列出**条目自己**那几种写法，指过来的 target 是另一种时
+   * 就会「同仓两写法各算各的」。这里声明一次归一，`matchesTarget` 那道精确串闸门跟着它走；
+   * **绝不许在这里改判据**（判据只住 `matches`），它只负责把两种写法摆到同一张台面上比。
+   * 缺省＝不归一（今天除 `repo` 外都是这一路）。
+   */
+  normalizeTarget?(target: string): string;
+  /**
    * **可选**的第二把判据：光看裸串判不准的 kind，自己按「这条引用从哪一面发来」收窄匹配。
    * 存在的理由只有一个——跨条目撞键。`skill` 的 `spec.file` 是相对路径，同名文件在两个项目根下是两个文件，
    * 而空间侧的引用（`SpaceProfile.skills[i]`）自带空间 id，能判准；角色侧的引用（`Role.skills[i]`）天生不绑空间，
@@ -236,6 +267,7 @@ export interface RegistryDescriptor<K extends RegistryKind = RegistryKind> {
 const MODEL_SPEC_KEYS = ['model', 'gatewayProfile', 'freeModel', 'note'] as const;
 const SKILL_SPEC_KEYS = ['space', 'file', 'note'] as const;
 const RULE_SPEC_KEYS = ['space', 'file', 'repo', 'pathsGlob', 'note'] as const;
+const REPO_SPEC_KEYS = ['space', 'dir', 'origin', 'note'] as const;
 const AGENT_KIND_SPEC_KEYS = ['binary'] as const;
 const NODE_TYPE_SPEC_KEYS = ['label', 'icon', 'group', 'order', 'hint'] as const;
 const MCP_SPEC_KEYS = ['command', 'args', 'note'] as const;
@@ -257,6 +289,7 @@ const SPEC_PARSERS: { [K in RegistryKind]: (raw: unknown) => RegistryParse<Regis
   model: parseModelSpec,
   skill: parseSkillSpec,
   rule: parseRuleSpec,
+  repo: parseRepoSpec,
   'agent-kind': parseAgentKindSpec,
   'node-type': parseNodeTypeSpec,
   mcp: parseMcpSpec,
@@ -352,6 +385,41 @@ export function parseRuleSpec(raw: unknown): RegistryParse<RuleRegistrySpec> {
     const v = (o[key] as string).trim();
     if (!v) return { ok: false, why: `${key} 给了就得是非空字符串（不留空串占位）` };
     spec[key] = v;
+  }
+  if (o.note !== undefined) {
+    if (typeof o.note !== 'string') return { ok: false, why: 'note 必须是字符串' };
+    const note = o.note.trim();
+    if (note) spec.note = note;
+  }
+  return { ok: true, value: spec };
+}
+
+/**
+ * `repo` 的 spec 机检（v14 A5-3）。姿态同前两枚：未知键即拒（`dire` 拼错＝这一枚仓从此探不到、
+ * 也指不到任何出处，静默变成一条空账），`space`/`dir` 必填，`origin` 给了就得是非空串——
+ * 它是**引用写法之一**，留空串等于往引用账里塞一条永远指不到的裸串（同 `rule.repo` 那条理由：
+ * 承载身份/作用域的键不许静默丢弃，只有纯注释的 `note` 空了整键不发）。
+ *
+ * **不判目录在不在、也不判 origin 与 `.git/config` 符不符**：登记时刻仓可以还没克隆（先立账后克隆是常态），
+ * 而 origin 的实读归派发现场（`dispatch.ts: candidateRepos` 每次都现读）。这里再算一遍就是两处判据。
+ * `origin` **原样存**（`owner/repo` 或完整 remote URL 都收）：归一只发生在匹配那一侧，且只用既有那一把尺。
+ */
+export function parseRepoSpec(raw: unknown): RegistryParse<RepoRegistrySpec> {
+  const SHAPE = 'repo 的配置详情必须是 {space, dir, origin?, note?}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(REPO_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  const space = typeof o.space === 'string' ? o.space.trim() : '';
+  if (!space) return { ok: false, why: `${SHAPE}；space 必须是非空字符串（这个仓挂在哪个项目根下，没有默认空间可猜）` };
+  const dir = typeof o.dir === 'string' ? o.dir.trim() : '';
+  if (!dir) return { ok: false, why: `${SHAPE}；dir 必须是非空字符串（相对该空间主仓根的仓库目录名）` };
+  const spec: RepoRegistrySpec = { space, dir };
+  if (o.origin !== undefined) {
+    if (typeof o.origin !== 'string') return { ok: false, why: 'origin 必须是字符串' };
+    const origin = o.origin.trim();
+    if (!origin) return { ok: false, why: 'origin 给了就得是非空字符串（不留空串占位：它是引用写法之一）' };
+    spec.origin = origin;
   }
   if (o.note !== undefined) {
     if (typeof o.note !== 'string') return { ok: false, why: 'note 必须是字符串' };

@@ -13,7 +13,7 @@ import { registryViewEntries } from './registry-view.js';
 /**
  * v14-T3 起单前预检：模板 `requires` 槽 × 注册表 → 逐槽落点。
  * 钉的是三条姿态，一条都不能漂：
- *  1. 只有已迁进表的 kind 判死活（今天＝`model`/`skill`(A5-1)/`rule`(A5-2)/`mcp`(T4) 与内置清单
+ *  1. 只有已迁进表的 kind 判死活（今天＝`model`/`skill`(A5-1)/`rule`(A5-2)/`repo`(A5-3)/`mcp`(T4) 与内置清单
  *     `agent-kind`(A3-2)/`node-type`(T1)），其余 `unjudged` **不拦**；
  *  2. 形状不认 → `malformed` 且 `ok=false`（判不了就不放行）；
  *  3. 匹配吃 R2 那把尺（`matchesTarget` → Descriptor `refKeys`），整枚 id / slug / spec 原值三写法同权。
@@ -33,6 +33,12 @@ const skillEntry = (spec: Record<string, unknown>, name = 's', enabled = true): 
 
 const ruleEntry = (spec: Record<string, unknown>, name = 'r', enabled = true): RegistryEntry => {
   const r = normalizeRegistryEntry({ kind: 'rule', name, spec, enabled });
+  if (!r.ok) throw new Error(r.why);
+  return r.value;
+};
+
+const repoEntry = (spec: Record<string, unknown>, name = 'p', enabled = true): RegistryEntry => {
+  const r = normalizeRegistryEntry({ kind: 'repo', name, spec, enabled });
   if (!r.ok) throw new Error(r.why);
   return r.value;
 };
@@ -87,12 +93,14 @@ describe('逐槽落点（checkGraphRequirements）', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('未迁进表的 kind 只披露不判死活（表里压根没有 repo 这一类，判「不存在」= 拿空白冒充断言）', () => {
-    const r = checkGraphRequirements(graphWith([{ kind: 'repo', id: 'packages/web' }]), [model]);
+  it('未迁进表的 kind 只披露不判死活（表里压根没有 role 这一类，判「不存在」= 拿空白冒充断言）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'role', id: 'r-deliver' }]), [model]);
     expect(r.unjudged).toEqual([
-      { kind: 'repo', id: 'packages/web', verdict: 'unjudged', why: '「仓库」这一类还没迁进注册表，判不了死活（只披露不拦）' },
+      { kind: 'role', id: 'r-deliver', verdict: 'unjudged', why: '「角色」这一类还没迁进注册表，判不了死活（只披露不拦）' },
     ]);
     expect(r.ok).toBe(true); // 起单放行：unjudged 不是闸
+    // 翻面自证：`repo` 自 A5-3 起在表里，同类槽再也不会发这句——拿一张发不出去的读数测渲染等于把桩当预言
+    expect(checkGraphRequirements(graphWith([{ kind: 'repo', id: 'packages/web' }]), [model]).unjudged).toEqual([]);
   });
 
   it('脏形状 → malformed 且不放行（正常走不到这里：validateDag 在写入面就拒；盘面手改得动）', () => {
@@ -114,15 +122,15 @@ describe('分组读数（模板卡那一行「需要：模型 1 · 技能 2」�
     const r = checkGraphRequirements(
       graphWith([
         { kind: 'model', id: model.id },
-        { kind: 'repo', id: 'a' },
+        { kind: 'role', id: 'a' },
         { kind: 'model', id: 'nope' },
-        { kind: 'repo', id: 'b' },
+        { kind: 'role', id: 'b' },
       ]),
       [model],
     );
     expect(r.need).toEqual([
       { kind: 'model', label: '模型', declared: 2, judged: 2, gaps: 1 },
-      { kind: 'repo', label: '仓库', declared: 2, judged: 0, gaps: 0 },
+      { kind: 'role', label: '角色', declared: 2, judged: 0, gaps: 0 },
     ]);
   });
 
@@ -333,5 +341,70 @@ describe('v14 A5-2 rule 槽已判死活', () => {
       checkGraphRequirements(graphWith([{ kind: 'rule' }]), [ruleEntry({ space: 'demo', file: 'a.md' }, 'a', false)]).slots[0]!
         .verdict,
     ).toBe('missing');
+  });
+});
+
+/**
+ * v14 A5-3：`repo` 进表之后，「这单要动哪个仓」也判得了死活（翻面代价同款：以前整类落 `unjudged`
+ * 一律放行，现在点名没登记的仓会拦起单）。这一类独有的只有一件——**槽里那串可能是两套名字之一**：
+ * 档案侧的目录名（`packages/web`）或派活侧的 `owner/repo`。两枚都得认，认不出任一就是现网引用被洗成
+ * 死缺；而**归一**（URL→`owner/repo`）只在匹配键那一侧发生，数据仍存原样。
+ */
+describe('v14 A5-3 repo 槽已判死活', () => {
+  const repo = repoEntry({ space: 'demo', dir: 'packages/web', origin: 'https://github.com/my-org/web.git' }, '前端仓');
+
+  it('命中写法五枚同权：id、slug、目录名、origin 原样、origin 归一出 owner/repo（派活侧那套写法自此指得到条目）', () => {
+    for (const id of [repo.id, repo.id.slice('repo:'.length), 'packages/web', 'https://github.com/my-org/web.git', 'my-org/web']) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'repo', id }]), [repo]);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', why: '用「前端仓」', entryId: repo.id });
+    }
+  });
+
+  /**
+   * 反方向（§十二-9「存原样、匹配时归一」的另一半）：条目登记的是 `owner/repo`——那正是
+   * `candidateRepos` 外发给用户的那一形——而模板作者把 clone URL 粘进了槽。只归一登记值的话
+   * 这一格会画 `✗ 死缺` 并拦下一次本来安全的起单，而句缺因还会指着 URL 说「表里没有」。
+   */
+  it('条目存 `owner/repo`、槽里写完整 URL ⇒ 仍命中（两写法同权不是单侧的）', () => {
+    const short = repoEntry({ space: 'demo', dir: 'packages/web', origin: 'my-org/web' }, '前端仓');
+    for (const id of ['my-org/web', 'https://github.com/my-org/web.git', 'git@github.com:my-org/web.git']) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'repo', id }]), [short]);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: short.id });
+    }
+    // 认不出 owner/repo 的域（自建 Gitea）不硬归：那一把尺不外扩，指不到就是指不到
+    expect(checkGraphRequirements(graphWith([{ kind: 'repo', id: 'https://git.internal/o/web' }]), [short]).slots[0]!.verdict).toBe(
+      'missing',
+    );
+  });
+
+  it('中文登记名不是引用写法（同 model/skill 那条）：槽里写名字判死缺，不替作者猜目录', () => {
+    const named = repoEntry({ space: 'demo', dir: 'packages/web' }, '主仓');
+    expect(checkGraphRequirements(graphWith([{ kind: 'repo', id: '主仓' }]), [named]).slots[0]!.verdict).toBe('missing');
+    expect(checkGraphRequirements(graphWith([{ kind: 'repo', id: '主仓' }]), [named]).ok).toBe(false);
+  });
+
+  it('目录名**不**按项目收窄（与 skill/rule 同一处理：槽里没写项目名，收窄=替作者编约束）', () => {
+    const otherSpace = repoEntry({ space: 'other', dir: 'packages/web' }, '别家的仓');
+    const r = checkGraphRequirements(graphWith([{ kind: 'repo', id: 'packages/web' }]), [otherSpace]);
+    expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: otherSpace.id });
+  });
+
+  it('死缺会拦起单，且分组记 judged（`需要：仓库 1` 从此有死活读数）', () => {    const r = checkGraphRequirements(graphWith([{ kind: 'repo', id: 'packages/api' }]), [repo]);
+    expect(r.slots[0]!.verdict).toBe('missing');
+    expect(r.ok).toBe(false);
+    expect(requirementGapWhy(r)).toContain('repo → packages/api');
+    expect(r.need).toEqual([{ kind: 'repo', label: '仓库', declared: 1, judged: 1, gaps: 1 }]);
+  });
+
+  it('宽槽（不点名）在表上就过；禁用中的不凑槽', () => {
+    expect(checkGraphRequirements(graphWith([{ kind: 'repo', hint: '有个仓就行' }]), [repo]).slots[0]!.verdict).toBe('ok');
+    expect(
+      checkGraphRequirements(graphWith([{ kind: 'repo' }]), [repoEntry({ space: 'demo', dir: 'x' }, 'x', false)]).slots[0]!
+        .verdict,
+    ).toBe('missing');
+  });
+
+  it('预检词表：`需要：仓库` 那一行有中文组名（KIND_CN 是全仓唯一一份措辞表）', () => {
+    expect(requirementKindLabel('repo')).toBe('仓库');
   });
 });

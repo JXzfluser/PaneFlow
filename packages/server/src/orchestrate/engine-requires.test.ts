@@ -84,7 +84,7 @@ describe('startRun 的能力槽预检', () => {
   });
 
   it('未迁进注册表的 kind 不拦起单（判不了死活就只披露，拿空白当断言=误杀存量模板）', async () => {
-    const run = await engine.startRun(graph([{ kind: 'repo', id: 'packages/web' }]), cwd);
+    const run = await engine.startRun(graph([{ kind: 'role', id: 'r-deliver' }]), cwd);
     expect((await settle(run.runId)).state).toBe('completed');
   });
 
@@ -113,6 +113,26 @@ describe('startRun 的能力槽预检', () => {
     expect(new RegistryStore(dataDir).add({ kind: 'rule', name: 'x', spec: { space: 'demo', file: 'docs/x.md' } }).ok).toBe(true);
     const run = await engine.startRun(graph([{ kind: 'rule', id: 'docs/x.md' }]), cwd);
     expect((await settle(run.runId)).state).toBe('completed');
+  });
+
+  /**
+   * v14 A5-3：`repo` 同款翻面。这一枚多一格收益的理由不是「再证一遍接线」，而是它是**三处裸串**
+   * （`repos[]`／`rules[].repo`／`delivery[].repo`）共同指的那一类：以前仓库槽整类落 `unjudged`，
+   * 起了单才发现家规要的仓根本不在盘上；现在那一步在 run 落册之前就被拒。
+   */
+  it('repo 槽自此拦起单：没登记即拒，登记后按目录名放行（origin 那套写法同样指得到）', async () => {
+    await expect(engine.startRun(graph([{ kind: 'repo', id: 'packages/web' }]), cwd)).rejects.toThrow(/repo → packages\/web/);
+    expect(
+      new RegistryStore(dataDir).add({
+        kind: 'repo',
+        name: '前端仓',
+        spec: { space: 'demo', dir: 'packages/web', origin: 'my-org/web' },
+      }).ok,
+    ).toBe(true);
+    for (const id of ['packages/web', 'my-org/web']) {
+      const run = await engine.startRun(graph([{ kind: 'repo', id }]), cwd);
+      expect((await settle(run.runId)).state).toBe('completed');
+    }
   });
 
   it('没带 requires 的模板一个字都不变：注册表破烂也照起单（预检不是全局新前置）', async () => {

@@ -10,13 +10,13 @@ import { matchesTarget, type RawReference } from './registry-refs.js';
  * 快照自带原文，条目被改了甚至被删了，这一单读到的还是它起单时那一份。
  *
  * 三条姿态：
- *  1. **只快照已迁进表的 kind**：指向 `rule`/`repo`/`role`/`check-type`… 的裸串今天表里没有这一类，
+ *  1. **只快照已迁进表的 kind**：指向 `role`/`check-type`/`template`… 的裸串今天表里没有这一类，
  *     快照它们就是拿注册表外的形状冒充注册表读数（与 R2 的 `unmigrated` 同一把尺）；
  *  2. **悬挂引用不进快照**：指向表内 kind 却解析不到条目，是 T3 预检的账（「这单会缺什么」），
  *     不在这里重复一份判据；快照只回答「实际吃进了什么」；
  *  3. **返回 null＝整键不给**，不返回空数组：`[]` 是正断言「扫过了、一条已迁能力都没吃」，
- *     而「没走到注册消费面」与它是两件事（宁缺毋假）。今天已迁进表的是登记项三枚（`model`、
- *     `mcp`(T4)、`skill`(A5-1)）与两枚**视图 kind**
+ *     而「没走到注册消费面」与它是两件事（宁缺毋假）。今天已迁进表的是登记项五枚（`model`、
+ *     `skill`(A5-1)、`rule`(A5-2)、`repo`(A5-3)、`mcp`(T4)）与两枚**视图 kind**
  *     （A3-2 的 `agent-kind`、T1 的 `node-type`：条目由出厂清单现算、不落盘，所以调用方必须喂
  *     `readView().entries`——只喂 `load()` 会把这两类静默读成「没吃到」，cap# 就此漏账）；
  *     样张里那枚「技能 2」自 A5-1 起真可能出现（`skill` 进了表），「机检 3」还要等 `check-type` 迁入——
@@ -50,7 +50,7 @@ export function capabilitySnapshot(
       (e) => e.kind === ref.kind && e.enabled !== false && matchesTarget(e, ref.target, { face: ref.face, id: ref.id }),
     );
     if (!matched.length) continue;
-    // 一枚裸串同时命中两枚条目（今天只有 `skill` 的相对路径会这样：两个项目根下同名文件）：
+    // 一枚裸串同时命中两枚条目（`skill`/`rule` 的相对路径、`repo` 的目录名都会跨空间撞）：
     // 正向账**不猜**是哪一枚。记一条=宣称这一单读了那个文件，那是多出来的一个结论（宁缺毋假）；
     // 反向账相反，逐条记全（`registry-refs.ts: matchedEntries` 那段）——两边问的不是同一个问题。
     if (matched.length > 1) continue;
