@@ -76,13 +76,17 @@ function ChannelsEditor() {
       },
     ]);
 
+  const [saving, setSaving] = useState(false);
   const save = async () => {
+    setSaving(true);
     try {
       const r = await api.saveChannels(channels);
       setChannels(r.channels);
       log('info', `已保存 ${r.channels.length} 条通道`);
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -210,8 +214,8 @@ function ChannelsEditor() {
         <button className="ghost" onClick={add}>
           + 新增通道
         </button>
-        <button className="primary" onClick={() => void save()}>
-          保存通道
+        <button className="primary" disabled={saving} onClick={() => void save()}>
+          {saving ? '保存中…' : '保存通道'}
         </button>
       </div>
     </>
@@ -247,7 +251,9 @@ function GithubCredCard() {
   useEffect(() => {
     void refresh();
   }, []);
+  const [saving, setSaving] = useState(false);
   const save = async () => {
+    setSaving(true);
     try {
       const d = await fetchJson<{ tokenConfigured: boolean }>('PUT', '/api/github/cred', {
         ...(token ? { token } : {}),
@@ -258,6 +264,8 @@ function GithubCredCard() {
       void refresh();
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
+    } finally {
+      setSaving(false);
     }
   };
   const [writing, setWriting] = useState(false);
@@ -331,8 +339,8 @@ function GithubCredCard() {
         placeholder="owner/repo"
       />
       <div className="settings-actions">
-        <button className="primary" onClick={() => void save()}>
-          保存凭据
+        <button className="primary" disabled={saving} onClick={() => void save()}>
+          {saving ? '保存中…' : '保存凭据'}
         </button>
         <button title="读取本机 `gh auth token` 的登录态并存入（gh 未登录会给出两条备选路）" disabled={importing} onClick={() => void importGh()}>
           <Icon name="key" size={12} /> {importing ? '导入中…' : '从 gh CLI 一键导入'}
@@ -549,7 +557,9 @@ function GatewayCard() {
       })
       .catch((e: Error) => log('error', `读取网关配置失败：${e.message}`));
   }, []);
+  const [saving, setSaving] = useState<'' | 'save' | 'asNew'>('');
   const save = async () => {
+    setSaving('save');
     try {
       await fetchJson<{ saved: boolean }>('PUT', '/api/gateway', {
         baseUrl: g.baseUrl,
@@ -565,10 +575,13 @@ function GatewayCard() {
       await runTest();
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
+    } finally {
+      setSaving('');
     }
   };
   /** D2：把上方表单当前内容另存为一档新网关（不动生效档） */
   const saveAsNew = async () => {
+    setSaving('asNew');
     try {
       await fetchJson<{ ok: boolean; id: string }>('POST', '/api/gateway/profile', {
         name: newName,
@@ -583,6 +596,8 @@ function GatewayCard() {
       log('info', `新档「${newName}」已入列（未切生效档；要启用点它的「设为生效」）`);
     } catch (e) {
       log('error', `另存新档失败：${(e as Error).message}`);
+    } finally {
+      setSaving('');
     }
   };
   const switchTo = async (p: GatewayProfileView) => {
@@ -661,8 +676,8 @@ function GatewayCard() {
       </div>
       <div className="settings-actions">
         {testing && <span className={testing.cls}>{testing.note}</span>}
-        <button className="primary" onClick={() => void save()}>
-          <Icon name="save" size={12} /> 保存并测试
+        <button className="primary" disabled={saving !== ''} onClick={() => void save()}>
+          <Icon name="save" size={12} /> {saving === 'save' ? '保存中…' : '保存并测试'}
         </button>
       </div>
       {/* v9-D2 多网关档：上面表单编辑的是生效档；并存其他网关在下方列表里切/删 */}
@@ -697,11 +712,11 @@ function GatewayCard() {
             aria-label="新档名"
           />
           <button
-            disabled={!newName.trim()}
+            disabled={!newName.trim() || saving !== ''}
             title="把上方表单里的地址/Key/模型另存为一档新网关（需要填 Key）"
             onClick={() => void saveAsNew()}
           >
-            ＋ 另存为新档
+            {saving === 'asNew' ? '存档中…' : '＋ 另存为新档'}
           </button>
         </div>
       </div>
@@ -1213,10 +1228,20 @@ export function SettingsView() {
     env: { agentsInstalled: string[] };
   } | null>(null);
   const [active, setActive] = useState(SECTIONS[0]?.id ?? 'channels');
+  // 这一枚探测要现起子进程问本机装了哪些 agent（herdr 也在里面），不是瞬时——点了没说「在探」就会被再按一次
+  const [envBusy, setEnvBusy] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
+  const probeEnv = () => {
+    setEnvBusy(true);
+    return api
+      .health()
+      .then(setEnv)
+      .finally(() => setEnvBusy(false));
+  };
+
   useEffect(() => {
-    void api.health().then(setEnv);
+    void probeEnv();
   }, []);
 
   // 滚动时高亮当前章节
@@ -1273,8 +1298,8 @@ export function SettingsView() {
             </p>
           )}
           <div className="settings-actions">
-            <button onClick={() => void api.health().then(setEnv)}>
-              <Icon name="refresh" size={12} /> 重新检测
+            <button disabled={envBusy} onClick={() => void probeEnv()}>
+              <Icon name="refresh" size={12} /> {envBusy ? '检测中…' : '重新检测'}
             </button>
           </div>
         </section>

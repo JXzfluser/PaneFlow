@@ -485,6 +485,8 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
   const [browseList, setBrowseList] = useState<string[] | null>(null);
   // 保存结果就地回执：日志面板默认收起，只 log() 等于「点了没反应」——成败都要在按钮旁边说一句
   const [saveState, setSaveState] = useState<{ ok: boolean; text: string } | null>(null);
+  // 那一笔 PUT 是全字段回写（档案大、server 要过形状闸），慢的时候有——按钮不说话就是「没点上」，人就会再按一次
+  const [savingProfile, setSavingProfile] = useState(false);
 
   useEffect(() => {
     setProfile(null);
@@ -515,6 +517,7 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
 
   const saveProfile = async () => {
     if (!profile) return;
+    setSavingProfile(true);
     // 作用域规则：没选文档的行写了也是惰条（server 读端按 file 非空过滤），不入库、但如实回执
     const blankRules = (profile.rules ?? []).filter((r) => !r.file.trim()).length;
     const rules = (profile.rules ?? [])
@@ -562,6 +565,8 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
       setSaveState({ ok: false, text: `保存失败：${(e as Error).message}（改动还在表单里，按指路改完再存）` });
+    } finally {
+      setSavingProfile(false);
     }
   };
 
@@ -665,8 +670,8 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
           </p>
           {agentControls}
           <div className="settings-actions">
-            <button className="primary" onClick={() => void saveProfile()}>
-              保存档案
+            <button className="primary" disabled={savingProfile} onClick={() => void saveProfile()}>
+              {savingProfile ? '保存中…' : '保存档案'}
             </button>
             {saveReceipt}
           </div>
@@ -867,8 +872,8 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
             onChange={(d) => setProfile((p) => (p ? { ...p, delivery: d } : p))}
           />
           <div className="settings-actions">
-            <button className="primary" onClick={() => void saveProfile()}>
-              保存档案
+            <button className="primary" disabled={savingProfile} onClick={() => void saveProfile()}>
+              {savingProfile ? '保存中…' : '保存档案'}
             </button>
             {saveReceipt}
           </div>
