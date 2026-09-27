@@ -387,7 +387,15 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   前置=W5′ 装备槽指向注册项，见 §七 二次刷新）。此后欠的三类账不在 agent 能代做的范围里：
   ①M0 机证① 的 10 条 replay 等臂复验（要 run 预算）；③X3 实机首驾（真项目上手敲一遍）。
   ~~②X2 的版本 bump / tag / Release~~——**已办**：五枚 `package.json` 0.2.0→0.3.0、本地产物冒烟 17/17、`v0.3.0` 标签推送后由
-  `release.yml` 自动发 GitHub Release（冒烟不过则不发）。装机侧回执（用户机 `install.sh` 升级后跑一次）仍在用户手里。
+  `release.yml` 自动发 GitHub Release（CI 里冒烟不过则不发）。**实发回执（2026-09-27 对平）**：bump 提交 `2975385` 的 CI run
+  `36315427746` 绿 → 推 `v0.3.0` 标签 → Release run `36315598843` 绿 → `gh release view v0.3.0` 四枚资产齐
+  （`paneflow-0.3.0.tgz` + `.sha256`、`paneflow-latest.tgz` + `.sha256`）；从公开 URL 重下的 `paneflow-latest.tgz` 实算 sha256
+  与 sidecar 逐字节相符（`dfc05d59…8ffd4d`），解包后 `package.json` 读回 `paneflow 0.3.0`。装机侧回执（用户机 `install.sh` 升级后跑一次）仍在用户手里。
+- **X3 的机器前置（本片新增的账，不是 X3 本身）**：本机在跑的 server 是 09-26 起的 dev 实例（PID 54817，`tsx packages/server/src/index.ts`），
+  它前端的 `packages/web/dist` 已是我 `pnpm build` 出的 HEAD——于是**前后端版本错配**：`GET /api/registry?kind=node-type` 与 `?kind=mcp`
+  在这台实例上回 400「这版只登记：model/agent-kind」（T1/T4 后端不在它身上），`/api/env/probe` 直接 404（E1/E2 不在），
+  而注册表列表、批量健康、`registry check`、单枚 `:id/health` 全 200（R1-R4/T3 在）。后果很具体：画布 Palette 读不到节点类型清单、
+  E2 向导按了没货。解法只有那条既定路：**队列空时的一次重启仪式**（与上面 v13-Z 那条余项是同一次），属共享状态变更，需用户令，不代做。
 - 基线读数（2026-09-26 实跑）：server **721/721**（50 文件）、cli **43/43**、web **57/57**、`pnpm typecheck` 四包净
   + `tsc -b packages/web` 净。
 
@@ -497,11 +505,17 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 | W6 | `roleShaV: 2` | **判为「现在做不出诚实版本」，仍待裁决（见 §七 二次刷新）** | — | — |
 | E1 | 环境发现器（只读） | **已完成 `e37d7b3`** | `e37d7b3` | `paneflow env probe <目录> [--json]` 七类草案逐项带依据（发现自哪个相对路径）；探测失败落 `missing`+一句为什么，不是 400 |
 | E2 | 一次事务登记 + 向导四步 | **已完成（本片）** | 本片 | `POST /api/env/register` 一次事务：probe → map → write 全绿才落档案（原子写），任一步失败整体不落盘。CLI `paneflow env add <目录> --space <id>` 一行回执；网页「项目」页头「🔍 发现环境并登记」开四步向导（选目录 → 看发现 → 勾选 → 登记回执）。判据在 `env-probe.mapProbeToProfilePatch` 纯函数：四类可登记（repo/doc/skill/rule 各自映射档案字段，rule 带 repo 关联），三类只披露（check/workflow/worktree 无字段，向导里勾选框置灰）。机证：单测 6 条（四类映射/三类披露/selected 越界与负索引忽略/existing 与同批去重/rule 按 file 去重/空 selected 全不选）+ 端到端 27 条（env-probe.test.ts 全绿）；`panelflow typecheck` 净 + web `tsc -b` 净 + server 61/890 绿 + web 12/90 绿。诚实边界：向导不装任何软件，只登记「本机/本仓确实有这些东西」 |
-| X1 | 注册中心视图（现役控件对照） | **全量已完成**（首屏 `10bc315` + 详情抽屉两件本片） | `10bc315` 本片 | 网页「注册中心」= 一张表（分组/label/来源/启停/删除）+ 健康点 ●/○/? + 被引用数 + 表单登记（不写 JSON）；**对照「现役家产」清点后缺的只有两件，本片补齐**：①**引用者清单**——详情抽屉「谁在用」逐条列 server 随条目发下的 `refs`（`face · 「名字」（id） · via`，与 CLI `registry refs` 同一份账同一把尺；`face` 原样画，中文对照表住在 server 的 400 文案里，不抄第二份），三种读数三句话：`refs` 缺键＝「这次没扫出来，不是没人用」（琥珀色，不给删除开绿灯）／`[]`＝「没人用（正读数）」／有货＝「被 N 处引用，删除时 server 拿这份清单拒你」；②**行内「探一次／现探」**——接既有 `GET /api/registry/:id/health`（CLI `registry probe` 的同一落点、同一份 5min 实探缓存，`?refresh=1` 才绕开），读数回来顺手并进批量那张 health map，于是表上那颗点与详情行不会画成两样；回执句只说它那一格说不出来的三件事（失败原话／这一类没有探针通道／刚探过一次，读数见上一格）。机证：web 单测 +9 条（`refRows` 三段排版与字段缺失、形状不认也不吞、缺键 vs 空数组分家、数值型 `refs` 不画清单但计数照读；`probeNote` 四态＋失败优先＋不重复贴人话），web **12 文件 / 100** 全绿 + `tsc -b` 净 + 根 typecheck 净。**M0 样张③ 的「肉眼看到」这条仍欠**（真浏览器截图取不到——应用内视口不可用；DOM 断言有）。**更正一笔**：`ba7622c` 的提交说明把「`api.dryRun` 返回形状并入单一事实源」记成本片改动，实际那半在 `1098285` 就落了（见上一行 K2）；提交已推故不改历史，账在这里对平 |
+| X1 | 注册中心视图（现役控件对照） | **全量已完成**（首屏 `10bc315` + 详情抽屉两件本片） | `10bc315` 本片 | 网页「注册中心」= 一张表（分组/label/来源/启停/删除）+ 健康点 ●/○/? + 被引用数 + 表单登记（不写 JSON）；**对照「现役家产」清点后缺的只有两件，本片补齐**：①**引用者清单**——详情抽屉「谁在用」逐条列 server 随条目发下的 `refs`（`face · 「名字」（id） · via`，与 CLI `registry refs` 同一份账同一把尺；`face` 原样画，中文对照表住在 server 的 400 文案里，不抄第二份），三种读数三句话：`refs` 缺键＝「这次没扫出来，不是没人用」（琥珀色，不给删除开绿灯）／`[]`＝「没人用（正读数）」／有货＝「被 N 处引用，删除时 server 拿这份清单拒你」；②**行内「探一次／现探」**——接既有 `GET /api/registry/:id/health`（CLI `registry probe` 的同一落点、同一份 5min 实探缓存，`?refresh=1` 才绕开），读数回来顺手并进批量那张 health map，于是表上那颗点与详情行不会画成两样；回执句只说它那一格说不出来的三件事（失败原话／这一类没有探针通道／刚探过一次，读数见上一格）。机证：web 单测 +9 条（`refRows` 三段排版与字段缺失、形状不认也不吞、缺键 vs 空数组分家、数值型 `refs` 不画清单但计数照读；`probeNote` 四态＋失败优先＋不重复贴人话），web **12 文件 / 100** 全绿 + `tsc -b` 净 + 根 typecheck 净。**M0 样张③ 的「肉眼看到」：截图仍取不到（应用内视口不可用），但现网 DOM 断言已实跑到**（2026-09-27，见下一行「现网取证」）。**更正一笔**：`ba7622c` 的提交说明把「`api.dryRun` 返回形状并入单一事实源」记成本片改动，实际那半在 `1098285` 就落了（见上一行 K2）；提交已推故不改历史，账在这里对平 |
 | X2 | CLI 三处必动 + AGENTS/README + 发行 v0.3.0 | **已完成**（代码面 `e8f1fb6` 一片 + 发行本片） | 本片 | 三处：①`CLI_SUBCOMMANDS` 已含 `env/registry`（前片完成，本片无需增枚）；②`VALUE_FLAGS` 已含 `kind/from/path/space/template`（本片不新增）；③USAGE 补 `env add` 一行（含 --json）；`paneflow env add <目录> --space <id> [--json]` 与网页向导同一 API、同一判据（stdout 干净可 `| jq`）；AGENTS.md 补 `env add` 命令块（四类入档 / 三类只披露 / 一行回执 / 不装任何软件）。机证：CLI 单测 4 条（人读一行 + `--json` 直出 + `body.error` 双语义退 1 + 脏输入不发请求与 USAGE 覆盖），CLI **3 文件 / 74** 全绿 + `pnpm typecheck` 净。**发行（本片）**：五枚 `package.json` 0.2.0→0.3.0（根 `name: paneflow` 的版本即注册表 `schema.json` 的 `writtenBy` 来源，无需另改代码）+ README 的 tag 示例那行照改；`node scripts/build-release.mjs` 本地产 `paneflow-0.3.0.tgz`（378.9KB／9 文件，带 `.sha256` sidecar 与 `LICENSE`——v0.2.0 包内缺许可那条已还）；`node scripts/smoke-release.mjs` 对**真产物** **17/17 通过**（含 E1/E2/E3「新起服务上 `runs`/`experiments --suite c4` 真打得通」与 E4/E6 自起实例不留孤儿）。打 `v0.3.0` 标签推 `origin/main` 后由 `release.yml` 自动发 GitHub Release（CI 里冒烟不过则不发）。**Release 与装机的肉眼回执仍是 X3 的事**——本仓在 agent 侧只能证到产物冒烟这一层 |
-| X3 | 实机首驾（零手填路径全程） | 待用户实机跑 | — | 代码路径已通：`paneflow env add <绝对路径> --space <id>` → `paneflow registry check --template x` → `paneflow dispatch "..." --repo ... --issue ...` → `paneflow status <runId>` 见「能力: N 项 · cap#xxx」一行；向导四步（网页）同路。欠的是真项目上跑一遍：本机装 v0.3.0 之后手敲一次；agent 侧无可代做的部分 |
+| X3 | 实机首驾（零手填路径全程） | 待用户实机跑 | — | 代码路径已通：`paneflow env add <绝对路径> --space <id>` → `paneflow registry check --template x` → `paneflow dispatch "..." --repo ... --issue ...` → `paneflow status <runId>` 见「能力: N 项 · cap#xxx」一行；向导四步（网页）同路。欠的是真项目上跑一遍：本机装 v0.3.0 之后手敲一次；agent 侧无可代做的部分。**机器前置在 §八 末一条**：本机在跑的 server 是 09-26 的 dev 实例，T1/T4/E1/E2 的后端不在它身上（`?kind=node-type` 400、`/api/env/probe` 404），不先做那次队列空重启，X3 的第一笔就撞这两处 |
 
 **M0 机证三条的现状（不洗）**：① 10 条 v13 历史 run replay 后 `骨架#/ctxSha/roleSha` 逐字节相等——**未跑**（要 run 预算点头）；② server 全量测试零改动零红——**已达标**（A3-2 片收口实跑：server **61 文件 / 872** 绿、web 11/**82**、cli 3/**70**，`pnpm typecheck` 净 + web `tsc -b` 净；T3 片时是 61/852、web 77、cli 69，R5 片收口时 57/817、web 71、cli 63——**只加不减**，且加的全是新片的判据断言，既有断言一条没放宽。X1 全量片收口时（K2 已在账）：**server 918 · web 12/100 · cli 75**，根 `typecheck` 净 + web `tsc -b` 净）；③ 注册中心首屏一张表 + 健康点 + 被引用数——**结构已证、视觉半证**（A3-2 后 `pnpm build` 刷新了 server 一键模式挂的前端，实机页面读回 `Agent 引擎 18 项 内置清单` 分组与「出厂行无启停/删除」；截图仍未取到——应用内视口不可用，见 X1 行）。
+   **X1 两件的现网取证（2026-09-27，`http://127.0.0.1:4310/` 注册中心，dist 为 HEAD）走 DOM 断言，原话照抄**：
+   模型条目详情抽屉「谁在用」两行——`gateway · 「默认档」（default） · freeModel` 与
+   `template · 「t3-demo」（t3-demo） · requires[0].id`（T3 的 `graph.requires` 引用真的进了引用账），
+   收尾一句「被 2 处引用——删除/停用时 server 会拿这份清单拒你。」；出厂项 `agent-kind:qwen` 的同一格画
+   「没人用（这是正读数：引用账确实扫过盘面，一处都没指着它）。」，健康格画「○ 不在：PATH 上逐个目录枚举完，没有「qwen」这个可执行文件」——
+   三种读数在真页面上分开了。「探一次」点下去回执「刚探过一次（回执时刻 2026-09-27 19:31），读数见上一格。」，无失败块。
 > ②里那条**工程口径**要写死：本仓 server 一键模式服务的是 `packages/web/dist`，改完 web 源码不跑 `pnpm build` 就等于没改——A3-2 第一次实机检查看到的就是旧包（`未知类型：agent-kind`），build 之后才读到新组名。判据落在构建链上，不靠记性。
 > ②「零改动」这条口径在 R5 需要说清它约束的是什么：**历史 run 的既有读数与既有判据不许改**（`骨架#/ctxSha/roleSha/graphSha` 逐字节、
 > 收口判定、退出码），不是「测试文件一行不许动」。R5 确实动了 5 条钉死字符串——收数表多一列（doc 明写要新增 `registrySnapshotSha` 列），
