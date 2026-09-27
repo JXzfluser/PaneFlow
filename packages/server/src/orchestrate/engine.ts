@@ -55,7 +55,8 @@ import {
   type DeliveryPlan,
   type DeliveryRule,
 } from './delivery.js';
-import { buildSkillBlock, resolveSkillRefs } from './skills.js';
+import { buildSkillBlock } from './skills.js';
+import { resolveEquipSlots } from './registry-equip.js';
 import {
   PRODUCT_READ_CAP,
   diffProduct,
@@ -3438,11 +3439,35 @@ export class Engine {
         }
       };
       const hit = matchRules(effectiveRules(profile), profile.rootCwd, nodeCwd);
-      // 岗位文档槽：与命中规则按 file 去重（空间/目录轴优先，同一篇不注两遍）；脏形一律不取
-      const roleRules = (Array.isArray(role?.rules) ? (role!.rules as unknown[]) : []).filter(
-        (f): f is string => typeof f === 'string' && !!f && !f.includes('..') && !hit.some((r) => r.file === f),
+      // 空间技能登记清单（裸串写法的那把池子尺吃它；v13-W1 的兼容带也吃它=没配槽时的全量）
+      const pool = (Array.isArray(profile.skills) ? profile.skills : []).filter(
+        (f): f is string => typeof f === 'string' && !!f,
       );
-      const ruleFiles = new Set([...hit.map((r) => r.file), ...roleRules]);
+      // v14-A5-5b：岗位装备槽两写法并存，**解析只在这一处发生**（`resolveEquipSlots`）——裸串照旧调
+      // `resolveSkillRefs`（判据仍是 v13-W1 那一把尺），`{kind,id}` 走 R2 的 `matchedEntries`。
+      // 注册表整表读不出时按「解析不到」落披露，绝不按「已注入」落账（宁缺毋假）。
+      let entries: RegistryEntry[] = [];
+      try {
+        entries = this.registry.readView().entries;
+      } catch {
+        /* 注册表读不动＝那一格引用对象自然解析不到，下面的 miss 会说清 */
+      }
+      const resolved = resolveEquipSlots(
+        { skills: role?.skills, rules: role?.rules },
+        {
+          spaceId: profile.id ?? run.spaceId,
+          skillPool: pool,
+          entries,
+          ...(role?.id ? { roleId: role.id } : {}),
+          alreadyCovered: new Set(hit.map((r) => r.file)),
+        },
+      );
+      // 兼容带（v13-W1）：没配技能槽=吃空间全量，一字不变
+      const skillFiles = role?.skills === undefined ? pool : resolved.skills;
+      // 岗位文档候选里带条目作用域的那几枚，照旧交给注入现场唯一的那把尺收窄（`matchRules`；
+      // 这里再算一遍 glob 就是两处判据，A5-2 那句「pathsGlob 不判」说的正是这件事）
+      const roleRules = matchRules(resolved.rules, profile.rootCwd, nodeCwd);
+      const ruleFiles = new Set([...hit.map((r) => r.file), ...roleRules.map((r) => r.file)]);
       const injectedRules: string[] = [];
       const block = buildConventionBlock(
         profile.rootCwd,
@@ -3452,18 +3477,11 @@ export class Engine {
       );
       if (block) parts.push(block);
       // I1：技能库走约定同款通道（整篇注入、大小上限复用）；v13-W1 起「注哪些」上移角色装备槽
-      const registry = (Array.isArray(profile.skills) ? profile.skills : []).filter(
-        (f): f is string => typeof f === 'string' && !!f,
-      );
       const slotted = roleEquipConfigured(role);
-      const resolved =
-        role?.skills === undefined
-          ? { files: registry, unknown: [] as string[] }
-          : resolveSkillRefs(registry, role.skills as string[]);
       const injectedSkills: string[] = [];
       const skillBlock = buildSkillBlock(
         profile.rootCwd,
-        resolved.files.filter((f) => !ruleFiles.has(f)),
+        skillFiles.filter((f) => !ruleFiles.has(f)),
         read,
         (f) => injectedSkills.push(f),
       );
@@ -3479,7 +3497,20 @@ export class Engine {
         ...(role?.id ? { role: role.id } : {}),
         skills: injectedSkills,
         rules: injectedRules,
-        ...(resolved.unknown.length ? { unknownSkills: resolved.unknown } : {}),
+        // 披露落的是**槽原文**（裸串就是那枚串，引用对象写成 `kind:id`）——那是「人写了什么没生效」的账，
+        // 不是解析结果；措辞归 shared 的 `equipSlotLabel`（网页与 CLI 说同一句）。
+        ...(resolved.unknownSkills.length ? { unknownSkills: resolved.unknownSkills.map((m) => m.label) } : {}),
+        ...(resolved.unknownRules.length ? { unknownRules: resolved.unknownRules.map((m) => m.label) } : {}),
+        // 明细那句「为什么」跟着 labels 同序落册，但**不进 roleSha**（见 shared 的 `NodeEquip.misses`）：
+        // 措辞的取材是注册表整表，入指纹就让毫不相关的项目条目也能抖出这一岗的装备指纹。
+        ...(resolved.unknownSkills.length || resolved.unknownRules.length
+          ? {
+              misses: [
+                ...resolved.unknownSkills.map((m) => ({ axis: 'skill' as const, slot: m.label, why: m.why })),
+                ...resolved.unknownRules.map((m) => ({ axis: 'rule' as const, slot: m.label, why: m.why })),
+              ],
+            }
+          : {}),
       };
     } catch {
       // profile unreadable — proceed without conventions

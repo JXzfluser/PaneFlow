@@ -944,6 +944,11 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .settings-listbox label.settings-check code { font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .equip-src { margin-left: auto; padding-left: 8px; font-size: 11px; color: var(--text-dim); opacity: .8; flex: 0 0 auto; }
 .equip-unknown { margin: 6px 0 0; font-size: 11px; color: var(--warn, #b8860b); display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+/* v14-A5-5b 定点引用行：与「清单外」分家——它不是毛病，是另一套写法（注册表尺），所以不吃 warn 色 */
+.equip-refs { margin: 6px 0 0; font-size: 11px; color: var(--text-dim); display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.equip-ref { display: inline-flex; gap: 4px; align-items: baseline; padding: 1px 6px; border: 1px solid var(--border); border-radius: var(--r-chip, 999px); }
+.equip-ref code { font-size: 11px; color: var(--text); }
+.equip-refs button { width: auto; margin: 0; padding: 0 4px; font-size: 11px; }
 .equip-manual { margin-top: 6px; }
 .equip-manual span { display: flex; gap: 6px; margin-top: 6px; }
 .equip-manual input { flex: 1 1 auto; min-width: 0; }

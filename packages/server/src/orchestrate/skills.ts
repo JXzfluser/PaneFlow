@@ -59,8 +59,8 @@ export function buildSkillBlock(
  * 未配槽（undefined）由调用方按兼容带处理（吃空间全量），这里不掺判策。
  */
 export function resolveSkillRefs(
-  registry: string[] | undefined,
-  refs: string[] | undefined,
+  registry: readonly string[] | undefined,
+  refs: readonly string[] | undefined,
 ): { files: string[]; unknown: string[] } {
   const known = new Set((registry ?? []).filter((f) => typeof f === 'string'));
   const files: string[] = [];

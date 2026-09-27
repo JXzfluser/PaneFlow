@@ -374,7 +374,14 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
           ? `    ${paint(io, '33', `⚠ 装备: ${bits} —— 该角色未配装备，正吃空间全量`)}`
           : `    装备: ${bits}${eq.role ? ` · 岗 ${eq.role}` : ''}`,
       );
-      if (eq.unknownSkills?.length) {
+      // 没落地的格子：v14-A5-5b 起 server 在注入现场逐格算好「为什么」（整表读不出／条目挂在别的项目／
+      // 形状不认…），CLI 原样渲这一句——判据与措辞都不在 CLI 侧（铁律 R4）。
+      // 旧单没有 `misses`：回落 v13-W1 那一行（那时唯一的没落地原因就是「不在登记清单」，措辞仍然为真）。
+      if (eq.misses?.length) {
+        for (const m of eq.misses) {
+          io.out(`    ${paint(io, '33', `⚠ 装备没落地，已跳过：${m.slot} —— ${m.why}`)}`);
+        }
+      } else if (eq.unknownSkills?.length) {
         io.out(
           `    ${paint(io, '33', `⚠ 装备引用不在登记清单，已跳过：${eq.unknownSkills.join('、')}`)}`,
         );

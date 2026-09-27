@@ -186,15 +186,20 @@ export function ctxShaDriftDiff(
  *  · skills / rules：注入现场**解析出的路径集**（按注入顺序，路径本身入指纹）。
  *    刻意**不**逐文件算内容指纹——文件改了是 ctxSha 的账（V4 已占坑），本键只证
  *    「哪一岗挂哪几篇」这格配置，于是「同装备同指纹」不被文档编辑噪声打破（判据外延自 V2）；
- *  · unknownSkills：装备槽引用了登记清单外的项（虽不注入，但它变了=这岗的配置确实被改过）。
+ *  · unknownSkills：装备槽引用了登记清单外的项（虽不注入，但它变了=这岗的配置确实被改过）；
+ *  · unknownRules（v14-A5-5b）：同一枚判序给岗位文档槽——它从前没有披露通道，所以只在非空时才进取材，
+ *    干净名册与旧单的 roleSha 逐字节不变（宁缺毋假：不给没落册的格子补一枚空数组冒充「配过」）。
  * scope（role/space 兼容带）不入指纹：它由「槽有没有配过」推得、与路径集冗余，
  * 算进去会让「配了一格内容等价的槽」也换指纹，破「同装备=同指纹」那半条判据。
+ * `misses`（v14-A5-5b 那句「为什么没落地」的明细）同样不入指纹，理由比 scope 更硬：它的取材是
+ * **注册表整表**——改一个毫不相关项目的条目，就能让这一岗的 roleSha 抖一下，那是拿别人的账冒充这岗的配置。
  */
 export interface RoleEquipFingerprint {
   role: string | null;
   skills: string[];
   rules: string[];
   unknownSkills?: string[];
+  unknownRules?: string[];
 }
 
 /** NodeEquip → 指纹取材：装备账是注入现场落册的现成结构，这里只做剥字段与归一 */
@@ -204,6 +209,7 @@ export function roleFingerprint(equip: NodeEquip): RoleEquipFingerprint {
     skills: [...equip.skills],
     rules: [...equip.rules],
     ...(equip.unknownSkills?.length ? { unknownSkills: [...equip.unknownSkills] } : {}),
+    ...(equip.unknownRules?.length ? { unknownRules: [...equip.unknownRules] } : {}),
   };
 }
 

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DECLARE_FACES, type DeclareFace, type RoleDeclaredFaces } from '@paneflow/shared';
+import { DECLARE_FACES, type DeclareFace, type RoleDeclaredFaces, type RoleEquipSlot } from '@paneflow/shared';
 import type { SpaceRule } from './rules.js';
 
 export interface Role {
@@ -17,13 +17,16 @@ export interface Role {
    * （清单外的引用跳过不注、落进节点 equip.unknownSkills 只披露）。
    * 键缺省=未配槽 → 沿用「空间全量注入」的现状一字不变（兼容带，不强迁）；
    * 显式 []=配过槽且该岗不吃技能文档（评审/验收岗常见的正是这个）。
+   * v14-A5-5b 起同格接受 `{kind:'skill',id}` 定点引用（见 shared 的 `RoleEquipSlot`：两写法并存，
+   * 裸串跨项目复用、定点引用认注册表条目并因此在**保存时**就被 R2 问过死活、删条目时又被引用账护住）。
    */
-  skills?: string[];
+  skills?: RoleEquipSlot[];
   /**
    * v13-W1 岗位装备·岗位文档槽（评审清单类家规）。注入 = matchRules 命中的空间规则
    * ∪ 本槽（按 file 去重，空间侧优先）。路径同 rules.file，相对主仓根，含 `..` 的一律不取。
+   * 定点引用同 `skills`（`{kind:'rule',id}`）。
    */
-  rules?: string[];
+  rules?: RoleEquipSlot[];
   /**
    * v13-W3 授权声明三面（gitPush / prOpen / issueWrite，皆布尔）。**PaneFlow 不造沙箱**：
    * 17 动词协议面无切钩子，能力锁归 agent CLI 侧——本槽只做三事：①诚实措辞注进 prompt

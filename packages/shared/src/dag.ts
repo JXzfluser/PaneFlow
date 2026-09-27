@@ -771,6 +771,28 @@ export interface NodeEquip {
   rules: string[];
   /** 装备槽引用了空间登记清单外的技能=跳过不注、只披露（评审 R5：只披露不拦） */
   unknownSkills?: string[];
+  /**
+   * v14-A5-5b 岗位文档槽没落地的披露（与 `unknownSkills` 同一条姿态，只是那一格从前**没有通道**：
+   * 脏路径静默跳过、定点引用无从生成）。只在这几格非空时落册——旧单与干净名册的装备账逐字节不变。
+   * 存的是**槽原文**（裸串就是那枚串，`{kind,id}` 写成 `kind:id`，措辞归 shared 的 `equipSlotLabel`），
+   * 因为它是「人写错了什么」的账，不是解析结果。
+   */
+  unknownRules?: string[];
+  /**
+   * v14-A5-5b 没落地格子的**那一句为什么**（与 `unknownSkills`/`unknownRules` 同源同序，只是多带措辞）。
+   * 为什么单开一格而不塞进 label 串：这句 `why` 的取材是**注册表整表**（「命中的条目挂在项目 other」这种话
+   * 只有对着别的项目才成立），把它并进入指纹的数组，改一个毫不相关的项目条目就能抖出这一岗的 roleSha——
+   * 那是「同装备=同指纹」的反面。所以 labels 入指纹（人写了什么）、`misses` 不入（本单当时怎么判的）。
+   * 只在这几格非空时落册；旧单整键缺省=没有这份明细，读端回落 labels 那一行（缺≠「没落地」）。
+   */
+  misses?: EquipSlotMissNote[];
+}
+
+/** 一格没落地的明细：哪一轴、槽原文、server 在注入现场算出的一句人话 */
+export interface EquipSlotMissNote {
+  axis: 'skill' | 'rule';
+  slot: string;
+  why: string;
 }
 
 export interface NodeRunRecord {

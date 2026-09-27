@@ -295,6 +295,87 @@ void _checkViewKindsCovered;
 export const REGISTRY_SOURCES = ['builtin', 'user', 'discovered'] as const;
 export type RegistrySource = (typeof REGISTRY_SOURCES)[number];
 
+/**
+ * v14-A5-5b 角色装备槽的**两写法**（`Role.skills` / `Role.rules` 的元素类型）。
+ *
+ *  - **裸相对路径**（v13-W1 起现役，也是存量名册里的唯一写法）：按「本单所在项目的登记池子」解析，
+ *    所以同一枚岗可以在两个项目里各吃各的那篇同名文档——跨项目复用是它的**语义**，不是 bug。
+ *  - **`{kind,id}` 定点引用**：吃的就是 `graph.requires` 那套槽词汇（同一份词表，不开第二套），
+ *    id 按 R2 那把尺（`matchesTarget`）解析——整枚 id／slug 段／`spec.file` 原值三种写法都算指到。
+ *
+ * 值域只封 `skill`/`rule`：装备槽注入的是**文档**。模型/网关/仓各有自己的选择口，把它们塞进同一格
+ * 就把「这岗吃了哪几篇文档」这枚读数变成什么都不是。
+ *
+ * 两写法各自落到哪儿（判据在 server 侧 `orchestrate/registry-equip.ts`，这里只记语义）：
+ *  - 裸串 → 照 v13-W1 一字不变：本单的**技能登记清单**里有没有这枚路径（池子语义）；
+ *  - `{kind,id}` → 命中的就是**注册表条目本身**，不再问池子（条目就是「这台机器上这篇文档登记过了」
+ *    那枚断言，再要池子点头是同一条事实问两次）；落地路径取条目的 `spec.file`，且只在
+ *    `spec.space` 等于本单所属项目时才注——条目说的是别人家项目根下的路径，越项目去读就是
+ *    拿相对路径跨根（`safeJoin` 那把尺不许）。`rule` 那一类还带着条目声明的作用域（`repo`/`pathsGlob`），
+ *    照旧交给注入现场那把唯一的尺（`matchRules`）收窄，不在这里再算一遍 glob。
+ *
+ * 两写法并存（不是替换）是刻意的：把存量裸串自动改写成 `{kind,id}` 等于**收窄**那枚岗
+ * （裸串跨项目可用，定点引用只在本单所属项目的那枚条目上生效），一次静默迁移会悄悄改变现网编排的
+ * 注入面。迁移因此只能是「只读报告 + 人点头」，不是写盘动作。
+ */
+export const ROLE_EQUIP_REF_KINDS = ['skill', 'rule'] as const;
+export type RoleEquipRefKind = (typeof ROLE_EQUIP_REF_KINDS)[number];
+
+export interface RoleEquipRef {
+  kind: RoleEquipRefKind;
+  /** 注册表条目引用（整枚 id／slug／`spec.file`；死活与命中都归 R2 那把尺） */
+  id: string;
+}
+
+export type RoleEquipSlot = string | RoleEquipRef;
+
+/** 装备槽引用只认这两枚键：多给的键（`space`/`file`/`filed` 拼错）一律拒——会被静默忽略的键就是假配置 */
+export const ROLE_EQUIP_REF_KEYS = ['kind', 'id'] as const;
+
+/**
+ * 一条槽的毛病（`null`=形状认）。fail-closed 姿态与 `requirementIssueOf`/`declares` 同族：
+ * **拼错的那一格会永远不生效**，而「装备没换上却以为换上了」正是 v13-W1 那份脏形状拦截要防的事故，
+ * 所以宁可在入库那一刻拒掉，不错放。
+ */
+export function equipSlotIssueOf(raw: unknown): string | null {
+  if (typeof raw === 'string') {
+    return raw.trim() ? null : '空串（要么给相对路径，要么给 {kind,id} 引用，不要塞空字符串）';
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return '既不是非空字符串、也不是 {kind,id} 引用对象';
+  }
+  const item = raw as Record<string, unknown>;
+  const unknown = Object.keys(item).filter((k) => !(ROLE_EQUIP_REF_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return `含未知键 ${unknown.join('、')}（引用写法只认 ${ROLE_EQUIP_REF_KEYS.join('/')}）`;
+  const kind = item.kind;
+  if (typeof kind !== 'string' || !(ROLE_EQUIP_REF_KINDS as readonly string[]).includes(kind)) {
+    return `kind 需是 ${ROLE_EQUIP_REF_KINDS.join('/')} 之一（装备槽注入的是文档，今天是这两类；收到 ${JSON.stringify(kind)}）`;
+  }
+  const id = item.id;
+  if (typeof id !== 'string' || !id.trim()) return '缺 id（这一槽钉哪一枚注册表条目）';
+  if (id.includes('..')) return 'id 含 ..（引用不许靠路径上跳定位文档）';
+  return null;
+}
+
+/** 这一槽是不是 `{kind,id}` 定点引用（形状认不认得都照 `equipSlotIssueOf` 的口径判） */
+export function isRoleEquipRef(slot: unknown): slot is RoleEquipRef {
+  if (typeof slot === 'string') return false;
+  return equipSlotIssueOf(slot) === null;
+}
+
+/**
+ * 一槽的**披露原文**：装备账落不进注入清单的那些槽要显出来给人看（CLI 的 ⚠ 行、网页的缺口行），
+ * 而裸串与引用对象在同一格里并存，直接 `String(slot)` 会把引用对象渲成 `[object Object]`。
+ * 措辞只这一处：注入现场（server）与勾选面（web）都要说同一枚槽时吃这一句，两张措辞表迟早分叉。
+ * 引用写成 `<kind>:<id>`，但 id 本身就是整枚注册表 id 时不再重复前缀（`skill:skill:x` 那种叠字读起来像坏了）。
+ */
+export function equipSlotLabel(slot: unknown): string {
+  if (typeof slot === 'string') return slot;
+  if (!isRoleEquipRef(slot)) return JSON.stringify(slot) ?? String(slot);
+  const { kind, id } = slot;
+  return id.startsWith(`${kind}:`) ? id : `${kind}:${id}`;
+}
+
 /** 注册表条目（信封本体；键名即账名，落盘形状与 API 返回形状同一份） */
 export interface RegistryEntry<K extends RegistryKind = RegistryKind> {
   /** `<kind>:<slug>`，全局唯一且**不可变** */

@@ -108,6 +108,8 @@ export interface NodeRunView {
   /**
    * v13-W1 岗位装备账（server 在注入现场算好落册，这里零判据只渲染）：
    * scope=space 即「这个岗其实在吃空间全量」——警告行的唯一依据；整缺=注入现场没走到，不猜。
+   * v14-A5-5b 起 `misses` 带每格的**一句为什么**（server 现算的措辞，CLI 不复述判据、不改写）；
+   * `unknownSkills`/`unknownRules` 仍是槽原文——旧单没有 `misses`，读端照旧回落那一行。
    */
   equip?: {
     scope: string;
@@ -115,6 +117,8 @@ export interface NodeRunView {
     skills?: string[];
     rules?: string[];
     unknownSkills?: string[];
+    unknownRules?: string[];
+    misses?: { axis: string; slot: string; why: string }[];
   };
   /**
    * v13-K1 命名产物台账（server 在尝试收口现场实读算好，这里零判据只渲染）：

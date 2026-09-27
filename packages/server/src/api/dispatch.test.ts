@@ -15,6 +15,7 @@ import {
   type IssueView,
 } from './dispatch.js';
 import { BUILTIN_TEMPLATES } from '../orchestrate/builtin-templates.js';
+import { RegistryStore } from '../orchestrate/registry.js';
 import { applyVariables, validateDag } from '@paneflow/shared';
 
 // v13-E2 fail-closed：buildDispatchGraph 不再回落缺省 claude——所有测试统一显式给 Planner kind
@@ -355,6 +356,13 @@ describe('v13-W2 planner 名册装备块（按装备结合场景点人）', () =
   const templateList = [{ name: 't1' }];
   const REGISTRY = ['skills/deploy.md', 'skills/export-guard.md', 'skills/review.md'];
 
+  /**
+   * v14-A5-5b 起 `teamEquipView` 必须拿到注册表读数才能解 `{kind,id}` 那一写法（判据与注入现场同源，
+   * 不给就解不出——所以参数是必填的，漏接编译不过）。这一批用例问的都是**裸串**那一路，
+   * 空表就是它们的正确取材：一条引用也不给，池子语义照旧。
+   */
+  const NO_REFS = { entries: [], spaceId: undefined } as const;
+
   /** 一台真项目：登记清单里三篇技能（首行=描述），外加一篇岗上专属清单 */
   function w2Root(): string {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-w2-plan-'));
@@ -374,12 +382,12 @@ describe('v13-W2 planner 名册装备块（按装备结合场景点人）', () =
 
   it('①配了装备槽的岗：名册行按角色分列实挂技能名（索引通道，不是整篇）+ 岗位文档名', () => {
     const root = w2Root();
-    const armed = teamEquipView({ skills: ['skills/deploy.md'], rules: ['role-checklist.md'] }, REGISTRY, root);
+    const armed = teamEquipView({ skills: ['skills/deploy.md'], rules: ['role-checklist.md'] }, REGISTRY, root, NO_REFS);
     expect(armed).toMatchObject({ skillSlotted: true, skillNames: ['deploy'], ruleNames: ['role-checklist'] });
     const p = plannerPrompt({
       team: [
         { roleId: 'r-arm', name: '实现', alias: '阿实', equip: armed },
-        { roleId: 'r-plain', name: '评审', equip: teamEquipView({}, REGISTRY, root) },
+        { roleId: 'r-plain', name: '评审', equip: teamEquipView({}, REGISTRY, root, NO_REFS) },
       ],
     });
     expect(p).toContain('阿实（roleId: r-arm · 装备：技能 deploy · 岗位文档 role-checklist）');
@@ -392,12 +400,12 @@ describe('v13-W2 planner 名册装备块（按装备结合场景点人）', () =
 
   it('②没配装备槽的岗如实显示「吃空间全量」（W1 兼容带，绝不显示成零装备）；显式 [] 才是正读数空槽', () => {
     const root = w2Root();
-    const unslotted = teamEquipView({}, REGISTRY, root);
+    const unslotted = teamEquipView({}, REGISTRY, root, NO_REFS);
     expect(unslotted.skillSlotted).toBe(false);
     const p = plannerPrompt({
       team: [
         { roleId: 'r-plain', name: '沉淀', equip: unslotted },
-        { roleId: 'r-zero', name: '验收', equip: teamEquipView({ skills: [] }, REGISTRY, root) },
+        { roleId: 'r-zero', name: '验收', equip: teamEquipView({ skills: [] }, REGISTRY, root, NO_REFS) },
       ],
     });
     expect(p).toContain('沉淀（roleId: r-plain · 装备：技能=吃空间全量（登记 3 项））');
@@ -408,7 +416,7 @@ describe('v13-W2 planner 名册装备块（按装备结合场景点人）', () =
 
   it('③装备槽引用了登记清单外的技能：不进名字列表（与引擎注入现场同源判据），行照出、单照建', () => {
     const root = w2Root();
-    const view = teamEquipView({ skills: ['skills/deploy.md', 'ghost.md'] }, REGISTRY, root);
+    const view = teamEquipView({ skills: ['skills/deploy.md', 'ghost.md'] }, REGISTRY, root, NO_REFS);
     expect(view.skillNames).toEqual(['deploy']);
     const p = plannerPrompt({ team: [{ roleId: 'r', name: '甲', equip: view }] });
     expect(p).toContain('装备：技能 deploy）');
@@ -419,11 +427,39 @@ describe('v13-W2 planner 名册装备块（按装备结合场景点人）', () =
     const p = plannerPrompt({
       team: [
         { roleId: 'std-planner', name: '规划', alias: '阿规' }, // 调用方没给装备账
-        { roleId: 'r-x', name: '乙', equip: teamEquipView(undefined, undefined, '/nonexistent/nope') },
+        { roleId: 'r-x', name: '乙', equip: teamEquipView(undefined, undefined, '/nonexistent/nope', NO_REFS) },
       ],
     });
     expect(p).toContain('- 阿规（roleId: std-planner）');
     // 没配技能槽/清单读不到：仍是「吃空间全量」，但没有登记清单就不报规模，也不编名字
     expect(p).toContain('乙（roleId: r-x · 装备：技能=吃空间全量）');
+  });
+
+  it('⑤v14-A5-5b 槽里写 {kind,id}：名册行解得出就报技能名，解不出（跨项目/未登记）就如实少列', () => {
+    const root = w2Root();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pf-w2-reg-'));
+    const reg = new RegistryStore(dataDir);
+    const add = (raw: Record<string, unknown>): string => {
+      const r = reg.add(raw);
+      if (!r.ok || !r.entry) throw new Error(`fixture 登记失败：${r.why ?? '没回条目'}`);
+      return r.entry.id;
+    };
+    const mine = add({ kind: 'skill', name: 'deploy', spec: { space: 'demo', file: 'skills/deploy.md' } });
+    const other = add({ kind: 'skill', name: 'elsewhere', spec: { space: 'other', file: 'skills/deploy.md' } });
+    const checklist = add({ kind: 'rule', name: 'rolecheck', spec: { space: 'demo', file: 'role-checklist.md' } });
+    const equip = { entries: reg.readView().entries, spaceId: 'demo' };
+
+    const view = teamEquipView({ skills: [{ kind: 'skill', id: mine }], rules: [{ kind: 'rule', id: checklist }] }, REGISTRY, root, equip);
+    expect(view).toMatchObject({ skillSlotted: true, skillNames: ['deploy'], ruleNames: ['role-checklist'] });
+    // 同一格换成挂别的项目的条目：路径按本单主仓根读不通 → 名字列表里就没有它（宁缺毋假，不拿引用对象凑一格）
+    const cross = teamEquipView({ skills: [{ kind: 'skill', id: other }] }, REGISTRY, root, equip);
+    expect(cross.skillNames).toEqual([]);
+    // 「与注入现场同源」不是口号：同一枚引用在规划手 prompt 里就是那一格技能名；换跨项目条目就不出现
+    expect(plannerPrompt({ team: [{ roleId: 'r', name: '甲', alias: '阿甲', equip: view }] })).toContain(
+      '阿甲（roleId: r · 装备：技能 deploy · 岗位文档 role-checklist）',
+    );
+    expect(plannerPrompt({ team: [{ roleId: 'r', name: '甲', alias: '阿甲', equip: cross }] })).toContain(
+      '阿甲（roleId: r · 装备：不挂技能文档（显式空槽）',
+    );
   });
 });

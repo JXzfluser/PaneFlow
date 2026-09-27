@@ -3,8 +3,8 @@ import type { FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
-import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag, forwardEdges, rejectEdgeNote, DECLARE_FACES } from '@paneflow/shared';
-import type { DagGraph, RunExperimentMeta, RunRecord } from '@paneflow/shared';
+import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag, forwardEdges, rejectEdgeNote, DECLARE_FACES, equipSlotIssueOf } from '@paneflow/shared';
+import type { DagGraph, RegistryEntry, RunExperimentMeta, RunRecord } from '@paneflow/shared';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
@@ -83,6 +83,9 @@ import path from 'node:path';
 import { ensureStandardRoles, loadRoles, saveRoles, type Role } from '../orchestrate/roles.js';
 // v14 A5-5a：三枚「正身在盘上」的视图 kind 的删除闸（角色库 PUT / 画布删图 / 网关删档都吃同一份判据）
 import { guardOnDiskDeletes } from '../orchestrate/registry-gate.js';
+// v14 A5-5b：装备槽 `{kind,id}` 定点引用的保存面闸（同一本注册表读数，判据归 registry-equip）
+import { RegistryStore } from '../orchestrate/registry.js';
+import { guardEquipRefs } from '../orchestrate/registry-equip.js';
 // v14 前置-1：agent kind 清单只有一处真身（此处曾与 env-check 的探测表各写一份，加一种要改两处）
 import { AGENT_KINDS, isAgentKind } from './agent-kinds.js';
 
@@ -289,17 +292,21 @@ export async function buildHttpServer(deps: HttpDeps) {
         return reply.code(400).send({ error: `角色 ID 非法：${r.id}` });
       }
       if (ids.has(r.id)) return reply.code(400).send({ error: `角色 ID 重复：${r.id}` });
-      // v13-W1 装备槽脏形状：格子里塞非字符串/空串/带 .. 的路径，到注入现场只会静默失效
-      // （装备没换上却以为换上了）——入库前就拒，一句指路（B1 delivery 同款姿态）
+      // v13-W1 装备槽脏形状 → v14-A5-5b 两写法：判据归 shared 的 `equipSlotIssueOf`（一处措辞、一处判序），
+      // 这里只把它翻成入库那一句指路。为什么必须在保存面拒：脏形状与坏引用到注入现场只会**静默失效**
+      // （装备没换上却以为换上了）——B1/W1/W3 三条同一姿态。
       for (const k of ['skills', 'rules'] as const) {
         const v = (r as unknown as Record<string, unknown>)[k];
         if (v === undefined) continue;
-        if (
-          !Array.isArray(v) ||
-          v.some((x) => typeof x !== 'string' || !x.trim() || x.includes('..'))
-        ) {
+        if (!Array.isArray(v)) {
           return reply.code(400).send({
-            error: `角色 ${r.id} 的 ${k} 必须是文档路径字符串数组（相对项目主仓根；${k === 'skills' ? '且需是该项目 skills 登记清单里的路径' : '不需要就不给这个键'}）`,
+            error: `角色 ${r.id} 的 ${k} 必须是数组（每格是相对主仓根的文档路径，或 {kind,id} 定点引用；不需要就不给这个键）`,
+          });
+        }
+        const bad = v.map((x, i) => ({ i, why: equipSlotIssueOf(x) })).find((x) => x.why !== null);
+        if (bad) {
+          return reply.code(400).send({
+            error: `角色 ${r.id} 的 ${k}[${bad.i}] 形状不认：${bad.why}（${k === 'skills' ? '裸串需是该项目 skills 登记清单里的相对路径' : '裸串需是相对主仓根的约定文档路径'}，或写 {kind:'${k === 'skills' ? 'skill' : 'rule'}',id:'…'} 定点引用注册表条目）`,
           });
         }
       }
@@ -328,6 +335,20 @@ export async function buildHttpServer(deps: HttpDeps) {
       }
       ids.add(r.id);
     }
+    // v14 A5-5b 保存面拒悬挂：装备槽里那些 `{kind,id}` 定点引用必须解析得到注册表条目，否则这一格
+    // 到注入现场只会静默不注（=「以为换上了装备」）。裸串**不判**——它指的本就是「本项目池子里的这枚路径」，
+    // 存量名册里可以有指向未登记路径的格子（跑单时落 unknown* 披露），一并拒等于替存量名册改判据。
+    // 注册表读不出＝500 不放行（A5-5a 同一条姿态：读不出降级成「没有悬挂」就是给写入开绿灯）。
+    let equipEntries;
+    try {
+      equipEntries = new RegistryStore(deps.dataDir).readView().entries;
+    } catch (err) {
+      return reply.code(500).send({
+        error: `注册表读不出（${(err as Error).message}）——读不出不等于装备槽没指错，这次不保存名册`,
+      });
+    }
+    const pinned = guardEquipRefs(equipEntries, roles);
+    if (!pinned.ok) return reply.code(pinned.code).send({ error: pinned.error });
     // v14 A5-5a：PUT 是整本名册覆写，「删一枚岗」= 这一次没再带上它。`role` 的正身就是这张名册，
     // 注册表对它没有写动词，所以 R2 的引用闸在注册表那侧管不到这里——闸装在写现场：
     // 本次被撤下的每一枚，先问一次引用账（班底 `team[i].roleId` 与画布 `nodes[i].config.role` 两处）。
@@ -1451,6 +1472,15 @@ export async function buildHttpServer(deps: HttpDeps) {
           );
       // B2：班底对着全局角色库解析（悬空 roleId 滤掉；全滤光=空班底回退旧行为）
       const roleIndex = new Map(loadRoles(deps.dataDir).map((r) => [r.id, r]));
+      // v14-A5-5b：装备槽里的 `{kind,id}` 要对着注册表整表才解得出路径——读不出时按空表走
+      // 「解析不到」（那一格不进名册行），绝不拿「挂着」冒充（宁缺毋假）；这里不 500 拦接单，
+      // 因为这是**显示面**取材，保存面那侧已经有 500 的闸。
+      let equipEntries: RegistryEntry[] = [];
+      try {
+        equipEntries = new RegistryStore(deps.dataDir).readView().entries;
+      } catch {
+        /* 注册表读不动：名册行如实少列 */
+      }
       const dispatchTeam = (profileTeam ?? [])
         .filter((m) => roleIndex.has(m.roleId))
         .map((m) => ({
@@ -1458,7 +1488,10 @@ export async function buildHttpServer(deps: HttpDeps) {
           name: roleIndex.get(m.roleId)!.name,
           ...(m.alias ? { alias: m.alias } : {}),
           // v13-W2：名册行带「装备」——规划手自此按装备结合场景点人（判据在 teamEquipView）
-          equip: teamEquipView(roleIndex.get(m.roleId), profileSkills, rootCwd),
+          equip: teamEquipView(roleIndex.get(m.roleId), profileSkills, rootCwd, {
+            entries: equipEntries,
+            spaceId: store0.spaceId,
+          }),
         }));
       const graph = buildDispatchGraph({
         task,

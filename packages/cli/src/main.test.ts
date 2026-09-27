@@ -387,6 +387,54 @@ describe('runs / status / approve', () => {
     expect(lOut).not.toContain('deliveryViolation');
   });
 
+  it('v14-A5-5b status 装备明细行：没落地的每一格带 server 那句为什么；旧单没有 misses 回落 v13-W1 那一行，干净名册两行都不显', async () => {
+    const withEquip = (equip: unknown) => ({
+      runId: 'r-eq',
+      state: 'completed',
+      dagName: 'g',
+      nodes: { a: { nodeId: 'a', state: 'done', equip } },
+    });
+    const { fetchImpl } = stubFetch([
+      // 新单：一格引用没落地，为什么是注入现场算的（CLI 不复述判据、不改写措辞）
+      {
+        body: withEquip({
+          scope: 'role',
+          role: 'r-pin',
+          skills: ['sk-b.md'],
+          rules: [],
+          unknownSkills: ['skill:ghost'],
+          unknownRules: ['rule:elsewhere'],
+          misses: [
+            { axis: 'skill', slot: 'skill:ghost', why: '注册表里解析不到可用的「skill」条目（ghost）' },
+            { axis: 'rule', slot: 'rule:elsewhere', why: '命中的条目不属于本单所在项目（「elsewhere」挂在项目「other」）' },
+          ],
+        }),
+      },
+      // W1 期的旧单：只有 labels，没有 misses → 那一行照旧（当时的唯一原因就是「不在登记清单」，措辞仍为真）
+      { body: withEquip({ scope: 'role', role: 'r-old', skills: [], unknownSkills: ['ghost.md'] }) },
+      // 装备全落地：一格都没掉 → 警示行不显（缺≠「有格子没落地」）
+      { body: withEquip({ scope: 'role', role: 'r-clean', skills: ['a.md'], rules: ['b.md'] }) },
+    ]);
+
+    const fresh = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-eq'], fresh.io)).toBe(0);
+    const fOut = fresh.lines.join('\n');
+    expect(fOut).toContain('⚠ 装备没落地，已跳过：skill:ghost —— 注册表里解析不到可用的「skill」条目（ghost）');
+    expect(fOut).toContain('⚠ 装备没落地，已跳过：rule:elsewhere —— 命中的条目不属于本单所在项目');
+    // 计数行仍报实发吃进的量：没落地的那格不进「技能 N」
+    expect(fOut).toContain('装备: 技能 1 · 岗位文档 0');
+
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-eq'], legacy.io)).toBe(0);
+    expect(legacy.lines.join('\n')).toContain('⚠ 装备引用不在登记清单，已跳过：ghost.md');
+
+    const clean = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-eq'], clean.io)).toBe(0);
+    const cOut = clean.lines.join('\n');
+    expect(cOut).not.toContain('已跳过');
+    expect(cOut).toContain('装备: 技能 1 · 岗位文档 1');
+  });
+
   it('v13-K1 status 产物行：命名产物清单照单渲染（sha·KB 都是 server 实算），未上架的件照实标注；没产物整缺不显', async () => {
     const base = {
       runId: 'r-k1',

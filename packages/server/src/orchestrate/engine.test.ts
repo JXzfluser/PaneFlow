@@ -4420,6 +4420,44 @@ describe('v13-W1 岗位装备槽（空间登记 / 目录作用域 / 角色装备
     expect(rev.harness!.ctxSha).toBeDefined();
     expect(rev.harness!.ctxSha).not.toBe(plain.harness!.ctxSha);
   });
+
+  it('⑤v14-A5-5b 装备槽写 {kind,id}：注的是条目 spec.file；挂在别的项目的条目不注、只披露', async () => {
+    const root = w1Root();
+    w1Profile(root);
+    const reg = new RegistryStore(dataDir);
+    const add = (raw: Record<string, unknown>): string => {
+      const r = reg.add(raw);
+      if (!r.ok || !r.entry) throw new Error(`fixture 登记失败：${r.why ?? '没回条目'}`);
+      return r.entry.id;
+    };
+    const here = add({ kind: 'skill', name: 'deploy', spec: { space: 'default', file: 'sk-b.md' } });
+    const elsewhere = add({ kind: 'skill', name: 'elsewhere', spec: { space: 'other', file: 'sk-c.md' } });
+    const checklist = add({ kind: 'rule', name: 'rolecheck', spec: { space: 'default', file: 'role-only.md' } });
+    saveRoles(dataDir, [
+      { id: 'r-pin', name: '定点岗', skills: [{ kind: 'skill', id: here }, 'sk-a.md'], rules: [{ kind: 'rule', id: checklist }] },
+      { id: 'r-cross', name: '跨项目岗', skills: [{ kind: 'skill', id: elsewhere }] },
+    ]);
+
+    const pinned = await runToCompletion(w1Graph('r-pin', '甲'), root);
+    expect(pinned.state).toBe('completed');
+    const pEq = pinned.nodes.a!.equip!;
+    // 注进 prompt 的是条目指向的那篇文档原文；装备账落的是**解析出的路径**（引用对象本身不进注入清单）
+    expect(promptOf('甲')).toContain('sk-b.md 正文开始');
+    expect(promptOf('甲')).toContain('sk-a.md 正文开始');
+    expect(promptOf('甲')).toContain('评审岗专属清单：');
+    expect(pEq.skills).toEqual(['sk-b.md', 'sk-a.md']);
+    expect(pEq.rules).toEqual(['space-rule.md', 'role-only.md']); // 空间轴那篇照守——装备槽降的是技能面，不是家规
+    expect(pEq.unknownSkills).toBeUndefined();
+    expect(pEq.unknownRules).toBeUndefined();
+
+    // 别的项目登记的条目：`spec.file` 按本单主仓根读就是跨根读——不注，但那一句要在账上
+    const cross = await runToCompletion(w1Graph('r-cross', '乙'), root);
+    expect(cross.state).toBe('completed'); // 一格落不了地的引用不许把跑单弄红（评审 R5：只披露不拦）
+    const cEq = cross.nodes.a!.equip!;
+    expect(cEq.skills).toEqual([]);
+    expect(cEq.unknownSkills).toEqual([elsewhere]);
+    expect(promptOf('乙')).not.toContain('sk-c.md 正文开始');
+  });
 });
 
 // -- v13-W2 角色指纹与上岗：roleSha/injectedBytes 落在注入现场 + 名册机检只披露不拦 ----------

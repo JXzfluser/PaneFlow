@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { equipSlotLabel, type RoleEquipSlot } from '@paneflow/shared';
+import { keepValidSlots, removeEquipSlot, splitEquipSlots } from '../equip-slots.js';
 import { api, fetchJson, type Channel, type ChannelType, type NotifyEvent } from '../api.js';
 import { useStore } from '../store.js';
 import { groupWikiPages, WIKI_GROUP_CAP } from '../wiki-sediment.js';
@@ -749,10 +751,14 @@ interface Role {
   agentKind?: string;
   prePrompt?: string;
   env?: Record<string, string>;
-  /** v13-W1 岗位装备·技能槽（引用项目 skills 登记清单；键缺省=未配槽，吃项目全量） */
-  skills?: string[];
-  /** v13-W1 岗位装备·岗位文档槽（评审清单类家规，与项目规则按路径去重） */
-  rules?: string[];
+  /**
+   * v13-W1 岗位装备·技能槽（引用项目 skills 登记清单；键缺省=未配槽，吃项目全量）。
+   * v14-A5-5b 起同一格还能写 `{kind,id}` 注册表定点引用（`RoleEquipSlot`＝两写法并存），
+   * 勾选面仍只产裸路径，引用那一写法在这里**看得见、能摘掉、不硬翻成勾选**（翻了就等于改写那枚岗的语义）。
+   */
+  skills?: RoleEquipSlot[];
+  /** v13-W1 岗位装备·岗位文档槽（评审清单类家规，与项目规则按路径去重）；两写法同上 */
+  rules?: RoleEquipSlot[];
   /** v13-W3 授权声明三面（声明非强制：只入 prompt + 收口对账，拦不了真动作） */
   declares?: Record<string, boolean>;
 }
@@ -810,19 +816,22 @@ function buildEquipCatalog(spaces: SpaceEquipSource[]): { skills: EquipOption[];
   };
 }
 
-/** 装备槽勾选器：登记清单里有的画成勾项，清单外（手加或历史遗留）另列一行如实标出 */
+/**
+ * 装备槽勾选器：登记清单里有的画成勾项（勾选只产**裸路径**），
+ * 清单外的裸串另列一行如实标出，`{kind,id}` 定点引用单独一行看得见、能摘掉——
+ * 两种写法语义不同（池子尺 vs 注册表尺），这里不把引用翻成勾选。
+ */
 function EquipPicker(props: {
   label: string;
   hint: string;
   options: EquipOption[];
-  selected: string[];
-  onChange: (next: string[]) => void;
+  selected: RoleEquipSlot[];
+  onChange: (next: RoleEquipSlot[]) => void;
 }) {
   const { label, hint, options, selected, onChange } = props;
+  const { bare, refs, unknown } = splitEquipSlots(selected, options.map((o) => o.path));
   const toggle = (path: string, on: boolean) =>
-    onChange(on ? [...selected, path] : selected.filter((x) => x !== path));
-  // 清单外的存量项不藏：它今天确实会被「跳过不注」，画出来才是诚实账
-  const unknown = selected.filter((p) => !options.some((o) => o.path === p));
+    onChange(on ? [...selected, path] : removeEquipSlot(selected, path));
   return (
     <div className="equip-slot">
       <label>{label}</label>
@@ -831,7 +840,7 @@ function EquipPicker(props: {
           <label key={o.path} className="settings-check" title={o.note ?? o.path}>
             <input
               type="checkbox"
-              checked={selected.includes(o.path)}
+              checked={bare.includes(o.path)}
               onChange={(e) => toggle(o.path, e.target.checked)}
             />
             <code>{o.path}</code>
@@ -840,13 +849,26 @@ function EquipPicker(props: {
         ))}
         {options.length === 0 && <span className="settings-hint">各项目还没登记可选文档</span>}
       </div>
+      {refs.length > 0 && (
+        <p className="equip-refs">
+          <Icon name="target" size={12} /> 定点引用（照注册中心条目解析，注入死活看那一面的探针）：
+          {refs.map((ref) => (
+            <span key={`${ref.kind}:${ref.id}`} className="equip-ref">
+              <code>{equipSlotLabel(ref)}</code>
+              <button className="ghost tiny" onClick={() => onChange(removeEquipSlot(selected, ref))}>
+                摘掉
+              </button>
+            </span>
+          ))}
+        </p>
+      )}
       {unknown.length > 0 && (
         <p className="equip-unknown">
           <Icon name="alert" size={12} /> 清单外（该项目注入时跳过不注）：
           {unknown.map((p) => ` ${p}`).join('；')}
           <button
             className="ghost tiny"
-            onClick={() => onChange(selected.filter((x) => options.some((o) => o.path === x)))}
+            onClick={() => onChange(keepValidSlots(selected, options.map((o) => o.path)))}
           >
             清掉
           </button>

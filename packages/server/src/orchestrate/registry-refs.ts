@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { REGISTRY_KINDS, type DagGraph, type DagNodeConfig, type RegistryDescriptor, type RegistryEntry, type RegistryRefContext } from '@paneflow/shared';
+import { REGISTRY_KINDS, equipSlotIssueOf, type DagGraph, type DagNodeConfig, type RegistryDescriptor, type RegistryEntry, type RegistryRefContext } from '@paneflow/shared';
 import { Store, type SpaceProfile } from './store.js';
 import { loadRoles, type Role } from './roles.js';
 import { readGatewayDoc, type GatewayDoc } from '../api/gateway.js';
@@ -78,8 +78,29 @@ export function refsFromRole(role: Role): RawReference[] {
   const out: RawReference[] = [];
   const by = { face: 'role' as const, id: role.id, name: role.name };
   if (role.agentKind) out.push({ ...by, via: 'agentKind', kind: 'agent-kind', target: role.agentKind });
-  (role.skills ?? []).forEach((s, i) => out.push({ ...by, via: `skills[${i}]`, kind: 'skill', target: s }));
-  (role.rules ?? []).forEach((r, i) => out.push({ ...by, via: `rules[${i}]`, kind: 'rule', target: r }));
+  // v14-A5-5b 两写法都算引用，但**指向哪一类由槽自己说**：
+  //  - `{kind,id}` → kind 取那一格声明的 `skill`/`rule`，target 取 `id`（整枚 id／slug／`spec.file` 三种
+  //    写法都归 `matchesTarget` 判，所以这里不猜形状）——这一条边从此被引用账看见，也就是
+  //    「删掉那枚条目会先被这一枚岗拦住」的兑现点（岗没有写动词，闸只能长在名册这一面）；
+  //  - 裸相对路径 → 仍按它那一轴的 kind 记账，target 就是那串路径（`spec.file` 是注册写法之一，
+  //    所以存量名册本来就在指条目，A5-1/A5-2 起账上就该这么算）。
+  // 脏形状（既不是非空串也不是认得的引用对象）不发边：它指向不了任何东西，硬算就是替它编一条引用。
+  for (const [k, kind] of [
+    ['skills', 'skill'],
+    ['rules', 'rule'],
+  ] as const) {
+    (role[k] ?? []).forEach((slot, i) => {
+      if (equipSlotIssueOf(slot) !== null) return;
+      // 走到这里只剩两种形状：非空裸串，或 `equipSlotIssueOf` 认下的 `{kind,id}`——`target` 都不为空，
+      // 且**原样不动**（裸串今天落册的就是那枚串，`trim` 一下就把账改了）
+      out.push({
+        ...by,
+        via: `${k}[${i}]`,
+        kind: typeof slot === 'string' ? kind : slot.kind,
+        target: typeof slot === 'string' ? slot : slot.id,
+      });
+    });
+  }
   return out;
 }
 
@@ -218,7 +239,7 @@ export function matchesTarget(entry: RegistryEntry, target: string, ref?: Regist
  * 反向问「删了会断谁」，多报只是多挡一次删除（可绕：先改引用再删），漏报则是静默把现役配置剪断；
  * 正向问「这一单实发吃了哪枚」，两枚都记就是宣称它读了两个文件，那是**多出来的一个结论**，不是保守。
  */
-export function matchedEntries(entries: RegistryEntry[], ref: RawReference): RegistryEntry[] {
+export function matchedEntries(entries: readonly RegistryEntry[], ref: RawReference): RegistryEntry[] {
   return entries.filter((e) => e.kind === ref.kind && matchesTarget(e, ref.target, { face: ref.face, id: ref.id }));
 }
 

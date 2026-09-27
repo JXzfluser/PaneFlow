@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import type { CheckSpec, DagGraph } from '@paneflow/shared';
-import { readSkillIndex, resolveSkillRefs } from '../orchestrate/skills.js';
+import type { CheckSpec, DagGraph, RegistryEntry, RoleEquipSlot } from '@paneflow/shared';
+import { readSkillIndex } from '../orchestrate/skills.js';
+import { resolveEquipSlots } from '../orchestrate/registry-equip.js';
 
 export interface DispatchOptions {
   task: string;
@@ -67,27 +68,31 @@ const docName = (file: string): string => path.basename(file).replace(/\.md$/i, 
 
 /**
  * v13-W2 名册装备行的取材器：把「角色槽 + 空间登记清单」折成名册行那一格账。
- * 判据与引擎注入现场（engine.resolveContext）**同源**：技能槽只看键在不在——
- * `role.skills === undefined` = 没配技能槽 = 该岗吃空间全量登记清单（W1 兼容带），
- * 配了（含显式 []）= 只挂槽里那些且必须是登记清单内的引用（清单外的引用不进名字列表）。
- * 技能名走 readSkillIndex 索引通道（名字，不是整篇；读不到的文件如实少列）；
- * 岗位文档（Role.rules）取文件名。
+ * 判据与引擎注入现场（engine.resolveContext）**同源**，自 v14-A5-5b 起就是字面意义上的同一份——
+ * 两写法（裸相对路径／`{kind,id}` 定点引用）的解析都走 `resolveEquipSlots`，这里不再自己数池子，
+ * 否则「名册行说挂了、跑单说没挂」就是两把尺。
+ * 技能槽只看键在不在：`role.skills === undefined` = 没配 = 该岗吃空间全量登记清单（W1 兼容带）；
+ * 配了（含显式 []）= 只挂槽里那些，且解析落不了地的不进名字列表（与注入现场同一条披露姿态）。
+ * 技能名走 readSkillIndex 索引通道（名字，不是整篇；读不到的文件如实少列）；岗位文档取文件名。
  */
 export function teamEquipView(
-  role: { skills?: string[]; rules?: string[] } | undefined,
+  role: { skills?: readonly RoleEquipSlot[]; rules?: readonly RoleEquipSlot[] } | undefined,
   registry: string[] | undefined,
   rootCwd: string | undefined,
+  /** 注册表读数 + 本项目 id：`{kind,id}` 那一写法只有对着这两枚才解得出路径（判据归 registry-equip） */
+  equip: { entries: readonly RegistryEntry[]; spaceId: string | undefined },
 ): TeamEquipView {
   const known = Array.isArray(registry) ? registry.filter((f): f is string => typeof f === 'string' && f !== '') : [];
   const slotted = role?.skills !== undefined;
-  const files = slotted ? resolveSkillRefs(known, role!.skills).files : known;
-  const ruleNames = (Array.isArray(role?.rules) ? role!.rules : []).filter(
-    (f): f is string => typeof f === 'string' && f !== '',
-  ).map(docName);
+  const resolved = resolveEquipSlots(
+    { skills: role?.skills, rules: role?.rules },
+    { spaceId: equip.spaceId, skillPool: known, entries: equip.entries },
+  );
+  const files = slotted ? resolved.skills : known;
   return {
     skillSlotted: slotted,
     skillNames: readSkillIndex(rootCwd, files).map((s) => s.name),
-    ruleNames,
+    ruleNames: resolved.rules.map((r) => docName(r.file)),
     ...(known.length ? { registryCount: known.length } : {}),
   };
 }
