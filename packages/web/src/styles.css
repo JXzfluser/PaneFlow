@@ -678,7 +678,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .run-card-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-display); font-size: 13.5px; }
 .run-card-head .badge { white-space: nowrap; }
 /* v7-A3 成本格：紧凑、次要色，不与状态徽标抢视觉 */
-.run-cost-chip { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border, #333); border-radius: 999px; padding: 1px 8px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.run-cost-chip { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .run-card-ops { margin-left: auto; display: flex; gap: 6px; }
 .run-card-ops button { padding: 3px 10px; font-size: 12px; }
 /* 组内 8 · 组间 12+：卡片头与进度条之间拉开分组节奏 */
@@ -960,8 +960,8 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .declares { margin-top: 6px; }
 .declares .settings-check { color: var(--text-dim); }
 /* 未保存标：卡背编辑只有本地态、刷新即蒸发的那段历史，自此界面上摊开写 */
-.bot-meta.dirty { color: var(--warn, #b8860b); font-weight: 600; }
-.bot-ghosts { font-size: 12px; color: var(--warn, #b8860b); margin: 0 0 8px; display: flex; gap: 5px; align-items: baseline; }
+.bot-meta.dirty { color: var(--warn); font-weight: 600; }
+.bot-ghosts { font-size: 12px; color: var(--warn); margin: 0 0 8px; display: flex; gap: 5px; align-items: baseline; }
 
 /* icon-only buttons */
 .run-card-ops button, .tb-group button, .tb-status button {
@@ -1016,7 +1016,7 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .enhance-draft-head { display: flex; align-items: baseline; justify-content: space-between; }
 .enhance-draft-title { font-weight: 600; }
 .enhance-draft-body { font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
-.enhance-draft-q { margin: 0; padding-left: 18px; font-size: 12px; color: var(--warn, #e0a03a); }
+.enhance-draft-q { margin: 0; padding-left: 18px; font-size: 12px; color: var(--warn); }
 .tasks-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
 .tasks-check input { width: auto; margin: 0; }
 .tasks-actions .primary { margin-left: auto; padding: 8px 20px; }
@@ -1024,9 +1024,9 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 /* H2: 产物货架（交付物看得见：列表/点开预览/下载） */
 .artifact-shelf { margin: 8px 0 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
 .artifact-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.artifact-row .dim, .artifact-row.dim { color: var(--text-dim, #999); font-size: 11px; }
-.artifact-chip { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border, #333); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
-.artifact-chip.warn { color: var(--warn, #e0a03a); border-color: var(--warn, #e0a03a); }
+.artifact-row .dim, .artifact-row.dim { color: var(--text-dim); font-size: 11px; }
+.artifact-chip { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+.artifact-chip.warn { color: var(--warn); border-color: var(--warn); }
 .artifact-dl { text-decoration: none; color: var(--text-dim); }
 .artifact-content { max-height: 260px; overflow: auto; margin: 4px 0 8px; padding: 8px 10px; background: var(--sunken); border: 1px solid var(--border); border-radius: 6px; font-size: 11.5px; white-space: pre-wrap; overflow-wrap: break-word; }
 
