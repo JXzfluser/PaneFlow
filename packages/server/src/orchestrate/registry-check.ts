@@ -93,6 +93,7 @@ const KIND_CN: Record<string, string> = {
   'agent-kind': 'Agent 引擎',
   'check-type': '机检',
   'node-type': '节点类型',
+  mcp: 'MCP 服务',
   template: '模板',
   channel: '通道',
   'artifact-kind': '产物',

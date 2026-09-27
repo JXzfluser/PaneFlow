@@ -8,6 +8,7 @@ import {
   NODE_TYPE_CATALOG,
   NODE_TYPE_GROUPS,
   parseNodeTypeSpec,
+  parseMcpSpec,
   REGISTRY_KINDS,
   REGISTRY_SCHEMA_VERSION,
   REGISTRY_VIEW_KINDS,
@@ -19,6 +20,10 @@ import {
   type RegistryEntry,
 } from '@paneflow/shared';
 import { AGENT_KINDS } from '../api/agent-kinds.js';
+import { entryHealth } from '../api/registry-health.js';
+import { REGISTRY_DESCRIPTORS } from './registry-descriptors.js';
+import { requirementKindLabel } from './registry-check.js';
+import { buildReferenceIndex, type RawReference } from './registry-refs.js';
 import { detectAppVersion, RegistryStore } from './registry.js';
 
 /**
@@ -244,6 +249,8 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
   it('用户登记的 model 排在前屏（compareEntries 吃 REGISTRY_KINDS 顺序，出厂那几十行不糊住自己的账）', () => {
     const store = storeAt(tmp());
     store.add(MODEL);
+    // T4 起有第二类用户登记项：两枚都登记上，这一格才真把「四类全在表上时按挂号序排」钉住
+    store.add({ kind: 'mcp', name: 'fs-server', spec: { command: 'mcp-fs' } });
     const entries = store.readView().entries;
     expect(entries[0]!.id).toBe('model:gpt-4o-mini');
     // 分组序＝挂号序：写死总数的断言在这类里没意义（迁一类加一批），序才是这一格要钉的东西
@@ -359,5 +366,89 @@ describe('v14 T1 节点类型清单进表（node-type 视图条目）', () => {
     // 拒得干净：一个字节没落盘，出厂项一枚不少（假开关一个也不给）
     expect(nodeRows(store.readView().entries)).toHaveLength(NODE_TYPE_CATALOG.length);
     expect(fs.existsSync(path.join(dir, 'registry'))).toBe(false);
+  });
+});
+
+describe('v14 T4 mcp 进表：只有声明账，探针刻意不做', () => {
+  const GOOD = { command: '/usr/local/bin/mcp-fs', args: '/srv/data --read-only', note: '只读文件' };
+  const rows = (entries: RegistryEntry[]): RegistryEntry[] => entries.filter((e) => e.kind === 'mcp');
+  /** 清洗器给的是 union（收窄要到 kind 才成立）；测试里手窄一次，不为断言在生产码上开 cast */
+  const mcpEntry = (name: string, spec: Record<string, unknown>): RegistryEntry<'mcp'> => {
+    const e = normalizeRegistryEntry({ kind: 'mcp', name, spec });
+    if (!e.ok) throw new Error(e.why);
+    return e.value as RegistryEntry<'mcp'>;
+  };
+  const value = (raw: unknown) => {
+    const r = parseMcpSpec(raw);
+    if (!r.ok) throw new Error(r.why);
+    return r.value;
+  };
+
+  it('挂号：认识它（可判预检死活），但它**不是**视图 kind（三动词该接、该落盘）', () => {
+    expect(REGISTRY_KINDS).toContain('mcp');
+    expect(REGISTRY_VIEW_KINDS).not.toContain('mcp');
+  });
+
+  it('spec 形状：三键白名单；command 非空是硬要求；args/note 空串整键不发', () => {
+    expect(parseMcpSpec(GOOD)).toEqual({ ok: true, value: GOOD });
+    expect(value({ command: ' npx ', args: '  ', note: '' })).toEqual({ command: 'npx' });
+    for (const [bad, why] of [
+      [{ command: 'x', transport: 'stdio' }, 'transport'], // 只有 stdio 一条路，预留第二值=猜语义
+      [{ command: '  ' }, 'command'],
+      [{ args: '-y' }, 'command'],
+      [{ command: 'x', args: ['-y'] }, 'args'],
+      [{ command: 'x', comand: 'y' }, 'comand'],
+    ] as const) {
+      const r = parseMcpSpec(bad);
+      if (r.ok) throw new Error(`脏形状被认下了：${JSON.stringify(bad)}`);
+      expect(r.why).toContain(why);
+    }
+  });
+
+  it('add 真落盘、update/remove 认它：视图 kind 那条拒路不误伤登记项', () => {
+    const dir = tmp();
+    const store = storeAt(dir);
+    const added = store.add({ kind: 'mcp', name: 'fs-server', spec: { command: 'mcp-fs', args: '/srv/data' } });
+    expect(added.ok).toBe(true);
+    const id = added.entry?.id ?? '';
+    expect(id).toBe('mcp:fs-server');
+    expect(fs.existsSync(path.join(dir, 'registry', 'entries.json'))).toBe(true);
+    expect(rows(store.readView().entries).map((e) => e.id)).toEqual([id]);
+    expect(store.update(id, { enabled: false }).ok).toBe(true);
+    expect(rows(store.readView().entries)[0]?.enabled).toBe(false);
+    expect(store.remove(id).ok).toBe(true);
+    expect(rows(store.readView().entries)).toEqual([]);
+  });
+
+  it('label 说的就是那行启动命令；中文 name 走确定性散列 id（同 E2 幂等地基）', () => {
+    const e = mcpEntry('文件服务', GOOD);
+    expect(REGISTRY_DESCRIPTORS.mcp.label(e)).toBe(`${GOOD.command} ${GOOD.args} · ${GOOD.note}`);
+    expect(splitRegistryId(e.id)?.slug).toMatch(/^u[0-9a-z]+$/);
+    expect(mcpEntry('文件服务', GOOD).id).toBe(e.id);
+  });
+
+  it('引用写法只认 id 与 slug：command 不算（拿它匹配=把「同命令的另一枚」读成「正在用这枚」）', () => {
+    const e = mcpEntry('fs-server', GOOD);
+    expect(REGISTRY_DESCRIPTORS.mcp.refKeys(e)).toEqual(['mcp:fs-server', 'fs-server']);
+    expect(REGISTRY_DESCRIPTORS.mcp.refKeys(e)).not.toContain(GOOD.command);
+  });
+
+  it('没有探针通道：mcp 条目整键不给健康读数（v13:285 不自实现 MCP 客户端，宁缺毋假）', async () => {
+    expect(await entryHealth(tmp(), mcpEntry('fs-server', GOOD), {})).toBeUndefined();
+  });
+
+  it('引用账与预检词表：requires 槽按 id 命中这一枚，组名出自单一词表', () => {
+    const stored = normalizeRegistryEntry({ kind: 'mcp', name: 'fs-server', spec: GOOD });
+    const twin = normalizeRegistryEntry({ kind: 'mcp', name: 'other', spec: GOOD }); // 同 command 的另一枚
+    if (!stored.ok || !twin.ok) throw new Error('条目清洗不该拒');
+    const raw: RawReference[] = [
+      { face: 'template', id: 'tpl', name: 'tpl', via: 'requires[0].id', kind: 'mcp', target: 'mcp:fs-server' },
+    ];
+    const idx = buildReferenceIndex([stored.value, twin.value], raw);
+    const hit = idx.byEntry.find((b) => b.entryId === 'mcp:fs-server');
+    expect(hit?.refs.map((r) => `${r.face}·${r.via}`)).toEqual(['template·requires[0].id']);
+    expect(idx.byEntry.find((b) => b.entryId === 'mcp:other')?.refs).toEqual([]);
+    expect(idx.dangling).toEqual([]);
+    expect(requirementKindLabel('mcp')).toBe('MCP 服务');
   });
 });

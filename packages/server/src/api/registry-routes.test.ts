@@ -67,12 +67,12 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(body.entries.filter((e) => !e.view)).toEqual([]); // 盘上真的一条没登记——这格还是正读数零
       expect(body.rejected).toEqual([]);
       expect(body.schema).toBeNull();
-      expect(body.knownKinds).toEqual(['model', 'agent-kind', 'node-type']);
+      expect(body.knownKinds).toEqual(['model', 'agent-kind', 'node-type', 'mcp']);
       expect(body.viewKinds).toEqual(['agent-kind', 'node-type']);
       // 组名只有一处措辞表（`registry-check.ts` 的 `KIND_CN`）：网页拿这张外发表的标签画分组，
       // 前端不再自己抄一份——抄了迟早分叉，而分叉的代价是「同一个 kind 两处两个名字」。
       expect(Object.keys(body.kindLabels).sort()).toEqual([...body.knownKinds].sort());
-      expect(body.kindLabels).toMatchObject({ model: '模型', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型' });
+      expect(body.kindLabels).toMatchObject({ model: '模型', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', mcp: 'MCP 服务' });
       expect(requirementKindLabel('agent-kind')).toBe(body.kindLabels['agent-kind']);
       expect(body.refSummary).toEqual({ scanned: 0, dangling: [], unmigrated: [] });
       // 视图项=出厂清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
@@ -234,6 +234,10 @@ describe('注册内核四动词（/api/registry）', () => {
         return raw;
       };
       expect(orderOf('start')).toBeLessThan(orderOf('end'));
+      // 台账序（条目按 id 稳定排）与画布序是两件事：id 序把「结束」排在「开始」前面。
+      // 所以画法必须自带一枚 `order`，不能拿台账序冒充——这一条同时钉住「两把尺没被并成一把」。
+      const byId = body.entries.map((e) => e.name);
+      expect(byId.indexOf('end')).toBeLessThan(byId.indexOf('start'));
       // 写入面对这一类同样全关：表单据此收起（`registrableKinds` 吃 viewKinds），不给「点开却登记不了」的假可点
       const add = await app.inject({
         method: 'POST',
@@ -251,30 +255,33 @@ describe('注册内核四动词（/api/registry）', () => {
   });
 
   /**
-   * v14 T1 的 HTTP 面：画布节点面板从此读这一刀（`Palette.tsx` 里那份硬编码按钮列表已拆）。
-   * 这里钉的是「server 交出去的那张表长什么样」，画法怎么排是 web 的纯函数（`node-types.test.ts`）。
+   * v14 T4 的对外读数：`mcp` 是**用户登记项**（与 `model` 同侧），所以这一格要钉的是两件相反的事——
+   * 写路径**开得通**（视图 kind 那扇拒路不许误伤），而脏形状（多一个 `transport` 键）照旧 400。
    */
-  it('GET /api/registry?kind=node-type：出厂六型带画法字段上架（画布面板的数据源）', async () => {
-    const { app } = await build();
+  it('POST kind=mcp：登记得进、label 就是那行启动命令；未知键照拒（宁拒不错放）', async () => {
+    const { app, registry } = await build();
     try {
-      const res = await app.inject({ method: 'GET', url: '/api/registry?kind=node-type', headers: { host: HOST } });
-      expect(res.statusCode).toBe(200);
-      const body = res.json() as { entries: { id: string; name: string; view: boolean; label: string; spec: Record<string, unknown> }[] };
-      expect(body.entries.map((e) => e.name).sort()).toEqual([...DAG_NODE_TYPES].sort());
-      expect(body.entries.every((e) => e.view && e.spec.label && e.spec.icon && typeof e.spec.order === 'number')).toBe(true);
-      // label 说的是画布上的样子（中文名 + 归组），不是把机器值重念一遍
-      expect(body.entries.find((e) => e.name === 'agent')).toMatchObject({
-        id: 'node-type:agent',
-        label: '「Agent 节点」· 核心',
-        spec: { icon: '⚙', group: 'core', order: 1 },
+      const ok = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'mcp', name: '文件服务', spec: { command: 'npx', args: '-y @mcp/fs /srv' } },
       });
-      // 台账序（条目按 id 稳定排）与画布序是两件事：id 序把「结束」排在「开始」前面。
-      // 所以画法必须自带一枚 `order`，不能拿台账序冒充——这一条同时钉住「两把尺没被并成一把」。
-      const byId = body.entries.map((e) => e.name);
-      expect(byId).toEqual([...byId].sort());
-      expect(byId.indexOf('end')).toBeLessThan(byId.indexOf('start'));
-      const order = (name: string): number => body.entries.find((e) => e.name === name)!.spec.order as number;
-      expect(order('start')).toBeLessThan(order('end'));
+      expect(ok.statusCode).toBe(200);
+      const id = (ok.json() as { entry: { id: string } }).entry.id;
+      expect(id).toMatch(/^mcp:u[0-9a-z]+$/); // 中文名→确定性散列 id（同 E2 幂等地基）
+      const one = await app.inject({ method: 'GET', url: `/api/registry/${id}`, headers: { host: HOST } });
+      expect(one.json()).toMatchObject({ entry: { kind: 'mcp', view: false, label: 'npx -y @mcp/fs /srv' } });
+      expect(registry.list('mcp').map((e) => e.id)).toEqual([id]);
+      const dirty = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'mcp', name: '另一台', spec: { command: 'mcp-x', transport: 'stdio' } },
+      });
+      expect(dirty.statusCode).toBe(400);
+      expect(dirty.json().error).toContain('transport');
+      expect(registry.list('mcp')).toHaveLength(1);
     } finally {
       await app.close();
     }

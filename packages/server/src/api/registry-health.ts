@@ -108,7 +108,16 @@ async function agentKindHealth(entry: RegistryEntry<'agent-kind'>, refresh: bool
   return { status: probed.status, detail, cached: probed.cached, at: new Date(probed.at).toISOString() };
 }
 
-/** kind → 探针通道。没有条目的 kind 一律没有健康读数（整键不给，不画成未知）。 */
+/**
+ * kind → 探针通道。没有条目的 kind 一律没有健康读数（整键不给，不画成未知）。
+ *
+ * **`mcp`（v14 T4）刻意不在这里**：探一台 MCP server 活着没有、有几个工具，需要一个真客户端去
+ * 握手 + `tools/list`——而 v13:285 的既有裁决是不自实现 MCP 客户端。所以这一 kind 只有声明账
+ * （`{command,args}` 登记的是「本机说有这台 server」），健康面**整键不给**。
+ * 这不是漏写：把「没客户端可探」写成 `unknown` 已经是多给一个读数（`unknown` 的文档语义是
+ * 「探了但没探通」），而画成 `missing` 就是替机器造一个不存在的结论。将来上客户端时，
+ * 这枚通道随那条真探针路一起落（和 `node-type` 视图 kind 不给健康同一个处理）。
+ */
 const CHANNELS: Record<string, (dataDir: string, entry: RegistryEntry, refresh: boolean) => Promise<EntryHealth>> = {
   model: (dataDir, entry, refresh) => modelHealth(dataDir, entry as RegistryEntry<'model'>, refresh),
   'agent-kind': (_dataDir, entry, refresh) => agentKindHealth(entry as RegistryEntry<'agent-kind'>, refresh),

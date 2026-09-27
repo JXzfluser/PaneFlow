@@ -120,8 +120,15 @@ const MODEL_FIELDS: RegistryFormField[] = [
   { key: 'note', label: '备注', type: 'text', hint: '为什么留这一枚' },
 ];
 
+const MCP_FIELDS: RegistryFormField[] = [
+  { key: 'command', label: '启动命令', type: 'text', required: true, hint: '本机可执行文件（绝对路径或 PATH 上的名字）' },
+  { key: 'args', label: '参数', type: 'text', hint: '原样存一行，PaneFlow 不解析、不拆词' },
+  { key: 'note', label: '备注', type: 'text', hint: '干什么用的（这一版只做登记账，工具桥接还没上）' },
+];
+
 export function formFieldsFor(kind: string): RegistryFormField[] | null {
   if (kind === 'model') return MODEL_FIELDS;
+  if (kind === 'mcp') return MCP_FIELDS;
   return null;
 }
 
@@ -188,6 +195,9 @@ const SPEC_FIELD_LABELS: Record<string, string> = {
   group: '分组',
   order: '组内次序',
   hint: '说明',
+  // mcp（v14 T4，用户登记项）：启动命令 + 参数 + 备注
+  command: '启动命令',
+  args: '参数',
 };
 
 export interface SpecRow {

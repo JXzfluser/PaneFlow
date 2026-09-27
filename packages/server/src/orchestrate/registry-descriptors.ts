@@ -80,10 +80,32 @@ export const nodeTypeDescriptor: RegistryDescriptor<'node-type'> = {
   },
 };
 
+/**
+ * `mcp`（v14 T4）：本机登记了哪台 MCP server。**只有声明账**——今天没有客户端去 `tools/list`，
+ * 所以 label 说的就是登记时那行启动命令本身，不含任何「探到几个工具」的读数（那是 v13:285 判死不做的东西）。
+ */
+export const mcpDescriptor: RegistryDescriptor<'mcp'> = {
+  kind: 'mcp',
+  label(entry) {
+    const { command, args, note } = entry.spec;
+    return [`${command}${args ? ` ${args}` : ''}`, note].filter(Boolean).join(' · ');
+  },
+  /**
+   * 引用写法只有两种：整枚 id 或 slug 段（与 agent-kind/node-type 同一把尺）。
+   * **`command` 不算引用写法**——配置里没有任何键写它，把它算进匹配键就是拿「别的条目恰好同命令」
+   * 冒充「这一枚正在被用」（同 model「中文名不算」、agent-kind「探测名不算」）。
+   */
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return slug ? [entry.id, slug] : [entry.id];
+  },
+};
+
 export const REGISTRY_DESCRIPTORS: { [K in RegistryEntry['kind']]: RegistryDescriptor<K> } = {
   model: modelDescriptor,
   'agent-kind': agentKindDescriptor,
   'node-type': nodeTypeDescriptor,
+  mcp: mcpDescriptor,
 };
 
 /** 按条目 kind 查人话标签（读端每条都过这里，所以 `label` 只可能有一份口径） */

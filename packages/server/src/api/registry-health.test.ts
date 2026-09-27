@@ -282,7 +282,17 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
       updatedAt: '2026-09-26T10:00:00.000Z',
       spec: {},
     } as unknown as RegistryEntry;
-    const { app } = await build([role]);
+    const mcp = {
+      id: 'mcp:fs',
+      kind: 'mcp',
+      name: '文件服务',
+      source: 'user',
+      enabled: true,
+      createdAt: '2026-09-26T10:00:00.000Z',
+      updatedAt: '2026-09-26T10:00:00.000Z',
+      spec: { command: 'mcp-fs', args: '/srv' },
+    } as unknown as RegistryEntry;
+    const { app } = await build([role, mcp]);
     try {
       stubModels([{ models: [] }]);
       const body = (await get(app, probeUrl('role:r-x'))).json();
@@ -293,14 +303,21 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
       // 静态段 vs 参数段的优先级：`/api/registry/health` 不能被 `:id` 吞成「探 id 叫 health 的条目」
       const batch = (await get(app, '/api/registry/health')).json();
       const roleRow = batch.entries.find((e: { id: string }) => e.id === 'role:r-x');
-      expect(batch.entries).toHaveLength(1 + AGENT_KINDS.length + NODE_TYPE_CATALOG.length); // 桩的那条 + 出厂视图项（并进去了才算生产形状）
+      expect(batch.entries).toHaveLength(2 + AGENT_KINDS.length + NODE_TYPE_CATALOG.length); // 桩的两条 + 出厂视图项（并进去了才算生产形状）
       expect('health' in roleRow).toBe(false);
-      // 视图 kind 有通道：probed 只数出厂项（桩那条 role 仍算「没通道」）
+      // 视图 kind 有通道：probed 只数出厂项（桩那两条 role/mcp 仍算「没通道」）
       expect(batch.summary).toMatchObject({ scanned: 0, probed: AGENT_KINDS.length });
       // T1 的 `node-type` 同样没有通道，而且是**刻意不开**：出厂清单不会「不在本机」，给它画红点是替人判死一堆好型。
       // 界面上据此天然没有那个点（缺键 ≠ 灰点 ≠ 红点，三件事各画各的）。
       const nodeRow = batch.entries.find((e: { kind: string }) => e.kind === 'node-type');
       expect('health' in nodeRow).toBe(false);
+      // T4 的 `mcp` 值得单独钉：它是**用户登记项却没有探针通道**，和上面两枚视图 kind 的拒法不同路。
+      // 探一台 MCP server 活不活要真客户端握手，而 v13:285 判死了不自实现客户端——于是「登记过」与
+      // 「探得活不活」是两件事：画红点是替人判死，画灰点（unknown）更是谎称探过。
+      const mcpProbe = (await get(app, probeUrl('mcp:fs'))).json();
+      expect(mcpProbe.entry.label).toBe('mcp-fs /srv');
+      expect('health' in mcpProbe).toBe(false);
+      expect('health' in batch.entries.find((e: { id: string }) => e.id === 'mcp:fs')).toBe(false);
     } finally {
       vi.unstubAllGlobals();
       await app.close();
@@ -308,7 +325,8 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
   });
 });
 
-describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {  it('freeModel 没人登记＝悬挂裸串（E2 的登记输入）；登记同值后引用账改口，悬挂归零', async () => {
+describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {
+  it('freeModel 没人登记＝悬挂裸串（E2 的登记输入）；登记同值后引用账改口，悬挂归零', async () => {
     const { app, dataDir } = await build();
     try {
       gatewayDoc(dataDir, [{ id: 'p-free', name: '免费档', freeModel: 'gpt-9' }], 'p-free');

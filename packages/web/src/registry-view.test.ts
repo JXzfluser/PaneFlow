@@ -122,6 +122,23 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
     expect(buildRegistryPayload('model', '甲', { model: '  ' })).toBeNull();
     expect(buildRegistryPayload('skill', '甲', {})).toBeNull();
   });
+
+  /** v14-T4：`mcp` 是第二类可登记 kind——表单长三键，但**只登记不探测**（没有健康点那一格） */
+  it('mcp 长出三键且 command 必填；args 空了整键不发', () => {
+    expect(formFieldsFor('mcp')!.map((f) => f.key)).toEqual(['command', 'args', 'note']);
+    expect(missingRequiredFields('mcp', '', {})).toEqual(['显示名', '启动命令']);
+    expect(buildRegistryPayload('mcp', ' 文件服务 ', { command: ' npx ', args: '   ', note: '' })).toEqual({
+      kind: 'mcp',
+      name: '文件服务',
+      spec: { command: 'npx' },
+    });
+    expect(buildRegistryPayload('mcp', '甲', { command: '' })).toBeNull();
+    // 出厂清单类（视图 kind）不进下拉：选了也登记不了，那是假可点
+    expect(registrableKinds(['model', 'agent-kind', 'node-type', 'mcp'], ['agent-kind', 'node-type'])).toEqual([
+      'model',
+      'mcp',
+    ]);
+  });
 });
 
 describe('v14-X1 只读 spec 与前向兼容读数', () => {

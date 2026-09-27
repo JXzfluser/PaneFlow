@@ -62,6 +62,26 @@ export interface NodeTypeRegistrySpec {
 }
 
 /**
+ * `mcp`（v14 T4）——「本机登记了哪个 MCP server」这张**声明账**。
+ * 形状决议只到「登记有什么」为止，**不含工具桥接**：v13:285 的既有裁决是不自实现 MCP 客户端，
+ * 所以这一版既没有客户端去 `tools/list`，R4 也就**没有 mcp 探针通道**（健康读数整键不给——
+ * 「没客户端可探」与「探到不在」是两件事）。这条边界必须写在这里，因为下一位接手的人最容易
+ * 顺手把「探到工具 5 个」的回执补上：那需要真客户端，而它是本片判死不做的东西。
+ *
+ * 消费面因此只有两处，都是声明级的：①T3 预检的 `requires: [{kind:'mcp', id}]` 槽（这单**需要**
+ * 环境里登记过这台 server——问的是登记账在不在，不是工具跑不跑）；②R2 引用账。
+ * 传输今天只有 stdio 一条（启动=在本机拉起那个命令），所以 `transport` 无第二值可枚举、不预留。
+ */
+export interface McpRegistrySpec {
+  /** 拉起这一 server 的可执行文件（绝对路径或 PATH 上的名字；不含密钥） */
+  command: string;
+  /** 启动参数，**原样存一行、不解析**（真正拉起它的人自己拆；这里不猜 shell 语义） */
+  args?: string;
+  /** 人写的备注（干什么用的、为什么留这一枚） */
+  note?: string;
+}
+
+/**
  * kind → spec 形状。**A1 落 `model` 当样板，A3-2 加 `agent-kind`（视图 kind）**；
  * 其余 kind 由 A3-x 逐片加成员，每片各带一条「等臂不破」断言。
  */
@@ -69,6 +89,7 @@ export interface RegistrySpecMap {
   model: ModelRegistrySpec;
   'agent-kind': AgentKindRegistrySpec;
   'node-type': NodeTypeRegistrySpec;
+  mcp: McpRegistrySpec;
 }
 
 export type RegistryKind = keyof RegistrySpecMap;
@@ -77,7 +98,7 @@ export type RegistryKind = keyof RegistrySpecMap;
  * 认识的 kind 清单（与 `RegistrySpecMap` 双向锁死，见下方 `_checkKindsCovered`）：
  * 加了 spec 成员忘了在这里挂号 = 编译期红，不是运行面「静默不认」。
  */
-export const REGISTRY_KINDS = ['model', 'agent-kind', 'node-type'] as const;
+export const REGISTRY_KINDS = ['model', 'agent-kind', 'node-type', 'mcp'] as const;
 
 /**
  * **视图 kind**：条目由别处（代码里的出厂清单）现算出来，`entries.json` 里永远没有它们。
@@ -150,6 +171,7 @@ export interface RegistryDescriptor<K extends RegistryKind = RegistryKind> {
 const MODEL_SPEC_KEYS = ['model', 'gatewayProfile', 'freeModel', 'note'] as const;
 const AGENT_KIND_SPEC_KEYS = ['binary'] as const;
 const NODE_TYPE_SPEC_KEYS = ['label', 'icon', 'group', 'order', 'hint'] as const;
+const MCP_SPEC_KEYS = ['command', 'args', 'note'] as const;
 
 export type RegistryParse<T> = { ok: true; value: T } | { ok: false; why: string };
 
@@ -168,6 +190,7 @@ const SPEC_PARSERS: { [K in RegistryKind]: (raw: unknown) => RegistryParse<Regis
   model: parseModelSpec,
   'agent-kind': parseAgentKindSpec,
   'node-type': parseNodeTypeSpec,
+  mcp: parseMcpSpec,
 };
 
 export function parseRegistrySpec(kind: unknown, raw: unknown): RegistryParse<RegistryEntry['spec']> {
@@ -247,6 +270,35 @@ export function parseNodeTypeSpec(raw: unknown): RegistryParse<NodeTypeRegistryS
     if (typeof o.hint !== 'string') return { ok: false, why: 'hint 必须是字符串' };
     const hint = o.hint.trim();
     if (hint) spec.hint = hint;
+  }
+  return { ok: true, value: spec };
+}
+
+/**
+ * `mcp` 的 spec 机检（v14 T4）。与 `model` 同属**用户登记项**（走写入面），姿态同款：未知键即拒
+ * （`comand` 拼错=这台 server 从此探不到也起不来，宁拒不错放）。
+ * `command` 要求非空是因为「登记了一台没有启动命令的 MCP server」没有任何后续能兑现；
+ * `args` **不做任何解析**（不拆引号、不分词、不校验可执行性）——本片没有客户端，拆它是替一个
+ * 不存在的消费方猜语义。
+ */
+export function parseMcpSpec(raw: unknown): RegistryParse<McpRegistrySpec> {
+  const SHAPE = 'mcp 的配置详情必须是 {command, args?, note?}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(MCP_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  const command = typeof o.command === 'string' ? o.command.trim() : '';
+  if (!command) return { ok: false, why: `${SHAPE}；command 必须是非空字符串（stdio 传输就得给出拉起它的那条命令）` };
+  const spec: McpRegistrySpec = { command };
+  if (o.args !== undefined) {
+    if (typeof o.args !== 'string') return { ok: false, why: 'args 必须是字符串（启动参数原样一行，不拆不解析）' };
+    const args = o.args.trim();
+    if (args) spec.args = args;
+  }
+  if (o.note !== undefined) {
+    if (typeof o.note !== 'string') return { ok: false, why: 'note 必须是字符串' };
+    const note = o.note.trim();
+    if (note) spec.note = note;
   }
   return { ok: true, value: spec };
 }
