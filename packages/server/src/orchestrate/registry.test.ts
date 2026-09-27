@@ -46,6 +46,14 @@ import { detectAppVersion, RegistryStore } from './registry.js';
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'pf-registry-'));
 const storeAt = (dir: string): RegistryStore => new RegistryStore(dir);
 const MODEL = { kind: 'model', name: 'gpt-4o-mini', spec: { model: 'gpt-4o-mini', gatewayProfile: 'free' } };
+/**
+ * 名册落盘（A5-4b-1）：`role` 是**盘上用户数据**现算的第一枚视图 kind——不写这一枚，注册表里
+ * role 那一组就是「空名册」的正读数（一条也不渲），拿视图 kind 全集下的 exact 断言会把它误当成漏渲。
+ * 需要 role 行渲出来的格子显式调用它；不需要的那格留空，另测「空名册=零条且不编」。
+ */
+const writeRoster = (dir: string, roles: unknown[]): void => {
+  fs.writeFileSync(path.join(dir, 'roles.json'), JSON.stringify(roles), 'utf8');
+};
 
 describe('注册条目清洗 normalizeRegistryEntry（§十.3/§十.4/§十.6）', () => {
   it('name 缺 id：按 <kind>:<slug> 生成，source/enabled/时间戳由服务端补齐', () => {
@@ -212,8 +220,10 @@ describe('RegistryStore 落盘姿态（§十.1/§十.2）', () => {
 });
 
 /**
- * v14 A3-2（R3）视图 kind：`agent-kind` 的条目由出厂清单**现算**，盘上永远没有它们。
- * （T1 起了第二枚视图 kind `node-type`，同一套姿态在下一格里对节点清单再钉一遍。）
+ * v14 A3-2（R3）视图 kind：`agent-kind` 的条目由代码里的清单**现算**，盘上永远没有它们。
+ * （T1 起了 `node-type`、A5-4 起了 `check-type`，同一套姿态在各自格里再钉一遍；
+ *  A5-4b-1 的 `role` 是**第一枚正身在盘上**的视图 kind——现算的输入是角色库名册，所以它的三条姿态
+ *  多一条「名册脏了怎么披露」，那一格单开在下面。）
  *
  * 三条最容易在实施时被洗掉的姿态，各有专测：
  *  1. **只读**——`readView()` 合进来的条目一个字节都不落盘（落了就是台账里多一份「本机有哪些 agent」，
@@ -222,7 +232,7 @@ describe('RegistryStore 落盘姿态（§十.1/§十.2）', () => {
  *     （静默吞掉就是「盘上明明有、表上看不见」那种查三天的账）；
  *  3. **写入面拒**——`add`/`update`/`remove` 三动词对视图 kind 全关（不拒就等于给用户造一个不生效的假开关）。
  */
-describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', () => {
+describe('v14 A3-2 视图条目 readView（现算，不落盘）', () => {
   /** 按 kind 取格：视图 kind 会一批批加进来（T1 加了 node-type），拿 `view.entries` 总数下断言的账每迁一类都要改一次 */
   const ofKind = (entries: RegistryEntry[], kind: string): RegistryEntry[] => entries.filter((e) => e.kind === kind);
 
@@ -236,8 +246,10 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
     expect(parseAgentKindSpec('pi').ok).toBe(false);
   });
 
-  it('一条没登记：视图项在表上、盘上无文件（读操作不写盘，出厂清单不抄进台账）', () => {
+  it('一条没登记：视图项在表上、注册台账无文件（读操作不写盘，现算清单不抄进台账）', () => {
     const dir = tmp();
+    // role 那一组的正身在角色库：给一枚岗，四枚视图 kind 才都在表上（空名册那条断言在下面 A5-4b-1 专块）
+    writeRoster(dir, [{ id: 'r-demo', name: '演示岗' }]);
     const store = storeAt(dir);
     const view = store.readView();
     const agents = ofKind(view.entries, 'agent-kind');
@@ -246,15 +258,17 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
     expect(new Set(agents.map((e) => e.name))).toEqual(new Set(AGENT_KINDS));
     // spec 由 `agentBinaryName` 现算：异名那几枚（antigravity）与 kind 不同，别拿 kind 冒充探测名
     expect(agents.find((e) => e.name === 'antigravity-cli')?.spec).toEqual({ binary: 'antigravity' });
-    // 表上除出厂 agent 外只有出厂节点清单——视图项只可能来自 `REGISTRY_VIEW_KINDS`，不认的 kind 一条不许冒出来
+    // 表上只可能出现 `REGISTRY_VIEW_KINDS` 那几类——不认的 kind 一条不许冒出来
     expect([...new Set(view.entries.map((e) => e.kind))].sort()).toEqual([...REGISTRY_VIEW_KINDS].sort());
     expect(fs.existsSync(path.join(dir, 'registry', 'entries.json'))).toBe(false);
     // 而写路径吃的仍是 `load()`：盘上就是零条
     expect(store.list()).toEqual([]);
   });
 
-  it('用户登记的 model 排在前屏（compareEntries 吃 REGISTRY_KINDS 顺序，出厂那几十行不糊住自己的账）', () => {
-    const store = storeAt(tmp());
+  it('用户登记的 model 排在前屏（compareEntries 吃 REGISTRY_KINDS 顺序，现算那几十行不糊住自己的账）', () => {
+    const dir = tmp();
+    writeRoster(dir, [{ id: 'r-demo', name: '演示岗' }]);
+    const store = storeAt(dir);
     store.add(MODEL);
     // 每一类**登记项**都得挂号，否则「序」这条断言会把没登记的那一类静默跳过
     // （A5-1 起有 skill、A5-2 起有 rule、A5-3 起有 repo：新迁一类就在这一格多 add 一条）
@@ -281,7 +295,7 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
     expect(view.entries.some((e) => e.id === 'agent-kind:myth')).toBe(false);
     expect(ofKind(view.entries, 'agent-kind')).toHaveLength(AGENT_KINDS.length); // 出厂项一枚不少，手写那枚一枚不掺
     expect(view.rejected.map((r) => r.id)).toEqual(['agent-kind:myth']);
-    expect(view.rejected[0]!.why).toContain('读端只看出厂项');
+    expect(view.rejected[0]!.why).toContain('读端只吃现算那份');
     expect(view.rejected[0]!.why).toContain('DELETE');
     // 清账路真的通：删的是盘上那条，删完出厂项照在（视图项拆不掉）
     const removed = store.remove('agent-kind:myth');
@@ -295,7 +309,10 @@ describe('v14 A3-2 视图条目 readView（出厂清单现算，不落盘）', (
     const store = storeAt(dir);
     const add = store.add({ kind: 'agent-kind', name: 'my-agent', spec: { binary: 'my-agent' } });
     expect(add.ok).toBe(false);
-    expect(add.why).toContain('内置能力清单');
+    // 拒句要点名**这一类的正身住在哪**（`VIEW_HOME` 全仓一份，拒写与遮蔽披露同一套措辞）：
+    // 光说「视图 kind」用户不知道去哪儿建，而「内置能力清单」那种泛称对岗位类是假账
+    expect(add.why).toContain('版本自带的 agent 类型清单');
+    expect(add.why).toContain('注册表登记不了它');
     expect(store.update('agent-kind:pi', { enabled: false }).ok).toBe(false);
     expect(store.remove('agent-kind:pi').ok).toBe(false);
     expect(fs.existsSync(path.join(dir, 'registry'))).toBe(false);
@@ -371,7 +388,7 @@ describe('v14 T1 节点类型清单进表（node-type 视图条目）', () => {
     const store = storeAt(dir);
     const add = store.add({ kind: 'node-type', name: 'my-type', spec: { label: '我的节点', icon: '★', group: 'core', order: 1 } });
     expect(add.ok).toBe(false);
-    expect(add.why).toContain('内置能力清单');
+    expect(add.why).toContain('画布的节点类型清单');
     expect(store.update('node-type:agent', { enabled: false }).ok).toBe(false);
     expect(store.remove('node-type:agent').ok).toBe(false);
     // 拒得干净：一个字节没落盘，出厂项一枚不少（假开关一个也不给）
@@ -454,7 +471,7 @@ describe('v14 A5-4 机检类型清单进表（check-type 视图条目）', () =>
     const store = storeAt(dir);
     const add = store.add({ kind: 'check-type', name: 'my-check', spec: { label: '我的检查', hint: '问一句', machine: true } });
     expect(add.ok).toBe(false);
-    expect(add.why).toContain('内置能力清单');
+    expect(add.why).toContain('机检类型清单');
     expect(store.update('check-type:command', { enabled: false }).ok).toBe(false);
     expect(store.remove('check-type:command').ok).toBe(false);
     expect(checkRows(store.readView().entries)).toHaveLength(CHECK_TYPE_CATALOG.length);

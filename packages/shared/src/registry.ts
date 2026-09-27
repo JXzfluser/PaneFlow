@@ -164,6 +164,28 @@ export interface CheckTypeRegistrySpec {
 }
 
 /**
+ * `role`（v14 A5-4b-1）——「本机角色库里有这么个岗」。数据正身住在 `roles.json`
+ * （server 的 `orchestrate/roles.ts: Role`，消费在注入现场的装备解析与 W4 能力账），
+ * 这一枚是**第一枚「条目由现盘现算」的视图 kind**（前两枚视图 kind 的正身是代码里的出厂清单）：
+ *  - 读端把名册逐条套上信封渲成条目，**不落 `entries.json`、写入面全拒**——拒的理由与前两枚不同：
+ *    前两枚是「版本决定，注册表不代造本机没有的东西」，这一枚是「岗位的正身在角色库，那里已经有写路径
+ *    （`PUT /api/roles`／网页『设置·角色库』），在这里再开一个写入面就是给同一枚岗位配两个主人」；
+ *  - 机器值（名册里的 `id`）就是条目的 `name`——今天 graph 的 `nodes[i].config.role` 与名册
+ *    `team[i].roleId` 写的正是这枚裸串，不认它则本片的引用账把现网班底全洗成悬挂；
+ *  - `label` 是用户起的中文岗名（画法），**不算引用写法**（与 node-type/check-type 的中文措辞、
+ *    model 的中文名、agent-kind 的探测名同一把尺）；
+ *  - 岗位自己那些**会变的账面**一概不进 spec：`prePrompt`/`env`（可能含密钥）/`skills[]`/`rules[]`/`declares`
+ *    都不是「这台机器有什么能力」而是「这个岗怎么用」，它们各自的账已经住在注入现场（`equip`）、
+ *    W4 能力账与 W3 声明账里。注册表在这里只是一面镜子，多照一件东西就多一处会腐烂的副本。
+ */
+export interface RoleRegistrySpec {
+  /** 岗名（角色库里用户起的那个人话名；画布与注册中心都拿它说话，不是引用写法） */
+  label: string;
+  /** 该岗钉着的 agent kind（裸串引用 `agent-kind`；缺省=没钉，跟空间默认或统一覆盖） */
+  agentKind?: string;
+}
+
+/**
  * kind → spec 形状。**A1 落 `model` 当样板，A3-2 加 `agent-kind`（视图 kind）**；
  * 其余 kind 由 A3-x 逐片加成员，每片各带一条「等臂不破」断言。
  */
@@ -175,6 +197,7 @@ export interface RegistrySpecMap {
   'agent-kind': AgentKindRegistrySpec;
   'node-type': NodeTypeRegistrySpec;
   'check-type': CheckTypeRegistrySpec;
+  role: RoleRegistrySpec;
   mcp: McpRegistrySpec;
 }
 
@@ -185,14 +208,15 @@ export type RegistryKind = keyof RegistrySpecMap;
  * 加了 spec 成员忘了在这里挂号 = 编译期红，不是运行面「静默不认」。
  * 顺序即注册中心的分组序（用户自己登记的东西排前，出厂那几十行不糊住自己的账）。
  */
-export const REGISTRY_KINDS = ['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'check-type', 'mcp'] as const;
+export const REGISTRY_KINDS = ['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'check-type', 'role', 'mcp'] as const;
 
 /**
- * **视图 kind**：条目由别处（代码里的出厂清单）现算出来，`entries.json` 里永远没有它们。
+ * **视图 kind**：条目由别处现算出来（出厂清单住在代码里，`role` 的名册住在 `roles.json`），
+ * `entries.json` 里永远没有它们。
  * 单列一枚清单而不写死在某个 if 里：写入面拒、UI 收控件、文案说「出厂登记不可删」三处都要用同一个答案
  * ——三份 if 迟早对不上，那就是第二份判据。
  */
-export const REGISTRY_VIEW_KINDS = ['agent-kind', 'node-type', 'check-type'] as const;
+export const REGISTRY_VIEW_KINDS = ['agent-kind', 'node-type', 'check-type', 'role'] as const;
 
 export function isRegistryViewKind(kind: unknown): boolean {
   return typeof kind === 'string' && (REGISTRY_VIEW_KINDS as readonly string[]).includes(kind);
@@ -289,6 +313,7 @@ const REPO_SPEC_KEYS = ['space', 'dir', 'origin', 'note'] as const;
 const AGENT_KIND_SPEC_KEYS = ['binary'] as const;
 const NODE_TYPE_SPEC_KEYS = ['label', 'icon', 'group', 'order', 'hint'] as const;
 const CHECK_TYPE_SPEC_KEYS = ['label', 'hint', 'machine'] as const;
+const ROLE_SPEC_KEYS = ['label', 'agentKind'] as const;
 const MCP_SPEC_KEYS = ['command', 'args', 'note'] as const;
 
 export type RegistryParse<T> = { ok: true; value: T } | { ok: false; why: string };
@@ -312,6 +337,7 @@ const SPEC_PARSERS: { [K in RegistryKind]: (raw: unknown) => RegistryParse<Regis
   'agent-kind': parseAgentKindSpec,
   'node-type': parseNodeTypeSpec,
   'check-type': parseCheckTypeSpec,
+  role: parseRoleSpec,
   mcp: parseMcpSpec,
 };
 
@@ -515,6 +541,32 @@ export function parseCheckTypeSpec(raw: unknown): RegistryParse<CheckTypeRegistr
     return { ok: false, why: `${SHAPE}；machine 必须是布尔（引擎实跑得动与否是机检账的分母，没有默认值可猜）` };
   }
   return { ok: true, value: { label, hint, machine: o.machine } };
+}
+
+/**
+ * `role` 的 spec 机检（v14 A5-4b-1）。与 `node-type`/`check-type` 同理：**只有名册现算会造这一形状**
+ * （视图 kind，写入面一律拒），但仍走同一张分派表清洗——不复用就得到处开第二份清洗路。
+ * `label` 必填非空：一枚没有岗名的岗位在界面上就只剩裸 id，而「读端拿什么称呼它」不该由注册表替用户编；
+ * 名册里真出现这种脏行时，是**现算那一侧把它披露掉**（见 server `registry-view.ts`），不是这里给它起个名。
+ * `agentKind` 给了就得是非空串（空串占位＝一条永远指不到的裸引用），且**不判它在不在**——那是 R2 引用账
+ * 与 `agent-kind` 出厂清单的账（写入面判存在性就等于拿此刻扫到的名册冒充历史）。
+ */
+export function parseRoleSpec(raw: unknown): RegistryParse<RoleRegistrySpec> {
+  const SHAPE = 'role 的配置详情必须是 {label, agentKind?}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(ROLE_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  const label = typeof o.label === 'string' ? o.label.trim() : '';
+  if (!label) return { ok: false, why: `${SHAPE}；label 必须是非空字符串（这个岗叫什么，没有默认名可猜）` };
+  const spec: RoleRegistrySpec = { label };
+  if (o.agentKind !== undefined) {
+    if (typeof o.agentKind !== 'string') return { ok: false, why: 'agentKind 必须是字符串（该岗钉着的 agent kind 裸引用）' };
+    const kind = o.agentKind.trim();
+    if (!kind) return { ok: false, why: 'agentKind 给了就得是非空字符串（不留空串占位：它是引用写法之一）' };
+    spec.agentKind = kind;
+  }
+  return { ok: true, value: spec };
 }
 
 /**

@@ -13,8 +13,8 @@ import { registryViewEntries } from './registry-view.js';
 /**
  * v14-T3 起单前预检：模板 `requires` 槽 × 注册表 → 逐槽落点。
  * 钉的是三条姿态，一条都不能漂：
- *  1. 只有已迁进表的 kind 判死活（今天＝`model`/`skill`(A5-1)/`rule`(A5-2)/`repo`(A5-3)/`mcp`(T4) 与内置清单
- *     `agent-kind`(A3-2)/`node-type`(T1)/`check-type`(A5-4)），其余 `unjudged` **不拦**；
+ *  1. 只有已迁进表的 kind 判死活（今天＝`model`/`skill`(A5-1)/`rule`(A5-2)/`repo`(A5-3)/`mcp`(T4) 与视图 kind
+ *     `agent-kind`(A3-2)/`node-type`(T1)/`check-type`(A5-4)/`role`(A5-4b-1)），其余 `unjudged` **不拦**；
  *  2. 形状不认 → `malformed` 且 `ok=false`（判不了就不放行）；
  *  3. 匹配吃 R2 那把尺（`matchesTarget` → Descriptor `refKeys`），整枚 id / slug / spec 原值三写法同权。
  */
@@ -53,6 +53,13 @@ const graphWith = (requires: unknown[]): DagGraph => ({
 });
 
 const model = entry({ model: 'gpt-4o-mini' }, '小4号');
+
+/**
+ * 视图条目现算现在要吃 `dataDir`（`role` 的正身是名册 `roles.json`）。这几块问的只有出厂那三类，
+ * 所以给一枚**不存在**的目录：那是「还没建过角色库」的正读数（空岗位、零披露），不是拿假路径冒充断言。
+ * 名册真读得到时渲出什么、脏盘怎么披露，在 `registry-view.test.ts` 用真 tmp 目录钉。
+ */
+const viewEntries = () => registryViewEntries({ dataDir: '/paneflow-view-entries-no-data-dir' }).entries;
 
 describe('逐槽落点（checkGraphRequirements）', () => {
   it('命中：entryId 给到、why 说用了哪一枚；整枚 id / slug / spec 原值三种写法都算命中', () => {
@@ -93,14 +100,15 @@ describe('逐槽落点（checkGraphRequirements）', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('未迁进表的 kind 只披露不判死活（表里压根没有 role 这一类，判「不存在」= 拿空白冒充断言）', () => {
-    const r = checkGraphRequirements(graphWith([{ kind: 'role', id: 'r-deliver' }]), [model]);
+  it('未迁进表的 kind 只披露不判死活（表里压根没有 template 这一类，判「不存在」= 拿空白冒充断言）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'template', id: 'issue-flow' }]), [model]);
     expect(r.unjudged).toEqual([
-      { kind: 'role', id: 'r-deliver', verdict: 'unjudged', why: '「角色」这一类还没迁进注册表，判不了死活（只披露不拦）' },
+      { kind: 'template', id: 'issue-flow', verdict: 'unjudged', why: '「模板」这一类还没迁进注册表，判不了死活（只披露不拦）' },
     ]);
     expect(r.ok).toBe(true); // 起单放行：unjudged 不是闸
-    // 翻面自证：`repo` 自 A5-3 起在表里，同类槽再也不会发这句——拿一张发不出去的读数测渲染等于把桩当预言
+    // 翻面自证：`repo` 自 A5-3、`role` 自 A5-4b-1 起在表里，同类槽再也不会发这句——拿一张发不出去的读数测渲染等于把桩当预言
     expect(checkGraphRequirements(graphWith([{ kind: 'repo', id: 'packages/web' }]), [model]).unjudged).toEqual([]);
+    expect(checkGraphRequirements(graphWith([{ kind: 'role', id: 'r-deliver' }]), [model]).unjudged).toEqual([]);
   });
 
   it('脏形状 → malformed 且不放行（正常走不到这里：validateDag 在写入面就拒；盘面手改得动）', () => {
@@ -119,18 +127,20 @@ describe('逐槽落点（checkGraphRequirements）', () => {
 
 describe('分组读数（模板卡那一行「需要：模型 1 · 技能 2」）', () => {
   it('按声明首现顺序分组；judged 只算判得了死活的槽，gaps 只算死缺', () => {
+    // 替身换枚还没迁的 kind（改口链：这格原来用 `role`，A5-4b-1 起它也判得了死活 → 换 `template`）：
+    // 这一格要钉的是「判不了的类只数 declared、不进 gaps」，拿一枚已判死活的 kind 断言 judged=0 就是自证空白。
     const r = checkGraphRequirements(
       graphWith([
         { kind: 'model', id: model.id },
-        { kind: 'role', id: 'a' },
+        { kind: 'template', id: 'a' },
         { kind: 'model', id: 'nope' },
-        { kind: 'role', id: 'b' },
+        { kind: 'template', id: 'b' },
       ]),
       [model],
     );
     expect(r.need).toEqual([
       { kind: 'model', label: '模型', declared: 2, judged: 2, gaps: 1 },
-      { kind: 'role', label: '角色', declared: 2, judged: 0, gaps: 0 },
+      { kind: 'template', label: '模板', declared: 2, judged: 0, gaps: 0 },
     ]);
   });
 
@@ -167,7 +177,7 @@ describe('拒单文案（requirementGapWhy）', () => {
  * `readView().entries`——只喂 `load()` 会把整类 agent 读成死缺，那是假红不是 fail-closed。
  */
 describe('v14 A3-2 agent-kind 槽已判死活（不再落 unjudged）', () => {
-  const views = registryViewEntries();
+  const views = viewEntries();
 
   it('命中写法两枚同权：整枚 id 与 kind 名；探测名**不是**引用写法（与 R2 同一把尺）', () => {
     for (const id of ['agent-kind:pi', 'pi']) {
@@ -212,7 +222,7 @@ describe('v14 A3-2 agent-kind 槽已判死活（不再落 unjudged）', () => {
  * 这一格钉的就是「零特例」这个事实：节点类型与 agent 类型在预检眼里走同一条路。
  */
 describe('v14 T1 node-type 槽已判死活', () => {
-  const views = registryViewEntries();
+  const views = viewEntries();
 
   it('清单里的型命中即过；写错一型＝missing 且拒单（以前整类落 unjudged 一律放行）', () => {
     for (const id of ['node-type:fanout', 'fanout']) {
@@ -248,7 +258,7 @@ describe('v14 T1 node-type 槽已判死活', () => {
  * 翻面代价与 `node-type` 同款：以前这一类整落 `unjudged` 一律放行，今天红槽会拦起单（fail-closed）。
  */
 describe('v14 A5-4 check-type 槽已判死活', () => {
-  const views = registryViewEntries();
+  const views = viewEntries();
 
   it('清单里的型命中即过；写错一型＝missing 且拒单（以前整类落 unjudged 一律放行）', () => {
     for (const id of ['check-type:delivery-branch', 'delivery-branch']) {
@@ -271,6 +281,59 @@ describe('v14 A5-4 check-type 槽已判死活', () => {
     expect(checkGraphRequirements(graphWith([{ kind: 'check-type', hint: '要一道守卫' }]), views).slots[0]!.verdict).toBe('ok');
     const r = checkGraphRequirements(graphWith([{ kind: 'check-type', id: 'contract' }]), views);
     expect(r.need).toEqual([{ kind: 'check-type', label: '机检', declared: 1, judged: 1, gaps: 0 }]);
+  });
+});
+
+/**
+ * v14 A5-4b-1：`role` 是第四枚视图 kind，也是**第一枚正身在盘上**的（名册 `roles.json` 是用户数据，不是出厂清单）。
+ * 预检侧的判据照旧一行没新写（`isJudged` 吃 `REGISTRY_KINDS`、匹配吃 Descriptor 的 `refKeys`）——
+ * 这一格因此喂**手工装配的条目集**（等同 `readView().entries` 里名册那一段）：预检从来自己不开盘，
+ * 「名册读得出几条、脏盘怎么披露」是 `registry-view.test.ts` 用真 tmp 目录钉的账，两处不重复。
+ *
+ * 翻面代价与前几枚同款且更硬：`config.role` 是模板里最常用的一枚引用，以前整类落 `unjudged` 一律放行，
+ * 今天绑了一枚名册里没有的岗＝起单被拒（fail-closed，与引擎实绑同一把尺）。
+ */
+describe('v14 A5-4b-1 role 槽已判死活', () => {
+  const role = (name: string, label: string): RegistryEntry => {
+    const r = normalizeRegistryEntry({ kind: 'role', name, spec: { label } });
+    if (!r.ok) throw new Error(r.why);
+    return r.value;
+  };
+  const roles = [role('r-deliver', '交付岗'), role('R-Plan', '规划岗')];
+
+  it('命中写法两枚同权：整枚 id 与 roleId 原值；岗名不是引用写法（与 model「中文名不算」同尺）', () => {
+    for (const id of ['role:r-deliver', 'r-deliver']) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'role', id }]), roles);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: 'role:r-deliver' });
+      expect(r.ok).toBe(true);
+    }
+    // 「交付岗」是给人看的中文名：算进匹配键就把模板里写错的那句中文读成「正在用这一枚岗」
+    expect(checkGraphRequirements(graphWith([{ kind: 'role', id: '交付岗' }]), roles).slots[0]!.verdict).toBe('missing');
+  });
+
+  it('大写 id 靠 `entry.name` 原值指得回来（slug 被小写化，只认 slug 会把在岗的岗读成死缺）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'role', id: 'R-Plan' }]), roles);
+    expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: 'role:r-plan' });
+  });
+
+  it('指不到那一枚 = missing 且拒单，`unjudged` 清空（以前这一类一律放行，翻转留字为证）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'role', id: 'r-ghost' }]), roles);
+    expect(r.slots[0]!.verdict).toBe('missing');
+    expect(r.slots[0]!.entryId).toBeUndefined();
+    expect(r.unjudged).toEqual([]);
+    expect(r.ok).toBe(false);
+    expect(requirementGapWhy(r)).toContain('role → r-ghost');
+  });
+
+  it('宽槽（不点名）＝「名册有岗就行」；一条没有才是死缺', () => {
+    expect(checkGraphRequirements(graphWith([{ kind: 'role', hint: '要有个交付的岗' }]), roles).slots[0]!.verdict).toBe('ok');
+    expect(checkGraphRequirements(graphWith([{ kind: 'role' }]), []).slots[0]!.verdict).toBe('missing');
+  });
+
+  it('分组记的是中文组名「角色」且 judged 全算（这一类不再是 unjudged）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'role', id: 'r-deliver' }, { kind: 'role', id: 'nope' }]), roles);
+    expect(r.need).toEqual([{ kind: 'role', label: '角色', declared: 2, judged: 2, gaps: 1 }]);
+    expect(requirementKindLabel('role')).toBe('角色');
   });
 });
 

@@ -9,12 +9,12 @@ import type { RegistryEntry } from '@paneflow/shared';
 
 /**
  * API 返回的条目 = 信封 + server 算好的人话标签（零判据消费面，不看 spec 说话）
- * + `view`（A3-2：这一项是内置清单的视图项，不可登记/改/删）。
+ * + `view`（A3-2：这一项是视图 kind 的条目，不可登记/改/删；正身逐 kind 见 `viewHomes`）。
  * `view` 是 server 给的读数，**不是**这里拿 `source==='builtin'` 推的——出处与可写性是两条判据。
  */
 export type RegistryEntryView = RegistryEntry & { label: string; view?: boolean };
 
-/** 这一项是不是内置清单的视图项（缺键＝旧 server，按可写条目渲染） */
+/** 这一项是不是视图 kind 的条目（缺键＝旧 server，按可写条目渲染） */
 export function isViewEntry(entry: RegistryEntryView): boolean {
   return entry.view === true;
 }
@@ -31,8 +31,14 @@ export interface RegistryListResponse {
   rejected: RegistryRejectedRow[];
   schema: { version: number; writtenBy?: string } | null;
   knownKinds: string[];
-  /** `knownKinds` 里「内置清单现算、写入面不接」的那几类（A3-2；缺键＝旧 server，一律按可登记渲染） */
+  /** `knownKinds` 里「现算出来、写入面不接」的那几类（A3-2；缺键＝旧 server，一律按可登记渲染） */
   viewKinds?: string[];
+  /**
+   * kind → 「这一类的正身在哪儿」（A5-4b-1）。视图 kind 有了第二份出处之后，「内置清单」这个措辞
+   * 对 `role` 就是假话（岗位是用户在角色库建的）——所以这句话由 server 逐 kind 给，网页不形容词。
+   * 缺键＝旧 server：回落到不带出处的通用措辞，不猜那一类的正身是什么。
+   */
+  viewHomes?: Record<string, string>;
   /** kind → 人话组名，server 算好（与预检的 `need[].label` 同一处措辞；缺键＝旧 server，见 kindGroupLabel） */
   kindLabels?: Record<string, string>;
 }
@@ -48,21 +54,26 @@ export interface KindGroup {
   kind: string;
   label: string;
   entries: RegistryEntryView[];
-  /** 这一整组都是出厂清单的视图项：登记控件对它不开，行内的启停/删除也不画 */
+  /** 这一整组都是视图项：登记控件对它不开，行内的启停/删除也不画 */
   view: boolean;
+  /** 这一类的正身在哪儿（server 给；缺＝旧 server，文案回落成不带出处的说法，不猜） */
+  home?: string;
 }
 
 /**
  * 按 kind 分组：先按 server 给的 knownKinds 顺序立牌（空组也立——「迁一个 kind 亮一个分组」，
  * 空表是正读数不是错误），entries 里冒出 knownKinds 之外的 kind 时追加在尾部（不静默吞）。
- * `viewKinds` 决定那一组是不是出厂组——以 server 的清单为准而不是「这一组恰好有条目且都带 view」，
- * 出厂组暂时探不出货（比如清单为空）也该说清「这一类不用登记」。
+ * `viewKinds` 决定那一组是不是视图组——以 server 的清单为准而不是「这一组恰好有条目且都带 view」，
+ * 视图组暂时探不出货（比如清单为空）也该说清「这一类不用登记」。
+ * `viewHomes` 逐 kind 带上「正身在哪儿」：四枚视图 kind 里 `role` 住角色库、其余三枚住代码，
+ * 拿一句「版本自带的内置清单」去描述用户自己建的岗位就是说假话。
  */
 export function groupEntriesByKind(
   entries: RegistryEntryView[],
   knownKinds: string[],
   viewKinds: string[] = [],
   kindLabels?: Record<string, string>,
+  viewHomes?: Record<string, string>,
 ): KindGroup[] {
   const kinds = [...knownKinds];
   for (const e of entries) if (!kinds.includes(e.kind)) kinds.push(e.kind);
@@ -71,6 +82,7 @@ export function groupEntriesByKind(
     label: kindGroupLabel(kind, kindLabels),
     entries: entries.filter((e) => e.kind === kind),
     view: viewKinds.includes(kind),
+    ...(viewHomes?.[kind] ? { home: viewHomes[kind] } : {}),
   }));
 }
 
@@ -464,13 +476,21 @@ export function formatWhen(iso: string | undefined): string {
 }
 
 /**
- * 详情格里两枚时刻的表头（出厂项那句「登记于」是假话——它没被登记过）。
- * 出厂项的 `createdAt` 是「本机这次运行开始看见它」的时刻，文案这么说，不替它编登记账。
+ * 详情格里两枚时刻的表头（视图项那句「登记于」是假话——它没被登记过）。
+ * 视图项的 `createdAt` 是「本机这次运行开始看见它」的时刻，文案这么说，不替它编登记账。
+ * `home` 是 server 逐 kind 给的正身（`agent-kind` 住出厂清单、`role` 住角色库）：拿「版本自带」去说
+ * 一枚用户自己建的岗位，就是当着用户的面撒谎，所以这一句也吃外发的那份措辞，页面不形容词。
  */
-export function whenLabels(view: boolean): { created: string; updated: string; note: string } {
-  return view
-    ? { created: '本机自', updated: '本次运行', note: '内置清单项由版本自带，没有登记时刻' }
-    : { created: '登记于', updated: '改于', note: '' };
+export function whenLabels(
+  view: boolean,
+  home?: string,
+): { created: string; updated: string; note: string } {
+  if (!view) return { created: '登记于', updated: '改于', note: '' };
+  return {
+    created: '本机自',
+    updated: '本次运行',
+    note: home ? `这一项由${home}现算出来，没有登记时刻` : '内置清单项由版本自带，没有登记时刻',
+  };
 }
 
 // -- v14-T3 模板卡的能力槽读数（`GET /api/registry/check` 的直译 + 那一行的排版） ------------

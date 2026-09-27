@@ -84,6 +84,21 @@ describe('startRun 的能力槽预检', () => {
   });
 
   it('未迁进注册表的 kind 不拦起单（判不了死活就只披露，拿空白当断言=误杀存量模板）', async () => {
+    // 改口入账：这一格的示例原来是 `role`，A5-4b-1 起它进了表（条目由名册现算）→ 换 `template`。
+    // 判据本身一字没改：改的只是「拿哪一类还没迁的当示例」。
+    const run = await engine.startRun(graph([{ kind: 'template', id: 'issue-flow' }]), cwd);
+    expect((await settle(run.runId)).state).toBe('completed');
+  });
+
+  /**
+   * v14 A5-4b-1：`role` 是**第一枚正身在盘上用户数据**的视图 kind，所以引擎口要证的不是判据（那里已钉），
+   * 而是这条最容易断的接线——`startRun` 喂给预检的那张表里，**有没有名册现算出来的那几行**。
+   * 只证 `readView()` 合并了视图条目不够：引擎完全可以走 `load()`（盘上登记项）那条老路，
+   * 于是「岗在角色库里、预检说没这枚岗」——两头各自都绿，只有起单口红。
+   */
+  it('role 槽自此判死活：名册里有那枚岗就放行，没有就拒（现算条目真的进了引擎那张表）', async () => {
+    await expect(engine.startRun(graph([{ kind: 'role', id: 'r-deliver' }]), cwd)).rejects.toThrow(/role → r-deliver/);
+    fs.writeFileSync(path.join(dataDir, 'roles.json'), `${JSON.stringify([{ id: 'r-deliver', name: '交付岗' }], null, 2)}\n`);
     const run = await engine.startRun(graph([{ kind: 'role', id: 'r-deliver' }]), cwd);
     expect((await settle(run.runId)).state).toBe('completed');
   });

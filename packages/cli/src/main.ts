@@ -15,6 +15,7 @@ import {
   type EnvProbeView,
   type RegistryCheckRow,
   type RegistryCheckView,
+  type RegistryDetailView,
   type RegistryEntryView,
   type RegistryHealthView,
   type RegistryListView,
@@ -570,11 +571,15 @@ function entryLine(io: CliIo, e: RegistryEntryView): string {
 const kindLabel = (body: { kindLabels?: Record<string, string> }) => (kind: string): string =>
   body.kindLabels?.[kind] ?? kind;
 
-function renderEntry(io: CliIo, e: RegistryEntryView): void {
+function renderEntry(io: CliIo, e: RegistryEntryView, viewHomes?: Record<string, string>): void {
   io.out(entryLine(io, e));
   if (e.view) {
-    // 视图项没有「登记」这件事，所以那句「登记于」不能照画（时刻是本次运行的读数，不是账）
-    io.out(`  内置清单的视图项：出厂自带、不落盘，改不了也删不了（这里的时刻=本机这次运行开始看见它，不是登记时刻）`);
+    // 视图项没有「登记」这件事，所以那句「登记于」不能照画（时刻是本次运行的读数，不是账）。
+    // 正身那句吃 server 的 `viewHomes`：`role` 的岗位是用户自己建的，写死「出厂自带」就是当着他的面说假话
+    const home = viewHomes?.[e.kind];
+    io.out(
+      `  视图项${home ? `（成员由${home}现算出来）` : '（成员由现算清单决定）'}：不落盘，改不了也删不了（这里的时刻=本机这次运行开始看见它，不是登记时刻）`,
+    );
   } else {
     io.out(`  登记于 ${e.createdAt}${e.updatedAt && e.updatedAt !== e.createdAt ? ` · 改于 ${e.updatedAt}` : ''}`);
   }
@@ -661,7 +666,7 @@ async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<numb
     case 'refs': {
       requirePos(args, 2, `paneflow registry ${verb} <id>`);
       const id = args.positional[1]!;
-      const { body } = await request<{ entry: RegistryEntryView }>(io, baseUrl, 'GET', `/api/registry/${encodeURIComponent(id)}`);
+      const { body } = await request<RegistryDetailView>(io, baseUrl, 'GET', `/api/registry/${encodeURIComponent(id)}`);
       if (jsonOr(args)) {
         // `refs` 只回引用那一格——机器判据要的是「有没有人在用」，不是整条信封
         dump(io, verb === 'refs' ? { id: body.entry.id, refs: body.entry.refs ?? null } : body.entry);
@@ -676,7 +681,7 @@ async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<numb
         for (const r of body.entry.refs) io.out(`  ${refLine(r)}`);
         return EXIT_OK;
       }
-      renderEntry(io, body.entry);
+      renderEntry(io, body.entry, body.viewHomes);
       return EXIT_OK;
     }
     case 'add': {

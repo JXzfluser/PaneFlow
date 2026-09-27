@@ -133,6 +133,14 @@ paneflow registry probe <id> [--refresh]     # 单枚探针，与批量面同一
 #   `requires: [{kind:"check-type",id:"command"}]` 从今天起判死活（红槽拦起单），能力快照 `cap#`
 #   也从此把这一单要跑的机检型记进去——**同一张图在 A5-4 前后起单会有两个 cap#**（历史单吃自己落册的副本，
 #   等臂跨这一刀对照时要记得差在版本，不在这一单）
+#   `role`（v14-A5-4b-1）是第四枚**视图 kind**，也是**第一枚正身在盘上**的：条目由 `roles.json` 名册逐条现算
+#   （`list --kind role` 画得出这一组的岗，`registry get role:<id>` 逐条列「这一枚岗被谁绑」——班底 `team[i].roleId`
+#   与节点 `config.role` 两处；**出处看得见 ≠ 删得掉**：R2 的「被引用不许删」长在注册表三个写动词上，
+#   而 `role` 恰恰没有写动词，所以从角色库删一枚还在被班底用的岗今天仍不拦——那道闸是 v14-A5-5 的账）。三条边界要说清：
+#   ①**注册表不是岗位的登记面**——建/改/删仍在角色库（网页『设置·角色库』或 `PUT /api/roles`），这里三写动词全拒；
+#   ②引用写法是 `role:<id>` / slug / **名册里那枚 id 原样**（大写 id 靠这一枚才指得回来），**岗名不算**引用写法；
+#   ③这一类**没有探针通道**（在册即在场：条目本来就是读那张名册读出来的）。名册脏了不冒充读数：
+#   读不出整组时进 `rejected` 一句「这不是本机没有岗位，是名册读不动」，缺岗名的行拿 id 顶并同样披露
 
 # 8) 起单前预检（v14-T3）：模板声明「这单要吃哪几项能力」，派活之前先对着注册表解析
 paneflow registry check [--template x] [--space S]   # 逐槽画 ✓命中 / ✗死缺 / ?还判不了 / ⚠形状不认
@@ -140,7 +148,8 @@ paneflow registry check [--template x] [--space S]   # 逐槽画 ✓命中 / ✗
 #   不给 --template = 普查全部在册模板，恒 0（普查不是闸，拦是起单口的事）
 paneflow registry check --template x --json  # → 那一行的原样负载：{slots,need,missing,unjudged,malformed,ok}
 #   模板侧声明（画布 JSON）：graph 顶层 `requires: [{kind, id?, hint?}]`——今天判死活的 kind 是
-#   `model`、`skill`（v14-A5-1）、`rule`（v14-A5-2）、`repo`（v14-A5-3）、`mcp` 与三枚视图 kind `agent-kind`/`node-type`/`check-type`（v14-A5-4；后两枚的引用写法=整枚 id 或 kind 名；
+#   `model`、`skill`（v14-A5-1）、`rule`（v14-A5-2）、`repo`（v14-A5-3）、`mcp` 与四枚视图 kind `agent-kind`/`node-type`/`check-type`（v14-A5-4）/`role`（v14-A5-4b-1；
+#   后三枚的引用写法=整枚 id 或 kind 名，`role` 额外认名册里那枚岗 id 原样、**不认岗名**；
 #   探测名 `antigravity` 那种异名**不算**引用写法，与 R2 引用账同一把尺——两把尺就会出现「预检说缺、引用账说在用」）。
 #   `skill`/`rule` 槽的引用写法多一枚 **`spec.file` 原值**（相对项目根的路径，就是今天 `profile.skills` /
 #   `profile.rules[i].file` 落册的那串），且**不**按 `--space` 收窄：`requires` 里没有写项目名的位置，本机任一项目登记过这篇即算命中
@@ -149,7 +158,7 @@ paneflow registry check --template x --json  # → 那一行的原样负载：{s
 #   `delivery[i].repo` 落册的就是它）与 `spec.origin`（`owner/repo` 或完整 remote URL，派活 `--repo` 写的也是它；
 #   两种拼法**互指**——条目存 URL 则 `owner/repo` 指得到，条目存 `owner/repo` 则 URL 也指得到，
 #   两侧都过 `parseGithubRemote` 那一把尺、只在比对那一瞬间归一，存的字节仍是用户写的原样）。
-#   指向 role/check-type/template/… 的槽仍落 `?`（表里没这一类，判「不存在」= 拿空白冒充断言）
+#   指向 template/gateway-profile/channel/… 的槽仍落 `?`（表里没这一类，判「不存在」= 拿空白冒充断言）
 paneflow env probe <绝对路径>                 # 只读环境发现器（v14-E1）：这台机器有什么可登记的，给的是草案不是断言
 paneflow env add <绝对路径> --space <id>      # 一次事务登记（v14-E2）：probe → map → 原子写档案，失败整体回滚
 #   四类入档：repo→repos / doc→conventionFiles / skill→skills / rule→rules（rule 带 repo 关联）；

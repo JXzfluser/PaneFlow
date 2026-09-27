@@ -98,10 +98,12 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
   it('model 长出四键、model 必填；没挂号的 kind 不临场发明字段', () => {
     expect(formFieldsFor('model')!.map((f) => f.key)).toEqual(['model', 'gatewayProfile', 'freeModel', 'note']);
     expect(formFieldsFor('model')!.find((f) => f.key === 'model')!.required).toBe(true);
-    // `rule`/`repo` 自 A5-2/A5-3 起有表单长法了；仍未迁的那一类照旧不猜形状
+    // `rule`/`repo` 自 A5-2/A5-3 起有表单长法了；视图 kind 从来没有——写入面本来就把它们拒了，
+    // 页面再给一张空表单等于宣称「这里能登记」，那一格点下去只会拿到一句 400
     expect(formFieldsFor('rule')!.map((f) => f.key)).toEqual(['space', 'file', 'repo', 'pathsGlob', 'note']);
     expect(formFieldsFor('repo')!.map((f) => f.key)).toEqual(['space', 'dir', 'origin', 'note']);
     expect(formFieldsFor('role')).toBeNull();
+    expect(formFieldsFor('check-type')).toBeNull();
   });
 
   /**
@@ -184,7 +186,9 @@ describe('v14-X1 表单长法与 POST 体组装', () => {
   it('必填没填时拒组装（返回 null），未知 kind 也拒（不猜形状）', () => {
     expect(buildRegistryPayload('model', '甲', { model: '  ' })).toBeNull();
     expect(buildRegistryPayload('rule', '甲', {})).toBeNull();
-    // `role` 是 A5-4 那一棒的替身（今天还没进表）：不猜形状就不该长出任何 spec 键
+    // 两路都拒，但理由不同：`template` 今天没进表（不猜形状），`role` 进了表却是视图 kind
+    // （名册才是正身，页面给它长表单就是造第二个登记面）——两种都拿 null，页面不给那张「新增」按钮
+    expect(buildRegistryPayload('template', '甲', { dir: 'x' })).toBeNull();
     expect(buildRegistryPayload('role', '甲', { dir: 'x' })).toBeNull();
   });
 
@@ -399,22 +403,23 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
       requirementBadge(
         row({
           ok: false,
-          // 「判不了的那一组」今天只能用 `role` 喂（`repo` 自 A5-3 起有探针、有判定，`judged: 0` 是它发不出的读数）
+          // 「判不了的那一组」今天只能用 `template` 喂（`role` 自 A5-4b-1 起有名册条目、有判定，
+          // `repo` 自 A5-3 起有探针——`judged: 0` 是它们发不出的读数）；未知 kind 的组名 server 不猜，画原值
           need: [
             { kind: 'model', label: '模型', declared: 1, judged: 1, gaps: 1 },
-            { kind: 'role', label: '角色', declared: 2, judged: 0, gaps: 0 },
+            { kind: 'template', label: 'template', declared: 2, judged: 0, gaps: 0 },
           ],
         }),
         3,
       ),
-    ).toEqual({ text: '需要：模型 1 · 角色 2', tone: 'gap' });
+    ).toEqual({ text: '需要：模型 1 · template 2', tone: 'gap' });
   });
 
   it('整组都判不了 = pending（画问号）：它既不是缺口也不是命中，红绿都不对', () => {
     const r = row({
-      slots: [{ kind: 'role', id: 'r-deliver', verdict: 'unjudged', why: '还没迁进注册表' }],
-      need: [{ kind: 'role', label: '角色', declared: 1, judged: 0, gaps: 0 }],
-      unjudged: [{ kind: 'role', id: 'r-deliver', verdict: 'unjudged', why: '还没迁进注册表' }],
+      slots: [{ kind: 'template', id: 'issue-flow', verdict: 'unjudged', why: '还没迁进注册表' }],
+      need: [{ kind: 'template', label: 'template', declared: 1, judged: 0, gaps: 0 }],
+      unjudged: [{ kind: 'template', id: 'issue-flow', verdict: 'unjudged', why: '还没迁进注册表' }],
     });
     expect(requirementBadge(r, 1).tone).toBe('pending');
     // 一半命中一半判不了 → 按命中说（有真读数就别挂问号）
@@ -439,7 +444,7 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
         slots: [
           { kind: 'model', id: 'gpt-4o-mini', verdict: 'ok', why: '用「小4号」' },
           { kind: 'model', id: 'gpt-9', verdict: 'missing', why: '注册表里没有' },
-          { kind: 'role', verdict: 'unjudged', why: '这一类还判不了' },
+          { kind: 'template', verdict: 'unjudged', why: '这一类还判不了' },
           { kind: 'model', verdict: 'malformed', why: '声明形状不认' },
           { kind: 'model', verdict: 'probed-elsewhere', why: '未来新值' },
         ],
@@ -448,7 +453,7 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
     expect(detail.split('\n')).toEqual([
       '✓ model → gpt-4o-mini：用「小4号」',
       '✗ model → gpt-9：注册表里没有',
-      '? role：这一类还判不了',
+      '? template：这一类还判不了',
       '⚠ model：声明形状不认',
       'probed-elsewhere model：未来新值',
     ]);
@@ -466,7 +471,7 @@ describe('v14-A3-2 内置清单视图项的消费面（只认 server 给的 view
     expect(isViewEntry(entry({ source: 'builtin' }))).toBe(false);
   });
 
-  it('分组级：出厂那一组整组标 view，且以 server 的 viewKinds 为准（空组也说清「不用登记」）', () => {
+  it('分组级：视图那一组整组标 view，且以 server 的 viewKinds 为准（空组也说清「不用登记」）', () => {
     const groups = groupEntriesByKind([viewEntry()], ['model', 'agent-kind'], ['agent-kind'], {
       model: '模型',
       'agent-kind': 'Agent 引擎',
@@ -475,20 +480,48 @@ describe('v14-A3-2 内置清单视图项的消费面（只认 server 给的 view
       ['model', false, '模型'],
       ['agent-kind', true, 'Agent 引擎'],
     ]);
-    // 出厂组一枚货都没探到时仍立牌并说明——不能因为它空就当普通空组劝人来登记
+    // 视图组一枚货都没探到时仍立牌并说明——不能因为它空就当普通空组劝人来登记
     const empty = groupEntriesByKind([], ['agent-kind'], ['agent-kind'], { 'agent-kind': 'Agent 引擎' });
     expect(empty[0]).toMatchObject({ view: true, entries: [] });
   });
 
-  it('登记下拉里不挂出厂 kind：挂上去就是「点开却登记不了」的假可点', () => {
+  /**
+   * v14 A5-4b-1：视图 kind 有了**两份出处**（`agent-kind` 住代码、`role` 住角色库），
+   * 「这一类的正身在哪儿」必须由 server 逐 kind 外发。这里钉的是消费面的两条：
+   *  ①给了才带 `home`（旧 server 缺键就整个不给这一格，不回落成「出厂清单」——那对岗位是假话）；
+   *  ②`home` 逐 kind 取，不按「view 为真」共用一句（共用就是页面自己造第二份措辞表）。
+   */
+  it('正身措辞吃 server 的 `viewHomes`：逐 kind 带，缺键不猜', () => {
+    const groups = groupEntriesByKind(
+      [viewEntry(), viewEntry({ id: 'role:r-a', kind: 'role' as never, name: 'r-a', source: 'user' })],
+      ['agent-kind', 'role'],
+      ['agent-kind', 'role'],
+      { 'agent-kind': 'Agent 引擎', role: '角色' },
+      { 'agent-kind': '版本自带的 agent 类型清单（成员与配置由代码决定）', role: '角色库那一面（岗位在那儿建、改、删）' },
+    );
+    expect(groups.map((g) => g.home)).toEqual([
+      '版本自带的 agent 类型清单（成员与配置由代码决定）',
+      '角色库那一面（岗位在那儿建、改、删）',
+    ]);
+    // 旧 server（不给 `viewHomes`）：`home` 整格缺省，页面据此回落到不带出处的措辞，不替它编一个正身
+    const legacy = groupEntriesByKind([viewEntry()], ['agent-kind'], ['agent-kind']);
+    expect('home' in legacy[0]!).toBe(false);
+  });
+
+  it('登记下拉里不挂视图 kind：挂上去就是「点开却登记不了」的假可点', () => {
     expect(registrableKinds(['model', 'agent-kind'], ['agent-kind'])).toEqual(['model']);
     expect(registrableKinds(['model', 'agent-kind'])).toEqual(['model', 'agent-kind']); // 旧 server 缺键：不猜
   });
 
-  it('两枚时刻的表头分家：出厂项没有登记时刻，说「登记于」是假话', () => {
+  it('两枚时刻的表头分家：视图项没有登记时刻，说「登记于」是假话', () => {
     expect(whenLabels(false)).toMatchObject({ created: '登记于', updated: '改于', note: '' });
     expect(whenLabels(true).created).not.toContain('登记');
     expect(whenLabels(true).note).toContain('版本自带');
+    // 给了正身就说正身：那句「版本自带」用在用户自己建的岗位上就是当着面撒谎
+    expect(whenLabels(true, '角色库那一面（岗位在那儿建、改、删）').note).toContain('角色库');
+    expect(whenLabels(true, '角色库那一面').note).not.toContain('版本自带');
+    // 非视图项即使带着 home 也不改口（正身只在 view 为真时才有意义）
+    expect(whenLabels(false, '角色库').note).toBe('');
   });
 });
 

@@ -6,6 +6,14 @@ import { contentSha } from './harness.js';
 import type { RawReference } from './registry-refs.js';
 
 /**
+ * 视图条目现算现在要吃 `dataDir`（A5-4b-1：`role` 的正身是名册 `roles.json`）。
+ * 这几格问的都是出厂那三类，所以给一枚**不存在**的目录——那是「还没建过角色库」的正读数
+ * （空岗位、零披露），不是拿假路径冒充断言。名册真读得到时进不进快照，见下面 A5-4b-1 那一块（手装条目，
+ * 与 `readView()` 装配出的形状同形）。
+ */
+const viewEntries = (): RegistryEntry[] => registryViewEntries({ dataDir: '/paneflow-snapshot-no-data-dir' }).entries;
+
+/**
  * v14 R5 能力快照账。这里全部喂**内存里的引用与条目**（快照器本来就不读盘，读盘在引擎侧），
  * 判据钉 doc §二 R5 那四句：只快照已迁 kind、悬挂不进快照、null≠`[]`、指纹与「活行」无关。
  */
@@ -129,7 +137,7 @@ describe('v14 A3-2 agent-kind 进能力快照', () => {
   });
 
   it('出厂视图项能进快照：spec 抄的是现算那一份（binary 探测名，不是 kind 名）', () => {
-    const views = registryViewEntries();
+    const views = viewEntries();
     const snap = capabilitySnapshot(views, [agentRef('pi')]);
     expect(snap).not.toBeNull();
     expect(snap!.refs).toEqual([
@@ -145,7 +153,7 @@ describe('v14 A3-2 agent-kind 进能力快照', () => {
 
   it('两枚能力并存时按 kind·id 排序；只喂盘上条目（load）就等于把 agent 那一枚读丢了', () => {
     const model = modelEntry('gpt-4o-mini');
-    const both = capabilitySnapshot([model, ...registryViewEntries()], [agentRef('pi'), ref({})])!;
+    const both = capabilitySnapshot([model, ...viewEntries()], [agentRef('pi'), ref({})])!;
     expect(both.refs.map((r) => r.id)).toEqual(['agent-kind:pi', 'model:gpt-4o-mini']);
     // 反面对照：盘上没有 agent-kind 条目（出厂清单不落盘，这是事实源所在）
     expect(capabilitySnapshot([model], [agentRef('pi'), ref({})])!.refs.map((r) => r.id)).toEqual(['model:gpt-4o-mini']);
@@ -270,7 +278,7 @@ describe('v14 A5-4 check-type 进能力快照', () => {
   });
 
   it('三道不同的检＝三条账，spec 抄现算那一份（label/hint/machine 整份，不只挑一枚）', () => {
-    const snap = capabilitySnapshot(registryViewEntries(), [
+    const snap = capabilitySnapshot(viewEntries(), [
       checkRef('command', 'nodes[0].config.checks[0].type'),
       checkRef('file-exists', 'nodes[1].config.checks[0].type'),
       checkRef('manual', 'nodes[1].config.checks[1].type'),
@@ -282,7 +290,7 @@ describe('v14 A5-4 check-type 进能力快照', () => {
     ]);
     expect(snap.refs[2]!.spec).toEqual({ label: '人工确认', hint: '引擎不判：把这一格拦成等人点头', machine: false });
     // 同一型画在两格＝一条账、via 合并（能力面问「吃了哪几枚」，不问吃了几回）
-    const twice = capabilitySnapshot(registryViewEntries(), [
+    const twice = capabilitySnapshot(viewEntries(), [
       checkRef('regex', 'nodes[0].config.checks[0].type'),
       checkRef('regex', 'nodes[3].config.checks[0].type'),
     ])!;
@@ -297,6 +305,6 @@ describe('v14 A5-4 check-type 进能力快照', () => {
   });
 
   it('清单外的型（悬挂）不进快照：那是预检的账，不在这里重复一份判据', () => {
-    expect(capabilitySnapshot(registryViewEntries(), [checkRef('file-exis', 'nodes[0].config.checks[0].type')])).toBeNull();
+    expect(capabilitySnapshot(viewEntries(), [checkRef('file-exis', 'nodes[0].config.checks[0].type')])).toBeNull();
   });
 });

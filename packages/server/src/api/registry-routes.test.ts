@@ -7,6 +7,7 @@ import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import type { Store } from '../orchestrate/store.js';
 import { RegistryStore } from '../orchestrate/registry.js';
 import { requirementKindLabel } from '../orchestrate/registry-check.js';
+import { viewHomeOf } from '../orchestrate/registry-view.js';
 import { CHECK_SPEC_TYPES, CHECK_TYPE_CATALOG, DAG_NODE_TYPES, MACHINE_CHECK_TYPES, NODE_TYPE_CATALOG } from '@paneflow/shared';
 import { AGENT_KINDS } from './agent-kinds.js';
 import { buildHttpServer } from './http.js';
@@ -63,25 +64,37 @@ describe('注册内核四动词（/api/registry）', () => {
         viewKinds: string[];
         kindLabels: Record<string, string>;
         refSummary: unknown;
+        viewHomes: Record<string, string>;
       };
       expect(body.entries.filter((e) => !e.view)).toEqual([]); // 盘上真的一条没登记——这格还是正读数零
       expect(body.rejected).toEqual([]);
       expect(body.schema).toBeNull();
-      // 挂号序＝注册中心的分组序：登记项在前、视图 kind 穿插在其注册位（A5-4 起 `check-type` 进表）
-      expect(body.knownKinds).toEqual(['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'check-type', 'mcp']);
-      expect(body.viewKinds).toEqual(['agent-kind', 'node-type', 'check-type']);
+      // 挂号序＝注册中心的分组序：登记项在前、视图 kind 穿插在其注册位（A5-4 起 `check-type`、A5-4b-1 起 `role` 进表）
+      expect(body.knownKinds).toEqual(['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'check-type', 'role', 'mcp']);
+      expect(body.viewKinds).toEqual(['agent-kind', 'node-type', 'check-type', 'role']);
+      // 正身逐 kind 给（A5-4b-1）：四枚视图 kind 里 `role` 住在角色库，其余三枚住在代码。
+      // 外发而不是让页面形容词——「版本自带的内置清单」这一句用在用户自己建的岗位上是假话。
+      const homes = body.viewHomes;
+      expect(Object.keys(homes).sort()).toEqual([...body.viewKinds].sort());
+      expect(homes.role).toContain('角色库');
+      expect(homes.role).not.toContain('版本自带');
+      expect(homes['agent-kind']).toContain('代码决定');
+      expect(homes['node-type']).toBe(viewHomeOf('node-type'));
       // 组名只有一处措辞表（`registry-check.ts` 的 `KIND_CN`）：网页拿这张外发表的标签画分组，
       // 前端不再自己抄一份——抄了迟早分叉，而分叉的代价是「同一个 kind 两处两个名字」。
       expect(Object.keys(body.kindLabels).sort()).toEqual([...body.knownKinds].sort());
-      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', rule: '规则', repo: '仓库', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', 'check-type': '机检', mcp: 'MCP 服务' });
+      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', rule: '规则', repo: '仓库', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', 'check-type': '机检', role: '角色', mcp: 'MCP 服务' });
       expect(requirementKindLabel('agent-kind')).toBe(body.kindLabels['agent-kind']);
       expect(body.refSummary).toEqual({ scanned: 0, dangling: [], unmigrated: [] });
-      // 视图项=出厂清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
+      // 视图项=现算清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
       const agents = body.entries.filter((e) => e.kind === 'agent-kind');
       expect(agents).toHaveLength(AGENT_KINDS.length);
       expect(new Set(agents.map((e) => e.name))).toEqual(new Set(AGENT_KINDS));
       expect(body.entries.every((e) => e.view && e.source === 'builtin')).toBe(true);
-      expect(new Set(body.entries.map((e) => e.kind))).toEqual(new Set(body.viewKinds));
+      // role 这一组此刻**空**是正读数：这一格的名册（`roles.json`）不存在，读端不替用户编岗位。
+      // 「视图项只可能来自 `REGISTRY_VIEW_KINDS`」这条仍成立（渲染出来的 kind 是它的子集）。
+      expect(body.entries.filter((e) => e.kind === 'role')).toEqual([]);
+      expect(new Set(body.entries.map((e) => e.kind))).toEqual(new Set(['agent-kind', 'node-type', 'check-type']));
       // label 由 Descriptor 算：异名才说话，同名不重复一遍
       const agy = body.entries.find((e) => e.name === 'antigravity-cli');
       expect(agy).toMatchObject({ id: 'agent-kind:antigravity-cli', label: '探测名 antigravity', spec: { binary: 'antigravity' } });
@@ -105,8 +118,9 @@ describe('注册内核四动词（/api/registry）', () => {
         payload: { kind: 'agent-kind', name: 'my-agent', spec: { binary: 'my-agent' } },
       });
       expect(add.statusCode).toBe(400);
-      expect(add.json().error).toContain('内置能力清单');
-      expect(add.json().error).toContain('注册表不代造本机没有的东西');
+      // 拒句点名这一类的**正身住在哪**（`VIEW_HOME` 一份措辞，四个视图 kind 各有各的答处）
+      expect(add.json().error).toContain('版本自带的 agent 类型清单');
+      expect(add.json().error).toContain('写入面不代造本机没有的东西');
       expect(registry.list('agent-kind')).toEqual([]); // 拒得干净：盘上没落下一条
       expect(fs.existsSync(path.join(dataDir, 'registry', 'entries.json'))).toBe(false);
 
@@ -125,7 +139,7 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(got.json().entry).toMatchObject({ id: 'agent-kind:pi', view: true });
       const del = await app.inject({ method: 'DELETE', url: '/api/registry/agent-kind%3Api', headers: { host: HOST } });
       expect(del.statusCode).toBe(400);
-      expect(del.json().error).toContain('内置能力清单');
+      expect(del.json().error).toContain('版本自带的 agent 类型清单');
     } finally {
       await app.close();
     }
@@ -150,7 +164,7 @@ describe('注册内核四动词（/api/registry）', () => {
       const shadow = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
       expect(shadow.json().rejected).toHaveLength(1);
       expect(shadow.json().rejected[0].id).toBe('agent-kind:pi');
-      expect(shadow.json().rejected[0].why).toContain('内置能力清单');
+      expect(shadow.json().rejected[0].why).toContain('读端只吃现算那份');
       expect(shadow.json().rejected[0].why).toContain('DELETE');
 
       const del = await app.inject({ method: 'DELETE', url: '/api/registry/agent-kind%3Api', headers: { host: HOST } });
@@ -249,7 +263,7 @@ describe('注册内核四动词（/api/registry）', () => {
         payload: { kind: 'node-type', name: 'my-node', spec: { label: '我的节点', icon: '★', group: 'core', order: 1 } },
       });
       expect(add.statusCode).toBe(400);
-      expect(add.json().error).toContain('内置能力清单');
+      expect(add.json().error).toContain('画布的节点类型清单');
       expect(registry.list('node-type')).toEqual([]);
       expect(fs.existsSync(path.join(dataDir, 'registry', 'entries.json'))).toBe(false);
     } finally {
@@ -289,9 +303,87 @@ describe('注册内核四动词（/api/registry）', () => {
         payload: { kind: 'check-type', name: 'my-check', spec: { label: '我的检查', hint: '问一句', machine: true } },
       });
       expect(add.statusCode).toBe(400);
-      expect(add.json().error).toContain('内置能力清单');
+      expect(add.json().error).toContain('机检类型清单');
       expect(registry.list('check-type')).toEqual([]);
       expect(fs.existsSync(path.join(dataDir, 'registry', 'entries.json'))).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * v14 A5-4b-1 的对外读数：`role` 是**第一枚正身在盘上用户数据**的视图 kind——条目由角色库名册现算。
+   * 这一格钉四件事，缺一件都说明读端或写端把「谁是正身」答错了：
+   *  1. 名册里干净的两枚岗上架，label/`name`/`spec` 的形状由 Descriptor + 信封算（这里不现编第二套措辞）；
+   *  2. 脏行（没 id、重名 id）**一枚不渲**，但必须出现在 `rejected` 里指名道姓——静默吞掉就是
+   *     「名册明明有四格，表上只见两格」那种查三天的账；
+   *  3. 三个写动词全拒，且拒句点名**去角色库**（用户在注册中心找那扇门是找不到的）；
+   *  4. 拒得干净：注册台账一个字节不落（视图 kind 不因「正身也在盘上」就偷偷开第二条写路）。
+   */
+  it('GET ?kind=role：名册现算上架、脏行只披露，写入面照拒并指路角色库', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      fs.writeFileSync(
+        path.join(dataDir, 'roles.json'),
+        `${JSON.stringify(
+          [
+            { id: 'r-deliver', name: '交付岗', agentKind: 'claude' },
+            { id: 'r-review', name: '评审岗' },
+            { name: '没有 id 的一格' },
+            { id: 'r-deliver', name: '重名的第二格' },
+          ],
+          null,
+          2,
+        )}\n`,
+      );
+      const res = await app.inject({ method: 'GET', url: '/api/registry?kind=role', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as {
+        entries: { id: string; name: string; label: string; source: string; view: boolean; enabled: boolean; spec: unknown }[];
+      };
+      expect(body.entries.map((e) => e.id)).toEqual(['role:r-deliver', 'role:r-review']);
+      expect(body.entries[0]).toMatchObject({
+        view: true,
+        source: 'user',
+        enabled: true,
+        name: 'r-deliver', // 机器值＝名册里的 id 原样（引用写法吃它，不吃岗名）
+        label: '「交付岗」 · 钉档 claude',
+        spec: { label: '交付岗', agentKind: 'claude' },
+      });
+      expect(body.entries[1]).toMatchObject({ label: '「评审岗」', spec: { label: '评审岗' } });
+
+      const list = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
+      const rejected = list.json().rejected as { id: string; why: string }[];
+      expect(rejected.map((r) => r.id)).toEqual(['roles.json[2]', 'role:r-deliver']);
+      expect(rejected[0]!.why).toContain('没有可用的 id');
+      expect(rejected[1]!.why).toContain('两枚 id');
+
+      const add = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'role', name: 'r-new', spec: { label: '新岗' } },
+      });
+      expect(add.statusCode).toBe(400);
+      expect(add.json().error).toContain('角色库那一面');
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: '/api/registry/role%3Ar-deliver',
+        headers: { host: HOST },
+        payload: { enabled: false },
+      });
+      expect(patch.statusCode).toBe(400);
+      expect(patch.json().error).toContain('改不了它');
+      const del = await app.inject({ method: 'DELETE', url: '/api/registry/role%3Ar-deliver', headers: { host: HOST } });
+      expect(del.statusCode).toBe(400);
+      expect(del.json().error).toContain('角色库那一面');
+      expect(registry.list('role')).toEqual([]);
+      expect(fs.existsSync(path.join(dataDir, 'registry', 'entries.json'))).toBe(false);
+
+      // 详情面也带正身措辞（`paneflow registry get` 吃这一格）：视图项那一行不能写死「出厂自带」
+      const detail = await app.inject({ method: 'GET', url: '/api/registry/role%3Ar-deliver', headers: { host: HOST } });
+      expect(detail.statusCode).toBe(200);
+      expect((detail.json() as { viewHomes: Record<string, string> }).viewHomes.role).toContain('角色库');
     } finally {
       await app.close();
     }

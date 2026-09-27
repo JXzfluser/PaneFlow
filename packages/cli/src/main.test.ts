@@ -785,7 +785,7 @@ describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全�
     rejected: [{ id: 'plugin:x', why: '不认的能力类型「plugin」（这版只登记：model）' }],
     schema: { version: 1, writtenBy: '0.3.0' },
     knownKinds: ['model'],
-    refSummary: { scanned: 12, dangling: [{ kind: 'model', target: 'gpt-5', by: [] }], unmigrated: [{ kind: 'role', targets: ['r-x'], refs: 3 }] },
+    refSummary: { scanned: 12, dangling: [{ kind: 'model', target: 'gpt-5', by: [] }], unmigrated: [{ kind: 'template', targets: ['t-x'], refs: 3 }] },
   };
 
   it('list：schema/knownKinds/分组/条目行 + 只披露不清除的 rejected + 引用账一行（全部照读字段）', async () => {
@@ -842,8 +842,43 @@ describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全�
     expect(second.lines.join('\n')).not.toContain('一处也没有');
   });
 
-  it('refs：逐处出处画全（face/名称/键路径都是 server 字段，不翻第二份词表）；零引用是正读数', async () => {
-    const { fetchImpl } = stubFetch([{ body: { entry } }, { body: { entry: { ...entry, refs: [] } } }]);
+  /**
+   * v14 A5-4b-1：视图项那一行的**正身**由 server 逐 kind 给（`viewHomes`）。写死一句「出厂自带」
+   * 在 `role` 上就是假话——那枚岗是用户在角色库自己建的，这里替他改口说「版本带的」不行。
+   * 旧 server 缺这一格时回落成不带出处的措辞：薄壳不猜这一类住在哪儿。
+   */
+  it('get 视图项：正身吃 server 的 `viewHomes`（岗位那行不说「出厂自带」）；缺键回落不猜', async () => {
+    const roleEntry = {
+      id: 'role:r-deliver',
+      kind: 'role',
+      name: 'r-deliver',
+      source: 'user',
+      enabled: true,
+      view: true,
+      label: '「交付岗」',
+      createdAt: '2026-09-28T00:00:00.000Z',
+      refs: [],
+    };
+    const { fetchImpl } = stubFetch([
+      { body: { entry: roleEntry, viewHomes: { role: '角色库那一面（岗位在那儿建、改、删；注册表只是它的镜子）' } } },
+      { body: { entry: roleEntry } },
+    ]);
+    const { io, lines } = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'get', 'role:r-deliver'], io)).toBe(0);
+    const out = lines.join('\n');
+    expect(out).toContain('成员由角色库那一面');
+    expect(out).toContain('不落盘，改不了也删不了');
+    expect(out).not.toContain('出厂自带');
+    expect(out).not.toContain('登记于'); // 视图项的时刻不是登记账，那句表头不能照画
+
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['registry', 'get', 'role:r-deliver'], legacy.io)).toBe(0);
+    const bare = legacy.lines.join('\n');
+    expect(bare).toContain('视图项（成员由现算清单决定）');
+    expect(bare).not.toContain('角色库'); // 没给就不带出处，更不替它编一个
+  });
+
+  it('refs：逐处出处画全（face/名称/键路径都是 server 字段，不翻第二份词表）；零引用是正读数', async () => {    const { fetchImpl } = stubFetch([{ body: { entry } }, { body: { entry: { ...entry, refs: [] } } }]);
     const { io, lines } = makeIo({ fetch: fetchImpl });
     expect(await main(['registry', 'refs', 'model:gpt-4o-mini'], io)).toBe(0);
     expect(lines.join('\n')).toContain('gateway · 免费档（free）· freeModel');
@@ -1072,14 +1107,14 @@ describe('registry check（v14-T3 起单前预检：判定全在 server，CLI �
     slots: [
       { kind: 'model', id: 'gpt-4o-mini', verdict: 'ok', why: '用「小4号」', entryId: 'model:gpt-4o-mini' },
       { kind: 'model', id: 'gpt-9', verdict: 'missing', why: '注册表里没有可用的「模型」条目指向「gpt-9」' },
-      // `?` 那一格换 kind=`role`：A5-3 起 server 再也不会对 repo 发这句（进表后只剩二值），
-      // 拿一张发不出去的读数测渲染等于把 CLI 的桩当预言用
-      { kind: 'role', id: 'r-deliver', verdict: 'unjudged', why: '「角色」这一类还没迁进注册表' },
+      // `?` 那一格换 kind=`template`：A5-4b-1 起 server 再也不会对 role 发这句（名册进表后只剩二值），
+      // 拿一张发不出去的读数测渲染等于把 CLI 的桩当预言用；未知 kind 的组名 server 也不猜，画原值
+      { kind: 'template', id: 'issue-flow', verdict: 'unjudged', why: '「template」这一类还没迁进注册表' },
       { kind: 'model', verdict: 'malformed', why: '声明形状不认：含未知键 knd' },
     ],
     need: [
       { kind: 'model', label: '模型', declared: 3, judged: 3, gaps: 2 },
-      { kind: 'role', label: '角色', declared: 1, judged: 0, gaps: 0 },
+      { kind: 'template', label: 'template', declared: 1, judged: 0, gaps: 0 },
     ],
     missing: [],
     unjudged: [],
@@ -1094,11 +1129,11 @@ describe('registry check（v14-T3 起单前预检：判定全在 server，CLI �
     expect(await main(['registry', 'check', '--template', 'flow', '--space', 'demo'], io)).toBe(1);
     expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/registry/check?template=flow&space=demo');
     const out = lines.join('\n');
-    expect(out).toContain('模板「flow」· 项目「demo」· 需要：模型 3 · 角色 1');
+    expect(out).toContain('模板「flow」· 项目「demo」· 需要：模型 3 · template 1');
     expect(out).toContain('← 有缺口');
     expect(out).toContain('✓ model → gpt-4o-mini  用「小4号」');
     expect(out).toContain('✗ model → gpt-9');
-    expect(out).toContain('? role → r-deliver');
+    expect(out).toContain('? template → issue-flow');
     expect(out).toContain('⚠ model  声明形状不认');
   });
 

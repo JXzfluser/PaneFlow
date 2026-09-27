@@ -298,9 +298,11 @@ export function RegistryView() {
         ? 'pf-registry-space-docs'
         : 'pf-registry-space-repos';
 
-  const groups = data ? groupEntriesByKind(data.entries, data.knownKinds, data.viewKinds ?? [], data.kindLabels) : [];
+  const groups = data
+    ? groupEntriesByKind(data.entries, data.knownKinds, data.viewKinds ?? [], data.kindLabels, data.viewHomes)
+    : [];
   const rejectedText = data ? rejectedSummary(data.rejected) : null;
-  // 表单只问能登记的那几类：出厂清单类（agent-kind）没有表单形状，选它必被 server 拒，不在这里挂出来
+  // 表单只问能登记的那几类：视图 kind（出厂清单与角色库那几类）没有表单形状，选它必被 server 拒，不在这里挂出来
   const kinds = registrableKinds(data?.knownKinds ?? [], data?.viewKinds ?? []);
 
   return (
@@ -495,15 +497,20 @@ export function RegistryView() {
             {g.label}
             <span className="registry-count">{g.entries.length} 项</span>
             {g.view && (
-              <span className="registry-chip" title="这一类由版本自带清单生成，不落盘、不登记">
-                内置清单
+              <span
+                className="registry-chip"
+                title={g.home ? `这一类的成员由${g.home}现算出来：不落盘、也不在这里登记` : '这一类由现算清单生成，不落盘、不登记'}
+              >
+                现算清单
               </span>
             )}
           </h3>
           {g.entries.length === 0 ? (
             <p className="settings-hint registry-empty">
               {g.view
-                ? '这一类是版本自带的内置清单，没有可登记的东西（本机没探到货就是正读数，不是没配好）。'
+                ? g.home
+                  ? `这一类的正身是${g.home}：这里没有可登记的东西，空表就是那一面此刻的读数。`
+                  : '这一类由现算清单生成，没有可登记的东西（清单为空就是正读数，不是没配好）。'
                 : `还没有登记的${g.label}——点右上「+ 登记一项」，从表单填进去。`}
             </p>
           ) : (
@@ -526,7 +533,7 @@ export function RegistryView() {
                   const pNote = probeNote(probe?.res, probe?.err ?? null);
                   const dot = healthDot(readout);
                   const view = isViewEntry(e);
-                  const when = whenLabels(view);
+                  const when = whenLabels(view, g.home);
                   return (
                     <Fragment key={e.id}>
                       <tr className={e.enabled ? '' : 'registry-row-off'}>
@@ -539,7 +546,14 @@ export function RegistryView() {
                         <td><span className="registry-chip">{sourceLabel(e.source)}</span></td>
                         <td>
                           {view ? (
-                            <span className="registry-label" title="出厂清单没有启停这一格：本机探到货就能用">
+                            <span
+                              className="registry-label"
+                              title={
+                                g.home
+                                  ? `这一类是现算出来的（${g.home}）：那一面里没有它，画布上也就用不了它，没有「停用」这一格`
+                                  : '现算清单没有启停这一格：清单里有就能用'
+                              }
+                            >
                               —
                             </span>
                           ) : (
@@ -578,7 +592,9 @@ export function RegistryView() {
                               <dt>id</dt>
                               <dd>
                                 <code>{e.id}</code>
-                                {view ? '（出厂清单生成，不可改）' : '（不可变；改名=重新登记）'}
+                                {view
+                                  ? `（由${g.home ?? '现算清单'}生成，不可改）`
+                                  : '（不可变；改名=重新登记）'}
                               </dd>
                               <dt>{when.created}</dt>
                               <dd>{formatWhen(e.createdAt) || '—'}</dd>

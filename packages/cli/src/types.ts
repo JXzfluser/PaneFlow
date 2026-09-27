@@ -202,8 +202,13 @@ export interface RegistryListView {
   rejected: { id: string; why: string }[];
   schema: { version: number; writtenBy?: string } | null;
   knownKinds: string[];
-  /** `knownKinds` 里「内置清单现算、不可登记/改/删」的那几类（A3-2；缺键＝旧 server） */
+  /** `knownKinds` 里「现算出来、不可登记/改/删」的那几类（A3-2；缺键＝旧 server） */
   viewKinds?: string[];
+  /**
+   * kind → 这一类的**正身在哪儿**（A5-4b-1 起外发；缺键＝旧 server）。视图 kind 不再只有一种出处
+   * （`agent-kind` 住代码、`role` 住角色库），薄壳自造一句「出厂自带」就会对岗位说假话——措辞只在 server 一处。
+   */
+  viewHomes?: Record<string, string>;
   /** kind → 人话组名（server 那一处词表外发；缺键＝旧 server，画 kind 原值，CLI 不自备对照表） */
   kindLabels?: Record<string, string>;
   refSummary?: {
@@ -238,6 +243,15 @@ export interface RegistryProbeView {
   at?: string;
   entry: RegistryEntryView;
   health?: RegistryHealthReadout;
+}
+
+/**
+ * `GET /api/registry/:id`（`paneflow registry get|refs <id>`）：条目 + 视图 kind 的正身措辞。
+ * `viewHomes` 与 list 同一份表——详情那一行「这一项从哪儿来」不能说假话（岗位不是出厂自带的）。
+ */
+export interface RegistryDetailView {
+  entry: RegistryEntryView;
+  viewHomes?: Record<string, string>;
 }
 
 /**

@@ -133,14 +133,18 @@ describe('引用索引（buildReferenceIndex）', () => {
     const raw = scanRawReferences(fixtureDataDir());
     const index = buildReferenceIndex([], raw);
     // 改口入账：`agent-kind`（A3-2）、`node-type`（T1）、`skill`（A5-1）、`rule`（A5-2）、`repo`（A5-3）、
-    // `check-type`（A5-4）自此不在这份名单里——它们进了表（视图那几枚的成员由出厂清单现算），成员判得了死活
+    // `check-type`（A5-4）、`role`（A5-4b-1）自此都不在这份名单里——它们进了表（视图那几枚的成员由出厂清单或名册现算），成员判得了死活
     expect(index.unmigrated.map((u) => u.kind).sort()).toEqual(
-      ['gateway-profile', 'role', 'template'].sort(),
+      ['gateway-profile', 'template'].sort(),
     );
-    const role = index.unmigrated.find((u) => u.kind === 'role');
-    expect(role).toEqual({ kind: 'role', targets: ['r-deliver'], refs: 2 }); // 班底名册 + 模板节点绑岗
     expect(index.dangling.every((d) => !index.unmigrated.some((u) => u.kind === d.kind))).toBe(true);
     expect(index.scanned).toBe(raw.length);
+    // A5-4b-1 同款代价：绑岗那两枚引用（`team[0].roleId` 与 `nodes[0].config.role`）从今天起是**可断的账**
+    // ——不喂名册条目时它落 dangling（以前连 dangling 都不进，只报一个 unmigrated 计数）。
+    // 两枚引用指向同一枚 `r-deliver`，逐条记全不合并：删岗要的就是「两处都得先改」这张账。
+    expect(index.dangling.filter((d) => d.kind === 'role').map((d) => `${d.kind}:${d.target}·${d.by.length}`)).toEqual([
+      'role:r-deliver·2',
+    ]);
     // A5-2 的代价钉在这里：约定文档路径从今天起是**可断的账**——只喂 model 条目时它落悬挂，
     // 而迁表之前它连 dangling 都不进（拿空白冒充断言）。引用来自两面（岗位装备槽 `rules[]` 与
     // 空间目录规则 `rules[i].file`），两面一起翻面：这正是「一条路径两处引用」该有的账，不合并。
@@ -203,9 +207,9 @@ describe('模板声明面 requires（v14-T3）', () => {
         { kind: 'model', hint: '任一模型即可，不点名' },
         { kind: 'skill', id: 'skills/y/SKILL.md' },
         { kind: 'rule', id: 'docs/always.md' },
-        // 留一枚**还没迁进表**的 kind 在这套 fixture 里：A5-3 把 repo 接走之后，
-        // 「未迁的 kind 只披露」这条老账总得有个样本可指（role 是 A5-4 那一棒的替身）。
-        { kind: 'role', id: 'r-deliver' },
+        // 留一枚**还没迁进表**的 kind 在这套 fixture 里：A5-3 把 repo、A5-4b-1 把 role 接走之后，
+        // 「未迁的 kind 只披露」这条老账总得有个样本可指（template 是下一棒的替身）。
+        { kind: 'template', id: 'issue-flow' },
       ],
       metadata: { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
     });
@@ -221,7 +225,7 @@ describe('模板声明面 requires（v14-T3）', () => {
       'requires[0].id=model:gpt-4o-mini',
       'requires[2].id=skill:skills/y/SKILL.md',
       'requires[3].id=rule:docs/always.md',
-      'requires[4].id=role:r-deliver',
+      'requires[4].id=template:issue-flow',
     ]);
   });
 
@@ -243,9 +247,9 @@ describe('模板声明面 requires（v14-T3）', () => {
     const miss = buildReferenceIndex([entry({ model: '别的型号' })], raw);
     // fixture 的节点还写着 `agentKind: 'pi'`——A3-2 起这一类判得了死活，按 kind 取 model 那格的老账
     expect(miss.dangling.filter((d) => d.kind === 'model').map((d) => `${d.kind}:${d.target}`)).toEqual(['model:gpt-4o-mini']);
-    // 改口入账（A5-1 → A5-2 → A5-3）：`skill`、`rule`、`repo` 自此都不在 unmigrated 里，
-    // 点名没登记就是**可断的账**；这份名单里剩下的那枚 `role` 是视图 kind（A5-4 那一棒才进表）
-    expect(miss.unmigrated.map((u) => u.kind)).toEqual(['role']);
+    // 改口入账（A5-1 → A5-2 → A5-3 → A5-4 → A5-4b-1）：`skill`/`rule`/`repo`/`check-type`/`role` 自此都不在 unmigrated 里，
+    // 点名没登记就是**可断的账**；这份名单里剩下的那枚 `template` 是下一棒的替身（模板还没进表）
+    expect(miss.unmigrated.map((u) => u.kind)).toEqual(['template']);
     expect(miss.dangling.filter((d) => d.kind === 'skill').map((d) => d.target)).toEqual(['skills/y/SKILL.md']);
     expect(miss.dangling.filter((d) => d.kind === 'rule').map((d) => d.target)).toEqual(['docs/always.md']);
   });
@@ -285,11 +289,12 @@ describe('模板声明面 requires（v14-T3）', () => {
 
 /**
  * v14 A3-2 的入账：`agent-kind` 迁入表（视图 kind）之后，盘面那三枚 kind 裸串第一次有了反查——
- * 「这型引擎被谁在用」从此和模型条目同一把尺。这里喂的条目集是 `registryViewEntries()`，
+ * 「这型引擎被谁在用」从此和模型条目同一把尺。这里喂的条目集是 `registryViewEntries({ dataDir })`（读面装配的真实形状：出厂三类 + 名册那几枚岗），
  * 即读面装配的真实形状（HTTP 面与引擎都拿它调 `buildReferenceIndex`）；只喂 model 条目测的是另一件事（上面那几格）。
  */
 describe('agent-kind 承接后的引用账（v14 A3-2）', () => {
-  const view = registryViewEntries();
+  // 视图条目现算现在要吃 dataDir（`role` 的正身是名册）：这几格仍用出厂那三类，给真 fixture 目录=读面装配的真实形状
+  const view = registryViewEntries({ dataDir: fixtureDataDir() }).entries;
   const raw = () => scanRawReferences(fixtureDataDir());
 
   it('现役三枚 kind 裸串全部落到出厂条目：unmigrated 不再报这一类，也不是 dangling', () => {
@@ -341,7 +346,8 @@ describe('agent-kind 承接后的引用账（v14 A3-2）', () => {
  * 从 `unmigrated` 的一句计数变成点名到格的悬挂账——那正是迁入表换来的能力。
  */
 describe('node-type 承接后的引用账（v14 T1）', () => {
-  const view = registryViewEntries();
+  // 视图条目现算现在要吃 dataDir（`role` 的正身是名册）：这几格仍用出厂那三类，给真 fixture 目录=读面装配的真实形状
+  const view = registryViewEntries({ dataDir: fixtureDataDir() }).entries;
   const raw = () => scanRawReferences(fixtureDataDir());
 
   it('每一枚 `nodes[].type` 都挂到出厂条目：出处指得到第几个节点', () => {
@@ -383,7 +389,8 @@ describe('node-type 承接后的引用账（v14 T1）', () => {
  * 前者是画法（`spec.machine`），后者只有整枚 id 与 `checks[].type` 原值两种。
  */
 describe('check-type 承接后的引用账（v14 A5-4）', () => {
-  const view = registryViewEntries();
+  // 视图条目现算现在要吃 dataDir（`role` 的正身是名册）：这几格仍用出厂那三类，给真 fixture 目录=读面装配的真实形状
+  const view = registryViewEntries({ dataDir: fixtureDataDir() }).entries;
   const raw = () => scanRawReferences(fixtureDataDir());
 
   it('每一枚 `checks[].type` 都挂到出厂条目：出处指得到第几格第几项', () => {
@@ -424,6 +431,59 @@ describe('check-type 承接后的引用账（v14 A5-4）', () => {
     // 与 `node-type`/`agent-kind` 同一把尺：拿措辞当匹配键，就会把写错成界面文案的那一格读成「正在用某一型」
     expect(index.byEntry.some((b) => b.kind === 'check-type' && b.refs.length)).toBe(false);
     expect(index.dangling.map((d) => d.target)).toEqual(['文件存在']);
+  });
+});
+
+/**
+ * v14 A5-4b-1 的入账：`role` 进表（**第一枚正身在盘上**的视图 kind）之后，「这一枚岗有人在绑」第一次
+ * 有了反查账——R2 那条「被引用不许删」的守卫本来就在，缺的只是这一类条目去接它。
+ *
+ * 这一格喂的是 `registryViewEntries({ dataDir })`，名册就是上面那套 fixture 里的 `roles.json`：
+ * 「条目从名册现算」与「引用账接得上」在同一次读数里对上，不靠手装条目冒充（手装的只能证明匹配键，
+ * 证不了读端装配出来的就是那一条）。这里同时是 `entry.name` 那枚键的存在理由——
+ * 名册里 `r-deliver` 靠 slug 也指得回，但大写 id 那种岗只认 name 原值（见 `roleDescriptor`）。
+ */
+describe('role 承接后的引用账（v14 A5-4b-1）', () => {
+  const dataDir = fixtureDataDir();
+  const view = registryViewEntries({ dataDir });
+  const raw = () => scanRawReferences(dataDir);
+
+  it('名册里的岗渲成条目：班底绑定与节点绑岗各得一条出处', () => {
+    const index = buildReferenceIndex(view.entries, raw());
+    expect(index.unmigrated.find((u) => u.kind === 'role')).toBeUndefined();
+    expect(index.dangling.filter((d) => d.kind === 'role')).toEqual([]);
+    const bound = index.byEntry.find((b) => b.entryId === 'role:r-deliver');
+    expect(bound!.refs.map((r) => `${r.face}.${r.via}`).sort()).toEqual([
+      'space.team[0].roleId',
+      'template.nodes[0].config.role',
+    ]);
+  });
+
+  it('整枚 id 与 roleId 原值同权命中（迁移后的 `{kind,id}` 写法今天就该认）', () => {
+    const index = buildReferenceIndex(view.entries, [
+      { face: 'template', id: 'flow', name: 'flow', via: 'requires[0].id', kind: 'role', target: 'role:r-deliver' },
+    ]);
+    expect(index.dangling).toEqual([]);
+    expect(index.byEntry.find((b) => b.entryId === 'role:r-deliver')!.refs).toHaveLength(1);
+  });
+
+  it('名册里没有的岗判得出死活＝dangling（以前只数不判）：班底打错一个字母点名到第几项', () => {
+    const index = buildReferenceIndex(view.entries, [
+      ...raw(),
+      { face: 'space', id: 'demo', name: '演示项目', via: 'team[1].roleId', kind: 'role', target: 'r-delvery' },
+    ]);
+    expect(index.dangling.find((d) => d.target === 'r-delvery')).toMatchObject({
+      kind: 'role',
+      by: [{ face: 'space', id: 'demo', via: 'team[1].roleId' }],
+    });
+  });
+
+  it('岗名不是引用写法：配置里写「交付岗」（界面措辞）不指向 r-deliver 那一枚', () => {
+    const index = buildReferenceIndex(view.entries, [
+      { face: 'template', id: 'flow', name: 'flow', via: 'nodes[0].config.role', kind: 'role', target: '交付岗' },
+    ]);
+    expect(index.byEntry.some((b) => b.kind === 'role' && b.refs.length)).toBe(false);
+    expect(index.dangling.map((d) => d.target)).toEqual(['交付岗']);
   });
 });
 

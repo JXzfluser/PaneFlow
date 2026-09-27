@@ -100,6 +100,29 @@ export const checkTypeDescriptor: RegistryDescriptor<'check-type'> = {
 };
 
 /**
+ * `role`（v14 A5-4b-1）：角色库名册的视图条目。与前三枚视图 kind 的**唯一**不同是正身是用户数据，
+ * 于是 label 的取舍也不同：`name` 是引擎认的那枚 **roleId 机器值**（画布里 `config.role` 写的就是它），
+ * 岗名（`spec.label`）是给人看的那个——所以 label 这句必须把岗名说出来，只画 `r-deliver` 用户认不出是哪岗。
+ *
+ * 引用写法**三枚**（整枚 id／slug 段／`entry.name` 即 roleId 原样）：第三枚是必需的——`registryId`
+ * 把 slug 小写化了，名册里那枚 `r-Deliver` 只有靠 name 原值才指得回来（与 `repo` 那枚 `dir` 同理）。
+ * **岗名不算引用写法**：没有任何键按岗名指岗，拿它当匹配键就是把「模板里写错的那句中文」读成
+ * 「正在用某一枚岗」（model／skill／node-type 三处同一把尺）。钉档 `spec.agentKind` 也不算——它是这枚岗
+ * 吃的那台 agent，不是这枚岗的名字（角色自己的 `agentKind` 那格由 `agent-kind` 那一类承接）。
+ */
+export const roleDescriptor: RegistryDescriptor<'role'> = {
+  kind: 'role',
+  label(entry) {
+    const { label, agentKind } = entry.spec;
+    return `「${label}」${agentKind ? ` · 钉档 ${agentKind}` : ''}`;
+  },
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return [entry.id, ...(slug ? [slug] : []), entry.name];
+  },
+};
+
+/**
  * `mcp`（v14 T4）：本机登记了哪台 MCP server。**只有声明账**——今天没有客户端去 `tools/list`，
  * 所以 label 说的就是登记时那行启动命令本身，不含任何「探到几个工具」的读数（那是 v13:285 判死不做的东西）。
  */
@@ -244,6 +267,7 @@ export const REGISTRY_DESCRIPTORS: { [K in RegistryEntry['kind']]: RegistryDescr
   'agent-kind': agentKindDescriptor,
   'node-type': nodeTypeDescriptor,
   'check-type': checkTypeDescriptor,
+  role: roleDescriptor,
   mcp: mcpDescriptor,
 };
 

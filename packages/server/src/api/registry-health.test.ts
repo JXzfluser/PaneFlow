@@ -42,7 +42,7 @@ async function build(stubEntries?: RegistryEntry[]) {
   const registry = stubEntries
     ? ({
         load: () => ({ entries: stubEntries, rejected: [] }),
-        readView: () => ({ entries: [...stubEntries, ...registryViewEntries()], rejected: [] }),
+        readView: () => ({ entries: [...stubEntries, ...registryViewEntries({ dataDir }).entries], rejected: [] }),
         readSchema: () => null,
       } as unknown as RegistryStore)
     : new RegistryStore(dataDir, '0.3.0-test');
@@ -272,16 +272,6 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
   });
 
   it('这一类没有探针通道＝`health` 整键不给（路由不把它写成 null）；同一条盘上 `/api/registry/health` 仍落批量那一刀', async () => {
-    const role = {
-      id: 'role:r-x',
-      kind: 'role',
-      name: '交付岗',
-      source: 'user',
-      enabled: true,
-      createdAt: '2026-09-26T10:00:00.000Z',
-      updatedAt: '2026-09-26T10:00:00.000Z',
-      spec: {},
-    } as unknown as RegistryEntry;
     const mcp = {
       id: 'mcp:fs',
       kind: 'mcp',
@@ -292,21 +282,26 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
       updatedAt: '2026-09-26T10:00:00.000Z',
       spec: { command: 'mcp-fs', args: '/srv' },
     } as unknown as RegistryEntry;
-    const { app } = await build([role, mcp]);
+    const { app, dataDir } = await build([mcp]);
     try {
       stubModels([{ models: [] }]);
+      // A5-4b-1：`role` 的行由名册现算，所以这一格的岗**必须是真渲出来的**（桩一条 `spec:{}` 的假条目
+      // 只会测到 label 兜底，测不到「读端把岗位当视图渲」这条生产形状）
+      fs.writeFileSync(path.join(dataDir, 'roles.json'), `${JSON.stringify([{ id: 'r-x', name: '交付岗', agentKind: 'claude' }], null, 2)}\n`);
       const body = (await get(app, probeUrl('role:r-x'))).json();
       expect(body.entry.id).toBe('role:r-x');
-      // descriptor 没挂号时 label 兜 name（不返空串冒充标签）
-      expect(body.entry.label).toBe('交付岗');
+      // label 走 Descriptor（岗名 + 钉档），不是 `name` 的复读
+      expect(body.entry.label).toBe('「交付岗」 · 钉档 claude');
       expect('health' in body).toBe(false);
       // 静态段 vs 参数段的优先级：`/api/registry/health` 不能被 `:id` 吞成「探 id 叫 health 的条目」
       const batch = (await get(app, '/api/registry/health')).json();
       const roleRow = batch.entries.find((e: { id: string }) => e.id === 'role:r-x');
-      expect(batch.entries).toHaveLength(2 + AGENT_KINDS.length + NODE_TYPE_CATALOG.length + CHECK_TYPE_CATALOG.length); // 桩的两条 + 出厂视图项（并进去了才算生产形状）
+      expect(batch.entries).toHaveLength(1 + AGENT_KINDS.length + NODE_TYPE_CATALOG.length + CHECK_TYPE_CATALOG.length + 1); // 桩的一条 + 现算视图项（并进去了才算生产形状）
       expect('health' in roleRow).toBe(false);
-      // 视图 kind 有通道：probed 只数出厂项（桩那两条 role/mcp 仍算「没通道」）
-      expect(batch.summary).toMatchObject({ scanned: 0, probed: AGENT_KINDS.length });
+      // 视图 kind 有通道：probed 只数出厂 agent（桩那条 mcp 与 role/node-type/check-type 仍算「没通道」）
+      // `scanned:1` 是这枚名册岗自己带出来的新账：`roles.json[i].agentKind` 是一枚 agent-kind 引用，
+      // A3-2 的出厂清项承接了它 → 记进 scanned，dangling 照旧零（判得了死活，且判出来是在的）。
+      expect(batch.summary).toMatchObject({ scanned: 1, dangling: 0, probed: AGENT_KINDS.length });
       // T1 的 `node-type` 同样没有通道，而且是**刻意不开**：出厂清单不会「不在本机」，给它画红点是替人判死一堆好型。
       // 界面上据此天然没有那个点（缺键 ≠ 灰点 ≠ 红点，三件事各画各的）。
       const nodeRow = batch.entries.find((e: { kind: string }) => e.kind === 'node-type');
@@ -316,7 +311,11 @@ describe('v14-R4 单枚探针（`GET /api/registry/:id/health` = `paneflow regis
       const checkRow = batch.entries.find((e: { kind: string }) => e.kind === 'check-type');
       expect(checkRow).toBeDefined();
       expect('health' in checkRow).toBe(false);
-      // T4 的 `mcp` 值得单独钉：它是**用户登记项却没有探针通道**，和上面两枚视图 kind 的拒法不同路。
+      // A5-4b-1 的 `role` 是**第四枚刻意不开**：视图 kind 里第一枚正身也在盘上的（角色库名册）。
+      // 「这岗在这台机器上活不活」从来不是一个问题——名册读得到它就存在，装备齐不齐另有 W1/W4 那两本账。
+      // 钉这一条是因为它最容易被顺手做掉：role 有 `agentKind`，看着就像可以「顺着钉档探一次」。
+      expect(roleRow).toMatchObject({ kind: 'role', view: true });
+      // T4 的 `mcp` 值得单独钉：它是**用户登记项却没有探针通道**，和上面几枚视图 kind 的拒法不同路。
       // 探一台 MCP server 活不活要真客户端握手，而 v13:285 判死了不自实现客户端——于是「登记过」与
       // 「探得活不活」是两件事：画红点是替人判死，画灰点（unknown）更是谎称探过。
       const mcpProbe = (await get(app, probeUrl('mcp:fs'))).json();
@@ -370,6 +369,9 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {
     const { app, dataDir } = await build();
     try {
       gatewayDoc(dataDir, [{ id: 'p-free', name: '免费档' }], 'p-free');
+      // 名册给一枚岗：`role` 自 A5-4b-1 起是视图 kind，表上少了它这一行，「四枚视图 kind 都在」这条
+      // 断言会静默退成三枚——这一格测的正是「用户登记项为零时整表面长什么样」
+      fs.writeFileSync(path.join(dataDir, 'roles.json'), `${JSON.stringify([{ id: 'r-x', name: '交付岗' }], null, 2)}\n`);
       stubModels([{ models: [] }]);
       const body = (await get(app, '/api/registry/health')).json();
       // 只有 `current` 这一枚 gateway-profile 引用：没进表＝只数不判（判「不存在」就是拿空白冒充断言）
@@ -377,7 +379,8 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {
       expect(body.dangling).toEqual([]);
       // 「一条都没登记」的正读数现在要说清是哪一半：用户登记项为空，出厂视图项照在表上
       expect(body.entries.filter((e: { view: boolean }) => !e.view)).toEqual([]);
-      // 出厂视图项不止一枚 kind（A3-2 的 agent 清单 + T1 的节点清单）——按「整表都是视图项」断言，别数 kind
+      // 出厂视图项不止一枚 kind（A3-2 的 agent 清单 + T1 的节点清单 + A5-4 的机检清单 + A5-4b-1 的名册）
+      // ——按「整表都是视图项」断言，别数 kind
       expect(body.entries.every((e: { view: boolean }) => e.view)).toBe(true);
       expect(new Set(body.entries.map((e: { kind: string }) => e.kind))).toEqual(new Set(REGISTRY_VIEW_KINDS));
       expect(body.summary.probed).toBe(AGENT_KINDS.length);

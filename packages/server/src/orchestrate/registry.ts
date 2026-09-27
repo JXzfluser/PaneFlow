@@ -12,7 +12,7 @@ import {
   type RegistrySchemaDoc,
 } from '@paneflow/shared';
 import { Store } from './store.js';
-import { registryViewEntries, viewKindWriteWhy } from './registry-view.js';
+import { registryViewEntries, viewHomeOf, viewKindWriteWhy } from './registry-view.js';
 
 /**
  * v14 A1（R1）注册表落盘层：`<dataDir>/registry/` 下两份文件——
@@ -122,8 +122,8 @@ export class RegistryStore {
    * 把「盘坏了」渲成「一条都没登记」是最典型的假绿）；单条不认识=进 rejected，其余照给。
    *
    * 写入路径（`add`/`update`/`remove`）只能吃这一枚：它们把结果整数组回写盘，
-   * 一旦在这里并进视图条目，出厂清单就被抄进了 `entries.json`（视图从此不再是视图，且再也删不掉）。
-   * 要「用户登记项 + 内置清单」的完整读数，用下面的 `readView()`。
+   * 一旦在这里并进视图条目，现算清单就被抄进了 `entries.json`（视图从此不再是视图，且再也删不掉）。
+   * 要「用户登记项 + 视图现算项」的完整读数，用下面的 `readView()`。
    */
   load(): RegistrySnapshot {
     let text: string;
@@ -155,21 +155,25 @@ export class RegistryStore {
   /**
    * 读端全貌（A3-2 起所有 HTTP/引擎读面吃这一枚）：`load()` 的用户登记项 **+ 视图 kind 现算条目**。
    *
-   * 两条规矩：
-   *  1. **视图赢**：视图 kind（今天 `agent-kind`）在盘上的那几条一律不生效，整条挪进 `rejected`
-   *     说清为什么不生效——把它们和出厂清单并排渲出来就是两份「本机有哪些 agent」打架；
-   *  2. **不落盘**：本方法只读，`add`/`update`/`remove` 走 `load()`。视图条目进了写路径＝出厂清单被抄进台账。
+   * 三条规矩：
+   *  1. **视图赢**：视图 kind（今天 `agent-kind`/`node-type`/`check-type`/`role`）在盘上的那几条一律不生效，
+   *     整条挪进 `rejected` 说清为什么不生效——把它们和现算项并排渲出来就是两份「本机有哪些 agent」打架；
+   *  2. **不落盘**：本方法只读，`add`/`update`/`remove` 走 `load()`。视图条目进了写路径＝现算清单被抄进台账；
+   *  3. **现算的脏读数也披露**（A5-4b-1）：`role` 的正身是用户数据（`roles.json`），那张盘可以是脏的
+   *     （手编名册是文档里明写过的正常操作）。builders 把「读得出但读不干净」的部分作为 `disclosures` 交出来，
+   *     这里并进同一格 `rejected`——网页与 CLI 已经在渲它，不开第二份「脏数据清单」字段。
    */
   readView(): RegistrySnapshot {
     const disk = this.load();
-    const views = registryViewEntries();
+    const views = registryViewEntries({ dataDir: this.dataDir });
     const shadowed = disk.entries.filter((e) => isRegistryViewKind(e.kind));
-    const entries = [...disk.entries.filter((e) => !isRegistryViewKind(e.kind)), ...views];
+    const entries = [...disk.entries.filter((e) => !isRegistryViewKind(e.kind)), ...views.entries];
     entries.sort(compareEntries);
     return {
       entries,
       rejected: [
         ...disk.rejected,
+        ...views.disclosures,
         ...shadowed.map((e) => ({ id: e.id, why: shadowedOnDiskWhy(e.kind) })),
       ],
     };
@@ -183,7 +187,7 @@ export class RegistryStore {
 
   /**
    * 按 id 取**盘上那条**（写路径与「这条是不是用户登记的」判定用；视图项在这里查不到，正是它该被认出的地方）。
-   * 面向人的详情读取用 `readView()`——出厂项也要能查得到。
+   * 面向人的详情读取用 `readView()`——视图项（出厂清单与名册现算的那几类）也要能查得到。
    */
   get(id: string): RegistryEntry | undefined {
     return this.load().entries.find((e) => e.id === id);
@@ -191,7 +195,7 @@ export class RegistryStore {
 
   /** 新增：id 缺省时按 name 生成；撞已有 id 一律拒（改=显式 update，id 不可变＝§十.6） */
   add(raw: unknown): RegistryWriteResult {
-    // 视图 kind 出厂自带，登记这条路不通（不拒的话，用户造的假 kind 会被读端当成可用能力）
+    // 视图 kind 的成员由现算决定（出厂清单或名册），登记这条路不通（不拒的话，用户造的假 kind 会被读端当成可用能力）
     const kind = (raw as { kind?: unknown } | null)?.kind;
     if (typeof kind === 'string' && isRegistryViewKind(kind)) return viewRefused('登记', kind);
     const norm = normalizeRegistryEntry(raw);
@@ -242,8 +246,8 @@ export class RegistryStore {
 
   /**
    * 删除：找不到=失败读数（不静默成功）。R2 的「被引用不许删」长在这个入口之前，不塞进本片。
-   * 视图 kind 的 id 在**读端看得到**（出厂项上架），盘上却没有那条记录——这里只说「没有条目」会自相矛盾，
-   * 所以点名「这一类删不了」；盘上真有一条手写的残记录时走下面的正常删除（清的是账，拆不掉出厂项）。
+   * 视图 kind 的 id 在**读端看得到**（现算项上架），盘上却没有那条记录——这里只说「没有条目」会自相矛盾，
+   * 所以点名「这一类删不了」；盘上真有一条手写的残记录时走下面的正常删除（清的是账，拆不掉正身那面的成员）。
    */
   remove(id: string): RegistryWriteResult {
     if (!id) return { ok: false, why: '缺少要删的条目 id' };
@@ -255,7 +259,7 @@ export class RegistryStore {
       return { ok: false, why: `没有条目「${id}」` };
     }
     // 只删**盘上那条**（手放进 `entries.json` 的记录）：读端本来就不吃它（见 `readView()` 的 shadow 账），
-    // 删掉它只是清账，拆不掉出厂项。删视图项走不到这里——它压根不在 `load()` 的结果里。
+    // 删掉它只是清账，拆不掉正身那面的成员。删视图项走不到这里——它压根不在 `load()` 的结果里。
     const rest = entries.filter((e) => e.id !== id);
     const guard = this.ensureSchema();
     if (!guard.ok) return guard;
@@ -287,8 +291,8 @@ function labelOf(raw: unknown, i: number): string {
 /**
  * 排序：先按 kind（`REGISTRY_KINDS` 的挂号顺序），再按 id。
  * 为什么不裸按 id：内置清单一次就是十几枚，按 id 排会把它们整块压在用户亲手登记的那几枚前面
- * （`agent-kind:` 字典序在 `model:` 之前）——「我登记的东西」该在第一屏，不是被出厂项埋了。
- * 挂号顺序本身即「用户可写的在前、出厂视图在后」那份意图（视图 kind 总在清单尾部加）。
+ * （`agent-kind:` 字典序在 `model:` 之前）——「我登记的东西」该在第一屏，不是被现算项埋了。
+ * 挂号顺序本身即「用户可写的在前、视图 kind 在后」那份意图（视图 kind 总在清单尾部加）。
  */
 function compareEntries(a: RegistryEntry, b: RegistryEntry): number {
   const ka = REGISTRY_KINDS.indexOf(a.kind);
@@ -298,10 +302,12 @@ function compareEntries(a: RegistryEntry, b: RegistryEntry): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-/** 盘上那条视图项的披露文案（进 `rejected`：只说清为什么不生效，不替人删——它是手放进去的，人该看见） */
+/** 盘上那条视图项的披露文案（进 `rejected`：只说清为什么不生效，不替人删——它是手放进去的，人该看见）。
+ *  正身那句取自 `viewHomeOf`：视图 kind 从今往后有四枚、其中 `role` 的正身是用户数据而不是出厂清单，
+ *  措辞在 registry-view 一处给，这里不另抄一份「内置能力清单」。 */
 function shadowedOnDiskWhy(kind: string): string {
   return (
-    `「${kind}」这一类是 PaneFlow 的内置能力清单，读端只看出厂项，盘上这条不生效（不占 id、不参与引用账与预检）。` +
+    `「${kind}」这一类是视图 kind（条目由${viewHomeOf(kind)}现算出来），读端只吃现算那份，盘上这条不生效（不占 id、不参与引用账与预检）。` +
     '要清掉它发 DELETE（删的就是这条盘上记录）；留着的话它每次都会出现在这份披露里。'
   );
 }

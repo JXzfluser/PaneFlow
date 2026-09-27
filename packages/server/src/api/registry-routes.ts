@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { isRegistryViewKind, REGISTRY_KINDS, REGISTRY_VIEW_KINDS, type RegistryEntry } from '@paneflow/shared';
 import type { RegistryStore, RegistryWriteResult } from '../orchestrate/registry.js';
 import { registryLabel } from '../orchestrate/registry-descriptors.js';
+import { viewHomeOf } from '../orchestrate/registry-view.js';
 import { readStoredGraphs, readReferenceIndex, refsForEntry, type ReferenceIndex, type RegistryReferrer } from '../orchestrate/registry-refs.js';
 import { checkGraphRequirements, requirementKindLabel } from '../orchestrate/registry-check.js';
 import { entryHealth, type EntryHealth } from './registry-health.js';
@@ -127,6 +128,10 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
       // 其中「内置清单现算、写入面不接」的那几类（A3-2）：消费面据此收起登记/编辑/删除控件，
       // 不必自己拿 `source==='builtin'` 猜（那是出处，不是可写性——两条判据迟早分家）
       viewKinds: REGISTRY_VIEW_KINDS,
+      // kind → 「这一类的正身在哪儿」（A5-4b-1）：视图 kind 从三枚变四枚之后，「内置清单」这个措辞对
+      // `role` 已经是假话——岗位是用户自己在角色库建的，页面却说「版本自带」。消费面据此出文案，
+      // 不各自形容词（与 `kindLabels` 同一条理由：两张措辞表迟早分叉，而没人会去比对）。
+      viewHomes: Object.fromEntries(REGISTRY_VIEW_KINDS.map((k) => [k, viewHomeOf(k)] as const)),
       // kind → 人话组名：措辞只有 `KIND_CN` 一处（预检的 `need[].label` 同源），网页与 CLI 拿它渲染。
       // 为什么外发而不是让前端各抄一份：两张措辞表迟早分叉，而没人会去比对两张措辞表——分叉了也没人红。
       kindLabels: Object.fromEntries(REGISTRY_KINDS.map((k) => [k, requirementKindLabel(k)] as const)),
@@ -220,7 +225,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     return {
       space: String(req.query.space ?? '').trim() || 'default',
       spaceNote:
-        '命中的判定只看注册表（已迁 kind 全在一张全局表上：model/skill/rule/mcp 是登记项，agent-kind/node-type 是代码现算的出厂视图项），项目名只影响指路文案。`skill`/`rule` 条目确实带项目作用域，但那一维住在两处：引用账（空间自己发的引用按主人收窄）与探针（去那个项目根实读一次）；预检的槽仍不按项目收窄——本机任一项目登记过这篇文档即算命中，因为 requires 槽里没有写项目名的位置',
+        '命中的判定只看注册表（已迁 kind 全在一张全局表上：model/skill/rule/repo/mcp 是登记项，agent-kind/node-type/check-type 是代码现算的出厂视图项，role 是角色库名册现算的视图项），项目名只影响指路文案。`skill`/`rule` 条目确实带项目作用域，但那一维住在两处：引用账（空间自己发的引用按主人收窄）与探针（去那个项目根实读一次）；预检的槽仍不按项目收窄——本机任一项目登记过这篇文档即算命中，因为 requires 槽里没有写项目名的位置',
       at: new Date().toISOString(),
       templates: targets.map((g) => checkGraphRequirements(g, entries)),
     };
@@ -240,7 +245,12 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     }
     const idx = indexOf(deps, snapshot.entries);
     if ('why' in idx) return reply.code(500).send({ error: idx.why });
-    return { entry: row(entry, idx.index) };
+    // `viewHomes` 与 list 同一份措辞表：详情面也要说清「这一枚的正身在哪儿」——`role` 那几枚岗
+    // 是用户自己建的，拿「出厂自带」描述它就是假话（消费面不形容词，判据与文案都出自这一处）
+    return {
+      entry: row(entry, idx.index),
+      viewHomes: Object.fromEntries(REGISTRY_VIEW_KINDS.map((k) => [k, viewHomeOf(k)] as const)),
+    };
   });
 
   /**
