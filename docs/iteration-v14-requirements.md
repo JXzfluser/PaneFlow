@@ -381,8 +381,9 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
   「禁 stub 自造 payload」一条的处置如实记：CLI 那条单测**仍按 `RunView` 最小结构读法手写**（这是 v11-A1 起每一片的既有
   约定，不是本片新造的假 payload），真正的形状约束改由 server 侧测试钉住——`http-artifacts.test.ts` 的台账条目一律标
   `RunProduct` 类型并**在架上手放同一串原文实算 sha**，端点返回形状若与 shared 类型分叉则编译期即红。
-- v13-Z 收口（全量复验 + 状态表 + AGENTS.md + 记忆）已办；**唯一余项=一次去临时 env 的重启仪式**
-  （撤 `PF_DIRTY_CHECK=0` / `PF_PROMPT_CONFIRM_MS=180000`，需队列空 + 用户令，属共享状态变更不代做）。
+- v13-Z 收口（全量复验 + 状态表 + AGENTS.md + 记忆）已办；~~**唯一余项=一次去临时 env 的重启仪式**
+  （撤 `PF_DIRTY_CHECK=0` / `PF_PROMPT_CONFIRM_MS=180000`，需队列空 + 用户令，属共享状态变更不代做）~~
+  **该重启已在 2026-09-28 做完**（队列空读数在先，起来的是 pid 71298），两枚临时标是否真离身见本文末「C4 开夜前置读数」栏第二条。
 - 未开工：**v14 的 R/T/W/E/X 五系代码面已全部落地**（逐片见 §十三；唯一挂着的是 W6 `roleShaV:2`，判据是「现在做不出诚实版本」，
   前置=W5′ 装备槽指向注册项，见 §七 二次刷新）。此后欠的三类账不在 agent 能代做的范围里：
   ①M0 机证① 的 10 条 replay 等臂复验（要 run 预算）；③X3 实机首驾**只剩带 agent 节点的那一笔**（要 token，且要在你自己那个项目上手敲才算数）——只读面与零 token 写面已由 agent 在临时靶项目 `x3` 上证完，逐条读数见本文末「X3 半程核对回执」「X3 写面回执」两段。
@@ -689,3 +690,29 @@ RegistryEntry<K extends Kind> = { id: '<kind>:<slug>'; kind: K; name; source: 'b
 - **顺带照出一句 AGENTS.md 的假话并改掉**（同一个探针模板 `x3-kind-probe`，只有 `▶/■` 两枚节点，验完即删）：拿四枚 `requires` 问「已迁的视图 kind 到底落什么画法」——`✓ template → t3-demo`／`✓ role → std-planner`／`✓ gateway-profile → default`／`? channel → any（「通道」这一类还没迁进注册表，判不了死活（只披露不拦））`，整屏退 **0**（带 `?` 的槽不算缺口）。AGENTS.md 里那句「指向 template/gateway-profile/channel/… 的槽仍落 `?`」自 A5-4b-2/A5-4b-1 起就不成立：前两枚早已判死活，只有真没迁的那一类才落 `?`。改口按屏上原话写，并补上「`?` 不拦」这半句（预检退 0 是它的直接读数）。
 - **残留（照实报，agent 删不掉的那部分）**：①临时项目 `x3` 还在——`DELETE /api/spaces` 这一版没有路由，网页「项目」视图里可直接删；它的档案是 `env add` 的原样产物，只在清理条目时把 `rules` 从 18 撤成 17（撤的正是 `README.md` 那条，它当时被临时条目指着，不撤就删不掉那枚条目）；②`run d8f8f5aa` 这条零节点单留在 x3 的运行记录里，是 cap# 那行的原件；③名册与注册表均回到首驾前的状态（`roles` 逐字节还原、注册表 49 条）。
 - **这一栏证到哪、没证到哪**：证到的是「注册表→引用账→删除闸→预检→起单 fail-closed→能力快照→历史读数」整条**机器链**在真盘上贯通，全程零手填路径、零 agent 支出。**没证到**的是带 agent 节点的真单——那一笔要 token，也要在你自己那个项目上人手敲一遍才算首驾（`default` 的档案这一趟一个字节没动）。
+
+## C4 开夜前置读数（2026-09-28）——为什么 X3 那一笔与 C4 第一夜今晚都开不了
+
+用户令「继续剩余全部任务」，剩下要真机的两处（X3 带 agent 的那一笔、C4 第一夜 #8/#9/#10）撞的是**同一枚上游**，
+所以这一栏记的是**开不了的原因**，不是待办清单。
+
+- **上游网关现在不通，实探两回同读数**：`GET /api/gateway/catalog?refresh=1` 与 `?profile=default&refresh=1` 都回
+  `models=0 · error=HTTP 500`（`http.ts:539` 起、`gateway.ts:336` 拼的是 `<base>/v1/models`，带 Bearer）；
+  `GET /api/registry/health` 因此把唯一那枚模型条目画成 `model:u1appnuf unknown — 未探得：「默认档」HTTP 500（没探通不等于不可用）`。
+- **500 不是我们那把钥匙造的**：不带凭据直打同一枚 `http://120.79.221.113:20128/v1/models` 回 **401**
+  （`{"error":{"code":"AUTH_002","message":"Authentication required",…}}`），站点根回 **307 → /dashboard**——上游活着、认得这个路径，
+  带 key 才 500，读法是**那一档网关自己的上游渠道坏了**，不是 PaneFlow 拼错 URL 也不是密钥不对。
+- **这一枚 500 预检拦不住，`dispatch` 也不会 400——它只会让单起来再红**：普查全部在册模板的实机读数（`pnpm paneflow registry check`，退 0）里
+  `t3-demo` 那一枚模型槽照画 `✓ model → glmcn/glm-4.7 用「默认档免费位」`——预检查的是**注册表里有没有这枚启用中的条目**，
+  不是**上游此刻通不通**（这是它的划界，不是它的漏洞：能力账与可用性哨兵是两回事）。agent kind 那一路也通
+  （`/api/health` 实探 `agentsInstalled: opencode/claude/codex/pi/hermes/qodercli` 六枚，v13-E2 的 fail-closed 不触发），
+  所以真派的单会**建起来、走到节点、在那一刻撞上游**——v13 那次「#8/#9/#10 首驾实跑到 failed，网关流断」就是这个形状。
+  **这一栏因此是「值不值得开夜」的判断，不是一道闸**：没有任何一处代码会在网关坏死时替你拒绝起单。
+- **开夜前照这一枚过一遍再动手**（顺序即判据，全部只读、零支出）：①`GET /api/gateway/catalog?refresh=1` 出**非空 models**；②`GET /api/registry/health` 里 `model` 那一枚转 `live`（`paneflow registry health --refresh` 同一条通道，R4 不另开）；③`GET /api/queue` 空；④`registry check --template <x>` 退 0。四条齐了才值得起第一单。
+- **顺手结掉 §八 那条 v13-Z 余项（去临时 env 的重启仪式）**：现在监听 4310 的是 pid 71298（2026-09-28 那次队列空重启起来的），
+  `ps eww 71298` 的环境里 **`PF_` 前缀零枚**（同一份 dump 里 `TMPDIR`/`PNPM_SCRIPT_SRC_DIR` 等照常列得出，不是读不到环境），
+  也就是说 `PF_DIRTY_CHECK=0` / `PF_PROMPT_CONFIRM_MS=180000` 那两枚临时标**已经不在这台实例上**——#110 那条余项至此有读数了。
+  这一面**没有 API 可自证**（`/api/health` 只报 `agentsInstalled/agentsMissing/nodeVersion/recommendedAgentKind/gatewayEnabled`，
+  `/api/config` 是 404），所以这条只能停在进程环境这一层，写在这里当下次不用再查。
+
+**这一片（W7 · better-ui 第三刀）之外，本轮零代码面改动**：X3 写面回执之后剩的都是文档面（`b2b62ac` 与本文末两段），W7 的账在 §十二 UI-3 行。
