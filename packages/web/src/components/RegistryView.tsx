@@ -54,6 +54,8 @@ export function RegistryView() {
    */
   const [health, setHealth] = useState<Map<string, RegistryHealthReadout> | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  // 整表那一刀在飞：按钮没这份读数就只是「点了一下没反应」——网关挂住时是几秒的静默动作
+  const [healthBusy, setHealthBusy] = useState(false);
   /**
    * X1 单枚探针（`registry probe` 的 UI 落点）：id → 刚做过的那一次回执或失败原话。
    * 与批量那一刀分家存放——批量是「整表扫一遍」，单枚是「我就问这一条」，混进同一张 map
@@ -80,16 +82,20 @@ export function RegistryView() {
   const [docCandidates, setDocCandidates] = useState<string[]>([]);
   const [repoCandidates, setRepoCandidates] = useState<string[]>([]);
   const [candidatesNote, setCandidatesNote] = useState<string | null>(null);
+  /** 表单的三个候选源共用这一份读数：它们同一次一起读、一起失败，各挂一个转圈就是三处说谎的机会 */
+  const [optionsBusy, setOptionsBusy] = useState(false);
   const selectedSpace = typeof formValues.space === 'string' ? formValues.space : '';
 
   const loadHealth = useCallback((refresh: boolean) => {
-    void api
+    setHealthBusy(true);
+    return api
       .registryHealth(refresh)
       .then((r) => {
         setHealth(healthIndex(r));
         setHealthError(null);
       })
-      .catch((e: Error) => setHealthError(e.message));
+      .catch((e: Error) => setHealthError(e.message))
+      .finally(() => setHealthBusy(false));
   }, []);
 
   const load = useCallback(() =>
@@ -109,25 +115,28 @@ export function RegistryView() {
   }, [load]);
 
   const ensureFormOptions = useCallback(() => {
-    api
-      .gatewayProfiles()
-      .then((r) => setGwProfiles(r.profiles.map((p) => ({ id: p.id, name: p.name }))))
-      .catch((e: Error) => setCatalogNote(`网关档清单读不出：${e.message}`));
-    api
-      .listSpaces()
-      .then((r) => {
-        setSpaces(r.spaces.map((s) => ({ id: s.id, name: s.name })));
-        setSpacesNote(null);
-      })
-      .catch((e: Error) => setSpacesNote(`项目清单读不出：${e.message}`));
-    api
-      .gatewayCatalog()
-      .then((r) => {
-        setModelCandidates([...new Set(r.profiles.flatMap((p) => p.models))]);
-        const errs = r.profiles.filter((p) => p.error).map((p) => `${p.name}：${p.error}`);
-        setCatalogNote(errs.length ? `型号探得不全：${errs.join('；')}` : null);
-      })
-      .catch((e: Error) => setCatalogNote(`型号清单探读失败：${e.message}`));
+    setOptionsBusy(true);
+    void Promise.allSettled([
+      api
+        .gatewayProfiles()
+        .then((r) => setGwProfiles(r.profiles.map((p) => ({ id: p.id, name: p.name }))))
+        .catch((e: Error) => setCatalogNote(`网关档清单读不出：${e.message}`)),
+      api
+        .listSpaces()
+        .then((r) => {
+          setSpaces(r.spaces.map((s) => ({ id: s.id, name: s.name })));
+          setSpacesNote(null);
+        })
+        .catch((e: Error) => setSpacesNote(`项目清单读不出：${e.message}`)),
+      api
+        .gatewayCatalog()
+        .then((r) => {
+          setModelCandidates([...new Set(r.profiles.flatMap((p) => p.models))]);
+          const errs = r.profiles.filter((p) => p.error).map((p) => `${p.name}：${p.error}`);
+          setCatalogNote(errs.length ? `型号探得不全：${errs.join('；')}` : null);
+        })
+        .catch((e: Error) => setCatalogNote(`型号清单探读失败：${e.message}`)),
+    ]).then(() => setOptionsBusy(false));
   }, []);
 
   /** 选了项目才去读那一枚档案拿路径候选（不选就不请求；读不出只说候选这一格，直填那条路不受影响） */
@@ -159,7 +168,8 @@ export function RegistryView() {
   }, [formOpen, formKind, selectedSpace]);
 
   const refreshCatalog = () => {
-    setCatalogNote('型号清单刷新中…');
+    // 不洗 catalogNote：刷新在飞时上一次的失败原文仍是「最后一次读数」，把它换成转圈就是抹掉证据
+    setOptionsBusy(true);
     api
       .gatewayCatalog(true)
       .then((r) => {
@@ -167,20 +177,22 @@ export function RegistryView() {
         const errs = r.profiles.filter((p) => p.error).map((p) => `${p.name}：${p.error}`);
         setCatalogNote(errs.length ? `型号探得不全：${errs.join('；')}` : null);
       })
-      .catch((e: Error) => setCatalogNote(`型号清单刷新失败：${e.message}`));
+      .catch((e: Error) => setCatalogNote(`型号清单刷新失败：${e.message}`))
+      .finally(() => setOptionsBusy(false));
   };
 
   const openForm = () => {
     const next = !formOpen;
     setFormOpen(next);
-    // 表单选项（网关档/型号候选/项目清单）只在首次打开时各探一次；失败文案是 server 原话，不拦登记
+    // 首次打开探一次；**上次没读全或读挂了（note 挂着原话）也再探一次**——
+    // 只认「全空且没报过错」的话，网关修好后重开表单还是那份旧失败文案，永远等不到自愈
+    if (!next || optionsBusy) return;
     if (
-      next &&
-      gwProfiles.length === 0 &&
-      modelCandidates.length === 0 &&
-      spaces.length === 0 &&
-      catalogNote === null &&
-      spacesNote === null
+      gwProfiles.length === 0 ||
+      modelCandidates.length === 0 ||
+      spaces.length === 0 ||
+      catalogNote !== null ||
+      spacesNote !== null
     )
       ensureFormOptions();
   };
@@ -322,10 +334,11 @@ export function RegistryView() {
         </button>
         <button
           className="ghost"
+          disabled={healthBusy}
           onClick={() => void loadHealth(true)}
           title="绕开服务端 5 分钟实探缓存重新探一遍（表不受影响）"
         >
-          重探健康点
+          {healthBusy ? '重探中…' : '重探健康点'}
         </button>
       </div>
 
@@ -333,14 +346,19 @@ export function RegistryView() {
         <p className="registry-load-fail">注册表读不出：{loadError}</p>
       )}
 
-      {healthError && (
+      {/* 重探在飞时不说上一轮的失败原话：那一行与「重探中」同时挂出来是两句互相打架的话 */}
+      {healthError && !healthBusy && (
         <p className="registry-load-fail">
           健康点读不出：{healthError}（表不受影响：那一格没点＝不知道，不是「不健康」）
         </p>
       )}
 
-      {!health && !healthError && (
-        <p className="settings-hint">健康点探测中…（与型号清单同一份实探缓存，不拖读表）</p>
+      {healthBusy && (
+        <p className="settings-hint">
+          {health
+            ? '正在重探健康点…（下面这些点还是上一次读数）'
+            : '健康点探测中…（与型号清单同一份实探缓存，不拖读表）'}
+        </p>
       )}
 
       {rejectedText && data && (
@@ -441,8 +459,13 @@ export function RegistryView() {
                               ))}
                             </datalist>
                             {f.list === 'models' && (
-                              <button className="link" type="button" onClick={refreshCatalog}>
-                                刷新型号清单
+                              <button
+                                className="link"
+                                type="button"
+                                disabled={optionsBusy}
+                                onClick={refreshCatalog}
+                              >
+                                {optionsBusy ? '刷新中…' : '刷新型号清单'}
                               </button>
                             )}
                             {f.list === 'space-docs' && !docCandidates.length && (
@@ -466,6 +489,9 @@ export function RegistryView() {
                   </div>
                 );
               })}
+              {optionsBusy && (
+                <p className="settings-hint">候选读取中…（网关档／型号／项目清单一起探，读不出来那一格也能直接填）</p>
+              )}
               {catalogNote && <p className="settings-hint">{catalogNote}</p>}
             </>
           ) : (
@@ -484,7 +510,7 @@ export function RegistryView() {
               取消
             </button>
             <button className="primary" disabled={busy === 'form'} onClick={() => void submit()}>
-              登记
+              {busy === 'form' ? '登记中…' : '登记'}
             </button>
           </div>
         </div>

@@ -1057,9 +1057,12 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 
 /* 文本型链接按钮 */
 .link { background: none; border: none; padding: 0; color: var(--accent); font-size: 12px; cursor: pointer; }
-.link:hover { text-decoration: underline; border: none; color: var(--accent); }
+/* .link 的 cursor:pointer 按类选择器压过全局 button:disabled{cursor:not-allowed}：
+   禁用中的链接按钮 opacity 已经掉了、手型却在，等于一边说「点不动」一边比划「能点」 */
+.link:disabled { cursor: not-allowed; }
+.link:not(:disabled):hover { text-decoration: underline; border: none; color: var(--accent); }
 /* 下划线位置/粗细取自字体度量，偏移 2px 不贴字底 */
-.link:hover, .wiki-page-list a, .artifact-dl:hover {
+.link:not(:disabled):hover, .wiki-page-list a, .artifact-dl:hover {
   text-decoration-thickness: from-font;
   text-underline-offset: 2px;
   text-decoration-skip-ink: auto;
