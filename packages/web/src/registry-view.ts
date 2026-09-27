@@ -232,6 +232,44 @@ export function refCountOf(entry: RegistryEntryView): number | null {
   return null;
 }
 
+/** 详情抽屉的「谁在用」一行（`face` 原样画：中文对照表只住在 server 的拒绝文案里，这里抄第二份迟早分叉） */
+export interface RegistryRefRow {
+  key: string;
+  text: string;
+}
+
+/**
+ * 引用出处逐条（X1 的「引用者清单」——CLI `registry refs <id>` 的同一份账，同一个画法）。
+ * `refs` 键不在＝引用账没扫出来（那一格画「不知道」，绝不画「没人用」给删除开绿灯）；
+ * `[]`＝正读数「没人用」。
+ */
+export function refRows(entry: RegistryEntryView): RegistryRefRow[] | null {
+  const refs = (entry as { refs?: unknown }).refs;
+  if (!Array.isArray(refs)) return null;
+  return refs.map((r, i) => {
+    const o = (r ?? {}) as { face?: unknown; id?: unknown; name?: unknown; via?: unknown };
+    const name = typeof o.name === 'string' ? o.name : '';
+    const id = typeof o.id === 'string' ? o.id : '';
+    return {
+      key: `${String(o.face ?? '?')}-${String(o.id ?? i)}-${i}`,
+      text: [
+        String(o.face ?? '（出处形状不认）'),
+        name || id ? `「${name || id}」${name && id ? `（${id}）` : ''}` : '',
+        typeof o.via === 'string' && o.via ? o.via : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    };
+  });
+}
+
+/** 引用清单的收尾一句（三种读数三句话，混一句就是假账） */
+export function refNote(entry: RegistryEntryView, rows: RegistryRefRow[] | null): string {
+  if (rows === null) return '引用账这次没扫出来（不是「没人用」）——上方「被引用」因此不画。';
+  if (rows.length === 0) return '没人用（这是正读数：引用账确实扫过盘面，一处都没指着它）。';
+  return `被 ${rows.length} 处引用——删除/停用时 server 会拿这份清单拒你。`;
+}
+
 /**
  * R4 `GET /api/registry/health` 的逐条目读数。`status` 按 string 收（server 日后加一枚枚举值
  * 不许把页面炸红，也不许被就近并进某一档），`detail` 是 server 的一句人话、原样进 title。
@@ -285,6 +323,32 @@ export function healthTitle(readout: RegistryHealthReadout | undefined): string 
   const d = readout.detail.trim();
   const text = d || `状态「${readout.status}」（server 没给解释）`;
   return readout.cached ? `${text}（缓存读数）` : text;
+}
+
+/**
+ * `GET /api/registry/:id/health` 的单枚探针回执（X1 的「探一次」，与 CLI `registry probe` 同一端点）。
+ * `health` **整键不给＝这一类没有探针通道**（server 的宁缺毋假同形）——那不是「不健康」，
+ * 也不许拿 `at`（回执时刻）当读数时刻画个灰点冒充探过。
+ */
+export interface RegistryProbeResponse {
+  at: string;
+  entry: RegistryEntryView;
+  health?: RegistryHealthReadout;
+}
+
+/**
+ * 「探一次」按钮下面那一句。四种读数四句话（上一格的健康行只吃 `health` 读数，
+ * 这里说的是它说不出来的那三件事）：
+ *  - 没点过 → `''`（不画「等待探测」占位，那一格本来就不存在）；
+ *  - 请求失败 → server/网络的原话；
+ *  - 回了却没 `health` 键 → **这一类没有探针通道**，不是「不健康」（拿它画灰点就是替人判死）；
+ *  - 回了且有读数 → 读数已并进上面那一格，这里只说刚做过这一次（不重复贴同一段人话）。
+ */
+export function probeNote(res: RegistryProbeResponse | undefined, failed: string | null): string {
+  if (failed) return `探针没回话：${failed}`;
+  if (!res) return '';
+  if (!res.health) return '这一类没有探针通道（注册表对它没有「实探」这一说，不是它不健康）。';
+  return `刚探过一次（回执时刻 ${formatWhen(res.at) || res.at}），读数见上一格。`;
 }
 
 /** rejected 的一句话总述（表前披露用；不代清、不提供批量清除） */

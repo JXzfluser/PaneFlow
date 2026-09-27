@@ -13,7 +13,10 @@ import {
   isViewEntry,
   kindGroupLabel,
   missingRequiredFields,
+  probeNote,
   refCountOf,
+  refNote,
+  refRows,
   rejectedSummary,
   registrableKinds,
   REGISTRY_NAME_FIELD,
@@ -24,6 +27,7 @@ import {
   type RegistryFormValues,
   type RegistryHealthReadout,
   type RegistryListResponse,
+  type RegistryProbeResponse,
 } from '../registry-view.js';
 
 /**
@@ -45,6 +49,12 @@ export function RegistryView() {
    */
   const [health, setHealth] = useState<Map<string, RegistryHealthReadout> | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  /**
+   * X1 单枚探针（`registry probe` 的 UI 落点）：id → 刚做过的那一次回执或失败原话。
+   * 与批量那一刀分家存放——批量是「整表扫一遍」，单枚是「我就问这一条」，混进同一张 map
+   * 就分不清哪个读数是刚现探的。
+   */
+  const [probed, setProbed] = useState<Record<string, { res?: RegistryProbeResponse; err?: string }>>({});
 
   const [formOpen, setFormOpen] = useState(false);
   const [formKind, setFormKind] = useState('model');
@@ -164,6 +174,31 @@ export function RegistryView() {
     } catch (e) {
       recordWriteError(entry.id, (e as Error).message);
       void load(); // 以服务端实态为准回滚本地显示
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * 探一次（只问这一条，吃 server 那份 5min 实探缓存；`refresh=true` 才绕开）。
+   * 读数回来了顺手喂给表上那颗点——同一份判据、同一个字段，只是这一枚更新，
+   * 于是「我刚探的这条」和「整表上次扫的」不会画成两样。
+   */
+  const probeOnce = async (entry: RegistryEntryView, refresh = false) => {
+    setBusy(entry.id);
+    try {
+      const res = await api.registryProbe(entry.id, refresh);
+      setProbed((m) => ({ ...m, [entry.id]: { res } }));
+      if (res.health) {
+        const readout = res.health;
+        setHealth((m) => {
+          const next = new Map(m ?? []);
+          next.set(entry.id, readout);
+          return next;
+        });
+      }
+    } catch (e) {
+      setProbed((m) => ({ ...m, [entry.id]: { err: (e as Error).message } }));
     } finally {
       setBusy(null);
     }
@@ -383,7 +418,10 @@ export function RegistryView() {
               <tbody>
                 {g.entries.map((e) => {
                   const refs = refCountOf(e);
+                  const refList = refRows(e);
                   const readout = health?.get(e.id);
+                  const probe = probed[e.id];
+                  const pNote = probeNote(probe?.res, probe?.err ?? null);
                   const dot = healthDot(readout);
                   const view = isViewEntry(e);
                   const when = whenLabels(view);
@@ -464,6 +502,44 @@ export function RegistryView() {
                                     ：{readout.detail}
                                     {readout.at ? `（读数时刻 ${formatWhen(readout.at) || readout.at}${readout.cached ? ' · 缓存' : ''}）` : ''}
                                   </dd>
+                                </>
+                              )}
+                              <dt>谁在用</dt>
+                              <dd>
+                                {refList && refList.length > 0 && (
+                                  <div className="registry-refs">
+                                    {refList.map((r) => (
+                                      <div key={r.key}>{r.text}</div>
+                                    ))}
+                                  </div>
+                                )}
+                                <span className={refList === null ? 'registry-detail-note warn' : 'registry-detail-note'}>
+                                  {refNote(e, refList)}
+                                </span>
+                              </dd>
+                              <dt>探针</dt>
+                              <dd>
+                                <button
+                                  className="link"
+                                  disabled={busy === e.id}
+                                  onClick={() => void probeOnce(e)}
+                                  title="只探这一条（与服务端 5 分钟实探缓存共用）"
+                                >
+                                  探一次
+                                </button>
+                                <button
+                                  className="link"
+                                  disabled={busy === e.id}
+                                  onClick={() => void probeOnce(e, true)}
+                                  title="绕开实探缓存现探一遍"
+                                >
+                                  现探
+                                </button>
+                              </dd>
+                              {pNote && (
+                                <>
+                                  <dt>探针读数</dt>
+                                  <dd className={probe?.err ? 'registry-detail-fail' : undefined}>{pNote}</dd>
                                 </>
                               )}
                               {writeErrors[e.id] && (

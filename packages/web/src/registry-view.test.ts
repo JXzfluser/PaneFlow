@@ -10,7 +10,10 @@ import {
   isViewEntry,
   kindGroupLabel,
   missingRequiredFields,
+  probeNote,
   refCountOf,
+  refNote,
+  refRows,
   rejectedSummary,
   registrableKinds,
   requirementBadge,
@@ -20,6 +23,7 @@ import {
   whenLabels,
   type RegistryCheckRow,
   type RegistryEntryView,
+  type RegistryProbeResponse,
 } from './registry-view';
 
 const entry = (over: Partial<RegistryEntryView> = {}): RegistryEntryView => ({
@@ -306,5 +310,79 @@ describe('v14-A3-2 内置清单视图项的消费面（只认 server 给的 view
     expect(whenLabels(false)).toMatchObject({ created: '登记于', updated: '改于', note: '' });
     expect(whenLabels(true).created).not.toContain('登记');
     expect(whenLabels(true).note).toContain('版本自带');
+  });
+});
+
+/**
+ * v14-X1 全量第一件：详情抽屉里的「引用者清单」。
+ * web 只把 server 随条目发下的 `refs` 排版成人话，零判据：`face` 原样画（中文对照表住在
+ * server 的 400 文案里，这里再抄一份就是两张表——CLI 同一把尺）。
+ */
+describe('refRows / refNote（引用者清单：缺、空、有货是三件事）', () => {
+  const withRefs = (refs: unknown) => entry({ refs } as never);
+
+  it('逐条出处：face · 「名字」（id） · via 三段，与 CLI registry refs 同一份账', () => {
+    const rows = refRows(
+      withRefs([
+        { face: 'gateway', id: 'p-free', name: '免费档', via: 'freeModel' },
+        { face: 'role', id: 'r-deliver', name: '交付岗', via: 'model' },
+      ]),
+    )!;
+    expect(rows.map((r) => r.text)).toEqual([
+      'gateway · 「免费档」（p-free） · freeModel',
+      'role · 「交付岗」（r-deliver） · model',
+    ]);
+    // key 稳定且逐行不同（React 列表不能拿文案当 key：两条同出处是合法读数）
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+  });
+
+  it('引用者字段缺谁就不画谁，形状不认也不吞：整行仍在，条数照实', () => {
+    const rows = refRows(withRefs([{ face: 'template' }, { via: 'x' }, null]))!;
+    expect(rows.map((r) => r.text)).toEqual(['template', '（出处形状不认） · x', '（出处形状不认）']);
+    expect(refNote(entry(), rows)).toBe('被 3 处引用——删除/停用时 server 会拿这份清单拒你。');
+  });
+
+  it('缺键 vs 空数组：一个是「没扫出来」（绝不给删除开绿灯），一个是正读数「没人用」', () => {
+    expect(refRows(entry())).toBeNull();
+    expect(refNote(entry(), null)).toContain('不是「没人用」');
+    expect(refNote(entry(), [])).toContain('没人用（这是正读数');
+    // 数值型 refs（server 只给计数的日子）不是数组 → 清单不画，但 count 那一格照读
+    expect(refRows(withRefs(3))).toBeNull();
+    expect(refCountOf(withRefs(3))).toBe(3);
+  });
+});
+
+/**
+ * v14-X1 全量第二件：行内「探一次」的回执文案。
+ * 四种读数四句话，健康那一格只吃 `health`，这里补它说不出来的三件事。
+ */
+describe('probeNote（单枚探针回执：失败 / 无通道 / 有读数 分得开）', () => {
+  const res = (over: Partial<RegistryProbeResponse> = {}): RegistryProbeResponse => ({
+    at: '2026-09-26T12:00:00.000Z',
+    entry: entry(),
+    ...over,
+  });
+
+  it('没点过不画占位；请求失败原话挂出（失败优先于读数——两样都在时报的是那件坏消息）', () => {
+    expect(probeNote(undefined, null)).toBe('');
+    expect(probeNote(res(), '网关 503')).toBe('探针没回话：网关 503');
+    expect(probeNote(undefined, '网络断了')).toBe('探针没回话：网络断了');
+  });
+
+  it('回了却没 health 键 = 这一类没有探针通道，不是「不健康」（拿它画灰点是替人判死）', () => {
+    const note = probeNote(res(), null);
+    expect(note).toContain('没有探针通道');
+    // 通道缺失不等于读数缺失：这里不硬造 status，健康那一格因此天然不画
+    expect(res().health).toBeUndefined();
+    expect(healthDot(res().health)).toBeNull();
+  });
+
+  it('有读数时只说「刚探过」并把人话留在上一格（同一段话不贴两遍）；时刻读不出原样挂', () => {
+    const note = probeNote(res({ health: { status: 'live', detail: '在清单里' } }), null);
+    expect(note).toContain('刚探过一次');
+    expect(note).toContain('读数见上一格');
+    expect(note).not.toContain('在清单里');
+    expect(note).toMatch(/2026-09-2\d/);
+    expect(probeNote(res({ at: '不是时间', health: { status: 'unknown', detail: '' } }), null)).toContain('不是时间');
   });
 });

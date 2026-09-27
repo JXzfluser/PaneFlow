@@ -1,6 +1,6 @@
 import type { DagGraph, NodeRunRecord, RunEvent, RunRecord } from '@paneflow/shared';
 import type { DryRunResult } from './components/dry-run.js';
-import type { RegistryAddPayload, RegistryCheckResponse, RegistryEntryView, RegistryHealthResponse, RegistryListResponse } from './registry-view.js';
+import type { RegistryAddPayload, RegistryCheckResponse, RegistryEntryView, RegistryHealthResponse, RegistryListResponse, RegistryProbeResponse } from './registry-view.js';
 
 const BASE = '';
 
@@ -200,7 +200,7 @@ export const api = {
       { raw: true },
     ),
   createSpace: (id: string, name: string) => json<unknown>('POST', '/api/spaces', { id, name }, { raw: true }),
-  // -- v14 X1 注册中心：表是 dataDir 级唯一事实源，不随项目空间走，故一律 raw（不带 space 参） --
+  // -- v14 X1 注册中心：表 + 批量健康 + 单枚探针 + 四动词，都是 dataDir 级唯一事实源（不随项目空间走，一律 raw） --
   registryList: (kind?: string) =>
     fetchJson<RegistryListResponse>('GET', `/api/registry${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
   /**
@@ -210,6 +210,12 @@ export const api = {
   registryHealth: (refresh = false) =>
     fetchJson<RegistryHealthResponse>('GET', `/api/registry/health${refresh ? '?refresh=1' : ''}`),
   registryAdd: (body: RegistryAddPayload) => fetchJson<{ entry: RegistryEntryView }>('POST', '/api/registry', body),
+  /**
+   * R4/X1 单枚探针（`paneflow registry probe <id>` 的同一落点）：只探这一条、吃同一份实探缓存。
+   * server 不回 `health` 键＝这一类没有探针通道（不是不健康），这里不替它补一个读数。
+   */
+  registryProbe: (id: string, refresh = false) =>
+    fetchJson<RegistryProbeResponse>('GET', `/api/registry/${encodeURIComponent(id)}/health${refresh ? '?refresh=1' : ''}`),
   /**
    * v14-T3 预检读数：一次拿全部在册模板的槽落点（模板卡不是一卡一发请求）。
    * 走带 `?space=` 的那枚 helper——预检的口径是「按当前项目解析」，项目名必须跟着走；
