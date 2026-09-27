@@ -785,7 +785,7 @@ describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全�
     rejected: [{ id: 'plugin:x', why: '不认的能力类型「plugin」（这版只登记：model）' }],
     schema: { version: 1, writtenBy: '0.3.0' },
     knownKinds: ['model'],
-    refSummary: { scanned: 12, dangling: [{ kind: 'model', target: 'gpt-5', by: [] }], unmigrated: [{ kind: 'template', targets: ['t-x'], refs: 3 }] },
+    refSummary: { scanned: 12, dangling: [{ kind: 'model', target: 'gpt-5', by: [] }], unmigrated: [{ kind: 'channel', targets: ['t-x'], refs: 3 }] },
   };
 
   it('list：schema/knownKinds/分组/条目行 + 只披露不清除的 rejected + 引用账一行（全部照读字段）', async () => {
@@ -797,7 +797,12 @@ describe('registry（v14-A1/A2 注册中心：条目说什么、谁在用，全�
     expect(out).toContain('注册表 schema v1（由 0.3.0 写） · 这版认识：model');
     expect(out).toContain('· model（1 项）');
     expect(out).toContain('model:gpt-4o-mini  gpt-4o-mini · 档=free  登记  被 1 处用');
-    expect(out).toContain('⚠ 本机不认（只披露不清除）：plugin:x —— 不认的能力类型「plugin」');
+    // 注账单独成一节，标题只说「照读时的一句话」：`rejected` 里既有渲不出条目的坏行，也有条目照渲、
+    // 旁边补一句的落差行（A5-4b-2 起真出现），说成「本机不认」就是对在表上的那一行撒谎；
+    // 且不把 ⚠ 行续在最后一组同缩进里——那是把注账读成「上一组的问题」
+    expect(out).toContain('· 照读时的一句话（1 条，只披露不清除');
+    expect(out).toContain('⚠ plugin:x —— 不认的能力类型「plugin」');
+    expect(out).not.toContain('本机不认');
     expect(out).toContain('扫过 12 处跨面裸串引用 · 指向已迁类型却查不到条目 1 处 · 指向未迁类型 3 处');
     expect(out).toContain('悬挂：model → gpt-5');
   });
@@ -1107,14 +1112,15 @@ describe('registry check（v14-T3 起单前预检：判定全在 server，CLI �
     slots: [
       { kind: 'model', id: 'gpt-4o-mini', verdict: 'ok', why: '用「小4号」', entryId: 'model:gpt-4o-mini' },
       { kind: 'model', id: 'gpt-9', verdict: 'missing', why: '注册表里没有可用的「模型」条目指向「gpt-9」' },
-      // `?` 那一格换 kind=`template`：A5-4b-1 起 server 再也不会对 role 发这句（名册进表后只剩二值），
+      // `?` 那一格换 kind=`channel`：改口链是 `role`（A5-4b-1 前）→ `template`（A5-4b-2 前）→ `channel`。
+      // A5-4b-2 起 server 再也不会对这两枚发这句（进表后只剩二值），
       // 拿一张发不出去的读数测渲染等于把 CLI 的桩当预言用；未知 kind 的组名 server 也不猜，画原值
-      { kind: 'template', id: 'issue-flow', verdict: 'unjudged', why: '「template」这一类还没迁进注册表' },
+      { kind: 'channel', id: 'chan-1', verdict: 'unjudged', why: '「channel」这一类还没迁进注册表' },
       { kind: 'model', verdict: 'malformed', why: '声明形状不认：含未知键 knd' },
     ],
     need: [
       { kind: 'model', label: '模型', declared: 3, judged: 3, gaps: 2 },
-      { kind: 'template', label: 'template', declared: 1, judged: 0, gaps: 0 },
+      { kind: 'channel', label: 'channel', declared: 1, judged: 0, gaps: 0 },
     ],
     missing: [],
     unjudged: [],
@@ -1129,11 +1135,11 @@ describe('registry check（v14-T3 起单前预检：判定全在 server，CLI �
     expect(await main(['registry', 'check', '--template', 'flow', '--space', 'demo'], io)).toBe(1);
     expect(calls[0]!.url).toBe('http://127.0.0.1:4310/api/registry/check?template=flow&space=demo');
     const out = lines.join('\n');
-    expect(out).toContain('模板「flow」· 项目「demo」· 需要：模型 3 · template 1');
+    expect(out).toContain('模板「flow」· 项目「demo」· 需要：模型 3 · channel 1');
     expect(out).toContain('← 有缺口');
     expect(out).toContain('✓ model → gpt-4o-mini  用「小4号」');
     expect(out).toContain('✗ model → gpt-9');
-    expect(out).toContain('? template → issue-flow');
+    expect(out).toContain('? channel → chan-1');
     expect(out).toContain('⚠ model  声明形状不认');
   });
 

@@ -99,7 +99,7 @@ paneflow experiments --suite c4              # 只读 server 端收数表（每�
 #                                             另含 v12-V2「人等分」列=人批门累计等待分钟，无账画 -）
 
 # 7) 注册中心（v14-A1/A2/R4）：能力条目说什么、谁在用、现在还在不在——三问三答，判据全在 server
-paneflow registry list [--kind model]        # 表 + 「被 N 处使用」+ 本机不认的条目（只披露不清除）
+paneflow registry list [--kind model]        # 表 + 「被 N 处使用」+ 照读时的一句话（`⚠` 行，只披露不清除：既有渲不出条目的坏行，也有条目在表上摆着、旁边要补一句的落差行——不是「本机不认」）
 #   组名（模型/Agent 引擎…）由 server 的 `kindLabels` 外发，网页与 CLI 都不各抄一份措辞表；server 没给就明写「未知类型」
 #   `agent-kind`（v14-A3-2）是**视图 kind**：18 枚由代码里的出厂清单现算、不落盘，所以没有启停/改删——三写动词对它全拒，
 #   时刻读成「本机自/本次运行」（进程启动时刻），手塞进 entries.json 的同名行会被挪进 `rejected` 说清为什么不生效
@@ -141,6 +141,17 @@ paneflow registry probe <id> [--refresh]     # 单枚探针，与批量面同一
 #   ②引用写法是 `role:<id>` / slug / **名册里那枚 id 原样**（大写 id 靠这一枚才指得回来），**岗名不算**引用写法；
 #   ③这一类**没有探针通道**（在册即在场：条目本来就是读那张名册读出来的）。名册脏了不冒充读数：
 #   读不出整组时进 `rejected` 一句「这不是本机没有岗位，是名册读不动」，缺岗名的行拿 id 顶并同样披露
+#   `template`＋`gateway-profile`（v14-A5-4b-2）是第五、六枚**视图 kind**，正身仍在自己那两张盘上
+#   （`graphs/*.json` 与 `gateway.json`）：注册表只是镜子——建/改/删模板走画布、配档走「设置·网关」，
+#   这里三个写动词照旧全拒（400 那句直接把人指回自己的那一面）。两枚的**机器值不同源**，各自跟着引擎取用时
+#   的那枚键：`template` 是**文件名去 `.json`**（`store.getGraph` 按文件名找图；图里 `name` 与文件名不一致时以文件名为准，
+#   另落一条披露说「两处不一致，改名要连文件一起改」），`gateway-profile` 是**档 id 原样**
+#   （`SpaceProfile.gatewayProfile` 与 `model.spec.gatewayProfile` 发的都是这一串）。引用写法三枚＝整枚 id／slug／机器值原样：
+#   第三枚必需——`registryId` 把 slug 小写化，而 `saveGraph`/`upsertGatewayProfile` 收大写，只认 slug 就把这枚现网写法洗成悬挂。
+#   两枚都**没有探针通道**（图在不在盘上、档配没配，条目本身就是读那两张盘读出来的）。网关那一枚带着全仓最硬的一条边界：
+#   **`apiKey` 在这面根本不出现**，条目只有 `keyConfigured` 布尔；「现在生效的是哪一档」（文档级 `current`）不进任何条目的
+#   spec（换档不是能力面变了——塞进去会让换档抖出 `specSha`），但它自今日起在引用账里是一条 `via:'current'` 的出处。
+#   label 之外不复述内容（节点数是个数，不是拓扑；`validateDag`/预检/`graphSha` 各有正身）
 
 # 8) 起单前预检（v14-T3）：模板声明「这单要吃哪几项能力」，派活之前先对着注册表解析
 paneflow registry check [--template x] [--space S]   # 逐槽画 ✓命中 / ✗死缺 / ?还判不了 / ⚠形状不认
@@ -148,8 +159,9 @@ paneflow registry check [--template x] [--space S]   # 逐槽画 ✓命中 / ✗
 #   不给 --template = 普查全部在册模板，恒 0（普查不是闸，拦是起单口的事）
 paneflow registry check --template x --json  # → 那一行的原样负载：{slots,need,missing,unjudged,malformed,ok}
 #   模板侧声明（画布 JSON）：graph 顶层 `requires: [{kind, id?, hint?}]`——今天判死活的 kind 是
-#   `model`、`skill`（v14-A5-1）、`rule`（v14-A5-2）、`repo`（v14-A5-3）、`mcp` 与四枚视图 kind `agent-kind`/`node-type`/`check-type`（v14-A5-4）/`role`（v14-A5-4b-1；
-#   后三枚的引用写法=整枚 id 或 kind 名，`role` 额外认名册里那枚岗 id 原样、**不认岗名**；
+#   `model`、`skill`（v14-A5-1）、`rule`（v14-A5-2）、`repo`（v14-A5-3）、`mcp` 与六枚视图 kind `agent-kind`/`node-type`/`check-type`（v14-A5-4）/`role`（v14-A5-4b-1）/
+#   `template`＋`gateway-profile`（v14-A5-4b-2；
+#   后五枚的引用写法=整枚 id 或 kind 名，`role`/`template`/`gateway-profile` 还各认自己那枚机器值原样（岗 id／文件名／档 id），**岗名、图内 name、档名一律不算**；
 #   探测名 `antigravity` 那种异名**不算**引用写法，与 R2 引用账同一把尺——两把尺就会出现「预检说缺、引用账说在用」）。
 #   `skill`/`rule` 槽的引用写法多一枚 **`spec.file` 原值**（相对项目根的路径，就是今天 `profile.skills` /
 #   `profile.rules[i].file` 落册的那串），且**不**按 `--space` 收窄：`requires` 里没有写项目名的位置，本机任一项目登记过这篇即算命中

@@ -123,6 +123,48 @@ export const roleDescriptor: RegistryDescriptor<'role'> = {
 };
 
 /**
+ * `template`（v14 A5-4b-2）：`graphs/` 那盘模板的视图条目。label 用人能认出的那枚**文件名**说话
+ * （`nodes[i].config.pipeline.template` 写的就是它），后面跟节点数与元数据里那句说明——
+ * 图的内容不在这面复述（`validateDag`/预检/`graphSha` 各有正身）。
+ * 引用写法**三枚**（整枚 id／slug 段／`entry.name` 即文件名原样）：第三枚必需，`registryId` 把 slug
+ * 小写化了，而 `saveGraph` 的名正则收大写（`Fix-Issue` 是能落盘的文件名）——只认 slug 就把这枚现网写法洗成悬挂。
+ * **`description` 不算引用写法**：没有任何键按那句说明指岗（同 `role` 的岗名、`model` 的中文名一把尺）。
+ */
+export const templateDescriptor: RegistryDescriptor<'template'> = {
+  kind: 'template',
+  label(entry) {
+    const { nodes, description } = entry.spec;
+    return `「${entry.name}」· ${nodes} 个节点${description ? ` · ${description}` : ''}`;
+  },
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return [entry.id, ...(slug ? [slug] : []), entry.name];
+  },
+};
+
+/**
+ * `gateway-profile`（v14 A5-4b-2）：网关盘 `profiles[]` 的视图条目。label 说三件事——
+ * 档名（用户起的那个人话名）、根地址（`/api/gateway` 本来就外发这一格，不是密钥）、
+ * **配没配密钥**（这一格决定「钉了这档能不能真跑」，是行动读数；值本身永不出现）。
+ * 引用写法**三枚**（整枚 id／slug 段／`entry.name` 即档 id 原样）：第三枚是必需的——
+ * `SpaceProfile.gatewayProfile` 与 `model.spec.gatewayProfile` 发的都是档 id 裸串，
+ * 而 `registryId` 会把它小写化（`upsertGatewayProfile` 收 `[a-zA-Z0-9_-]`，大写 id 能落盘）。
+ * **`freeModel` 那一格不算这一枚的引用写法**：它是指向 `model` 的一条引用（住在引用账那侧），
+ * 不是这档的名字（拿它当匹配键就把「某型号名」读成「正在用这一档」）。
+ */
+export const gatewayProfileDescriptor: RegistryDescriptor<'gateway-profile'> = {
+  kind: 'gateway-profile',
+  label(entry) {
+    const { label, baseUrl, keyConfigured } = entry.spec;
+    return `「${label}」${baseUrl ? ` · ${baseUrl}` : ''} · ${keyConfigured ? '已配密钥' : '未配密钥'}`;
+  },
+  refKeys(entry) {
+    const slug = splitRegistryId(entry.id)?.slug;
+    return [entry.id, ...(slug ? [slug] : []), entry.name];
+  },
+};
+
+/**
  * `mcp`（v14 T4）：本机登记了哪台 MCP server。**只有声明账**——今天没有客户端去 `tools/list`，
  * 所以 label 说的就是登记时那行启动命令本身，不含任何「探到几个工具」的读数（那是 v13:285 判死不做的东西）。
  */
@@ -268,6 +310,8 @@ export const REGISTRY_DESCRIPTORS: { [K in RegistryEntry['kind']]: RegistryDescr
   'node-type': nodeTypeDescriptor,
   'check-type': checkTypeDescriptor,
   role: roleDescriptor,
+  template: templateDescriptor,
+  'gateway-profile': gatewayProfileDescriptor,
   mcp: mcpDescriptor,
 };
 

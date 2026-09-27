@@ -69,21 +69,37 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(body.entries.filter((e) => !e.view)).toEqual([]); // 盘上真的一条没登记——这格还是正读数零
       expect(body.rejected).toEqual([]);
       expect(body.schema).toBeNull();
-      // 挂号序＝注册中心的分组序：登记项在前、视图 kind 穿插在其注册位（A5-4 起 `check-type`、A5-4b-1 起 `role` 进表）
-      expect(body.knownKinds).toEqual(['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'check-type', 'role', 'mcp']);
-      expect(body.viewKinds).toEqual(['agent-kind', 'node-type', 'check-type', 'role']);
-      // 正身逐 kind 给（A5-4b-1）：四枚视图 kind 里 `role` 住在角色库，其余三枚住在代码。
-      // 外发而不是让页面形容词——「版本自带的内置清单」这一句用在用户自己建的岗位上是假话。
+      // 挂号序＝注册中心的分组序：登记项在前、视图 kind 穿插在其注册位
+      // （A5-4 起 `check-type`、A5-4b-1 起 `role`、A5-4b-2 起 `template`/`gateway-profile` 进表）
+      expect(body.knownKinds).toEqual([
+        'model',
+        'skill',
+        'rule',
+        'repo',
+        'agent-kind',
+        'node-type',
+        'check-type',
+        'role',
+        'template',
+        'gateway-profile',
+        'mcp',
+      ]);
+      expect(body.viewKinds).toEqual(['agent-kind', 'node-type', 'check-type', 'role', 'template', 'gateway-profile']);
+      // 正身逐 kind 给（A5-4b-1/A5-4b-2）：六枚视图 kind 里 `agent-kind`/`node-type`/`check-type` 住在代码，
+      // `role`/`template`/`gateway-profile` 住在用户盘（角色库、模板、网关设置那一面）。
+      // 外发而不是让页面形容词——「版本自带的内置清单」这一句用在用户自己建的岗位/模板/网关档上是假话。
       const homes = body.viewHomes;
       expect(Object.keys(homes).sort()).toEqual([...body.viewKinds].sort());
       expect(homes.role).toContain('角色库');
       expect(homes.role).not.toContain('版本自带');
+      expect(homes.template).toContain('编排模板');
+      expect(homes['gateway-profile']).toContain('网关设置');
       expect(homes['agent-kind']).toContain('代码决定');
       expect(homes['node-type']).toBe(viewHomeOf('node-type'));
       // 组名只有一处措辞表（`registry-check.ts` 的 `KIND_CN`）：网页拿这张外发表的标签画分组，
       // 前端不再自己抄一份——抄了迟早分叉，而分叉的代价是「同一个 kind 两处两个名字」。
       expect(Object.keys(body.kindLabels).sort()).toEqual([...body.knownKinds].sort());
-      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', rule: '规则', repo: '仓库', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', 'check-type': '机检', role: '角色', mcp: 'MCP 服务' });
+      expect(body.kindLabels).toMatchObject({ model: '模型', skill: '技能', rule: '规则', repo: '仓库', 'agent-kind': 'Agent 引擎', 'node-type': '节点类型', 'check-type': '机检', role: '角色', template: '模板', 'gateway-profile': '网关档', mcp: 'MCP 服务' });
       expect(requirementKindLabel('agent-kind')).toBe(body.kindLabels['agent-kind']);
       expect(body.refSummary).toEqual({ scanned: 0, dangling: [], unmigrated: [] });
       // 视图项=现算清单成员，一条不多一条不少（计数吃单一事实源，不写死 18）
@@ -91,9 +107,10 @@ describe('注册内核四动词（/api/registry）', () => {
       expect(agents).toHaveLength(AGENT_KINDS.length);
       expect(new Set(agents.map((e) => e.name))).toEqual(new Set(AGENT_KINDS));
       expect(body.entries.every((e) => e.view && e.source === 'builtin')).toBe(true);
-      // role 这一组此刻**空**是正读数：这一格的名册（`roles.json`）不存在，读端不替用户编岗位。
+      // `role`/`template`/`gateway-profile` 这三组此刻**空**是正读数：这一格的名册、模板盘与网关盘都不存在，
+      // 读端不替用户编岗位/模板/档（「那一面还没建过东西」与「这一类渲不出来」是两件事）。
       // 「视图项只可能来自 `REGISTRY_VIEW_KINDS`」这条仍成立（渲染出来的 kind 是它的子集）。
-      expect(body.entries.filter((e) => e.kind === 'role')).toEqual([]);
+      for (const kind of ['role', 'template', 'gateway-profile']) expect(body.entries.filter((e) => e.kind === kind)).toEqual([]);
       expect(new Set(body.entries.map((e) => e.kind))).toEqual(new Set(['agent-kind', 'node-type', 'check-type']));
       // label 由 Descriptor 算：异名才说话，同名不重复一遍
       const agy = body.entries.find((e) => e.name === 'antigravity-cli');
@@ -384,6 +401,103 @@ describe('注册内核四动词（/api/registry）', () => {
       const detail = await app.inject({ method: 'GET', url: '/api/registry/role%3Ar-deliver', headers: { host: HOST } });
       expect(detail.statusCode).toBe(200);
       expect((detail.json() as { viewHomes: Record<string, string> }).viewHomes.role).toContain('角色库');
+    } finally {
+      await app.close();
+    }
+  });
+
+  /**
+   * v14 A5-4b-2 的对外读数：`template` 与 `gateway-profile` 上架走的是**同一扇门**（视图 kind），
+   * 但它们的正身是两张不同的盘（`graphs/` 与 `gateway.json`），所以这一格要把三件事一起钉住：
+   *  ①现算条目真从盘上来（含大写档 id 靠 `entry.name` 保住原样、脏行只披露）；
+   *  ②写入面照拒，且拒句里说的是**那一面**（拿「版本自带」去拒一张用户自己画的模板就是当面说假话）；
+   *  ③密钥不跟着条目上架（R1 边界②在 HTTP 出口再验一次，序列化整份响应而不是挑字段）。
+   */
+  it('GET ?kind=template / ?kind=gateway-profile：两张盘现算上架、脏行只披露，写入面各自指路自己的那一面', async () => {
+    const { app, registry, dataDir } = await build();
+    try {
+      fs.mkdirSync(path.join(dataDir, 'graphs'), { recursive: true });
+      const graph = (name: string, nodes: number) => ({
+        version: 1,
+        name,
+        nodes: Array.from({ length: nodes }, (_, i) => ({ id: `n${i}`, type: 'start', label: '开始', config: {} })),
+        edges: [],
+        metadata: { createdAt: '', updatedAt: '', description: '接单到 PR' },
+      });
+      fs.writeFileSync(path.join(dataDir, 'graphs', 'issue-flow.json'), `${JSON.stringify(graph('issue-flow', 2), null, 2)}\n`);
+      fs.writeFileSync(path.join(dataDir, 'graphs', 'broken.json'), '{ 不是 JSON\n');
+      fs.writeFileSync(
+        path.join(dataDir, 'gateway.json'),
+        `${JSON.stringify(
+          {
+            current: 'Gw-Main',
+            profiles: [
+              { id: 'Gw-Main', name: '主档', baseUrl: 'https://gw.example', apiKey: 'sk-route-永不出现' },
+              { id: 'gw-dup', name: '第一个' },
+              { id: 'gw-dup', name: '第二个' },
+            ],
+          },
+          null,
+          2,
+        )}\n`,
+      );
+
+      const t = await app.inject({ method: 'GET', url: '/api/registry?kind=template', headers: { host: HOST } });
+      expect(t.statusCode).toBe(200);
+      expect((t.json() as { entries: unknown[] }).entries).toEqual([
+        {
+          id: 'template:issue-flow',
+          kind: 'template',
+          name: 'issue-flow',
+          source: 'user',
+          enabled: true,
+          view: true,
+          createdAt: expect.any(String),
+          updatedAt: expect.any(String),
+          spec: { nodes: 2, description: '接单到 PR' },
+          label: '「issue-flow」· 2 个节点 · 接单到 PR',
+          // 空数组是**正读数**「没人用」：`template` 进表后第一次有引用账可指（别的图 `pipeline.template`
+          // 写它就算一处）。迁表之前这一类连 `refs` 键都不会有——那是「判不了」，不是「没人用」。
+          refs: [],
+        },
+      ]);
+
+      const g = await app.inject({ method: 'GET', url: '/api/registry?kind=gateway-profile', headers: { host: HOST } });
+      const gRows = (g.json() as { entries: { id: string; name: string; label: string; spec: Record<string, unknown> }[] }).entries;
+      expect(gRows.map((e) => e.id).sort()).toEqual(['gateway-profile:gw-dup', 'gateway-profile:gw-main']);
+      // 机器值是档 id **原样**（`Gw-Main` 能落盘也能被钉到），id 那一段被小写化——所以第三枚匹配键必须带 name
+      const main = gRows.find((e) => e.id === 'gateway-profile:gw-main')!;
+      expect(main).toMatchObject({ name: 'Gw-Main', label: '「主档」 · https://gw.example · 已配密钥', spec: { label: '主档', baseUrl: 'https://gw.example', keyConfigured: true } });
+      expect(gRows.find((e) => e.id === 'gateway-profile:gw-dup')).toMatchObject({ label: '「第一个」 · 未配密钥' });
+      // 同 id 的第二枚不渲条目：`readGateway` 的 `find` 只会用第一条，注册表说「有两枚」就是假账
+      expect(gRows).toHaveLength(2);
+      // 整份响应里搜不到密钥（序列化搜，不挑字段——挑字段就只能证明挑过的那几个字段干净）
+      expect(JSON.stringify([t.json(), g.json()])).not.toContain('sk-route');
+
+      const list = await app.inject({ method: 'GET', url: '/api/registry', headers: { host: HOST } });
+      const rejected = list.json().rejected as { id: string; why: string }[];
+      expect(rejected.map((r) => r.id).sort()).toEqual(['gateway-profile:gw-dup', 'graphs/broken.json']);
+      expect(rejected.find((r) => r.id === 'gateway-profile:gw-dup')!.why).toContain('两枚 id');
+      expect(rejected.find((r) => r.id === 'graphs/broken.json')!.why).toContain('JSON 读不出');
+
+      // 写入面：两个 kind 各自指路自己那张盘，且拒得没落盘
+      const addT = await app.inject({
+        method: 'POST',
+        url: '/api/registry',
+        headers: { host: HOST },
+        payload: { kind: 'template', name: 'x', spec: { nodes: 1 } },
+      });
+      expect(addT.statusCode).toBe(400);
+      expect(addT.json().error).toContain('编排模板');
+      const delG = await app.inject({
+        method: 'DELETE',
+        url: '/api/registry/gateway-profile%3Agw-main',
+        headers: { host: HOST },
+      });
+      expect(delG.statusCode).toBe(400);
+      expect(delG.json().error).toContain('网关设置');
+      expect(registry.list('template')).toEqual([]);
+      expect(fs.existsSync(path.join(dataDir, 'registry', 'entries.json'))).toBe(false);
     } finally {
       await app.close();
     }

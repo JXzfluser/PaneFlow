@@ -133,10 +133,10 @@ describe('引用索引（buildReferenceIndex）', () => {
     const raw = scanRawReferences(fixtureDataDir());
     const index = buildReferenceIndex([], raw);
     // 改口入账：`agent-kind`（A3-2）、`node-type`（T1）、`skill`（A5-1）、`rule`（A5-2）、`repo`（A5-3）、
-    // `check-type`（A5-4）、`role`（A5-4b-1）自此都不在这份名单里——它们进了表（视图那几枚的成员由出厂清单或名册现算），成员判得了死活
-    expect(index.unmigrated.map((u) => u.kind).sort()).toEqual(
-      ['gateway-profile', 'template'].sort(),
-    );
+    // `check-type`（A5-4）、`role`（A5-4b-1）、`template`/`gateway-profile`（A5-4b-2）自此都不在这份名单里
+    // ——它们进了表（视图那几枚的成员由出厂清单、名册、模板盘或网关盘现算），成员判得了死活。
+    // 空数组是**正读数**：这套 fixture 的引用面已全覆盖，「unmigrated 从此为空」就是 §十二-1 清单收口的账。
+    expect(index.unmigrated).toEqual([]);
     expect(index.dangling.every((d) => !index.unmigrated.some((u) => u.kind === d.kind))).toBe(true);
     expect(index.scanned).toBe(raw.length);
     // A5-4b-1 同款代价：绑岗那两枚引用（`team[0].roleId` 与 `nodes[0].config.role`）从今天起是**可断的账**
@@ -162,6 +162,50 @@ describe('引用索引（buildReferenceIndex）', () => {
     expect(index.dangling.filter((d) => d.kind === 'check-type').map((d) => `${d.kind}:${d.target}`)).toEqual([
       'check-type:file-exists',
     ]);
+  });
+
+  /**
+   * v14 A5-4b-2：`template`/`gateway-profile` 进表后的两笔账，一处一格、各证一件事。
+   *
+   * ①**未迁的 stance 得有样本可指**。上面那格现在断的是 `unmigrated` 为空——空数组证不了「只披露不判」，
+   * 所以这里喂一枚真还没进表的 kind（`channel`）把那条 stance 继续钉住；判据一字没改。
+   * ②**翻面的代价**：子流程模板名与档名从今天起是可断的账（以前连 dangling 都不进）。
+   * 档名那笔尤其要留字：`current`（生效档）与空间钉档是两处引用同一枚目标，删档时人要的是「两处都得改」。
+   */
+  it('A5-4b-2：未迁 kind 的 stance 由 `channel` 继续样本化；template/gateway-profile 自此落 dangling', () => {
+    const raw = [...scanRawReferences(fixtureDataDir()), { face: 'space' as const, id: 'demo', name: '演示项目', via: 'notify', kind: 'channel', target: 'chan-wecom' }];
+    const index = buildReferenceIndex([], raw);
+    expect(index.unmigrated).toEqual([{ kind: 'channel', targets: ['chan-wecom'], refs: 1 }]);
+    // 判不了的类绝不进 dangling：那等于替「还没迁」这一类造一条「删了会断」的假账
+    expect(index.dangling.some((d) => d.kind === 'channel')).toBe(false);
+
+    expect(index.dangling.filter((d) => d.kind === 'template').map((d) => `${d.kind}:${d.target}·${d.by.length}`)).toEqual([
+      'template:fallback·1',
+      'template:sub-flow·1',
+    ]);
+    expect(index.dangling.filter((d) => d.kind === 'gateway-profile').map((d) => `${d.kind}:${d.target}·${d.by.length}`)).toEqual([
+      'gateway-profile:free·2',
+    ]);
+  });
+
+  it('运行时变量槽**不是引用**：`pipeline.template` 写 `{{…}}` 既不建边也不进悬挂（A5-4b-2 进表后才露出来的那类假账）', () => {
+    // 出厂模板 `builtin-issue-triage` 真就这么写：子流程走哪张图由上游节点在运行时定。
+    // 以前这一串只混在 `unmigrated` 的计数里看不见；模板进表后若不剔掉，注册中心就会报一条「删了会断」的假悬挂。
+    const graphWith = (tpl: string): DagGraph => ({
+      version: 1,
+      name: 'var-slot',
+      nodes: [{ id: 'n1', type: 'pipeline', label: '子流程', config: { pipeline: { template: tpl } } }],
+      edges: [],
+      metadata: { createdAt: '', updatedAt: '' },
+    });
+    const vars = refsFromGraph(graphWith('{{triage.artifact.extra.suggestedTemplate}}'), 'var-slot');
+    expect(vars.filter((r) => r.kind === 'template')).toEqual([]);
+    // 剔除只针对那一格，不是把整个节点的账洗掉：节点型那枚引用照记
+    expect(vars.map((r) => `${r.kind}·${r.via}`)).toEqual(['node-type·nodes[0].type']);
+    // 拼出来的名字仍然是一枚引用（它今天确实指不到任何一张图，该进 dangling——判据窄到「整串就是一枚变量」）
+    expect(refsFromGraph(graphWith('fix-{{x}}'), 'var-slot').filter((r) => r.kind === 'template').map((r) => r.target)).toEqual(['fix-{{x}}']);
+    // 建边一侧同样不受牵连：真写了图名的那一格照旧建边
+    expect(refsFromGraph(graphWith('sub-flow'), 'var-slot').filter((r) => r.kind === 'template').map((r) => r.target)).toEqual(['sub-flow']);
   });
 
   it('同一枚目标被多处引用：by 逐条列全（删除时要把人要回去改的位置一次给够）', () => {
@@ -207,9 +251,9 @@ describe('模板声明面 requires（v14-T3）', () => {
         { kind: 'model', hint: '任一模型即可，不点名' },
         { kind: 'skill', id: 'skills/y/SKILL.md' },
         { kind: 'rule', id: 'docs/always.md' },
-        // 留一枚**还没迁进表**的 kind 在这套 fixture 里：A5-3 把 repo、A5-4b-1 把 role 接走之后，
-        // 「未迁的 kind 只披露」这条老账总得有个样本可指（template 是下一棒的替身）。
-        { kind: 'template', id: 'issue-flow' },
+        // 留一枚**还没迁进表**的 kind 在这套 fixture 里：A5-3 把 repo、A5-4b-1 把 role、A5-4b-2 把
+        // template/gateway-profile 接走之后，「未迁的 kind 只披露」这条老账总得有个样本可指（channel 是下一棒的替身）。
+        { kind: 'channel', id: 'chan-1' },
       ],
       metadata: { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
     });
@@ -225,7 +269,7 @@ describe('模板声明面 requires（v14-T3）', () => {
       'requires[0].id=model:gpt-4o-mini',
       'requires[2].id=skill:skills/y/SKILL.md',
       'requires[3].id=rule:docs/always.md',
-      'requires[4].id=template:issue-flow',
+      'requires[4].id=channel:chan-1',
     ]);
   });
 
@@ -247,9 +291,10 @@ describe('模板声明面 requires（v14-T3）', () => {
     const miss = buildReferenceIndex([entry({ model: '别的型号' })], raw);
     // fixture 的节点还写着 `agentKind: 'pi'`——A3-2 起这一类判得了死活，按 kind 取 model 那格的老账
     expect(miss.dangling.filter((d) => d.kind === 'model').map((d) => `${d.kind}:${d.target}`)).toEqual(['model:gpt-4o-mini']);
-    // 改口入账（A5-1 → A5-2 → A5-3 → A5-4 → A5-4b-1）：`skill`/`rule`/`repo`/`check-type`/`role` 自此都不在 unmigrated 里，
-    // 点名没登记就是**可断的账**；这份名单里剩下的那枚 `template` 是下一棒的替身（模板还没进表）
-    expect(miss.unmigrated.map((u) => u.kind)).toEqual(['template']);
+    // 改口入账（A5-1 → A5-2 → A5-3 → A5-4 → A5-4b-1 → A5-4b-2）：`skill`/`rule`/`repo`/`check-type`/`role`
+    // 与 `template`/`gateway-profile` 自此都不在 unmigrated 里，点名没登记就是**可断的账**；
+    // 这份名单里剩下的那枚 `channel` 是下一棒的替身（通道还没进表）
+    expect(miss.unmigrated.map((u) => u.kind)).toEqual(['channel']);
     expect(miss.dangling.filter((d) => d.kind === 'skill').map((d) => d.target)).toEqual(['skills/y/SKILL.md']);
     expect(miss.dangling.filter((d) => d.kind === 'rule').map((d) => d.target)).toEqual(['docs/always.md']);
   });

@@ -19,7 +19,11 @@ export function isViewEntry(entry: RegistryEntryView): boolean {
   return entry.view === true;
 }
 
-/** 盘上没被认出的残条（server 只披露不清除；why 是 server 的一句人话，原样转述） */
+/**
+ * 照读时的一句话（server 只披露不清除；why 是 server 的一句人话，原样转述）。
+ * 两种行都有：渲不出条目的坏行，以及**条目照渲、旁边要补一句**的落差行（文件名≠图内 name 等）——
+ * 所以这一栏的文案不许说成「没被认出」，见 `rejectedSummary`。
+ */
 export interface RegistryRejectedRow {
   id: string;
   why: string;
@@ -65,8 +69,9 @@ export interface KindGroup {
  * 空表是正读数不是错误），entries 里冒出 knownKinds 之外的 kind 时追加在尾部（不静默吞）。
  * `viewKinds` 决定那一组是不是视图组——以 server 的清单为准而不是「这一组恰好有条目且都带 view」，
  * 视图组暂时探不出货（比如清单为空）也该说清「这一类不用登记」。
- * `viewHomes` 逐 kind 带上「正身在哪儿」：四枚视图 kind 里 `role` 住角色库、其余三枚住代码，
- * 拿一句「版本自带的内置清单」去描述用户自己建的岗位就是说假话。
+ * `viewHomes` 逐 kind 带上「正身在哪儿」：六枚视图 kind 里 `agent-kind`/`node-type`/`check-type` 住代码，
+ * `role`/`template`/`gateway-profile` 住用户盘（角色库、模板、网关设置那一面）。
+ * 拿一句「版本自带的内置清单」去描述用户自己建的岗位/模板/网关档就是说假话。
  */
 export function groupEntriesByKind(
   entries: RegistryEntryView[],
@@ -100,6 +105,29 @@ const SOURCE_LABELS: Record<string, string> = {
 
 export function sourceLabel(source: string): string {
   return SOURCE_LABELS[source] ?? `未识别来源「${source}」`;
+}
+
+/**
+ * 视图项在「启停」那一格画什么（纯函数，组件只照读——和 `whenLabels` 同一批可测的画法件）。
+ *
+ * 默认话术是「清单里没有它就用不了，所以没有停用这一格」，但 **`gateway-profile` 是例外**：
+ * 网关那一面自己有 `enabled` 键，一个停用的档真跑不了。镜子必须照出那一格，否则「清单里有就能用」
+ * 这句在停用档面前就是假话，而预检那边已经按 `enabled` 收窄过了（两面向同一件事说两种话）。
+ * 照读不等于给开关：这一格永远不可点，启停的正身在那一面。
+ */
+export function viewEnabledCell(entry: RegistryEntryView, home?: string): { text: string; title: string } {
+  if (entry.enabled === false) {
+    return {
+      text: '停用中',
+      title: `这一项在${home ?? '它自己的那一面'}里是停用状态：注册表只照读，启停不在这里按`,
+    };
+  }
+  return {
+    text: '—',
+    title: home
+      ? `这一类是现算出来的（${home}）：那一面里没有它，画布上也就用不了它，没有「停用」这一格`
+      : '现算清单没有启停这一格：清单里有就能用',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +335,12 @@ const SPEC_FIELD_LABELS: Record<string, string> = {
   origin: '远端仓',
   // check-type（v14 A5-4）：spec 里第一枚布尔——`false` 说的是「人看一眼」，与行首那句 label 同源
   machine: '引擎实跑',
+  // template（v14 A5-4b-2， graphs 盘现算）：节点数是读数，0 是「一张空图」而不是「没读出来」
+  nodes: '节点数',
+  description: '说明',
+  // gateway-profile（v14 A5-4b-2，网关盘现算）：这里只有引用与读数，`apiKey` 从不进条目（所以也没有对应键）
+  baseUrl: '网关地址',
+  keyConfigured: '配了密钥',
 };
 
 export interface SpecRow {
@@ -463,7 +497,9 @@ export function probeNote(res: RegistryProbeResponse | undefined, failed: string
 /** rejected 的一句话总述（表前披露用；不代清、不提供批量清除） */
 export function rejectedSummary(rejected: RegistryRejectedRow[]): string | null {
   if (rejected.length === 0) return null;
-  return `另有 ${rejected.length} 条没被认出的记录（盘上残留或旧版写入，server 只披露不清除），不计入下表：`;
+  // 这一栏两种行都有：压根渲不出条目的坏行，以及**条目照渲、旁边要补一句**的落差行（文件名≠图内 name 等）。
+  // 所以不能说成「N 条没被认出」——对在表上明晃晃摆着的那一行就是假话，而用户会以为整组读数都不可信。
+  return `另有 ${rejected.length} 条照读时的一句话（server 只披露不清除）：渲不出条目的那类不进下表，条目在表上的那类是它旁边要补的话：`;
 }
 
 /** 时间戳 → 人话（读不出就原样挂出，不冒充空串是「没有」） */

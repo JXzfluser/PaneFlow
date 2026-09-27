@@ -5667,6 +5667,18 @@ describe('v14-R5 逐单能力快照（起单现场抄 spec，cap# 进账）', ()
     );
     // 密钥禁入 spec/快照（R1 边界②）：整份记录里都不该出现那串 apiKey
     expect(JSON.stringify(run.capabilityRefs)).not.toContain('sk-secret');
+    // A5-4b-2 的翻面账：`gateway-profile` 进表后，这一单吃的那一档自己也进账（以前那枚裸串只落 `unmigrated` 计数）。
+    // 它是**现役能力**这一问的正确答案（钉哪一档就是这一单的能力面之一），但同一张图跨这一刀会有两个 `cap#`——
+    // 那一刀是版本带来的，历史单吃自己落册的副本一字不动（上面那两条断言钉的就是这件事）。
+    expect(refsOf(run, 'gateway-profile')).toEqual([
+      {
+        kind: 'gateway-profile',
+        id: 'gateway-profile:free',
+        specSha: contentSha({ label: '免费档', baseUrl: 'https://gw.invalid', freeModel: 'gpt-4o-mini', keyConfigured: true }),
+        spec: { label: '免费档', baseUrl: 'https://gw.invalid', freeModel: 'gpt-4o-mini', keyConfigured: true },
+        via: ['gateway·current'],
+      },
+    ]);
   });
 
   it('起单之后编辑条目：历史 run 的读数一字不动（v0.1「活行 sha」判死的那条病）', async () => {
@@ -5680,10 +5692,12 @@ describe('v14-R5 逐单能力快照（起单现场抄 spec，cap# 进账）', ()
     expect(JSON.stringify(run.capabilityRefs)).toBe(before);
     expect(run.capabilitySha).toBe(capBefore);
     // 盘上那份也还是起单时的原文——快照不是「读时再去查活行」
+    // 按 kind 取而不是数 `[0]`：A5-4b-2 起 `gateway-profile` 也进账，快照按 `kind\0id` 排，
+    // 字母序把网关档排在 model 之前——位置是排序的副产品，这一格要钉的是「历史那份没改」。
     const persisted = JSON.parse(
       fs.readFileSync(path.join(dataDir, 'spaces', 'default', 'runs', `${run.runId}.json`), 'utf8'),
     ) as RunRecord;
-    expect(persisted.capabilityRefs?.[0]?.spec).toEqual({ model: 'gpt-4o-mini' });
+    expect(refsOf(persisted, 'model')[0]?.spec).toEqual({ model: 'gpt-4o-mini' });
   });
 
   it('再起一单＝重新现读：编辑后的能力面进新单的 cap#（等臂跨臂变更就此暴露）', async () => {
@@ -5693,7 +5707,7 @@ describe('v14-R5 逐单能力快照（起单现场抄 spec，cap# 进账）', ()
     new RegistryStore(dataDir).update(entry.id, { spec: { model: 'gpt-4o-mini', note: '换了一版配置' } });
     const second = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
     expect(second.capabilitySha).not.toBe(first.capabilitySha);
-    expect(second.capabilityRefs?.[0]?.spec).toEqual({ model: 'gpt-4o-mini', note: '换了一版配置' });
+    expect(refsOf(second, 'model')[0]?.spec).toEqual({ model: 'gpt-4o-mini', note: '换了一版配置' });
     // 同配置连起两单：cap# 相等（等臂第四枚判据的正读数，不受 runId 等噪声影响）
     const third = await runToCompletion(serialGraph(), fs.mkdtempSync(path.join(os.tmpdir(), 'pf-r5-')));
     expect(third.capabilitySha).toBe(second.capabilitySha);

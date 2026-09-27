@@ -24,6 +24,7 @@ import {
   REGISTRY_NAME_FIELD,
   sourceLabel,
   specRows,
+  viewEnabledCell,
   whenLabels,
   type RegistryEntryView,
   type RegistryFormField,
@@ -533,6 +534,7 @@ export function RegistryView() {
                   const pNote = probeNote(probe?.res, probe?.err ?? null);
                   const dot = healthDot(readout);
                   const view = isViewEntry(e);
+                  const enabledCell = viewEnabledCell(e, g.home);
                   const when = whenLabels(view, g.home);
                   return (
                     <Fragment key={e.id}>
@@ -546,15 +548,8 @@ export function RegistryView() {
                         <td><span className="registry-chip">{sourceLabel(e.source)}</span></td>
                         <td>
                           {view ? (
-                            <span
-                              className="registry-label"
-                              title={
-                                g.home
-                                  ? `这一类是现算出来的（${g.home}）：那一面里没有它，画布上也就用不了它，没有「停用」这一格`
-                                  : '现算清单没有启停这一格：清单里有就能用'
-                              }
-                            >
-                              —
+                            <span className="registry-label" title={enabledCell.title}>
+                              {enabledCell.text}
                             </span>
                           ) : (
                             <input

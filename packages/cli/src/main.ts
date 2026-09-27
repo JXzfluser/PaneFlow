@@ -652,7 +652,14 @@ async function cmdRegistry(io: CliIo, baseUrl: string, args: Args): Promise<numb
         io.out(`· ${kindLabel(body)(kind)}（${body.entries.filter((e) => e.kind === kind).length} 项）`);
         for (const e of body.entries.filter((x) => x.kind === kind)) io.out(entryLine(io, e));
       }
-      for (const r of body.rejected) io.out(`  ${paint(io, '33', `⚠ 本机不认（只披露不清除）：${r.id} —— ${r.why}`)}`);
+      // 这一栏是 server 的「照读注账」：既包含渲不出条目的坏行，也包含**条目照渲、但要补一句**的落差
+      // （文件名≠图内 name、档名缺失回落 id……）。所以标题不许说成「本机不认」——那对在表上明晃晃摆着的
+      // 那一行就是假话（A5-4b-2 起这一类真出现了）。措辞只保留两处共有的不变量：只披露、不清除。
+      // 单独起一节而不是把 ⚠ 行直接续在最后一组后面（同缩进）：那会让人把注账读成「网关档那一组的问题」。
+      if (body.rejected.length) {
+        io.out(`· 照读时的一句话（${body.rejected.length} 条，只披露不清除：渲不出条目的坏行 + 条目在表上、旁边要补一句的落差行）`);
+        for (const r of body.rejected) io.out(`  ${paint(io, '33', `⚠ ${r.id} —— ${r.why}`)}`);
+      }
       const s = body.refSummary;
       if (s) {
         io.out(

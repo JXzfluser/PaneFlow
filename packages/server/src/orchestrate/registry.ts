@@ -28,7 +28,12 @@ import { registryViewEntries, viewHomeOf, viewKindWriteWhy } from './registry-vi
  *  - 目录不存在/戳不存在 → 不是错误，是「还没登记过任何东西」的正读数（`load()` 返回空表，不写盘）。
  */
 
-/** 全表读取结果：`rejected` 是盘面里有但本机不认的条目（只披露不清除——手改盘面/旧版本写的都算） */
+/**
+ * 全表读取结果。`rejected` 是**照读时的一句话**，两种行都有：渲不出条目的坏行（手改盘面/旧版本写的/
+ * 视图 kind 被塞进 entries.json），以及条目照渲、但旁边要补一句的落差行（A5-4b-2 起有实例：模板文件名
+ * ≠ 图内 name、档名缺失回落 id）。所以这一栏不叫「本机不认的条目」——对在表上明晃晃摆着的那一行是假话。
+ * 共同不变量只有一条：只披露，不清除。
+ */
 export interface RegistrySnapshot {
   entries: RegistryEntry[];
   rejected: { id: string; why: string }[];
@@ -303,8 +308,8 @@ function compareEntries(a: RegistryEntry, b: RegistryEntry): number {
 }
 
 /** 盘上那条视图项的披露文案（进 `rejected`：只说清为什么不生效，不替人删——它是手放进去的，人该看见）。
- *  正身那句取自 `viewHomeOf`：视图 kind 从今往后有四枚、其中 `role` 的正身是用户数据而不是出厂清单，
- *  措辞在 registry-view 一处给，这里不另抄一份「内置能力清单」。 */
+ *  正身那句取自 `viewHomeOf`：视图 kind 从今往后有六枚、其中三枚（`role`/`template`/`gateway-profile`）
+ *  的正身是用户数据而不是出厂清单，措辞在 registry-view 一处给，这里不另抄一份「内置能力清单」。 */
 function shadowedOnDiskWhy(kind: string): string {
   return (
     `「${kind}」这一类是视图 kind（条目由${viewHomeOf(kind)}现算出来），读端只吃现算那份，盘上这条不生效（不占 id、不参与引用账与预检）。` +

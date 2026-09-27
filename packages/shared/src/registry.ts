@@ -186,6 +186,48 @@ export interface RoleRegistrySpec {
 }
 
 /**
+ * `template`（v14 A5-4b-2）——「本机在册的编排模板有这么几张」。正身住在 `<dataDir>/graphs/*.json`
+ * （写入面是模板 CRUD，消费在 `store.getGraph`——引擎按**文件名**取图），注册表这一枚仍是镜子：
+ *  - 机器值（文件名去 `.json`）就是条目的 `name`：`nodes[i].config.pipeline.template` 与
+ *    `fallbackTemplate` 写的正是这一串，`store.getGraph()` 也是拿它当键查的，认不出它等于把现网
+ *    嵌套流程全洗成悬挂；图内 `graph.name` 与文件名不一致时**以文件名为准**并披露（那正是引擎
+ *    真取不到图的那一格，注册表跟着文件名说才算说对）；
+ *  - `nodes` 是**读数**（这张图有几个节点），不是判据也不参与任何判定；`description` 是用户在
+ *    模板元数据里写的那句说明（画法级的话，进快照只是让账能解释自己）；
+ *  - 图的内容（节点、边、`requires`）**一概不进 spec**：那是一张图自己的账，已经各有消费面
+ *    （`validateDag`、预检、`graphSha`），抄进注册表就是第二份会腐烂的副本。
+ */
+export interface TemplateRegistrySpec {
+  /** 节点数（现算那趟从图里读到的实数；空图 0 是正读数，不是缺键） */
+  nodes: number;
+  /** 模板元数据里那句说明（缺省=没写过，不拿空串占位） */
+  description?: string;
+}
+
+/**
+ * `gateway-profile`（v14 A5-4b-2）——「本机配了这么几档模型网关」。正身住在 `gateway.json`
+ * 的 `profiles[]`（写入面是 `POST /api/gateway/profile`，消费在注入现场的 `buildGatewayEnv`/限流），
+ * 这一枚把「钉档」这件事从裸串变成有正身可指的引用：`SpaceProfile.gatewayProfile`、
+ * `model.spec.gatewayProfile`、文档级 `current` 发的都是**档 id 原样**。
+ *
+ * **`apiKey` 永不进 spec，也永不进引用账与快照**（R1 边界②：密钥只在盘上流转；连 `/api/gateway`
+ * 都只回 `keyConfigured`）。这里因此只带一枚 `keyConfigured` 布尔——它说的是「这一档能不能真跑」
+ * 的可行动读数，而不是密钥本身。
+ * 「现在生效的是哪一档」是**文档级**读数（`GatewayDoc.current`），不进任何条目：把它塞进某一档的
+ * spec 就等于「换一档 = 两枚条目同时改 specSha」，而换档不是能力面变了。
+ */
+export interface GatewayProfileRegistrySpec {
+  /** 档名（用户在网关那一面起的名字，画法；**不算引用写法**） */
+  label: string;
+  /** 网关根地址（不是密钥；`/api/gateway` 本来就外发这一格） */
+  baseUrl?: string;
+  /** 该档的免费档型号（裸串；它同时是一条指向 `model` 的引用，住在引用账那边） */
+  freeModel?: string;
+  /** 配没配密钥（只报布尔，不报值） */
+  keyConfigured: boolean;
+}
+
+/**
  * kind → spec 形状。**A1 落 `model` 当样板，A3-2 加 `agent-kind`（视图 kind）**；
  * 其余 kind 由 A3-x 逐片加成员，每片各带一条「等臂不破」断言。
  */
@@ -198,6 +240,8 @@ export interface RegistrySpecMap {
   'node-type': NodeTypeRegistrySpec;
   'check-type': CheckTypeRegistrySpec;
   role: RoleRegistrySpec;
+  template: TemplateRegistrySpec;
+  'gateway-profile': GatewayProfileRegistrySpec;
   mcp: McpRegistrySpec;
 }
 
@@ -208,15 +252,27 @@ export type RegistryKind = keyof RegistrySpecMap;
  * 加了 spec 成员忘了在这里挂号 = 编译期红，不是运行面「静默不认」。
  * 顺序即注册中心的分组序（用户自己登记的东西排前，出厂那几十行不糊住自己的账）。
  */
-export const REGISTRY_KINDS = ['model', 'skill', 'rule', 'repo', 'agent-kind', 'node-type', 'check-type', 'role', 'mcp'] as const;
+export const REGISTRY_KINDS = [
+  'model',
+  'skill',
+  'rule',
+  'repo',
+  'agent-kind',
+  'node-type',
+  'check-type',
+  'role',
+  'template',
+  'gateway-profile',
+  'mcp',
+] as const;
 
 /**
- * **视图 kind**：条目由别处现算出来（出厂清单住在代码里，`role` 的名册住在 `roles.json`），
- * `entries.json` 里永远没有它们。
- * 单列一枚清单而不写死在某个 if 里：写入面拒、UI 收控件、文案说「出厂登记不可删」三处都要用同一个答案
+ * **视图 kind**：条目由别处现算出来（出厂清单住在代码里，`role`/`template`/`gateway-profile` 的正身
+ * 住在盘上），`entries.json` 里永远没有它们。
+ * 单列一枚清单而不写死在某个 if 里：写入面拒、UI 收控件、文案说「这一类不在这里登记」三处都要用同一个答案
  * ——三份 if 迟早对不上，那就是第二份判据。
  */
-export const REGISTRY_VIEW_KINDS = ['agent-kind', 'node-type', 'check-type', 'role'] as const;
+export const REGISTRY_VIEW_KINDS = ['agent-kind', 'node-type', 'check-type', 'role', 'template', 'gateway-profile'] as const;
 
 export function isRegistryViewKind(kind: unknown): boolean {
   return typeof kind === 'string' && (REGISTRY_VIEW_KINDS as readonly string[]).includes(kind);
@@ -314,6 +370,8 @@ const AGENT_KIND_SPEC_KEYS = ['binary'] as const;
 const NODE_TYPE_SPEC_KEYS = ['label', 'icon', 'group', 'order', 'hint'] as const;
 const CHECK_TYPE_SPEC_KEYS = ['label', 'hint', 'machine'] as const;
 const ROLE_SPEC_KEYS = ['label', 'agentKind'] as const;
+const TEMPLATE_SPEC_KEYS = ['nodes', 'description'] as const;
+const GATEWAY_PROFILE_SPEC_KEYS = ['label', 'baseUrl', 'freeModel', 'keyConfigured'] as const;
 const MCP_SPEC_KEYS = ['command', 'args', 'note'] as const;
 
 export type RegistryParse<T> = { ok: true; value: T } | { ok: false; why: string };
@@ -338,6 +396,8 @@ const SPEC_PARSERS: { [K in RegistryKind]: (raw: unknown) => RegistryParse<Regis
   'node-type': parseNodeTypeSpec,
   'check-type': parseCheckTypeSpec,
   role: parseRoleSpec,
+  template: parseTemplateSpec,
+  'gateway-profile': parseGatewayProfileSpec,
   mcp: parseMcpSpec,
 };
 
@@ -565,6 +625,69 @@ export function parseRoleSpec(raw: unknown): RegistryParse<RoleRegistrySpec> {
     const kind = o.agentKind.trim();
     if (!kind) return { ok: false, why: 'agentKind 给了就得是非空字符串（不留空串占位：它是引用写法之一）' };
     spec.agentKind = kind;
+  }
+  return { ok: true, value: spec };
+}
+
+/**
+ * `template` 的 spec 机检（v14 A5-4b-2）。同 `role`：**只有 graphs 盘现算会造这一形状**（视图 kind，
+ * 写入面一律拒），但仍走同一张分派表清洗。
+ * `nodes` 必须是**非负整数**：它是「这张图有几个节点」的读数，`1.5`/`-2`/`'3'` 都不是读数而是脏盘——
+ * 现算那趟本该从图里实读出整数，脏值只可能来自手工塞进 `entries.json` 的残记录（那条路要靠披露说清，
+ * 不是靠这里悄悄修平）。`0` 是正读数（空图真存在），不给它任何特殊语义。
+ * `description` 空了整键不发（纯注释键，同 `model`/`skill`）。
+ */
+export function parseTemplateSpec(raw: unknown): RegistryParse<TemplateRegistrySpec> {
+  const SHAPE = 'template 的配置详情必须是 {nodes, description?}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(TEMPLATE_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  if (typeof o.nodes !== 'number' || !Number.isInteger(o.nodes) || o.nodes < 0) {
+    return { ok: false, why: `${SHAPE}；nodes 必须是非负整数（这张图的节点数是实读出来的，负数/小数/字符串都不是读数）` };
+  }
+  const spec: TemplateRegistrySpec = { nodes: o.nodes };
+  if (o.description !== undefined) {
+    if (typeof o.description !== 'string') return { ok: false, why: 'description 必须是字符串' };
+    const description = o.description.trim();
+    if (description) spec.description = description;
+  }
+  return { ok: true, value: spec };
+}
+
+/**
+ * `gateway-profile` 的 spec 机检（v14 A5-4b-2）。同 `role`：视图 kind，只有网关盘现算会造这一形状。
+ * `label` 必填非空（档名是网关那一面用户自己起的，注册表不代起）；`baseUrl`/`freeModel` 给了就得
+ * 是非空串（空串占位＝一条永远指不到的裸引用，同 `model.gatewayProfile`）；
+ * `keyConfigured` **必填布尔、不猜默认值**——它是「这一档能不能真跑」的可行动读数，缺省当 `false`
+ * 会把配好密钥的档说成没配（假红），缺省当 `true` 会把裸档说成能跑（假绿），两个方向都不可原谅，
+ * 所以照 `check-type.machine` 那条姿态：宁拒不错放。
+ * `apiKey` 在这一面**根本不出现**：键名不在 `GATEWAY_PROFILE_SPEC_KEYS` 里，脏盘上写了它＝未知键即拒
+ * （不是「丢掉就好」——把密钥挪进注册表条目是一件必须响亮失败的事）。
+ */
+export function parseGatewayProfileSpec(raw: unknown): RegistryParse<GatewayProfileRegistrySpec> {
+  const SHAPE = 'gateway-profile 的配置详情必须是 {label, baseUrl?, freeModel?, keyConfigured}';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, why: SHAPE };
+  const o = raw as Record<string, unknown>;
+  const unknown = Object.keys(o).filter((k) => !(GATEWAY_PROFILE_SPEC_KEYS as readonly string[]).includes(k));
+  if (unknown.length) return { ok: false, why: `${SHAPE}；含未知键 ${unknown.join('/')}` };
+  const label = typeof o.label === 'string' ? o.label.trim() : '';
+  if (!label) return { ok: false, why: `${SHAPE}；label 必须是非空字符串（这一档叫什么，网关盘上写着，注册表不代起）` };
+  if (typeof o.keyConfigured !== 'boolean') {
+    return { ok: false, why: `${SHAPE}；keyConfigured 必须是布尔（配没配密钥是「这一档能不能跑」的读数，没有默认值可猜）` };
+  }
+  const spec: GatewayProfileRegistrySpec = { label, keyConfigured: o.keyConfigured };
+  if (o.baseUrl !== undefined) {
+    if (typeof o.baseUrl !== 'string') return { ok: false, why: 'baseUrl 必须是字符串（网关根地址；密钥不在这面出现）' };
+    const baseUrl = o.baseUrl.trim();
+    if (!baseUrl) return { ok: false, why: 'baseUrl 给了就得是非空字符串（不留空串占位）' };
+    spec.baseUrl = baseUrl;
+  }
+  if (o.freeModel !== undefined) {
+    if (typeof o.freeModel !== 'string') return { ok: false, why: 'freeModel 必须是字符串（该档免费档型号的裸引用）' };
+    const freeModel = o.freeModel.trim();
+    if (!freeModel) return { ok: false, why: 'freeModel 给了就得是非空字符串（不留空串占位：它是引用写法之一）' };
+    spec.freeModel = freeModel;
   }
   return { ok: true, value: spec };
 }

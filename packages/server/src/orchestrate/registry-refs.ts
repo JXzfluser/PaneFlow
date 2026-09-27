@@ -84,6 +84,17 @@ export function refsFromRole(role: Role): RawReference[] {
 }
 
 /**
+ * 整串就是一枚运行时变量（`{{triage.artifact.extra.suggestedTemplate}}`）：这一格**没有指名任何能力**，
+ * 引擎在派发前才把它的值填进来。算引用就是拿「以后会指到谁」冒充「现在指着谁」——
+ * 既不该出现在引用账的边上，也不该出现在悬挂里（自 A5-4b-2 模板进表后，`pipeline.template` 是模板类
+ * 裸串的主要出处，这类占位以前只混在 `unmigrated` 计数里看不见，进表后若不剔除就会报出一条假悬挂）。
+ * 判据收得很窄：**整串**是 `{{ … }}` 才算，`fix-{{x}}` 那种拼出来的名字仍然是一枚引用（它确实指不到）。
+ */
+function isRuntimeVariableSlot(target: string): boolean {
+  return /^\{\{.*\}\}$/.test(target.trim());
+}
+
+/**
  * 一张模板/一次实发 graph → 它的节点级裸串引用。
  * `name` 由调用方给：在册模板传 `graph.name`（也就是 `pipeline.template` 指向的那枚），
  * run 的出场 graph 同样传它的 `graph.name`——两处同一枚键，反查才对得上。
@@ -101,7 +112,7 @@ export function refsFromGraph(graph: DagGraph, name: string): RawReference[] {
       out.push({ ...by, via: `nodes[${i}].config.pipeline.fallbackTemplate`, kind: 'template', target: cfg.pipeline.fallbackTemplate });
     (cfg.checks ?? []).forEach((c, j) => out.push({ ...by, via: `nodes[${i}].config.checks[${j}].type`, kind: 'check-type', target: c.type }));
   });
-  return out;
+  return out.filter((r) => !isRuntimeVariableSlot(r.target));
 }
 
 /**

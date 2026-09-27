@@ -9,6 +9,7 @@ import {
   type RegistryEntry,
 } from '@paneflow/shared';
 import { AGENT_KINDS, agentBinaryName } from '../api/agent-kinds.js';
+import { readGatewayRoster, type GatewayProfile } from '../api/gateway.js';
 import { rolesPath, type Role } from './roles.js';
 
 /**
@@ -31,8 +32,9 @@ const BOOT_AT = new Date().toISOString();
 /**
  * 现算要吃的上下文。A5-4b-1 之前视图 kind 的正身全在代码里，builders 不需要任何输入；
  * `role` 是**第一枚「条目由现盘现算」**的视图 kind（名册 `roles.json` 是用户数据，不是出厂清单），
- * 所以这里必须给得到 dataDir。参数写成对象而不是裸字符串：下一枚现盘视图（`template` 吃 `graphs/`、
- * `gateway-profile` 吃 `gateway.json`）要的也许不止这一枚，届时加键不动调用方。
+ * 所以这里必须给得到 dataDir。参数写成对象而不是裸字符串：现盘的三枚（`role` 吃 `roles.json`、
+ * `template` 吃 `graphs/`、`gateway-profile` 吃 `gateway.json`）各自的根都在 dataDir 下，
+ * 届时加键不动调用方。
  */
 export interface ViewContext {
   dataDir: string;
@@ -228,6 +230,216 @@ function roleEntries(ctx: ViewContext): ViewBuild {
 }
 
 /**
+ * `template`（v14 A5-4b-2）：`graphs/*.json` 那张模板盘的渲版。与 `role` 同属**正身在盘上**的视图 kind，
+ * 判据同源、脏法不同（这里脏的是「一张图读不出」而不是「名册读不出」，所以披露逐文件出）：
+ *  1. **机器值是文件名去 `.json`，不是图内的 `graph.name`**：引擎取图走 `store.getGraph(id)`，那个 id
+ *     正是文件名；两者不一致时（手拷进来的图、改名没改文件名的图）跟着 `graph.name` 说就会做出
+ *     「注册表里有这张、派活时拿不到」的假账。所以条目一律按文件名渲，并把不一致**披露出来**
+ *     （那一格正是引擎真取不到图的格子，说出来才有得可修）；
+ *  2. **读不出的图不渲条目**：JSON 坏/顶层不是对象/`nodes` 不是数组时，「节点数」这格没有读数——
+ *     拿 `0` 冒充就是「一张空模板」，而空图（`nodes: []`）是**另一种正读数**，两者必须分家。
+ *     图在盘上这个事实由披露句承载（「这张图画不出来」），不由条目承载；
+ *  3. **图的内容一概不进 spec**：节点、边、`requires` 各有正身（`validateDag`、预检、`graphSha`），
+ *     抄进注册表就是第二份会腐烂的副本。`nodes`（节点数）与 `description`（元数据里那句说明）
+ *     只是让这一行能解释自己。
+ */
+function templateEntries(ctx: ViewContext): ViewBuild {
+  const dir = path.join(ctx.dataDir, 'graphs');
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { entries: [], disclosures: [] };
+    return {
+      entries: [],
+      disclosures: [{ id: 'graphs/', why: `模板目录读不出（${(err as Error).message}）：「模板」这一组因此一条也渲不出来——这不是「本机没有模板」，是那一格读不动。` }],
+    };
+  }
+  const entries: RegistryEntry[] = [];
+  const disclosures: { id: string; why: string }[] = [];
+  // 键是**条目 id**（`registryId` 归一后的 slug）不是文件名：`a b.json` 与 `a-b.json` 是两个引擎都
+  // 取得到的文件（手改盘面写得出空格，`saveGraph` 的名正则只拦新建那一侧），却归一成同一枚条目 id——
+  // 注册表只能说一枚。大小写异名（`Foo`/`foo`）在大小写敏感的卷上同理撞车，只是 macOS 默认盘根本存不下两个文件。
+  const byEntryId = new Map<string, string>();
+  for (const file of files.sort((a, b) => a.localeCompare(b))) {
+    const stem = file.slice(0, -'.json'.length);
+    if (!stem) {
+      disclosures.push({ id: `graphs/${file}`, why: '这个文件名去掉了 `.json` 就什么都不是（`graphs/.json`）：引擎按文件名取图，这张图谁也叫不到——只披露不清除。' });
+      continue;
+    }
+    const id = registryId('template', stem);
+    const prior = byEntryId.get(id);
+    if (prior !== undefined) {
+      disclosures.push({
+        id,
+        why:
+          `两张图在注册表里归一成同一枚条目 id（${id}）：「${prior}」与「${stem}」（文件名不同、slug 相同）。` +
+          '引擎两张都取得到，但注册表只渲第一条（说「有两枚 template:x」就是假账）——把其中一枚改名。',
+      });
+      continue;
+    }
+    const built = readGraphFile(path.join(dir, file), file);
+    if (!built.ok) {
+      disclosures.push({ id: `graphs/${file}`, why: built.why });
+      continue;
+    }
+    byEntryId.set(id, stem);
+    if (built.innerName !== undefined && built.innerName !== stem) {
+      disclosures.push({
+        id,
+        why:
+          `这张图的文件名是「${stem}」而图里写的 name 是「${built.innerName}」：条目按**文件名**渲（引擎就是按文件名取图的），` +
+          '两处不一致时模板改名要连文件一起改，否则画布选名与派活取图会指到不同的地方。',
+      });
+    }
+    const raw = {
+      id,
+      kind: 'template' as const,
+      name: stem,
+      source: 'user' as const,
+      enabled: true,
+      createdAt: BOOT_AT,
+      updatedAt: BOOT_AT,
+      spec: { nodes: built.nodes, ...(built.description ? { description: built.description } : {}) },
+    };
+    const norm = normalizeRegistryEntry(raw);
+    if (!norm.ok) throw new Error(`模板盘算出了不合法的条目（${stem}）：${norm.why}`);
+    entries.push(norm.value);
+  }
+  return { entries, disclosures };
+}
+
+/**
+ * 单张图的严格读法：给出节点数＋那句说明＋图内 name；读不出就给一句能行动的 why。
+ * 只读，红线：视图面永不写盘（也不建目录——`Store` 构造期的 `mkdirSync` 是运行面的事）。
+ */
+function readGraphFile(
+  file: string,
+  basename: string,
+): { ok: true; nodes: number; description?: string; innerName?: string } | { ok: false; why: string } {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    return { ok: false, why: `这张图读不动（${(err as Error).message}）：不渲条目——「读不出」不等于「本机没这张模板」。` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return { ok: false, why: `这张图的 JSON 读不出（${(err as Error).message}）：引擎同样打不开它，所以这里不渲条目、只披露。` };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, why: `期望图对象，读到 ${basename} 顶层是 ${Array.isArray(parsed) ? 'array' : typeof parsed}：不渲条目。` };
+  }
+  const o = parsed as Record<string, unknown>;
+  if (!Array.isArray(o.nodes)) {
+    return { ok: false, why: `${basename} 的 nodes 不是数组（缺或类型不对）：节点数没有读数，拿 0 冒充就是「一张空模板」——那是另一种正读数，两者必须分家。` };
+  }
+  const metadata = o.metadata;
+  const description =
+    metadata !== null && typeof metadata === 'object' && typeof (metadata as { description?: unknown }).description === 'string'
+      ? (metadata as { description: string }).description.trim()
+      : '';
+  const innerName = typeof o.name === 'string' ? o.name.trim() : undefined;
+  return { ok: true, nodes: (o.nodes as unknown[]).length, ...(description ? { description } : {}), ...(innerName !== undefined ? { innerName } : {}) };
+}
+
+/**
+ * `gateway-profile`（v14 A5-4b-2）：网关盘 `profiles[]` 的渲版。逐条判据同 `role`（同一族「镜子不替数据编话」）：
+ *  - 机器值是**档 id 原样**：`SpaceProfile.gatewayProfile`、`model.spec.gatewayProfile` 与文档级 `current`
+ *    发的都是这一串，认不出它等于把现网所有钉档洗成悬挂；
+ *  - 没有可用 id（非对象/id 缺/空/非串）与同 id 的第二行都不渲条目、只披露（`readGateway` 的 `find`
+ *    只会用第一条，注册表说「有两个」而运行面只认一个是假账）；
+ *  - **`apiKey` 在这一面根本不出现**：条目只带 `keyConfigured` 布尔（R1 边界②：密钥只在盘上流转，
+ *    任何以网关盘为输入的推导器都不许把它带进返回值——`/api/gateway` 列表面同一姿态）；
+ *  - 「现在生效的是哪一档」（`GatewayDoc.current`）是**文档级**读数，不进任何条目：换档不是能力面变了，
+ *    把它塞进某一档的 spec 会让换档抖出 specSha。
+ */
+function gatewayProfileEntries(ctx: ViewContext): ViewBuild {
+  const roster = readGatewayRoster(ctx.dataDir);
+  if (!roster.ok) {
+    return {
+      entries: [],
+      disclosures: [
+        {
+          id: 'gateway.json',
+          why: `网关配置读不出（${roster.why}）：「网关档」这一组因此一条也渲不出来——这不是「本机没有档」，是那盘读不动。`,
+        },
+      ],
+    };
+  }
+  const entries: RegistryEntry[] = [];
+  const disclosures: { id: string; why: string }[] = [];
+  const seen = new Map<string, number>();
+  roster.rows.forEach((row, i) => {
+    const maybe = row as Partial<GatewayProfile> | null | undefined;
+    const id = typeof maybe?.id === 'string' ? maybe.id : '';
+    if (!id) {
+      disclosures.push({
+        id: `gateway.json profiles[${i}]`,
+        why: '这一档没有可用的 id（不是对象，或 id 缺/空/非串）：任何钉档都指不到它，所以这里不渲条目——只披露不清除，要留要删去网关那一面。',
+      });
+      return;
+    }
+    const prior = seen.get(id);
+    if (prior !== undefined) {
+      disclosures.push({
+        id: registryId('gateway-profile', id),
+        why:
+          `网关盘上有两枚 id「${id}」的档（第 ${prior + 1} 条与第 ${i + 1} 条）：读端只认第一条（与 ` +
+          '`readGateway` 的 find 同一把尺），第二条没渲成条目——去网关那一面把其中一枚改名或删掉。',
+      });
+      return;
+    }
+    seen.set(id, i);
+    const label = typeof maybe?.name === 'string' ? maybe.name.trim() : '';
+    if (!label) {
+      disclosures.push({
+        id: registryId('gateway-profile', id),
+        why: `档位「${id}」在盘上没有档名：注册中心这一行只能拿 id 称呼它（这不是替它起的名字）。`,
+      });
+    }
+    const optional = (key: 'baseUrl' | 'freeModel'): string | undefined => {
+      const v = maybe?.[key];
+      if (v === undefined) return undefined;
+      const trimmed = typeof v === 'string' ? v.trim() : '';
+      if (!trimmed) {
+        disclosures.push({
+          id: registryId('gateway-profile', id),
+          why: `档位「${id}」的 ${key} 不是可用的串（空或类型不对）：这一格没当值渲，也没当「没配」——去网关那一面看清那一格。`,
+        });
+        return undefined;
+      }
+      return trimmed;
+    };
+    const baseUrl = optional('baseUrl');
+    const freeModel = optional('freeModel');
+    const raw = {
+      id: registryId('gateway-profile', id),
+      kind: 'gateway-profile' as const,
+      name: id,
+      // 档是用户在本机配的，不是版本自带的（`source` 说出处；可写性由 `view` 标说，两条判据早已分家）
+      source: 'user' as const,
+      // 信封的 enabled 吃盘上那一格：`enabled` 缺省=配了就用（与 `upsertGatewayProfile` 的 ?? true 同一把尺）
+      enabled: maybe?.enabled !== false,
+      createdAt: BOOT_AT,
+      updatedAt: BOOT_AT,
+      spec: {
+        label: label || id,
+        ...(baseUrl !== undefined ? { baseUrl } : {}),
+        ...(freeModel !== undefined ? { freeModel } : {}),
+        keyConfigured: Boolean(maybe?.apiKey),
+      },
+    };
+    const norm = normalizeRegistryEntry(raw);
+    if (!norm.ok) throw new Error(`网关盘算出了不合法的条目（${id}）：${norm.why}`);
+    entries.push(norm.value);
+  });
+  return { entries, disclosures };
+}
+
+/**
  * 名册的严格读法（只读，红线：视图面永不写盘）。三种读数分开：
  *  - `ENOENT`＝还没建过角色库，是**正读数**（空名册、无披露）；
  *  - 读得动但解析不出/顶层不是数组＝**读不出**（调用方出披露，不渲空表冒充「没有岗位」）；
@@ -262,6 +474,8 @@ const VIEW_BUILDERS: { [K in (typeof REGISTRY_VIEW_KINDS)[number]]: ViewBuilder 
   'node-type': nodeTypeEntries,
   'check-type': checkTypeEntries,
   role: roleEntries,
+  template: templateEntries,
+  'gateway-profile': gatewayProfileEntries,
 };
 
 /**
@@ -282,15 +496,17 @@ export function registryViewEntries(ctx: ViewContext): ViewBuild {
  * `shadowedOnDiskWhy`）问的是同一件事——这一类的成员由谁决定——所以两处吃同一张表：写两份措辞迟早分叉，
  * 而没人会去比对两句拒答。
  *
- * 措辞**必须逐 kind 给**：前三枚的正身是代码（成员与配置由版本决定），`role` 的正身是角色库
- * （用户数据，由那一面决定）。拿「内置出厂项、由版本决定」去拒岗位的写请求，就是当着用户的面说假话——
- * 那一枚岗是他自己建的。
+ * 措辞**必须逐 kind 给**：前三枚的正身是代码（成员与配置由版本决定），后三枚（`role`/`template`/
+ * `gateway-profile`）的正身是用户数据（岗位在角色库、模板在画布那一面、档在网关那一面各已有写路径）。
+ * 拿「内置出厂项、由版本决定」去拒岗位的写请求，就是当着用户的面说假话——那一枚岗是他自己建的。
  */
 const VIEW_HOME: { [K in (typeof REGISTRY_VIEW_KINDS)[number]]: string } = {
   'agent-kind': '版本自带的 agent 类型清单（成员与配置由代码决定）',
   'node-type': '画布的节点类型清单（成员与配置由代码决定）',
   'check-type': '机检类型清单（成员与配置由代码决定）',
   role: '角色库那一面（岗位在那儿建、改、删；注册表只是它的镜子）',
+  template: '编排模板那一面（模板在那儿存、改、删；注册表只是它的镜子）',
+  'gateway-profile': '网关设置那一面（档位在那儿配、改、删；注册表只是它的镜子）',
 };
 
 /** 正身句子取值；调用方只在 `isRegistryViewKind` 为真之后进来（判据在 shared），表外 kind 不是这里要拦的事 */

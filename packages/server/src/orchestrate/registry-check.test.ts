@@ -14,7 +14,8 @@ import { registryViewEntries } from './registry-view.js';
  * v14-T3 起单前预检：模板 `requires` 槽 × 注册表 → 逐槽落点。
  * 钉的是三条姿态，一条都不能漂：
  *  1. 只有已迁进表的 kind 判死活（今天＝`model`/`skill`(A5-1)/`rule`(A5-2)/`repo`(A5-3)/`mcp`(T4) 与视图 kind
- *     `agent-kind`(A3-2)/`node-type`(T1)/`check-type`(A5-4)/`role`(A5-4b-1)），其余 `unjudged` **不拦**；
+ *     `agent-kind`(A3-2)/`node-type`(T1)/`check-type`(A5-4)/`role`(A5-4b-1)/`template`+`gateway-profile`(A5-4b-2)），
+ *     其余 `unjudged` **不拦**；
  *  2. 形状不认 → `malformed` 且 `ok=false`（判不了就不放行）；
  *  3. 匹配吃 R2 那把尺（`matchesTarget` → Descriptor `refKeys`），整枚 id / slug / spec 原值三写法同权。
  */
@@ -100,15 +101,16 @@ describe('逐槽落点（checkGraphRequirements）', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('未迁进表的 kind 只披露不判死活（表里压根没有 template 这一类，判「不存在」= 拿空白冒充断言）', () => {
-    const r = checkGraphRequirements(graphWith([{ kind: 'template', id: 'issue-flow' }]), [model]);
+  it('未迁进表的 kind 只披露不判死活（表里压根没有 channel 这一类，判「不存在」= 拿空白冒充断言）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'channel', id: 'slack' }]), [model]);
     expect(r.unjudged).toEqual([
-      { kind: 'template', id: 'issue-flow', verdict: 'unjudged', why: '「模板」这一类还没迁进注册表，判不了死活（只披露不拦）' },
+      { kind: 'channel', id: 'slack', verdict: 'unjudged', why: '「通道」这一类还没迁进注册表，判不了死活（只披露不拦）' },
     ]);
     expect(r.ok).toBe(true); // 起单放行：unjudged 不是闸
-    // 翻面自证：`repo` 自 A5-3、`role` 自 A5-4b-1 起在表里，同类槽再也不会发这句——拿一张发不出去的读数测渲染等于把桩当预言
+    // 翻面自证：`repo` 自 A5-3、`role` 自 A5-4b-1、`template` 自 A5-4b-2 起在表里，同类槽再也不会发这句——拿一张发不出去的读数测渲染等于把桩当预言
     expect(checkGraphRequirements(graphWith([{ kind: 'repo', id: 'packages/web' }]), [model]).unjudged).toEqual([]);
     expect(checkGraphRequirements(graphWith([{ kind: 'role', id: 'r-deliver' }]), [model]).unjudged).toEqual([]);
+    expect(checkGraphRequirements(graphWith([{ kind: 'template', id: 'issue-flow' }]), [model]).unjudged).toEqual([]);
   });
 
   it('脏形状 → malformed 且不放行（正常走不到这里：validateDag 在写入面就拒；盘面手改得动）', () => {
@@ -127,20 +129,21 @@ describe('逐槽落点（checkGraphRequirements）', () => {
 
 describe('分组读数（模板卡那一行「需要：模型 1 · 技能 2」）', () => {
   it('按声明首现顺序分组；judged 只算判得了死活的槽，gaps 只算死缺', () => {
-    // 替身换枚还没迁的 kind（改口链：这格原来用 `role`，A5-4b-1 起它也判得了死活 → 换 `template`）：
+    // 替身换枚还没迁的 kind（改口链：这格原来用 `role`，A5-4b-1 起它也判得了死活 → 换 `template`，
+    // A5-4b-2 起模板也判得了 → 换 `channel`）：
     // 这一格要钉的是「判不了的类只数 declared、不进 gaps」，拿一枚已判死活的 kind 断言 judged=0 就是自证空白。
     const r = checkGraphRequirements(
       graphWith([
         { kind: 'model', id: model.id },
-        { kind: 'template', id: 'a' },
+        { kind: 'channel', id: 'a' },
         { kind: 'model', id: 'nope' },
-        { kind: 'template', id: 'b' },
+        { kind: 'channel', id: 'b' },
       ]),
       [model],
     );
     expect(r.need).toEqual([
       { kind: 'model', label: '模型', declared: 2, judged: 2, gaps: 1 },
-      { kind: 'template', label: '模板', declared: 2, judged: 0, gaps: 0 },
+      { kind: 'channel', label: '通道', declared: 2, judged: 0, gaps: 0 },
     ]);
   });
 
@@ -504,5 +507,84 @@ describe('v14 A5-3 repo 槽已判死活', () => {
 
   it('预检词表：`需要：仓库` 那一行有中文组名（KIND_CN 是全仓唯一一份措辞表）', () => {
     expect(requirementKindLabel('repo')).toBe('仓库');
+  });
+});
+
+/**
+ * v14 A5-4b-2：`template` 与 `gateway-profile` 是第五、六枚视图 kind，也是第二、三枚**正身在盘上**的
+ * （模板在 `graphs/`，档在 `gateway.json`）。预检侧的判据照旧一行没新写（`isJudged` 吃 `REGISTRY_KINDS`、
+ * 匹配吃 Descriptor 的 `refKeys`），所以这一格照 `role` 的样子喂**手工装配的条目集**——
+ * 「盘上读得出几条、脏图怎么披露」是 `registry-view.test.ts` 用真 tmp 目录钉的账，两处不重复。
+ *
+ * 翻面代价与前几枚同款：以前这两类槽一律 `unjudged` 放行，今天点名一枚盘上没有的模板/档位＝起单被拒
+ * （fail-closed，与引擎 `store.getGraph` 取不到图、`readGateway` 回落 current 同一把尺）。
+ */
+describe('v14 A5-4b-2 template / gateway-profile 槽已判死活', () => {
+  const tpl = (name: string, nodes: number, description?: string): RegistryEntry => {
+    const r = normalizeRegistryEntry({ kind: 'template', name, spec: { nodes, ...(description ? { description } : {}) } });
+    if (!r.ok) throw new Error(r.why);
+    return r.value;
+  };
+  const gw = (name: string, spec: Record<string, unknown>): RegistryEntry => {
+    const r = normalizeRegistryEntry({ kind: 'gateway-profile', name, spec });
+    if (!r.ok) throw new Error(r.why);
+    return r.value;
+  };
+  const templates = [tpl('issue-flow', 6, '接单到 PR'), tpl('Fix-Big', 3)];
+  const profiles = [gw('gw-main', { label: '主档', baseUrl: 'https://gw.local/v1', freeModel: 'gpt-4o-mini', keyConfigured: true })];
+
+  it('模板命中写法两枚同权：整枚 id 与文件名原值；说明句不是引用写法（与 role「岗名不算」同尺）', () => {
+    for (const id of ['template:issue-flow', 'issue-flow']) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'template', id }]), templates);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: 'template:issue-flow' });
+      expect(r.ok).toBe(true);
+    }
+    expect(checkGraphRequirements(graphWith([{ kind: 'template', id: '接单到 PR' }]), templates).slots[0]!.verdict).toBe(
+      'missing',
+    );
+  });
+
+  it('大写文件名靠 `entry.name` 原值指得回来（slug 被小写化，只认 slug 会把在用的模板读成死缺）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'template', id: 'Fix-Big' }]), templates);
+    expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: 'template:fix-big' });
+  });
+
+  it('指不到那一枚 = missing 且拒单，`unjudged` 清空（以前这一类一律放行，翻转留字为证）', () => {
+    const r = checkGraphRequirements(graphWith([{ kind: 'template', id: 'never-saved' }]), templates);
+    expect(r.slots[0]!.verdict).toBe('missing');
+    expect(r.slots[0]!.entryId).toBeUndefined();
+    expect(r.unjudged).toEqual([]);
+    expect(r.ok).toBe(false);
+    expect(requirementGapWhy(r)).toContain('template → never-saved');
+  });
+
+  it('宽槽＝「盘上有模板就行」；一张没有才是死缺（空图 nodes:0 也是可用的模板，不据读数拦）', () => {
+    expect(checkGraphRequirements(graphWith([{ kind: 'template', hint: '要有张流程' }]), templates).slots[0]!.verdict).toBe('ok');
+    expect(checkGraphRequirements(graphWith([{ kind: 'template' }]), []).slots[0]!.verdict).toBe('missing');
+    expect(checkGraphRequirements(graphWith([{ kind: 'template', id: 'empty-one' }]), [tpl('empty-one', 0)]).slots[0]!.verdict).toBe('ok');
+  });
+
+  it('档位命中写法两枚同权：整枚 id 与档 id 原样；档名/baseUrl/freeModel 都不是这一枚的引用写法', () => {
+    for (const id of ['gateway-profile:gw-main', 'gw-main']) {
+      const r = checkGraphRequirements(graphWith([{ kind: 'gateway-profile', id }]), profiles);
+      expect(r.slots[0]).toMatchObject({ verdict: 'ok', entryId: 'gateway-profile:gw-main' });
+    }
+    // 「主档」是用户起的中文名；`freeModel` 那格是指向 `model` 的一条引用，不是这档的名字
+    for (const id of ['主档', 'https://gw.local/v1', 'gpt-4o-mini']) {
+      expect(checkGraphRequirements(graphWith([{ kind: 'gateway-profile', id }]), profiles).slots[0]!.verdict).toBe('missing');
+    }
+  });
+
+  it('两枚的分组各记中文组名且 judged 全算（「需要：模板 1 · 网关档 1」那一行自此有死活读数）', () => {
+    const r = checkGraphRequirements(
+      graphWith([{ kind: 'template', id: 'issue-flow' }, { kind: 'gateway-profile', id: 'gw-none' }]),
+      [...templates, ...profiles],
+    );
+    expect(r.need).toEqual([
+      { kind: 'template', label: '模板', declared: 1, judged: 1, gaps: 0 },
+      { kind: 'gateway-profile', label: '网关档', declared: 1, judged: 1, gaps: 1 },
+    ]);
+    expect(requirementKindLabel('template')).toBe('模板');
+    expect(requirementKindLabel('gateway-profile')).toBe('网关档');
   });
 });

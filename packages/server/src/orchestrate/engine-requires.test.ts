@@ -84,9 +84,9 @@ describe('startRun 的能力槽预检', () => {
   });
 
   it('未迁进注册表的 kind 不拦起单（判不了死活就只披露，拿空白当断言=误杀存量模板）', async () => {
-    // 改口入账：这一格的示例原来是 `role`，A5-4b-1 起它进了表（条目由名册现算）→ 换 `template`。
+    // 改口入账：这一格的示例原来是 `role` → A5-4b-1 起换 `template` → A5-4b-2 起模板也进了表，再换 `channel`。
     // 判据本身一字没改：改的只是「拿哪一类还没迁的当示例」。
-    const run = await engine.startRun(graph([{ kind: 'template', id: 'issue-flow' }]), cwd);
+    const run = await engine.startRun(graph([{ kind: 'channel', id: 'chan-1' }]), cwd);
     expect((await settle(run.runId)).state).toBe('completed');
   });
 
@@ -146,6 +146,35 @@ describe('startRun 的能力槽预检', () => {
     ).toBe(true);
     for (const id of ['packages/web', 'my-org/web']) {
       const run = await engine.startRun(graph([{ kind: 'repo', id }]), cwd);
+      expect((await settle(run.runId)).state).toBe('completed');
+    }
+  });
+
+  /**
+   * v14 A5-4b-2：`template` 与 `gateway-profile` 是第二、三枚**正身在用户盘**的视图 kind（模板盘与网关盘）。
+   * 引擎口证的仍是接线：预检那张表里得有「graphs 目录现算出来的那几行」和「gateway.json 现算出来的那几行」。
+   *
+   * 这一枚比 role 那格更值得单独钉：模板条目是从 `dataDir/graphs` 现算的，而**起单的那张图本身就来自同一张表**
+   * （`startRun` 拿到的 graph 由调用方给）。若引擎读的是「手上这张图」而不是「盘上那批图」，
+   * 那么 `{kind:'template', id:'另一张模板'}` 永远指不到——判据在，条目不在，起单口红。
+   */
+  it('template / gateway-profile 槽自此判死活：盘上有那张图/那一档就放行，没有就拒', async () => {
+    await expect(engine.startRun(graph([{ kind: 'template', id: 'needs' }]), cwd)).rejects.toThrow(/template → needs/);
+    await expect(
+      engine.startRun(graph([{ kind: 'gateway-profile', id: 'gw-pro' }]), cwd),
+    ).rejects.toThrow(/gateway-profile → gw-pro/);
+
+    fs.mkdirSync(path.join(dataDir, 'graphs'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dataDir, 'graphs', 'needs.json'),
+      `${JSON.stringify(graph([{ kind: 'model', id: 'whatever' }]), null, 2)}\n`,
+    );
+    fs.writeFileSync(
+      path.join(dataDir, 'gateway.json'),
+      `${JSON.stringify({ current: 'gw-pro', profiles: [{ id: 'gw-pro', name: '生产档', baseUrl: 'https://gw.example.com', apiKey: 'sk-x' }] }, null, 2)}\n`,
+    );
+    for (const slot of [{ kind: 'template', id: 'needs' }, { kind: 'gateway-profile', id: 'gw-pro' }]) {
+      const run = await engine.startRun(graph([slot]), cwd);
       expect((await settle(run.runId)).state).toBe('completed');
     }
   });

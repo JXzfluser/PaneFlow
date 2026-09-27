@@ -22,7 +22,9 @@ import type { RegistryEntry } from '@paneflow/shared';
  *     把探针通道的故障画成红点就是替机器造一个不存在的结论（先例：`herdr-ops.ts:120-128 probeAgent`
  *     也只由明确错误码给 `gone`，答不上来返回 null）。
  *  3. **宁缺毋假**：这一类没有探针通道（今天＝三枚正身在代码里的视图 kind `node-type`/`check-type`
- *     加 `mcp`，另加 `role`——它的「在不在」由名册现算那一刻就定了，再探一次只是把同一句话问第二遍）
+ *     加 `mcp`，再加三枚**正身在盘上**的视图 kind `role`/`template`/`gateway-profile`——它们的条目
+ *     就是「现算那趟读到了什么」本身，再探一次只是把同一句话问第二遍；「这一档没配密钥」是 spec 读数
+ *     不是探针读数，`keyConfigured:false` 由条目自己说，不需要通道）
  *     → 整键不给，界面上什么都不画。「不知道这一类怎么探」和「探了说它不在」是两回事。
  */
 

@@ -345,7 +345,11 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {
       expect(before.summary).toMatchObject({
         scanned: 2,
         dangling: 1,
-        unmigrated: 1,
+        // 改口入账：`unmigrated` 这一格原来是 1（`gateway-profile` 没进表，只数不判）。A5-4b-2 起
+        // 扫描器能发出的 kind **全部**在表里了，所以 HTTP 面的 unmigrated 恒 0 是正读数；
+        // 「未迁的类只披露不判」那条 stance 由**判据层**继续钉住（`registry-refs` 手喂一枚 `channel` 裸串、
+        // `registry-check` 的 `?` 那一格）——在这里再造样本只能靠假盘面，那是拿假输入测渲染。
+        unmigrated: 0,
         probed: AGENT_KINDS.length,
         unused: factoryRows,
       });
@@ -365,25 +369,45 @@ describe('v14-R4 汇总账：哪些裸串引用被注册表承接了', () => {
     }
   });
 
-  it('gateway-profile 一类还没进表：只披露计数，绝不判死活（宁缺毋假）', async () => {
+  /**
+   * v14 A5-4b-2 的翻面账：`gateway-profile` 与 `template` 进表之前，这一格钉的是「整表只有一枚
+   * gateway-profile 引用（`current`），它连 dangling 都不进——只数不判」。今天同一枚引用**有出处了**，
+   * 所以这一格改钉两件事：
+   *  ①承接：那枚档的 `refs` 里能看到 `via:'current'`（引用账从「判不了」变成「指得到谁在用」）；
+   *  ②整表形状：六枚视图 kind 全上架（含两张盘现算的那三枚），用户登记项仍为空是正读数。
+   * 「未迁 kind 只披露」那条 stance 没有消失，只是**在 HTTP 面样本化不了**了——扫描器此刻能发出的
+   * kind 全在表里，所以它住在判据层：`registry-refs.test.ts`（喂一枚 `channel` 裸串）与
+   * `registry-check.test.ts`（`channel` 槽落 `?`）各钉一枚。
+   */
+  it('gateway-profile 自此进表：`current` 那枚裸串有出处；六枚视图 kind 同表上架', async () => {
     const { app, dataDir } = await build();
     try {
       gatewayDoc(dataDir, [{ id: 'p-free', name: '免费档' }], 'p-free');
-      // 名册给一枚岗：`role` 自 A5-4b-1 起是视图 kind，表上少了它这一行，「四枚视图 kind 都在」这条
-      // 断言会静默退成三枚——这一格测的正是「用户登记项为零时整表面长什么样」
+      // 名册给一枚岗：`role` 自 A5-4b-1 起是视图 kind，表上少了它这一行，「六枚视图 kind 都在」这条
+      // 断言会静默退成五枚——这一格测的正是「用户登记项为零时整表面长什么样」
       fs.writeFileSync(path.join(dataDir, 'roles.json'), `${JSON.stringify([{ id: 'r-x', name: '交付岗' }], null, 2)}\n`);
+      // 另两枚视图 kind 的正身是两张盘：不写盘面，`template` 那一组就是「还没建过模板」的正读数（零条）
+      fs.mkdirSync(path.join(dataDir, 'graphs'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dataDir, 'graphs', 'flow.json'),
+        `${JSON.stringify({ version: 1, name: 'flow', nodes: [{ id: 'n1', type: 'start', label: '开始', config: {} }], edges: [], metadata: { createdAt: '', updatedAt: '' } }, null, 2)}\n`,
+      );
       stubModels([{ models: [] }]);
       const body = (await get(app, '/api/registry/health')).json();
-      // 只有 `current` 这一枚 gateway-profile 引用：没进表＝只数不判（判「不存在」就是拿空白冒充断言）
-      expect(body.summary.unmigrated).toBe(1);
+      // 扫描器能发出的 kind 全在表里 = 无「只数不判」那一档；`current` 也不再是悬挂（它指得到那一档）
+      expect(body.summary.unmigrated).toBe(0);
       expect(body.dangling).toEqual([]);
+      const gw = body.entries.find((e: { id: string }) => e.id === 'gateway-profile:p-free');
+      expect(gw.refs).toEqual([{ face: 'gateway', id: 'p-free', name: '免费档', via: 'current' }]);
       // 「一条都没登记」的正读数现在要说清是哪一半：用户登记项为空，出厂视图项照在表上
       expect(body.entries.filter((e: { view: boolean }) => !e.view)).toEqual([]);
-      // 出厂视图项不止一枚 kind（A3-2 的 agent 清单 + T1 的节点清单 + A5-4 的机检清单 + A5-4b-1 的名册）
-      // ——按「整表都是视图项」断言，别数 kind
+      // 视图项不止一枚 kind（agent 18 + 节点 6 + 机检 6 + 名册 1 + 模板 1 + 档 1）——按 kind 全集断言，别数死
       expect(body.entries.every((e: { view: boolean }) => e.view)).toBe(true);
       expect(new Set(body.entries.map((e: { kind: string }) => e.kind))).toEqual(new Set(REGISTRY_VIEW_KINDS));
+      // 探针通道仍只有 agent 那一类：`template`/`gateway-profile` 没有通道，整键不给读数（宁缺毋假）
       expect(body.summary.probed).toBe(AGENT_KINDS.length);
+      expect(gw.health).toBeUndefined();
+      expect(body.entries.find((e: { id: string }) => e.id === 'template:flow').health).toBeUndefined();
     } finally {
       vi.unstubAllGlobals();
       await app.close();

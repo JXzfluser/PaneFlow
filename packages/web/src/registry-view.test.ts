@@ -22,6 +22,7 @@ import {
   spaceRepoCandidates,
   sourceLabel,
   specRows,
+  viewEnabledCell,
   whenLabels,
   type RegistryCheckRow,
   type RegistryEntryView,
@@ -86,11 +87,16 @@ describe('v14-X1 注册中心分组与文案（判据全在 server，这里只�
     expect(sourceLabel(' alien')).toContain(' alien');
   });
 
-  it('rejected 一句总述带计数与「不计入下表」；空 rejected 不给话（不凭空造警告）', () => {
+  it('rejected 一句总述：只说「照读时的一句话」，两种行都装得下（不谎称整组都没被认出）', () => {
     expect(rejectedSummary([])).toBeNull();
     const text = rejectedSummary([{ id: 'bad:1', why: '不认的能力类型「bad」' }]);
     expect(text).toContain('1 条');
-    expect(text).toContain('不计入下表');
+    // 不变量两条，都在句面上：只披露、不清除；渲不出条目的那类才不进下表
+    expect(text).toContain('只披露不清除');
+    expect(text).toContain('不进下表');
+    // A5-4b-2 起 `rejected` 里会有「条目照渲、旁边补一句」的行（文件名≠图内 name）——
+    // 总述不许把它们一律说成「没被认出」，那等于告诉用户整组读数都不可信
+    expect(text).not.toMatch(/没被认出|本机不认/);
   });
 });
 
@@ -336,6 +342,18 @@ describe('v14-X1 只读 spec 与前向兼容读数', () => {
       { key: 'hint', label: '说明', text: '引擎不判' },
       { key: 'machine', label: '引擎实跑', text: '否' },
     ]);
+    // A5-4b-2 两张盘的读数各一枚布尔/数字：`nodes: 0` 必须画成「节点数 0」（那是「一张空图」这个正读数，
+    // 不是「没读出来」——画成空串就等于把 server 的 0 洗成空白）；`keyConfigured: false` 同理是
+    // 「这一档跑不了」的行动读数，画成「否」比画成缺键有用。
+    expect(specRows({ nodes: 0, description: '还没画完' })).toEqual([
+      { key: 'nodes', label: '节点数', text: '0' },
+      { key: 'description', label: '说明', text: '还没画完' },
+    ]);
+    expect(specRows({ label: '免费档', baseUrl: 'https://gw.example', keyConfigured: false })).toEqual([
+      { key: 'label', label: '显示名', text: '免费档' },
+      { key: 'baseUrl', label: '网关地址', text: 'https://gw.example' },
+      { key: 'keyConfigured', label: '配了密钥', text: '否' },
+    ]);
   });
 
   it('refs：键不在就什么都不画——缺 ≠ 0（引用账没读出来不是「没人用」）', () => {
@@ -403,23 +421,24 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
       requirementBadge(
         row({
           ok: false,
-          // 「判不了的那一组」今天只能用 `template` 喂（`role` 自 A5-4b-1 起有名册条目、有判定，
-          // `repo` 自 A5-3 起有探针——`judged: 0` 是它们发不出的读数）；未知 kind 的组名 server 不猜，画原值
+          // 「判不了的那一组」今天只能用 `channel` 喂（改口链：`role` 自 A5-4b-1、`template`/`gateway-profile`
+          // 自 A5-4b-2 起有名册/模板盘/网关盘条目，`repo` 自 A5-3 起有探针——`judged: 0` 是它们发不出的读数）；
+          // 未知 kind 的组名 server 不猜，画原值
           need: [
             { kind: 'model', label: '模型', declared: 1, judged: 1, gaps: 1 },
-            { kind: 'template', label: 'template', declared: 2, judged: 0, gaps: 0 },
+            { kind: 'channel', label: 'channel', declared: 2, judged: 0, gaps: 0 },
           ],
         }),
         3,
       ),
-    ).toEqual({ text: '需要：模型 1 · template 2', tone: 'gap' });
+    ).toEqual({ text: '需要：模型 1 · channel 2', tone: 'gap' });
   });
 
   it('整组都判不了 = pending（画问号）：它既不是缺口也不是命中，红绿都不对', () => {
     const r = row({
-      slots: [{ kind: 'template', id: 'issue-flow', verdict: 'unjudged', why: '还没迁进注册表' }],
-      need: [{ kind: 'template', label: 'template', declared: 1, judged: 0, gaps: 0 }],
-      unjudged: [{ kind: 'template', id: 'issue-flow', verdict: 'unjudged', why: '还没迁进注册表' }],
+      slots: [{ kind: 'channel', id: 'chan-1', verdict: 'unjudged', why: '还没迁进注册表' }],
+      need: [{ kind: 'channel', label: 'channel', declared: 1, judged: 0, gaps: 0 }],
+      unjudged: [{ kind: 'channel', id: 'chan-1', verdict: 'unjudged', why: '还没迁进注册表' }],
     });
     expect(requirementBadge(r, 1).tone).toBe('pending');
     // 一半命中一半判不了 → 按命中说（有真读数就别挂问号）
@@ -444,7 +463,7 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
         slots: [
           { kind: 'model', id: 'gpt-4o-mini', verdict: 'ok', why: '用「小4号」' },
           { kind: 'model', id: 'gpt-9', verdict: 'missing', why: '注册表里没有' },
-          { kind: 'template', verdict: 'unjudged', why: '这一类还判不了' },
+          { kind: 'channel', verdict: 'unjudged', why: '这一类还判不了' },
           { kind: 'model', verdict: 'malformed', why: '声明形状不认' },
           { kind: 'model', verdict: 'probed-elsewhere', why: '未来新值' },
         ],
@@ -453,7 +472,7 @@ describe('requirementBadge / requirementDetail（能力槽读数排版）', () =
     expect(detail.split('\n')).toEqual([
       '✓ model → gpt-4o-mini：用「小4号」',
       '✗ model → gpt-9：注册表里没有',
-      '? template：这一类还判不了',
+      '? channel：这一类还判不了',
       '⚠ model：声明形状不认',
       'probed-elsewhere model：未来新值',
     ]);
@@ -522,6 +541,42 @@ describe('v14-A3-2 内置清单视图项的消费面（只认 server 给的 view
     expect(whenLabels(true, '角色库那一面').note).not.toContain('版本自带');
     // 非视图项即使带着 home 也不改口（正身只在 view 为真时才有意义）
     expect(whenLabels(false, '角色库').note).toBe('');
+  });
+});
+
+/**
+ * v14 A5-4b-2：视图项的「启用」那一格从此有两种读数。
+ *
+ * 前四枚视图 kind（`agent-kind`/`node-type`/`check-type` ＋名册那枚 `role`）没有启停态，画「—」是对的；
+ * 但 `gateway-profile` 的正身（网关盘那一行）**自己有 `enabled` 键**——停用的档真跑不了，而预检那边
+ * 已经按 `enabled` 收窄过槽了（`registry-check.ts` 只认启用中的条目）。镜子若在这一格继续画「—」，
+ * 就是页面与判据对同一件事说两种话，而用户看到的还是那句「清单里有就能用」——假话。
+ *
+ * 这一格同时钉住另一半：照读**不等于**给开关。文案里永远不许出现「点击」（启停的正身在那一面，
+ * 在这里给个可点的格子就是造一个不生效的假控件，与三动词对视图 kind 全拒同一个道理）。
+ */
+describe('viewEnabledCell（视图项的启停格：照读 server 的 enabled，不给开关）', () => {
+  const view = (over: Partial<RegistryEntryView> = {}): RegistryEntryView =>
+    entry({ id: 'template:flow', kind: 'template' as never, name: 'flow', view: true, ...over });
+
+  it('停用中：说清是「那一面里停着」，注册表只照读不代收启停', () => {
+    const cell = viewEnabledCell(view({ enabled: false }), '网关设置那一面（档位在那儿配、改、删）');
+    expect(cell.text).toBe('停用中');
+    expect(cell.title).toContain('网关设置那一面');
+    expect(cell.title).toContain('只照读');
+    // 没有可点的暗示：这一格永远不是开关
+    expect(`${cell.text}${cell.title}`).not.toMatch(/点击|开关/);
+  });
+
+  it('正读数分两种：有正身就说正身，没正身（旧 server 缺键）回落成不带出处的说法，不替它编一个', () => {
+    expect(viewEnabledCell(view({ enabled: true }), '编排模板那一面').title).toContain('编排模板那一面');
+    expect(viewEnabledCell(view()).title).toBe('现算清单没有启停这一格：清单里有就能用');
+    expect(viewEnabledCell(view()).text).toBe('—');
+  });
+
+  it('非视图项不走这里（组件对它们画的是真开关）：`enabled:false` 在这里同样是「停用中」，两种读数分家', () => {
+    expect(viewEnabledCell(entry({ enabled: false })).text).toBe('停用中');
+    expect(viewEnabledCell(entry({ enabled: true })).text).toBe('—');
   });
 });
 

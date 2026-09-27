@@ -54,6 +54,23 @@ const MODEL = { kind: 'model', name: 'gpt-4o-mini', spec: { model: 'gpt-4o-mini'
 const writeRoster = (dir: string, roles: unknown[]): void => {
   fs.writeFileSync(path.join(dir, 'roles.json'), JSON.stringify(roles), 'utf8');
 };
+/**
+ * 另两枚「正身在用户盘」的视图 kind（A5-4b-2）的同款桩：模板盘与网关盘。
+ * 与名册那枚同一条理由——不写盘，这两组就是「盘上没有」的正读数（零条），
+ * 而拿 `REGISTRY_VIEW_KINDS` 全集下的 exact 断言会把「那一面此刻是空的」误当成「视图没渲这一类」。
+ */
+const writeGraphs = (dir: string, names: string[]): void => {
+  fs.mkdirSync(path.join(dir, 'graphs'), { recursive: true });
+  for (const n of names)
+    fs.writeFileSync(
+      path.join(dir, 'graphs', `${n}.json`),
+      JSON.stringify({ version: 1, name: n, nodes: [{ id: 'n1', type: 'start', label: '开始', config: {} }], edges: [], metadata: { createdAt: '', updatedAt: '' } }),
+      'utf8',
+    );
+};
+const writeGatewayProfiles = (dir: string, doc: unknown): void => {
+  fs.writeFileSync(path.join(dir, 'gateway.json'), JSON.stringify(doc), 'utf8');
+};
 
 describe('注册条目清洗 normalizeRegistryEntry（§十.3/§十.4/§十.6）', () => {
   it('name 缺 id：按 <kind>:<slug> 生成，source/enabled/时间戳由服务端补齐', () => {
@@ -248,8 +265,11 @@ describe('v14 A3-2 视图条目 readView（现算，不落盘）', () => {
 
   it('一条没登记：视图项在表上、注册台账无文件（读操作不写盘，现算清单不抄进台账）', () => {
     const dir = tmp();
-    // role 那一组的正身在角色库：给一枚岗，四枚视图 kind 才都在表上（空名册那条断言在下面 A5-4b-1 专块）
+    // role/template/gateway-profile 三枚的正身都在用户盘：给三处盘上有货，六枚视图 kind 才都在表上
+    // （空那一面的 exact 断言在下面各专块里，那里测的是「盘上没货时渲什么」）
     writeRoster(dir, [{ id: 'r-demo', name: '演示岗' }]);
+    writeGraphs(dir, ['flow']);
+    writeGatewayProfiles(dir, { profiles: [{ id: 'free', name: '免费档', baseUrl: 'https://gw.example', apiKey: 'sk-secret' }], current: 'free' });
     const store = storeAt(dir);
     const view = store.readView();
     const agents = ofKind(view.entries, 'agent-kind');
@@ -260,6 +280,8 @@ describe('v14 A3-2 视图条目 readView（现算，不落盘）', () => {
     expect(agents.find((e) => e.name === 'antigravity-cli')?.spec).toEqual({ binary: 'antigravity' });
     // 表上只可能出现 `REGISTRY_VIEW_KINDS` 那几类——不认的 kind 一条不许冒出来
     expect([...new Set(view.entries.map((e) => e.kind))].sort()).toEqual([...REGISTRY_VIEW_KINDS].sort());
+    // R1 边界②在**装配口**再钉一次：网关盘上明明写着密钥，合并视图里一个字都不许带出来
+    expect(JSON.stringify(view)).not.toContain('sk-secret');
     expect(fs.existsSync(path.join(dir, 'registry', 'entries.json'))).toBe(false);
     // 而写路径吃的仍是 `load()`：盘上就是零条
     expect(store.list()).toEqual([]);
@@ -268,6 +290,8 @@ describe('v14 A3-2 视图条目 readView（现算，不落盘）', () => {
   it('用户登记的 model 排在前屏（compareEntries 吃 REGISTRY_KINDS 顺序，现算那几十行不糊住自己的账）', () => {
     const dir = tmp();
     writeRoster(dir, [{ id: 'r-demo', name: '演示岗' }]);
+    writeGraphs(dir, ['flow']);
+    writeGatewayProfiles(dir, { profiles: [{ id: 'free', name: '免费档', baseUrl: 'https://gw.example' }] });
     const store = storeAt(dir);
     store.add(MODEL);
     // 每一类**登记项**都得挂号，否则「序」这条断言会把没登记的那一类静默跳过

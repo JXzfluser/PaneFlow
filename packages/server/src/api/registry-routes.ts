@@ -128,9 +128,9 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
       // 其中「内置清单现算、写入面不接」的那几类（A3-2）：消费面据此收起登记/编辑/删除控件，
       // 不必自己拿 `source==='builtin'` 猜（那是出处，不是可写性——两条判据迟早分家）
       viewKinds: REGISTRY_VIEW_KINDS,
-      // kind → 「这一类的正身在哪儿」（A5-4b-1）：视图 kind 从三枚变四枚之后，「内置清单」这个措辞对
-      // `role` 已经是假话——岗位是用户自己在角色库建的，页面却说「版本自带」。消费面据此出文案，
-      // 不各自形容词（与 `kindLabels` 同一条理由：两张措辞表迟早分叉，而没人会去比对）。
+      // kind → 「这一类的正身在哪儿」（A5-4b-1 起，A5-4b-2 补齐六枚）：视图 kind 里三枚住代码、三枚住用户盘，
+      // 「内置清单」这个措辞对后三枚已经是假话——岗是用户自己建的、模板是他自己存的、档是他自己配的，
+      // 页面却说「版本自带」。消费面据此出文案，不各自形容词（与 `kindLabels` 同一条理由：两张措辞表迟早分叉，而没人会去比对）。
       viewHomes: Object.fromEntries(REGISTRY_VIEW_KINDS.map((k) => [k, viewHomeOf(k)] as const)),
       // kind → 人话组名：措辞只有 `KIND_CN` 一处（预检的 `need[].label` 同源），网页与 CLI 拿它渲染。
       // 为什么外发而不是让前端各抄一份：两张措辞表迟早分叉，而没人会去比对两张措辞表——分叉了也没人红。
@@ -225,7 +225,7 @@ export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRoute
     return {
       space: String(req.query.space ?? '').trim() || 'default',
       spaceNote:
-        '命中的判定只看注册表（已迁 kind 全在一张全局表上：model/skill/rule/repo/mcp 是登记项，agent-kind/node-type/check-type 是代码现算的出厂视图项，role 是角色库名册现算的视图项），项目名只影响指路文案。`skill`/`rule` 条目确实带项目作用域，但那一维住在两处：引用账（空间自己发的引用按主人收窄）与探针（去那个项目根实读一次）；预检的槽仍不按项目收窄——本机任一项目登记过这篇文档即算命中，因为 requires 槽里没有写项目名的位置',
+        '命中的判定只看注册表（已迁 kind 全在一张全局表上：model/skill/rule/repo/mcp 是登记项，agent-kind/node-type/check-type 是代码现算的出厂视图项，role/template/gateway-profile 是用户盘现算的视图项），项目名只影响指路文案。`skill`/`rule` 条目确实带项目作用域，但那一维住在两处：引用账（空间自己发的引用按主人收窄）与探针（去那个项目根实读一次）；预检的槽仍不按项目收窄——本机任一项目登记过这篇文档即算命中，因为 requires 槽里没有写项目名的位置',
       at: new Date().toISOString(),
       templates: targets.map((g) => checkGraphRequirements(g, entries)),
     };

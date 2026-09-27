@@ -63,6 +63,44 @@ export function readGatewayDoc(dataDir: string): GatewayDoc {
   }
 }
 
+/**
+ * 档位盘的**严格读法**（v14 A5-4b-2，只读；注册表 `gateway-profile` 视图 kind 的现算侧吃它）。
+ * 与 `readGatewayDoc` 的区别只在「读不读得干净」这一格的诚实度：
+ *  - 运行面（`readGateway`）问的是「此刻拿哪一档去跑」，脏盘必须降级成「无档」继续活（旁账不拦主路）；
+ *  - 能力面问的是「本机配了哪几档」，把读不出/逐条丢掉的行画成「没有这一档」就是假读数。
+ * 所以这里三种读数分开，且**逐条原样交出、不做 filter**（取舍与披露归调用方，同 `readRoleRoster`）：
+ *  - `ENOENT` = 还没配过网关 → `rows: []`，是**正读数**；
+ *  - 顶层不是对象（JSON 坏/数组/裸值）→ `ok:false` 带一句人话原因；
+ *  - 顶层是对象但既无 `profiles[]` 也无扁平键 → `rows: []`（正读数：盘在，档没有）；
+ *  - 旧扁平格式 → 包成单档交出（与 `parseGatewayDoc` 同一包装，两面对得上才谈得上迁移）。
+ */
+export type GatewayRosterRead = { ok: true; rows: unknown[] } | { ok: false; why: string };
+
+export function readGatewayRoster(dataDir: string): GatewayRosterRead {
+  let text: string;
+  try {
+    text = fs.readFileSync(gatewayPath(dataDir), 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, rows: [] };
+    return { ok: false, why: (err as Error).message };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return { ok: false, why: `JSON 读不出：${(err as Error).message}` };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, why: `期望档位文档对象，读到 ${path.basename(gatewayPath(dataDir))} 顶层是 ${Array.isArray(parsed) ? 'array' : typeof parsed}` };
+  }
+  const o = parsed as Record<string, unknown>;
+  if (Array.isArray(o.profiles)) return { ok: true, rows: o.profiles as unknown[] };
+  if (o.baseUrl !== undefined || o.apiKey !== undefined || o.enabled !== undefined || o.freeModel !== undefined) {
+    return { ok: true, rows: [{ id: DEFAULT_PROFILE_ID, name: '默认档', ...(o as ModelGatewaySettings) }] };
+  }
+  return { ok: true, rows: [] };
+}
+
 function writeGatewayDoc(dataDir: string, doc: GatewayDoc): void {
   // 含 apiKey 明文：权限收紧 0o600（对齐 github.json）
   fs.writeFileSync(gatewayPath(dataDir), JSON.stringify(doc, null, 2), { mode: 0o600 });
