@@ -3,6 +3,8 @@ import { api, fetchJson, type Channel, type ChannelType, type NotifyEvent } from
 import { useStore } from '../store.js';
 import { groupWikiPages, WIKI_GROUP_CAP } from '../wiki-sediment.js';
 import { Icon, type IconName } from './Icon.js';
+import { PromptModal, type ModalRequest } from './PromptModal.js';
+import { removeGatewayProfileRequest, unlinkPatRequest, overwriteIntakeRequest } from '../dialogs.js';
 
 /**
  * 设置页章节分两组（v13 排版分类整顿）：
@@ -234,6 +236,7 @@ function GithubCredCard() {
   const log = useStore((s) => s.log);
   const [g, setG] = useState<GithubCredState>({ tokenConfigured: false, defaultRepo: '' });
   const [token, setToken] = useState('');
+  const [modal, setModal] = useState<ModalRequest | null>(null);
   const refresh = () =>
     fetchJson<GithubCredState>('GET', '/api/github/cred')
       .then(setG)
@@ -256,17 +259,15 @@ function GithubCredCard() {
   };
   const [writing, setWriting] = useState(false);
   const [importing, setImporting] = useState(false);
-  /** U2：解绑=只清本机存的 PAT，gh 登录态兜底还在 */
-  const unlink = async () => {
-    if (!window.confirm('清除本机存储的 PAT？默认仓库等配置会保留；本机 gh 登录态仍可当兜底凭据。')) return;
-    try {
-      await fetchJson<{ unlinked: boolean }>('POST', '/api/github/cred/unlink');
-      log('info', '已解绑本机存储的 PAT');
-      void refresh();
-    } catch (e) {
-      log('error', `解绑失败：${(e as Error).message}`);
-    }
-  };
+  /** U2：解绑=只清本机存的 PAT，gh 登录态兜底还在（确认走 D3 模态，报错显示在框内） */
+  const unlink = () =>
+    setModal(
+      unlinkPatRequest(async () => {
+        await fetchJson<{ unlinked: boolean }>('POST', '/api/github/cred/unlink');
+        log('info', '已解绑本机存储的 PAT');
+        void refresh();
+      }),
+    );
   /** v9-D1：本机 gh 已登录 → 一键把 token 搬进来；拿不到时错误里自带路 A/路 B 指引 */
   const importGh = async () => {
     setImporting(true);
@@ -297,13 +298,9 @@ function GithubCredCard() {
       );
     } catch (e) {
       const msg = (e as Error).message;
-      if (msg.includes('overwrite')) {
-        if (window.confirm(`${msg}\n确定要用 PaneFlow 模板覆盖它吗？`)) {
-          await writeIntake(true);
-        }
-      } else {
-        log('error', `接单模板回写失败：${msg}`);
-      }
+      // 409「已存在，要覆盖得显式 overwrite」：原生的二次确认换成 D3 模态，server 那句原文直接当说明
+      if (msg.includes('overwrite')) setModal(overwriteIntakeRequest(msg, () => writeIntake(true)));
+      else log('error', `接单模板回写失败：${msg}`);
     } finally {
       setWriting(false);
     }
@@ -338,7 +335,7 @@ function GithubCredCard() {
           <Icon name="key" size={12} /> {importing ? '导入中…' : '从 gh CLI 一键导入'}
         </button>
         {g.source === 'stored-pat' && (
-          <button className="ghost" title="只清本机存的 PAT（默认仓库保留；gh 登录态兜底不受影响）" onClick={() => void unlink()}>
+          <button className="ghost" title="只清本机存的 PAT（默认仓库保留；gh 登录态兜底不受影响）" onClick={() => unlink()}>
             解绑本机存储
           </button>
         )}
@@ -358,6 +355,7 @@ function GithubCredCard() {
           )}
         </button>
       </div>
+      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </>
   );
 }
@@ -519,6 +517,7 @@ function GatewayCard() {
   const [swPath, setSwPath] = useState('');
   const [swCandidates, setSwCandidates] = useState<SwitchCandidate[] | null>(null);
   const [swPicked, setSwPicked] = useState<string[]>([]);
+  const [modal, setModal] = useState<ModalRequest | null>(null);
   const runTest = async (): Promise<void> => {
     setTesting({ note: '探测中…', cls: 'settings-action-note' });
     const r = await fetchJson<GatewayTestResult>('POST', '/api/gateway/test').catch(
@@ -592,16 +591,16 @@ function GatewayCard() {
       log('error', `切档失败：${(e as Error).message}`);
     }
   };
-  const removeProfile = async (p: GatewayProfileView) => {
-    if (!window.confirm(`删除网关档「${p.name}」？密钥与地址会一并从本地移除。`)) return;
-    try {
-      await fetchJson<{ ok: boolean }>('DELETE', `/api/gateway/profile/${encodeURIComponent(p.id)}`);
-      await refresh();
-      log('info', `已删除档「${p.name}」`);
-    } catch (e) {
-      log('error', `删档失败：${(e as Error).message}`);
-    }
-  };
+  // v14-A5-5a：这枚删除面自此问引用账——被项目钉着的档 400 点名出处。
+  // 那句拒答从前只弹一条会自己消失的 toast，现在显示在确认框内部且不关窗，人来得及读完「先改哪几处」。
+  const removeProfile = (p: GatewayProfileView) =>
+    setModal(
+      removeGatewayProfileRequest(p.name, async () => {
+        await fetchJson<{ ok: boolean }>('DELETE', `/api/gateway/profile/${encodeURIComponent(p.id)}`);
+        await refresh();
+        log('info', `已删除档「${p.name}」`);
+      }),
+    );
   /** D3：preview 只回掩码候选；确认勾选后才落盘 */
   const probeImport = async () => {
     try {
@@ -681,7 +680,7 @@ function GatewayCard() {
               <button className="sm" onClick={() => void switchTo(p)}>设为生效</button>
             )}
             {profiles.length > 1 && (
-              <button className="sm ghost" title="删除此档" onClick={() => void removeProfile(p)}>
+              <button className="sm ghost" title="删除此档" onClick={() => removeProfile(p)}>
                 <Icon name="x" size={11} />
               </button>
             )}
@@ -739,6 +738,7 @@ function GatewayCard() {
           </>
         )}
       </details>
+      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </>
   );
 }

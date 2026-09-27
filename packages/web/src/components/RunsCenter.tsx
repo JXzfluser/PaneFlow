@@ -6,6 +6,8 @@ import { runCostLabel } from '../cost.js';
 import { needsPublicConfirm, type WikiPreviewRes } from '../wiki-sediment.js';
 import { RunTimeline } from './RunTimeline.js';
 import { Icon, type IconName } from './Icon.js';
+import { PromptModal, type ModalRequest } from './PromptModal.js';
+import { purgeRunRequest, resumeRunRequest } from '../dialogs.js';
 
 /** 运行终章徽章：状态色 + 一枚线性图符（蓝皮书批注感，不用彩色表情符）。 */
 function stateBadge(state: RunRecord['state']): { cls: string; icon: IconName | null; text: string } {
@@ -90,6 +92,7 @@ export function useRunNotifications(): void {
 function ArchivedPanel() {
   const log = useStore((s) => s.log);
   const [archived, setArchived] = useState<RunRecord[] | null>(null);
+  const [modal, setModal] = useState<ModalRequest | null>(null);
 
   const reload = () => {
     void fetchJson<{ runs: RunRecord[] }>('GET', '/api/runs?archived=1')
@@ -112,24 +115,20 @@ function ArchivedPanel() {
     }
   };
 
-  const purge = async (runId: string) => {
-    if (!window.confirm(`真删除 ${runId}？\n\n记录文件将从磁盘移除，不可恢复。`)) return;
-    const alsoArtifacts = window.confirm(
-      '一并清理该 run 的产物文件？\n\n只删工作区 .herdr/artifacts 下与本 run 节点同名的结果文件，加上引擎上架到产物架的整份副本（架上那些是 worktree 回收后唯一还在的原文）；其它文件不动。\n点「取消」= 保留产物（默认）。',
-    );
-    try {
-      await fetchJson<{ deleted: boolean; purgedArtifacts: number }>(
-        'DELETE',
-        `/api/runs/${encodeURIComponent(runId)}/archive${alsoArtifacts ? '?purgeArtifacts=1' : ''}`,
-      ).then((d) => {
+  // 原生 confirm 归位 D3 模态（v14 better-ui）：两次连排问句并成一次，产物清理成默认不勾的勾选框。
+  // 报错不再只落 toast——onSubmit 抛出的 server 原文由模态显示在框内、窗不关，人可以改勾再试或 Esc。
+  const purge = (runId: string) =>
+    setModal(
+      purgeRunRequest(runId, async (alsoArtifacts) => {
+        const d = await fetchJson<{ deleted: boolean; purgedArtifacts: number }>(
+          'DELETE',
+          `/api/runs/${encodeURIComponent(runId)}/archive${alsoArtifacts ? '?purgeArtifacts=1' : ''}`,
+        );
         if (d.purgedArtifacts) log('info', `已连带清理 ${d.purgedArtifacts} 个产物文件`);
-      });
-      setArchived((cur) => (cur ?? []).filter((r) => r.runId !== runId));
-      log('info', `已真删除 ${runId}`);
-    } catch (e) {
-      log('error', `删除失败：${(e as Error).message}`);
-    }
-  };
+        setArchived((cur) => (cur ?? []).filter((r) => r.runId !== runId));
+        log('info', `已真删除 ${runId}`);
+      }),
+    );
 
   if (archived === null) return <div className="runs-empty">归档加载中…</div>;
   if (archived.length === 0) return <div className="runs-empty">没有归档记录。运行卡片上按「归档」可归档到这里。</div>;
@@ -155,13 +154,14 @@ function ArchivedPanel() {
               <button title="恢复到主列表（反归档）" onClick={() => void unarchive(r.runId)}>
                 <Icon name="undo" />
               </button>
-              <button className="danger" title="真删除（不可恢复；可选一并清理本 run 产物，默认保留）" onClick={() => void purge(r.runId)}>
+              <button className="danger" title="真删除（不可恢复；可选一并清理本 run 产物，默认保留）" onClick={() => purge(r.runId)}>
                 <Icon name="trash" />
               </button>
             </div>
           </div>
         </div>
       ))}
+      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </div>
   );
 }
@@ -268,6 +268,7 @@ export function RunsCenter() {
   const setView = useStore((s) => s.setView);
   const log = useStore((s) => s.log);
   const [tab, setTab] = useState<'active' | 'archived'>('active');
+  const [modal, setModal] = useState<ModalRequest | null>(null);
 
   // 时间线：运行中的记录随 WS 实时到（读 store），历史记录按需拉一次
   const [openTl, setOpenTl] = useState<string | null>(null);
@@ -349,23 +350,16 @@ export function RunsCenter() {
     }
   };
 
-  // v7-A5 断点续跑：以源 run 已应用的图重启，done 节点（含 fanout 克隆）整体继承不重跑
-  const resume = async (r: RunRecord) => {
-    const all = Object.values(r.nodes);
-    const done = all.filter((n) => n.state === 'done');
-    const ok = window.confirm(
-      `从断点续跑 #${r.runId}？\n\n` +
-        `继承已完成节点 ${done.length}/${all.length}${done.length ? `：${done.map((n) => n.nodeId).join('、')}` : ''}\n` +
-        `失败与未执行节点将重新执行（产物黑板从源 run 载入）。`,
+  // v7-A5 断点续跑：以源 run 已应用的图重启，done 节点（含 fanout 克隆）整体继承不重跑。
+  // 「继承哪几格」的读数住在 dialogs.resumeRunRequest（纯函数，web 无渲染测试，所以文案与判据都在那里可断言）。
+  const resume = (r: RunRecord) =>
+    setModal(
+      resumeRunRequest(r, async () => {
+        const d = await api.resumeRun(r);
+        const done = Object.values(r.nodes).filter((n) => n.state === 'done').length;
+        log('info', `断点续跑已启动：新 run ${d.runId} 继承 ${done} 个已完成节点`);
+      }),
     );
-    if (!ok) return;
-    try {
-      const d = await api.resumeRun(r);
-      log('info', `断点续跑已启动：新 run ${d.runId} 继承 ${done.length} 个已完成节点`);
-    } catch (e) {
-      log('error', `续跑失败：${(e as Error).message}`);
-    }
-  };
 
   // v11-C5：推前预览弹层替代旧「409→window.confirm→重发」三段舞——先拉 preview（零网络零 push），
   // 草稿看过门过过再推；failed / completed-with-failures 单服务端自动预选反面教材侧门。
@@ -552,7 +546,7 @@ export function RunsCenter() {
                   </button>
                 )}
                 {r.state === 'failed' && (
-                  <button title="从断点续跑（已完成节点直接继承，失败/未跑节点重执行）" onClick={() => void resume(r)}>
+                  <button title="从断点续跑（已完成节点直接继承，失败/未跑节点重执行）" onClick={() => resume(r)}>
                     <Icon name="resume" size={12} />
                   </button>
                 )}
@@ -651,6 +645,7 @@ export function RunsCenter() {
       {wikiPreview && !wikiPreview.loading && wikiPreview.res && (
         <WikiPublishModal run={wikiPreview.run} preview={wikiPreview.res} onClose={() => setWikiPreview(null)} />
       )}
+      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </div>
   );
 }

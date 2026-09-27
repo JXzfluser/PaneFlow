@@ -460,6 +460,15 @@ button.icon { padding: 4px 6px; min-width: 28px; }
   padding: 7px 9px; font: inherit; font-size: 12.5px;
 }
 .modal.modal-prompt .pm-err { color: var(--err); margin-top: 8px; }
+/* 勾选框：上面那条 input 规则是给文本框定的（width:100% + padding），勾选框要单独归位 */
+.modal.modal-prompt .pm-check {
+  display: flex; align-items: flex-start; gap: 7px; margin-top: 12px;
+  color: var(--text); font-size: 11.5px; line-height: 1.6; cursor: pointer;
+}
+.modal.modal-prompt .pm-check input[type="checkbox"] {
+  flex: none; width: 13px; height: 13px; margin: 3px 0 0; padding: 0;
+  background: var(--panel-2); accent-color: var(--accent);
+}
 .modal.modal-prompt .close-row { gap: 8px; }
 
 /* v11-C5 沉淀推前预览弹层：草稿 <pre> 直读（不引 markdown 库）+ 门拒因 + 公开勾选 */
