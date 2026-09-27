@@ -40,3 +40,19 @@ export function keepValidSlots(
 ): RoleEquipSlot[] {
   return selected.filter((x) => typeof x !== 'string' || optionPaths.includes(x));
 }
+
+/** 这一枚引用是不是已经在这格上（比对按 `kind`+`id` 成对，不按对象引用相等） */
+export function hasEquipRef(
+  selected: readonly RoleEquipSlot[],
+  ref: { kind: RoleEquipRef['kind']; id: string },
+): boolean {
+  return selected.some((x) => isRoleEquipRef(x) && x.kind === ref.kind && x.id === ref.id);
+}
+
+/** 定点引用的勾选：同一枚不重复塞（重复会渲成两行一样的 chip，摘一次只掉一枚，是假象） */
+export function toggleEquipRef(
+  selected: readonly RoleEquipSlot[],
+  ref: { kind: RoleEquipRef['kind']; id: string },
+): RoleEquipSlot[] {
+  return hasEquipRef(selected, ref) ? removeEquipSlot(selected, ref) : [...selected, ref];
+}

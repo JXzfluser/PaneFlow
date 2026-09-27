@@ -258,6 +258,42 @@ export function spaceRepoCandidates(spaces: SpaceDocCandidateSource[], spaceId: 
   return [...new Set(repos.filter((r): r is string => typeof r === 'string' && r.trim() !== '').map((r) => r.trim()))].sort();
 }
 
+/** 装备槽「定点引用」的一行（v14-A5-5b-2）：勾它 = 往那一格写 `{kind,id}` */
+export interface EquipRefOption {
+  /** 写进槽的原样 id（不 trim、不小写、不换成 `spec.file`——换了就不是定点引用了） */
+  id: string;
+  kind: 'skill' | 'rule';
+  /** 条目说的是哪篇文档（相对那一项目的主仓根） */
+  file: string;
+  /** 挂在哪个项目：有名字用名字，**没这个名字就退回 id 原样**（不拿空白冒充「没项目」） */
+  space: string;
+}
+
+/**
+ * 注册中心里可被岗位装备槽引用的 `skill`/`rule` 条目清单。
+ * 三条判序都不在这儿自造：`enabled` 与注入现场（`registry-equip.resolveRef` 的 `e.enabled`）**同一把尺**
+ * ——停用的条目拿去凑装备槽就是假绿，所以这里根本递不出去；`spec.space`/`spec.file` 读不出的行
+ * 不画（说不清它指哪篇文档，画出来就是一格点了会落空的勾）；跨项目的条目**照列**并带项目名——
+ * 角色是全局库，「这一枚在别的项目、注到本项目时会被跳过不注」那句话住在状态页的装备明细行，
+ * 不在勾选面上重算一遍（两处判据迟早分叉）。
+ */
+export function equipRefOptions(
+  entries: readonly RegistryEntry[],
+  kind: EquipRefOption['kind'],
+  spaces: readonly { id: string; name: string }[],
+): EquipRefOption[] {
+  const out: EquipRefOption[] = [];
+  for (const e of entries) {
+    if (e.kind !== kind || !e.enabled) continue;
+    const spec = e.spec as { space?: unknown; file?: unknown } | undefined;
+    const file = typeof spec?.file === 'string' ? spec.file : '';
+    const space = typeof spec?.space === 'string' ? spec.space : '';
+    if (!file || !space) continue;
+    out.push({ id: e.id, kind, file, space: spaces.find((s) => s.id === space)?.name ?? space });
+  }
+  return out.sort((a, b) => a.space.localeCompare(b.space) || a.file.localeCompare(b.file) || a.id.localeCompare(b.id));
+}
+
 export type RegistryFormValues = Record<string, string | boolean>;
 
 /** 提交前的「必填齐没齐」清单（返回缺的字段中文名；这是 UI 礼节，不是形状校验） */

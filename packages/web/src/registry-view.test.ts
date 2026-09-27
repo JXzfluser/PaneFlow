@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildRegistryPayload,
+  equipRefOptions,
   formFieldsFor,
   formatWhen,
   groupEntriesByKind,
@@ -317,6 +318,79 @@ describe('v14 A5-2/A5-3 spaceRepoCandidates（规则作用域与仓库登记的�
     ).toEqual(['packages/server', 'packages/web']);
     expect(spaceRepoCandidates([{ id: 'demo', skills: ['a.md'] }], 'demo')).toEqual([]);
     expect(spaceRepoCandidates([{ id: 'other', repos: ['x'] }], 'demo')).toEqual([]);
+  });
+});
+
+/**
+ * v14 A5-5b-2 定点引用那一列的候选：只能从**注册中心实读回来的条目**里挑（web 不扫盘、不猜 id）。
+ * `enabled` 与注入现场同一把尺（`registry-equip.resolveRef` 也拒停用条目）——这里放行就是假绿；
+ * 跨项目的条目**照列**并带项目名：角色是全局库，「注到本项目会被跳过」那句话住在状态页的装备明细行，
+ * 不在勾选面上重算第二遍。
+ */
+describe('v14 A5-5b-2 equipRefOptions（装备槽的定点引用候选）', () => {
+  const skill = (over: Partial<RegistryEntryView> = {}): RegistryEntryView =>
+    entry({ kind: 'skill', id: 'skill:s-1', name: '技能一篇', spec: { space: 'demo', file: 'docs/a.md' }, ...over });
+
+  it('只给这一类 kind；id 原样（不 trim、不小写、不换成 spec.file）', () => {
+    const got = equipRefOptions(
+      [skill(), skill({ kind: 'rule', id: 'rule:r-1', spec: { space: 'demo', file: 'docs/r.md' } })],
+      'skill',
+      [{ id: 'demo', name: '演示项目' }],
+    );
+    expect(got).toEqual([{ id: 'skill:s-1', kind: 'skill', file: 'docs/a.md', space: '演示项目' }]);
+    // 大写 id 靠原样这一枚才指得回来（registryId 会把 slug 小写化）
+    expect(equipRefOptions([skill({ id: 'skill:My-Skill' })], 'skill', [{ id: 'demo', name: '演示项目' }])).toEqual([
+      { id: 'skill:My-Skill', kind: 'skill', file: 'docs/a.md', space: '演示项目' },
+    ]);
+    expect(equipRefOptions([skill({ id: 'skill:My-Skill' })], 'rule', [])).toEqual([]);
+  });
+
+  it('停用的条目递不出去（与注入现场同一把尺）；spec 读不出 file/space 的行不画', () => {
+    expect(equipRefOptions([skill({ enabled: false })], 'skill', [])).toEqual([]);
+    // 脏形状那几枚 server 不会外发（parseSkillSpec fail-closed），这里仍要画得出「不画」——
+    // 一旦两处判据分叉，勾选面递出去的就是注入现场必定跳过的一格
+    const broken = (id: string, spec: unknown): RegistryEntryView =>
+      ({ ...skill(), id, spec } as unknown as RegistryEntryView);
+    expect(
+      equipRefOptions(
+        [
+          broken('skill:no-file', { space: 'demo' }),
+          broken('skill:no-space', { file: 'docs/a.md' }),
+          broken('skill:empty', { space: '', file: '' }),
+          broken('skill:dirty', { space: 7, file: ['docs/a.md'] }),
+          broken('skill:none', undefined),
+        ],
+        'skill',
+        [],
+      ),
+    ).toEqual([]);
+  });
+
+  it('项目名有就用名字，档案里没这一枚就退回 id 原样（不拿空白冒充「没项目」）', () => {
+    expect(equipRefOptions([skill()], 'skill', [{ id: 'other', name: '别家' }])).toEqual([
+      { id: 'skill:s-1', kind: 'skill', file: 'docs/a.md', space: 'demo' },
+    ]);
+    expect(equipRefOptions([skill()], 'skill', [{ id: 'demo', name: '演示项目' }])).toEqual([
+      { id: 'skill:s-1', kind: 'skill', file: 'docs/a.md', space: '演示项目' },
+    ]);
+  });
+
+  it('跨项目的条目照列，各带自己的项目名；排序按 项目→文档→id 稳定', () => {
+    const got = equipRefOptions(
+      [
+        skill({ id: 'skill:b2', spec: { space: 'demo', file: 'docs/b.md' } }),
+        skill({ id: 'skill:z', spec: { space: 'other', file: 'docs/a.md' } }),
+        skill({ id: 'skill:b1', spec: { space: 'demo', file: 'docs/a.md' } }),
+      ],
+      'skill',
+      [{ id: 'demo', name: 'Alpha 项目' }],
+    );
+    // 排的是显示出来的那一串（项目名，读不出时是 id）：同项目的两枚永远挨着，条目内按文档、再按 id
+    expect(got).toEqual([
+      { id: 'skill:b1', kind: 'skill', file: 'docs/a.md', space: 'Alpha 项目' },
+      { id: 'skill:b2', kind: 'skill', file: 'docs/b.md', space: 'Alpha 项目' },
+      { id: 'skill:z', kind: 'skill', file: 'docs/a.md', space: 'other' },
+    ]);
   });
 });
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { equipSlotLabel, type RoleEquipSlot } from '@paneflow/shared';
-import { keepValidSlots, removeEquipSlot, splitEquipSlots } from '../equip-slots.js';
+import { keepValidSlots, hasEquipRef, removeEquipSlot, splitEquipSlots, toggleEquipRef } from '../equip-slots.js';
+import { equipRefOptions, type EquipRefOption, type RegistryEntryView } from '../registry-view.js';
 import { api, fetchJson, type Channel, type ChannelType, type NotifyEvent } from '../api.js';
 import { useStore } from '../store.js';
 import { groupWikiPages, WIKI_GROUP_CAP } from '../wiki-sediment.js';
@@ -753,8 +754,8 @@ interface Role {
   env?: Record<string, string>;
   /**
    * v13-W1 岗位装备·技能槽（引用项目 skills 登记清单；键缺省=未配槽，吃项目全量）。
-   * v14-A5-5b 起同一格还能写 `{kind,id}` 注册表定点引用（`RoleEquipSlot`＝两写法并存），
-   * 勾选面仍只产裸路径，引用那一写法在这里**看得见、能摘掉、不硬翻成勾选**（翻了就等于改写那枚岗的语义）。
+   * v14-A5-5b 起同一格还能写 `{kind,id}` 注册表定点引用（`RoleEquipSlot`＝两写法并存）：
+   * 勾选面两列并排（上列产裸路径、下列产引用），两列各说各的尺，不互相翻译。
    */
   skills?: RoleEquipSlot[];
   /** v13-W1 岗位装备·岗位文档槽（评审清单类家规，与项目规则按路径去重）；两写法同上 */
@@ -817,9 +818,11 @@ function buildEquipCatalog(spaces: SpaceEquipSource[]): { skills: EquipOption[];
 }
 
 /**
- * 装备槽勾选器：登记清单里有的画成勾项（勾选只产**裸路径**），
- * 清单外的裸串另列一行如实标出，`{kind,id}` 定点引用单独一行看得见、能摘掉——
- * 两种写法语义不同（池子尺 vs 注册表尺），这里不把引用翻成勾选。
+ * 装备槽勾选器：两写法两列并排——上列是**本项目的登记清单**（勾它产裸相对路径），
+ * 下列是**注册中心的条目**（勾它产 `{kind,id}`）。两列不是同一篇文档的两个画法：
+ * 裸串走池子尺（换个项目还能指到同名那篇），定点引用认那一枚条目自己（条目改了它跟着改、
+ * 被引用还受注册表的删除闸护着），所以这里两列都留着，谁也不替谁。
+ * 清单外的裸串另列一行如实标出；已写进去的引用同样列出来、能摘掉。
  */
 function EquipPicker(props: {
   label: string;
@@ -827,8 +830,12 @@ function EquipPicker(props: {
   options: EquipOption[];
   selected: RoleEquipSlot[];
   onChange: (next: RoleEquipSlot[]) => void;
+  /** 定点引用那一面的可选项（注册中心的 `skill`/`rule` 条目；空数组＝表里这类还没有条目） */
+  refOptions: EquipRefOption[];
+  /** 注册中心那一刀读没读到：读不到时明说「没读到」，不拿空列表冒充「没有条目」 */
+  refsRead: boolean;
 }) {
-  const { label, hint, options, selected, onChange } = props;
+  const { label, hint, options, selected, onChange, refOptions, refsRead } = props;
   const { bare, refs, unknown } = splitEquipSlots(selected, options.map((o) => o.path));
   const toggle = (path: string, on: boolean) =>
     onChange(on ? [...selected, path] : removeEquipSlot(selected, path));
@@ -848,6 +855,26 @@ function EquipPicker(props: {
           </label>
         ))}
         {options.length === 0 && <span className="settings-hint">各项目还没登记可选文档</span>}
+      </div>
+      <div className="equip-refpick">
+        <label>定点引用（注册中心条目：认那一枚自己登记的文档，不吃本项目的清单）</label>
+        <div className="settings-listbox">
+          {refOptions.map((o) => (
+            <label key={o.id} className="settings-check" title={`${o.space} · ${o.file}`}>
+              <input
+                type="checkbox"
+                checked={hasEquipRef(selected, o)}
+                onChange={() => onChange(toggleEquipRef(selected, { kind: o.kind, id: o.id }))}
+              />
+              <code>{o.file}</code>
+              <span className="equip-src">{o.space}</span>
+            </label>
+          ))}
+          {!refsRead && <span className="settings-hint">注册中心那一刀没读到（上面的勾选不受影响）</span>}
+          {refsRead && refOptions.length === 0 && (
+            <span className="settings-hint">注册中心里还没有这一类条目（先去登记一枚，才能定点引用）</span>
+          )}
+        </div>
       </div>
       {refs.length > 0 && (
         <p className="equip-refs">
@@ -905,6 +932,9 @@ function RolesEditor() {
   /** 在册：最后一次 PUT /api/roles 成功后服务端认下的样子——两者不等即「未保存」 */
   const [committed, setCommitted] = useState<Role[]>([]);
   const [catalog, setCatalog] = useState<{ skills: EquipOption[]; docs: EquipOption[] }>({ skills: [], docs: [] });
+  /** v14-A5-5b-2 定点引用那一列的取材：`null`=那一刀还没读到（与「表里没这类条目」分家） */
+  const [registryEntries, setRegistryEntries] = useState<RegistryEntryView[] | null>(null);
+  const [spaceNames, setSpaceNames] = useState<{ id: string; name: string }[]>([]);
   const [usage, setUsage] = useState<Record<string, RoleUsage>>({});
   const [agentKinds, setAgentKinds] = useState<string[]>([]);
   useEffect(() => {
@@ -921,8 +951,18 @@ function RolesEditor() {
       .catch(() => undefined);
     // 装备勾选清单=各项目登记清单的并集（数据面走 GET /api/spaces，界面上不新造判据）
     void fetchJson<{ spaces?: SpaceEquipSource[] }>('GET', '/api/spaces')
-      .then((d) => setCatalog(buildEquipCatalog(d.spaces ?? [])))
-      .catch(() => undefined); // 拉不到清单=只剩手填路，不拦角色编辑
+      .then((d) => {
+        const sp = d.spaces ?? [];
+        setCatalog(buildEquipCatalog(sp));
+        setSpaceNames(sp.map((s) => ({ id: s.id, name: s.name })));
+      })
+      .catch(() => undefined); // 拉不到清单=裸路径那一列空着，只剩注册中心那一列可勾
+    // 定点引用那一列吃注册中心的条目表（R3 只读视图，与「注册中心」页同一份读数）；拉不到留 null，
+    // 界面明说「那一刀没读到」——拿空列表冒充「没有可引用的条目」会把人的判断带走
+    void api
+      .registryList()
+      .then((d) => setRegistryEntries(d.entries))
+      .catch(() => undefined);
     void api.health().then((h) => setAgentKinds(h.agentKinds));
   }, []);
   /** 整库 PUT（/api/roles 是全量替换语义）；成功才把草稿升格为在册，失败留在未保存态 */
@@ -950,6 +990,12 @@ function RolesEditor() {
     return (ia < 0 ? 100 : ia) - (ib < 0 ? 100 : ib);
   });
   const ghosts = Object.entries(usage).filter(([id]) => !roles.some((r) => r.id === id));
+  // 定点引用那一列的取材：条目表整份拿回来再按轴分（server 的 R3 视图不替角色页筛，筛在这儿做，
+  // 判据只有「这一枚是不是这一类、还在不在册」两问，不重算 id、不判跨项目能不能注）
+  const refsRead = registryEntries !== null;
+  const readEntries = registryEntries ?? [];
+  const skillRefOptions = equipRefOptions(readEntries, 'skill', spaceNames);
+  const docRefOptions = equipRefOptions(readEntries, 'rule', spaceNames);
   return (
     <>
       {roles.length === 0 && (
@@ -1055,10 +1101,10 @@ function RolesEditor() {
                         : { skills: undefined, rules: undefined },
                     )
                   }
-                  title="没配装备的岗吃该项目登记的全部文档；配了槽就只吃勾中的这几篇"
+                  title="没配装备的岗吃该项目登记的全部文档；配了槽就只吃选中的这几篇（裸路径或注册中心条目）"
                 >
                   <option value="space">吃项目全量（默认，不配槽）</option>
-                  <option value="own">自带装备（按项目登记清单勾选）</option>
+                  <option value="own">自带装备（勾项目登记清单 / 注册中心条目）</option>
                 </select>
                 {equipped && (
                   <>
@@ -1068,6 +1114,8 @@ function RolesEditor() {
                       options={catalog.skills}
                       selected={r.skills ?? []}
                       onChange={(next) => patch(r.id, { skills: next })}
+                      refOptions={skillRefOptions}
+                      refsRead={refsRead}
                     />
                     <EquipPicker
                       label="岗位文档（来自各项目的规则登记）"
@@ -1075,6 +1123,8 @@ function RolesEditor() {
                       options={catalog.docs}
                       selected={r.rules ?? []}
                       onChange={(next) => patch(r.id, { rules: next })}
+                      refOptions={docRefOptions}
+                      refsRead={refsRead}
                     />
                   </>
                 )}
