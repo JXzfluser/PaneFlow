@@ -182,7 +182,8 @@ paneflow registry check --template x --json  # → 那一行的原样负载：{s
 #   `delivery[i].repo` 落册的就是它）与 `spec.origin`（`owner/repo` 或完整 remote URL，派活 `--repo` 写的也是它；
 #   两种拼法**互指**——条目存 URL 则 `owner/repo` 指得到，条目存 `owner/repo` 则 URL 也指得到，
 #   两侧都过 `parseGithubRemote` 那一把尺、只在比对那一瞬间归一，存的字节仍是用户写的原样）。
-#   指向 template/gateway-profile/channel/… 的槽仍落 `?`（表里没这一类，判「不存在」= 拿空白冒充断言）
+#   已迁的六枚视图 kind 同样判死活（实机读数：`requires:[{kind:'template',id:'t3-demo'}]`／`{kind:'role',id:'std-planner'}`／`{kind:'gateway-profile',id:'default'}` 三枚都落 ✓，条目由代码或盘上正身现算，不需要谁去登记）；
+#   只有表里真没有的这一类才落 `?`（如 `channel`：「『通道』这一类还没迁进注册表，判不了死活（只披露不拦）」，且带 `?` 的槽不算缺口——预检退 0）；判「不存在」= 拿空白冒充断言
 paneflow env probe <绝对路径>                 # 只读环境发现器（v14-E1）：这台机器有什么可登记的，给的是草案不是断言
 paneflow env add <绝对路径> --space <id>      # 一次事务登记（v14-E2）：probe → map → 原子写档案，失败整体回滚
 #   四类入档：repo→repos / doc→conventionFiles / skill→skills / rule→rules（rule 带 repo 关联）；
