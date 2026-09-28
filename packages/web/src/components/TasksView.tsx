@@ -460,19 +460,31 @@ function TaskCard({
     run.graph.metadata?.description?.trim() ||
     (run.issueId ? `Issue #${run.issueId}` : templateLabel(run.dagName).title);
 
+  /**
+   * 队列两枚写动词的在飞读数。两枚共一份账是因为它们动的是同一行：
+   * 撤回成功后这一单仍挂在「排队中」直到列表刷新——读数在 POST 回来时抹掉，
+   * 就是请人对着同一行再按一次，所以撤回分「在发」与「已发待刷新」两态。
+   */
+  const [queueOp, setQueueOp] = useState<'' | 'promote' | 'cancel' | 'cancel-sent'>('');
   const promote = async () => {
+    setQueueOp('promote');
     try {
       await api.promoteRun(run.runId);
       onQueueChanged();
     } catch (e) {
       useStore.getState().log('error', `提队首失败：${(e as Error).message}`);
+    } finally {
+      setQueueOp((cur) => (cur === 'promote' ? '' : cur));
     }
   };
   const cancelQueued = async () => {
+    setQueueOp('cancel');
     try {
       await api.stopRun(run.runId);
       onQueueChanged();
+      setQueueOp('cancel-sent');
     } catch (e) {
+      setQueueOp('');
       useStore.getState().log('error', `取消失败：${(e as Error).message}`);
     }
   };
@@ -513,8 +525,26 @@ function TaskCard({
         <div className="task-queued">
           <p className="task-queued-reason">{queuedReasonText(queue, run.runId)}</p>
           <div className="task-queued-actions">
-            <button onClick={() => void promote()}>⏫ 提到队首</button>
-            <button onClick={() => void cancelQueued()}>✕ 取消排队</button>
+            <button
+              disabled={queueOp !== ''}
+              title={queueOp === 'promote' ? '队列位置调整中…' : '插队到队首（尚未开跑，只挪位置）'}
+              onClick={() => void promote()}
+            >
+              {queueOp === 'promote' ? '提到队首中…' : '⏫ 提到队首'}
+            </button>
+            <button
+              disabled={queueOp !== ''}
+              title={
+                queueOp === 'cancel'
+                  ? '撤回指令发送中…'
+                  : queueOp === 'cancel-sent'
+                    ? '已撤回：这一单不会开跑，等列表把它收成「已取消」'
+                    : '取消排队（尚未开跑，撤回即终态）'
+              }
+              onClick={() => void cancelQueued()}
+            >
+              {queueOp === 'cancel' ? '取消中…' : queueOp === 'cancel-sent' ? '已撤回，等刷新…' : '✕ 取消排队'}
+            </button>
           </div>
         </div>
       )}

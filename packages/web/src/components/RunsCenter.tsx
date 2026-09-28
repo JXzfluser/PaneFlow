@@ -93,6 +93,8 @@ function ArchivedPanel() {
   const log = useStore((s) => s.log);
   const [archived, setArchived] = useState<RunRecord[] | null>(null);
   const [modal, setModal] = useState<ModalRequest | null>(null);
+  /** 反归档按行读数：这一枚是图标按钮，点了没字就是「没点上」，人会对着同一行再按一次 */
+  const [restoring, setRestoring] = useState<Record<string, boolean>>({});
 
   const reload = () => {
     void fetchJson<{ runs: RunRecord[] }>('GET', '/api/runs?archived=1')
@@ -105,12 +107,18 @@ function ArchivedPanel() {
   useEffect(reload, []);
 
   const unarchive = async (runId: string) => {
+    setRestoring((c) => ({ ...c, [runId]: true }));
     try {
       const d = await fetchJson<{ restored: boolean; run: RunRecord }>('POST', `/api/runs/${encodeURIComponent(runId)}/unarchive`);
       useStore.setState((s) => ({ runs: { ...s.runs, [d.run.runId]: d.run } }));
       setArchived((cur) => (cur ?? []).filter((r) => r.runId !== runId));
       log('info', `已恢复 ${runId} 到主列表`);
     } catch (e) {
+      setRestoring((c) => {
+        const next = { ...c };
+        delete next[runId];
+        return next;
+      });
       log('error', `反归档失败：${(e as Error).message}`);
     }
   };
@@ -151,8 +159,12 @@ function ArchivedPanel() {
               }}>
                 <Icon name="download" />
               </button>
-              <button title="恢复到主列表（反归档）" onClick={() => void unarchive(r.runId)}>
-                <Icon name="undo" />
+              <button
+                disabled={restoring[r.runId]}
+                title={restoring[r.runId] ? '恢复指令发送中…' : '恢复到主列表（反归档）'}
+                onClick={() => void unarchive(r.runId)}
+              >
+                {restoring[r.runId] ? '恢复中…' : <Icon name="undo" />}
               </button>
               <button className="danger" title="真删除（不可恢复；可选一并清理本 run 产物，默认保留）" onClick={() => purge(r.runId)}>
                 <Icon name="trash" />
@@ -280,6 +292,21 @@ export function RunsCenter() {
   const [artLists, setArtLists] = useState<Record<string, { dir: string; exists: boolean; files: ArtifactFile[] }>>({});
   const [artView, setArtView] = useState<Record<string, string>>({});
 
+  /**
+   * 写面那一刀的在飞读数，按 runId 记（这几枚按钮点下去都是真 POST）。
+   * 'stop' = 指令还在路上，'stop-done' = server 已收但这一单还没落终态——
+   * 两态分开是因为「发停止指令」成功不等于「已停」：把读数在 POST 回来时抹掉，
+   * 卡片还挂着「运行中」，按钮回到原样就是请人再按一次。
+   */
+  const [runOp, setRunOp] = useState<Record<string, 'stop' | 'stop-done' | 'archive'>>({});
+  const setRunOpFor = (runId: string, op: 'stop' | 'stop-done' | 'archive' | null) =>
+    setRunOp((c) => {
+      const next = { ...c };
+      if (op === null) delete next[runId];
+      else next[runId] = op;
+      return next;
+    });
+
   const toggleArtifacts = async (runId: string) => {
     if (openArts === runId) {
       setOpenArts(null);
@@ -342,11 +369,30 @@ export function RunsCenter() {
   const queuedCount = list.filter((r) => r.state === 'queued').length;
 
   const stop = async (runId: string) => {
+    setRunOpFor(runId, 'stop');
     try {
       await api.stopRun(runId);
       log('warn', `已发送停止指令：${runId}`);
+      setRunOpFor(runId, 'stop-done');
     } catch (e) {
+      setRunOpFor(runId, null);
       log('error', `停止失败：${(e as Error).message}`);
+    }
+  };
+
+  // v7-A2 归档：移出主列表、记录保留。成功即把这张卡从 store 里摘掉，所以在飞读数只盖住 POST 那一段
+  const archive = async (runId: string) => {
+    setRunOpFor(runId, 'archive');
+    try {
+      await fetchJson<{ archived: boolean }>('POST', `/api/runs/${encodeURIComponent(runId)}/archive`);
+      useStore.setState((s) => {
+        const runs = { ...s.runs };
+        delete runs[runId];
+        return { ...s, runs };
+      });
+    } catch (e) {
+      setRunOpFor(runId, null);
+      log('error', `归档失败：${(e as Error).message}`);
     }
   };
 
@@ -419,6 +465,7 @@ export function RunsCenter() {
           .map((n) => ({ id: n.nodeId, rs: n.rejections ?? [] }))
           .filter((x) => x.rs.length > 0);
         const reworkTotal = reworked.reduce((s, x) => s + x.rs.length, 0);
+        const op = runOp[r.runId];
         return (
           <div key={r.runId} className={`run-card state-${r.state}`}>
             <div className="run-card-head">
@@ -531,18 +578,12 @@ export function RunsCenter() {
                   <Icon name="download" size={12} />
                 </button>
                 {!['running', 'queued'].includes(r.state) && (
-                  <button title="归档（移出主列表，记录保留）" onClick={() => {
-                    void fetchJson<{ archived: boolean }>('POST', `/api/runs/${r.runId}/archive`)
-                      .then(() => {
-                        useStore.setState((s) => {
-                          const runs = { ...s.runs };
-                          delete runs[r.runId];
-                          return { ...s, runs };
-                        });
-                      })
-                      .catch((e: Error) => useStore.getState().log('error', `归档失败：${e.message}`));
-                  }}>
-                    <Icon name="box" size={12} />
+                  <button
+                    disabled={op === 'archive'}
+                    title={op === 'archive' ? '归档指令发送中…' : '归档（移出主列表，记录保留）'}
+                    onClick={() => void archive(r.runId)}
+                  >
+                    {op === 'archive' ? '归档中…' : <Icon name="box" size={12} />}
                   </button>
                 )}
                 {r.state === 'failed' && (
@@ -554,13 +595,35 @@ export function RunsCenter() {
                   <Icon name="external" size={12} />
                 </button>
                 {r.state === 'running' && (
-                  <button className="danger" title="停止" onClick={() => void stop(r.runId)}>
-                    <Icon name="stop" size={12} />
+                  <button
+                    className="danger"
+                    disabled={op !== undefined}
+                    title={
+                      op === 'stop'
+                        ? '停止指令发送中…'
+                        : op === 'stop-done'
+                          ? '停止指令已发出，等这一单在节点边界收口（再点一下不会更快）'
+                          : '停止'
+                    }
+                    onClick={() => void stop(r.runId)}
+                  >
+                    {op ? (op === 'stop' ? '停止中…' : '等待收口…') : <Icon name="stop" size={12} />}
                   </button>
                 )}
                 {r.state === 'queued' && (
-                  <button className="danger" title="取消排队（尚未开跑，撤回即终态）" onClick={() => void stop(r.runId)}>
-                    <Icon name="x" size={12} />
+                  <button
+                    className="danger"
+                    disabled={op !== undefined}
+                    title={
+                      op === 'stop'
+                        ? '撤回排队指令发送中…'
+                        : op === 'stop-done'
+                          ? '已撤回：这一单不会开跑，等列表把它收成「已取消」'
+                          : '取消排队（尚未开跑，撤回即终态）'
+                    }
+                    onClick={() => void stop(r.runId)}
+                  >
+                    {op ? (op === 'stop' ? '取消中…' : '已撤回…') : <Icon name="x" size={12} />}
                   </button>
                 )}
               </div>
