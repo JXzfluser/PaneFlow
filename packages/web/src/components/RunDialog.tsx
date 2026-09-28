@@ -26,7 +26,8 @@ export function RunDialog({
     for (const v of variables) init[v.key] = v.default ?? '';
     return init;
   });
-  const [busy, setBusy] = useState(false);
+  /** 两枚按钮共一份在飞读数（它们抢同一份图与目录），但各说各在干什么：原来「预演」只有 disabled，没有一句话 */
+  const [dlgOp, setDlgOp] = useState<'' | 'dry' | 'start'>('');
   const [issueId, setIssueId] = useState('');
   const [preview, setPreview] = useState<DryRunResult | null>(null);
 
@@ -37,13 +38,13 @@ export function RunDialog({
       log('error', '请先填写流水线工作目录');
       return;
     }
-    setBusy(true);
+    setDlgOp('dry');
     try {
       setPreview(await api.dryRun(graph, cwd.trim(), values));
     } catch (e) {
       log('error', `预演失败：${(e as Error).message}`);
     } finally {
-      setBusy(false);
+      setDlgOp((cur) => (cur === 'dry' ? '' : cur));
     }
   };
 
@@ -56,16 +57,15 @@ export function RunDialog({
       log('error', `缺少必填参数：${missing.map((v) => v.label).join('、')}`);
       return;
     }
-    setBusy(true);
+    setDlgOp('start');
     try {
       const { run } = await api.startRun(graph, cwd.trim(), values, issueId.trim() || undefined);
       onStarted(run.runId);
       log('info', `流水线已启动：${run.runId}`);
       onClose();
     } catch (e) {
+      setDlgOp((cur) => (cur === 'start' ? '' : cur));
       log('error', `启动失败：${(e as Error).message}`);
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -145,9 +145,11 @@ export function RunDialog({
         )}
         <div className="close-row">
           <button onClick={onClose}>取消</button>
-          <button disabled={busy} onClick={() => void dryRun()}>🔍 预演</button>
-          <button className="primary" disabled={busy} onClick={() => void submit()}>
-            {busy ? '启动中…' : '▶ 启动'}
+          <button disabled={dlgOp !== ''} onClick={() => void dryRun()}>
+            {dlgOp === 'dry' ? '预演中…' : '🔍 预演'}
+          </button>
+          <button className="primary" disabled={dlgOp !== ''} onClick={() => void submit()}>
+            {dlgOp === 'start' ? '启动中…' : '▶ 启动'}
           </button>
         </div>
       </div>

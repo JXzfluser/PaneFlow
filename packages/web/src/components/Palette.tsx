@@ -26,6 +26,8 @@ export function Palette() {
   const space = useStore((s) => s.space);
   const [modal, setModal] = useState<ModalRequest | null>(null);
   const [advOpen, setAdvOpen] = useState(false);
+  /** 导入模板那一发是真写盘（本地读文件 + POST /api/graphs + 刷列表），慢的时候「导入」得改口说话，不然就是没点上 */
+  const [importing, setImporting] = useState(false);
   /**
    * v14-T3 预检读数（一次拿全部模板，不是一卡一发请求）。`null` = 还没读到/读失败了——
    * 那时带槽的卡画「预检没读出」灰字，**绝不画 ✓**：缺口最坏的样子就是看着没事。
@@ -142,6 +144,7 @@ export function Palette() {
   };
 
   const importTpl = async (file: File) => {
+    setImporting(true);
     try {
       const graph = JSON.parse(await file.text()) as DagGraph;
       if (graph?.version !== 1 || !Array.isArray(graph.nodes)) throw new Error('不是有效的 PaneFlow 模板');
@@ -150,6 +153,8 @@ export function Palette() {
       log('info', `已导入模板「${graph.name}」`);
     } catch (e) {
       log('error', `导入失败：${(e as Error).message}`);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -159,11 +164,12 @@ export function Palette() {
 
       <h4>
         模板
-        <label className="pal-import" title="导入模板 JSON">
-          导入
+        <label className="pal-import" title={importing ? '模板读取并写入中…' : '导入模板 JSON'}>
+          {importing ? '导入中…' : '导入'}
           <input
             type="file"
             accept=".json,application/json"
+            disabled={importing}
             style={{ display: 'none' }}
             onChange={(e) => {
               const f = e.target.files?.[0];

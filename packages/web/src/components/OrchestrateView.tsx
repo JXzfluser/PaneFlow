@@ -36,6 +36,12 @@ export function OrchestrateView() {
   );
   const activeRun = activeRunId ? runs[activeRunId] : null;
   const running = activeRun?.state === 'running';
+  /**
+   * 顶栏四枚写动词的在飞读数（保存 / 停止 / 同步推 / 同步拉）：四枚原本全是 `void fn()`，
+   * 点下去一句不说。'stop' 与 'stop-done' 分家同运行中心那枚——「停止指令已发出」≠「这一单已停」，
+   * POST 回来时画布上还挂着「运行中」，读数那一刻抹掉就是请人再按一次。
+   */
+  const [topOp, setTopOp] = useState<'' | 'save' | 'stop' | 'stop-done' | 'push' | 'pull'>('');
 
   const switchPane = (mode: PaneMode) => {
     localStorage.setItem(PANE_KEY, mode);
@@ -57,10 +63,13 @@ export function OrchestrateView() {
 
   const stop = async () => {
     if (!activeRunId) return;
+    setTopOp('stop');
     try {
       await api.stopRun(activeRunId);
       log('warn', '已发送停止指令（会先打断运行中的 Agent）…');
+      setTopOp('stop-done');
     } catch (e) {
+      setTopOp('');
       log('error', `停止失败：${(e as Error).message}`);
     }
   };
@@ -71,20 +80,31 @@ export function OrchestrateView() {
       log('error', '请先在顶栏输入框填写模板名（字母/数字/-/_）再保存');
       return;
     }
+    setTopOp('save');
     try {
       await api.saveGraph({ ...toGraph(), name });
       setTemplates((await api.listGraphs()).graphs);
       log('info', `模板「${name}」已保存`);
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
+    } finally {
+      setTopOp((cur) => (cur === 'save' ? '' : cur));
     }
   };
 
+  // 同步两枚走「更多」菜单：菜单在请求落定前不关，否则「同步中…」那句跟着菜单一起消失，读数等于没做
+  const closeMenuWhenSettled = (verb: 'push' | 'pull') => {
+    setTopOp((cur) => (cur === verb ? '' : cur));
+    setMoreOpen(false);
+  };
+
   const syncPush = async () => {
+    setTopOp('push');
     try {
       const st = await api.syncStatus();
       if (!st.configured) {
         log('warn', '模板云端同步未启用：请到设置页配置 GitHub Token 与默认目标仓库（owner/name）；环境变量 PF_GITHUB_REPO/PF_GITHUB_TOKEN 亦可，env 优先');
+        closeMenuWhenSettled('push');
         return;
       }
       await api.syncPush();
@@ -92,9 +112,11 @@ export function OrchestrateView() {
     } catch (e) {
       log('error', `模板同步失败：${(e as Error).message}`);
     }
+    closeMenuWhenSettled('push');
   };
 
   const syncPull = async () => {
+    setTopOp('pull');
     try {
       const r = await api.syncPull();
       setTemplates((await api.listGraphs()).graphs);
@@ -102,6 +124,7 @@ export function OrchestrateView() {
     } catch (e) {
       log('error', `拉取失败：${(e as Error).message}`);
     }
+    closeMenuWhenSettled('pull');
   };
 
   return (
@@ -109,8 +132,12 @@ export function OrchestrateView() {
       <div className="topbar">
         <div className="tb-group" title="当前画布的模板">
           <input className="gname" value={graphName} onChange={(e) => renameGraph(e.target.value)} placeholder="模板名" style={{ width: 150 }} />
-          <button onClick={saveTemplate} title="保存模板（用左侧模板名）">
-            <Icon name="save" /> 保存
+          <button
+            onClick={() => void saveTemplate()}
+            disabled={topOp === 'save'}
+            title={topOp === 'save' ? '模板写入中…' : '保存模板（用左侧模板名）'}
+          >
+            {topOp === 'save' ? '保存中…' : (<><Icon name="save" /> 保存</>)}
           </button>
         </div>
 
@@ -139,8 +166,19 @@ export function OrchestrateView() {
               <Icon name="play" /> 运行
             </button>
           ) : (
-            <button className="danger" onClick={() => void stop()} title="停止流水线">
-              <Icon name="stop" />
+            <button
+              className="danger"
+              disabled={topOp === 'stop' || topOp === 'stop-done'}
+              title={
+                topOp === 'stop'
+                  ? '停止指令发送中…'
+                  : topOp === 'stop-done'
+                    ? '停止指令已发出，等这一单在节点边界收口（再点一下不会更快）'
+                    : '停止流水线'
+              }
+              onClick={() => void stop()}
+            >
+              {topOp === 'stop' ? '停止中…' : topOp === 'stop-done' ? '等待收口…' : <Icon name="stop" />}
             </button>
           )}
         </div>
@@ -179,8 +217,18 @@ export function OrchestrateView() {
                   >
                     ⎇ 模板变量
                   </button>
-                  <button onClick={() => { void syncPush(); setMoreOpen(false); }}>☁️ 同步模板到 GitHub</button>
-                  <button onClick={() => { void syncPull(); setMoreOpen(false); }}>⬇️ 从 GitHub 拉取</button>
+                  <button
+                    disabled={topOp === 'push' || topOp === 'pull'}
+                    onClick={() => { void syncPush(); }}
+                  >
+                    {topOp === 'push' ? '☁️ 同步中…' : '☁️ 同步模板到 GitHub'}
+                  </button>
+                  <button
+                    disabled={topOp === 'push' || topOp === 'pull'}
+                    onClick={() => { void syncPull(); }}
+                  >
+                    {topOp === 'pull' ? '⬇️ 拉取中…' : '⬇️ 从 GitHub 拉取'}
+                  </button>
                   <button
                     onClick={() => {
                       clearCanvas();
