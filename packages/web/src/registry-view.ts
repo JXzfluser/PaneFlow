@@ -145,7 +145,13 @@ export interface RegistryFormField {
   /** 下拉选项的来源（渲染侧按这一枚去取候选，不再写死 `key === 'gatewayProfile'`） */
   options?: 'gateway-profiles' | 'spaces';
   /** 直接给 datalist 候选集（可选也可填——候选是省手的，不是白名单） */
-  list?: 'models' | 'space-docs' | 'space-repos';
+  list?: 'models' | 'space-docs' | 'space-repos' | 'repo-origins';
+  /**
+   * 这一格填的是**这一项的正身**（型号串／文档路径／仓目录／启动命令）——显示名空着时从它派生。
+   * 刻意不用「第一个必填字段」代替这一枚：`skill`/`rule`/`repo` 的必填头一格是「所属项目」，
+   * 拿项目 id 当能力名就是把「default」写进账里，而它是作用域不是身份。
+   */
+  primary?: boolean;
 }
 
 /** 信封层的显示名（POST 体的 name，所有 kind 共用） */
@@ -158,7 +164,7 @@ export const REGISTRY_NAME_FIELD: RegistryFormField = {
 };
 
 const MODEL_FIELDS: RegistryFormField[] = [
-  { key: 'model', label: '型号', type: 'text', required: true, list: 'models', hint: '可从网关探得的清单里选，也可直接填' },
+  { key: 'model', label: '型号', type: 'text', required: true, primary: true, list: 'models', hint: '可从网关探得的清单里选，也可直接填' },
   { key: 'gatewayProfile', label: '归属网关档', type: 'select', options: 'gateway-profiles', hint: '只是裸 id 引用；档在不在由服务端的引用账说' },
   { key: 'freeModel', label: '免费位', type: 'checkbox', hint: '登记时它挂在网关的免费位上才勾' },
   { key: 'note', label: '备注', type: 'text', hint: '为什么留这一枚' },
@@ -172,7 +178,7 @@ const MODEL_FIELDS: RegistryFormField[] = [
  */
 const SKILL_FIELDS: RegistryFormField[] = [
   { key: 'space', label: '所属项目', type: 'select', required: true, options: 'spaces', hint: '相对路径以这个项目的根为基准，换项目=换文件' },
-  { key: 'file', label: '文档路径', type: 'text', required: true, list: 'space-docs', hint: '相对项目根；可从该项目已登记的清单里选，也可直接填' },
+  { key: 'file', label: '文档路径', type: 'text', required: true, primary: true, list: 'space-docs', hint: '相对项目根；可从该项目已登记的清单里选，也可直接填' },
   { key: 'note', label: '备注', type: 'text', hint: '这篇是干什么的（选填）' },
 ];
 
@@ -184,7 +190,7 @@ const SKILL_FIELDS: RegistryFormField[] = [
  */
 const RULE_FIELDS: RegistryFormField[] = [
   { key: 'space', label: '所属项目', type: 'select', required: true, options: 'spaces', hint: '约定文档以这个项目的根为基准' },
-  { key: 'file', label: '文档路径', type: 'text', required: true, list: 'space-docs', hint: '相对项目根；候选来自该项目已登记的文档路径，也可直接填' },
+  { key: 'file', label: '文档路径', type: 'text', required: true, primary: true, list: 'space-docs', hint: '相对项目根；候选来自该项目已登记的文档路径，也可直接填' },
   { key: 'repo', label: '只在某仓生效', type: 'text', list: 'space-repos', hint: '填仓库目录名（相对主仓根）；留空=整个项目都守这条' },
   { key: 'pathsGlob', label: '只在某目录生效', type: 'text', hint: '对节点工作目录的 glob，如 packages/**；原样存，PaneFlow 不在这一步展开' },
   { key: 'note', label: '备注', type: 'text', hint: '为什么/什么时候守这条（会随文档注入给 agent）' },
@@ -199,13 +205,13 @@ const RULE_FIELDS: RegistryFormField[] = [
  */
 const REPO_FIELDS: RegistryFormField[] = [
   { key: 'space', label: '所属项目', type: 'select', required: true, options: 'spaces', hint: '目录名以这个项目的根为基准，换项目=换目录' },
-  { key: 'dir', label: '仓库目录', type: 'text', required: true, list: 'space-repos', hint: '相对项目根的目录名；可从该项目已登记的仓库里选，也可直接填' },
-  { key: 'origin', label: '远端仓', type: 'text', hint: 'owner/repo 或完整 remote URL（选填）；派活时 --repo 认的就是这一枚' },
+  { key: 'dir', label: '仓库目录', type: 'text', required: true, primary: true, list: 'space-repos', hint: '相对项目根的目录名；可从该项目已登记的仓库里选，也可直接填' },
+  { key: 'origin', label: '远端仓', type: 'text', list: 'repo-origins', hint: 'owner/repo 或完整 remote URL（选填）；派活时 --repo 认的就是这一枚' },
   { key: 'note', label: '备注', type: 'text', hint: '这个仓是干什么的（选填）' },
 ];
 
 const MCP_FIELDS: RegistryFormField[] = [
-  { key: 'command', label: '启动命令', type: 'text', required: true, hint: '本机可执行文件（绝对路径或 PATH 上的名字）' },
+  { key: 'command', label: '启动命令', type: 'text', required: true, primary: true, hint: '本机可执行文件（绝对路径或 PATH 上的名字）' },
   { key: 'args', label: '参数', type: 'text', hint: '原样存一行，PaneFlow 不解析、不拆词' },
   { key: 'note', label: '备注', type: 'text', hint: '干什么用的（这一版只做登记账，工具桥接还没上）' },
 ];
@@ -220,7 +226,48 @@ export function formFieldsFor(kind: string): RegistryFormField[] | null {
 }
 
 /**
+ * 本机只读探测（`POST /api/env/probe`，v14-E1）的候选提取——登记面的「路径」那一格不该逼人回忆。
+ *
+ * 三条边界：
+ *  - **只挑不改**：`evidence` 就是 server 给的相对路径原值（doc 是 `AGENTS.md`、skill 是 `skills/x.md`、
+ *    rule 是 `docs/y.md`），与 `spec.file` 落册时吃的是同一串，所以这里不拼路径、也不剥前缀。
+ *  - **计数项不是路径**：规则候选超过上限时 server 会另起一项「另 N 篇未逐项列出」，
+ *    它的 `evidence` 是 `<目录清单：…>` 这种带尖括号的说明（正是为了不被当成相对路径去 stat）——挡掉。
+ *  - 探得的与档案里已登记的并起来：前者说「盘上有这篇」，后者说「这项目已经在用这篇」，
+ *    人要的往往两枚都有；重复由 `Set` 收，序按码位（与 server 的 `byRelPath` 同一条理由）。
+ */
+export function probeFileCandidates(items: { kind: string; evidence: string }[]): string[] {
+  const out = items
+    .filter((it) => (it.kind === 'doc' || it.kind === 'skill' || it.kind === 'rule') && it.evidence)
+    .filter((it) => !it.evidence.startsWith('<'))
+    .map((it) => it.evidence.trim());
+  return [...new Set(out)].sort();
+}
+
+/** 远端仓候选：`repo` 那一项的 `name` 是 server 归一过的 `owner/repo`（认不出时是原始 URL），原样递给人挑 */
+export function probeOriginCandidates(items: { kind: string; name: string }[]): string[] {
+  return [...new Set(items.filter((it) => it.kind === 'repo' && it.name.trim()).map((it) => it.name.trim()))].sort();
+}
+
+/** 档案已登记的路径 ∪ 本机探得的路径（两枚都不空时并；空的那侧不参与） */
+export function mergeCandidates(a: readonly string[], b: readonly string[]): string[] {
+  return [...new Set([...a, ...b].map((x) => x.trim()).filter((x) => x !== ''))].sort();
+}
+
+/**
+ * 从主字段派生显示名（少打一格）：`docs/guide/review.md` → `review`，`glm-4.7` → `glm-4.7`。
+ * 只在名字那一格还空着时用它——派生是**代填**，不是替人改写已经填过的字。
+ */
+export function deriveNameFromValue(v: string): string {
+  const s = String(v ?? '').trim().replace(/[\\/]+$/, '');
+  if (!s) return '';
+  const last = s.split(/[\\/]/).pop() ?? s;
+  return last.replace(/\.(md|json|ya?ml|ts|js|tsx|jsx)$/i, '');
+}
+
+/**
  * 候选池只吃档案里那三条路径列表，所以按**结构**收（server 的 `SpaceProfile` 不在 shared 里，
+
  * 这里抄全表就是把「档案加字段」变成页面的破坏性变更）。字段全可选：`GET /api/spaces/:id`
  * 对没配过的键整缺不造默认，这里也不拿 `undefined` 当空数组用。
  */

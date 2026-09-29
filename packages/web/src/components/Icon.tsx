@@ -159,7 +159,10 @@ const ICONS = {
 export type IconName = keyof typeof ICONS;
 
 export function Icon({ name, size = 14, className }: { name: IconName; size?: number; className?: string }) {
-  const stroke = size >= 14 ? 2 : Math.max(1.5, (size / 14) * 2);
+  // viewBox 固定 24 格，所以用户单位下的 strokeWidth 2 只在该图标真按 24px 画时才是 2 条线宽：
+  // 12px 处它已细到 0.86 物理像素（dpr1 上就是一条糊掉的灰线）。这里换成「实际落在屏幕上多粗」——
+  // 24 格以下一律保持 1.5 物理像素（与旁边 400 字重的正文同量级），24 格以上才用 2 的出厂线宽。
+  const stroke = size >= 18 ? 2 : (1.5 * 24) / size;
   return (
     <svg
       className={`ic${className ? ` ${className}` : ''}`}

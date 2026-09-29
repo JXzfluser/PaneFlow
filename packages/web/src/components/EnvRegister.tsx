@@ -207,10 +207,12 @@ export function EnvRegister({ spaceId, onClose, onRegistered }: { spaceId: strin
                       aria-label={`${KIND_LABEL[item.kind]} ${item.name}`}
                     />
                     <span className="er-kind">{KIND_LABEL[item.kind]}</span>
-                    <span className="er-name">{item.name}</span>
-                    <span className="er-detail">{item.detail}</span>
+                    <span className="er-titles">
+                      <span className="er-name">{item.name}</span>
+                      {item.detail && <span className="er-detail">{item.detail}</span>}
+                      {!canPick && <span className="er-tag disclosed">无字段</span>}
+                    </span>
                     <span className="er-evidence">依据 · {item.evidence}</span>
-                    {!canPick && <span className="er-tag disclosed">无字段</span>}
                   </label>
                 );
               })}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildRegistryPayload,
+  deriveNameFromValue,
   equipRefOptions,
   formFieldsFor,
   formatWhen,
@@ -10,8 +11,11 @@ import {
   healthTitle,
   isViewEntry,
   kindGroupLabel,
+  mergeCandidates,
   missingRequiredFields,
+  probeFileCandidates,
   probeNote,
+  probeOriginCandidates,
   refCountOf,
   refNote,
   refRows,
@@ -725,5 +729,77 @@ describe('probeNote（单枚探针回执：失败 / 无通道 / 有读数 分得
     expect(note).not.toContain('在清单里');
     expect(note).toMatch(/2026-09-2\d/);
     expect(probeNote(res({ at: '不是时间', health: { status: 'unknown', detail: '' } }), null)).toContain('不是时间');
+  });
+});
+
+describe('本机探测喂给表单的候选（E1 只读探到的路径/远端仓，页面不判断据只照抄）', () => {
+  const item = (kind: string, name: string, evidence = name) => ({ kind, name, detail: '', evidence });
+
+  it('probeFileCandidates：doc/skill/rule 三类取的是 evidence（相对项目根的路径），不是 name', () => {
+    expect(
+      probeFileCandidates([item('doc', 'AGENTS.md'), item('skill', 'deploy', 'skills/deploy.md'), item('rule', '家规', 'docs/rule.md')]),
+    ).toEqual(['AGENTS.md', 'docs/rule.md', 'skills/deploy.md']);
+  });
+
+  it('超量那一行不是路径：evidence 用尖括号标「目录清单」，不许当候选填进文档路径格', () => {
+    expect(probeFileCandidates([item('doc', 'docs', '<目录清单：仓根同级 *.md + docs/*.md>')])).toEqual([]);
+  });
+
+  it('probeFileCandidates：其余 kind（仓/命令/工作流/worktree）不进文档候选，空串与重复都收掉，结果稳定排序', () => {
+    const got = probeFileCandidates([
+      item('repo', 'my-org/my-repo', '.git/config'),
+      item('check', 'pnpm', 'package.json'),
+      item('workflow', 'ci', '.github/workflows/ci.yml'),
+      item('worktree', 'wt', '.git/worktrees/'),
+      item('skill', 'a', 'skills/a.md'),
+      item('skill', 'b', 'skills/a.md'),
+      item('doc', '空', ''),
+    ]);
+    expect(got).toEqual(['skills/a.md']);
+  });
+
+  it('probeOriginCandidates：仓条目取的是 name（owner/repo 或 server 没归一出的原样 URL），evidence 不算', () => {
+    expect(
+      probeOriginCandidates([
+        item('repo', 'z-org/beta', '.git/config'),
+        item('repo', 'my-org/alpha', '.git/config'),
+        item('repo', '  ', '.git/config'),
+        item('doc', 'AGENTS.md'),
+      ]),
+    ).toEqual(['my-org/alpha', 'z-org/beta']);
+  });
+
+  it('mergeCandidates：档案登记过的 ∪ 盘上探到的，去重去空白后排序（两侧来源不同，合的是候选池不是判据）', () => {
+    expect(mergeCandidates(['skills/x.md', ' docs/a.md ', ''], ['docs/a.md', 'AGENTS.md', '  '])).toEqual([
+      'AGENTS.md',
+      'docs/a.md',
+      'skills/x.md',
+    ]);
+  });
+
+  it('deriveNameFromValue：路径/仓名取末段、去扩展名、去尾斜杠；空值不拿空白冒充名字', () => {
+    expect(deriveNameFromValue('skills/deploy.md')).toBe('deploy');
+    expect(deriveNameFromValue('docs/rules/team.md')).toBe('team');
+    expect(deriveNameFromValue('my-org/my-repo')).toBe('my-repo');
+    expect(deriveNameFromValue('packages/web')).toBe('web');
+    expect(deriveNameFromValue('packages/web/')).toBe('web');
+    expect(deriveNameFromValue('gpt-4o')).toBe('gpt-4o');
+    expect(deriveNameFromValue('  ')).toBe('');
+    expect(deriveNameFromValue('')).toBe('');
+  });
+
+  it('表单里的候选格与「正身格」都挂号：显示名只从正身派生，不拿第一个必填猜（那是所属项目）', () => {
+    expect(formFieldsFor('repo')?.find((f) => f.key === 'origin')?.list).toBe('repo-origins');
+    expect(formFieldsFor('skill')?.find((f) => f.key === 'file')?.list).toBe('space-docs');
+    expect(formFieldsFor('rule')?.find((f) => f.key === 'file')?.list).toBe('space-docs');
+    for (const kind of ['model', 'skill', 'rule', 'repo', 'mcp']) {
+      const primaries = (formFieldsFor(kind) ?? []).filter((f) => f.primary);
+      expect(primaries.map((f) => f.key)).toEqual([
+        { model: 'model', skill: 'file', rule: 'file', repo: 'dir', mcp: 'command' }[kind],
+      ]);
+      // 正身格从来不是「第一个必填」那格：skill/rule/repo 的头一枚必填是所属项目
+      const firstRequired = (formFieldsFor(kind) ?? []).find((f) => f.required && f.type !== 'checkbox')?.key;
+      if (kind === 'skill' || kind === 'rule' || kind === 'repo') expect(firstRequired).toBe('space');
+    }
   });
 });

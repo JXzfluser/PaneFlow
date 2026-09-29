@@ -1,9 +1,10 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
-import { api, fetchJson } from '../api.js';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { api, fetchJson, type EnvProbeItem } from '../api.js';
 import { useStore } from '../store.js';
 import { Icon } from './Icon.js';
 import {
   buildRegistryPayload,
+  deriveNameFromValue,
   formFieldsFor,
   formatWhen,
   groupEntriesByKind,
@@ -12,8 +13,11 @@ import {
   healthTitle,
   isViewEntry,
   kindGroupLabel,
+  mergeCandidates,
   missingRequiredFields,
+  probeFileCandidates,
   probeNote,
+  probeOriginCandidates,
   refCountOf,
   refNote,
   refRows,
@@ -35,6 +39,9 @@ import {
   type SpaceDocCandidateSource,
 } from '../registry-view.js';
 
+/** 行上四类写动作：在飞读数按这一枚点名（同一条目的四发不能共用一句话） */
+type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
+
 /**
  * v14 X1 注册中心（M0 可感面）：一张表 + 一组动词，登记走表单、**永远不写 JSON**。
  * 家规：判定全在 server——label / rejected.why / 400 error 都是 server 给的一句人话，原样转述；
@@ -44,7 +51,15 @@ export function RegistryView() {
   const log = useStore((s) => s.log);
   const [data, setData] = useState<RegistryListResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  // 登记那一发：表单唯一一次「填完再点」的写
+  const [formBusy, setFormBusy] = useState(false);
+  /**
+   * 行上那一发点的是哪个动词：启停／探一次／现探／删除共用同一枚条目 id，只带 id 的话
+   * 「停用中…」和「删除中…」会一起亮、两枚探针按钮同时改口——在飞读数要点名到那一发，不能让人猜。
+   */
+  const [writeOp, setWriteOp] = useState<{ id: string; op: RowOp } | null>(null);
+  const rowBusy = (id: string) => writeOp?.id === id;
+  const opBusy = (id: string, op: RowOp) => writeOp?.id === id && writeOp.op === op;
   const [detailId, setDetailId] = useState<string | null>(null);
   // 对某条目最近一次写失败的服务端原文（进详情抽屉披露，不 toast 完就蒸发）
   const [writeErrors, setWriteErrors] = useState<Record<string, string>>({});
@@ -76,8 +91,11 @@ export function RegistryView() {
    * `skill`/`rule` 表单的候选（v14 A5-1/A5-2）：项目下拉读 `/api/spaces`，文档路径与仓库目录名读
    * **所选项目档案里已有的值**（`GET /api/spaces/:id`）。前端不拼路径、不猜目录：候选读不出来时，
    * 直填那一格照旧可走——候选是省手的，不是白名单。
+   * 档案里没登记过路径时另有一把尺：拿这个项目的 `rootCwd` 走一次**只读**环境探测
+   * （`/api/env/probe`，v14-E1），把盘上真有的那几篇端成点一下就能填的牌——登记面的手打字数
+   * 不该由「档案里恰好记没记过」决定。判据仍在 server（这里只照抄它给的相对路径），网页不 stat 任何东西。
    */
-  const [spaces, setSpaces] = useState<{ id: string; name: string }[]>([]);
+  const [spaces, setSpaces] = useState<{ id: string; name: string; rootCwd?: string }[]>([]);
   const [spacesNote, setSpacesNote] = useState<string | null>(null);
   const [docCandidates, setDocCandidates] = useState<string[]>([]);
   const [repoCandidates, setRepoCandidates] = useState<string[]>([]);
@@ -85,6 +103,73 @@ export function RegistryView() {
   /** 表单的三个候选源共用这一份读数：它们同一次一起读、一起失败，各挂一个转圈就是三处说谎的机会 */
   const [optionsBusy, setOptionsBusy] = useState(false);
   const selectedSpace = typeof formValues.space === 'string' ? formValues.space : '';
+  /** 所选项目的根（本机探测的唯一基准；档案里没填就是 undefined——那一轮扫描干脆不开口） */
+  const selectedSpaceRoot = spaces.find((s) => s.id === selectedSpace)?.rootCwd;
+
+  /**
+   * 本机只读探测的候选（盘上真有的那几篇）：与档案候选**分开存**，因为两枚出处说的是两件事——
+   * 「档案里登记过」与「这个根下有这篇」。混成一池就再没人看得出某条候选其实只来自其中一处。
+   * 按 space 缓一份：换项目才重扫，同一次开表单里来回切 kind 不再重复走盘。
+   */
+  const [scan, setScan] = useState<{ space: string; items: EnvProbeItem[]; note: string | null } | null>(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const scanned = scan?.space === selectedSpace ? scan : null;
+  const docChoices = useMemo(
+    () => mergeCandidates(docCandidates, probeFileCandidates(scanned?.items ?? [])),
+    [docCandidates, scanned],
+  );
+  const originChoices = useMemo(() => probeOriginCandidates(scanned?.items ?? []), [scanned]);
+
+  /** 扫一次这个项目的根（只读：server 侧 stat/readdir + 三条只读 git 命令，绝不写盘） */
+  const scanSpaceRoot = useCallback(
+    (id: string, root: string, force = false) => {
+      if (!id || !root) return;
+      if (!force && scan?.space === id) return;
+      let dead = false;
+      setScanBusy(true);
+      api
+        .envProbe(root)
+        .then((r) => {
+          if (dead) return;
+          setScan({ space: id, items: r.items ?? [], note: r.error ?? null });
+        })
+        .catch((e: Error) => {
+          if (dead) return;
+          setScan({ space: id, items: [], note: `本机探测没回话：${e.message}` });
+        })
+        .finally(() => {
+          if (!dead) setScanBusy(false);
+        });
+      return () => {
+        dead = true;
+      };
+    },
+    [scan?.space],
+  );
+
+  // 选了项目就顺手扫一次根：登记面该问的是「这台机器上有什么」，不是「档案里恰好记过什么」
+  useEffect(() => {
+    if (!formOpen || !selectedSpace) return;
+    const root = spaces.find((s) => s.id === selectedSpace)?.rootCwd;
+    if (!root) return;
+    return scanSpaceRoot(selectedSpace, root) as (() => void) | undefined;
+  }, [formOpen, selectedSpace, spaces, scanSpaceRoot]);
+
+  const closeForm = () => {
+    setFormOpen(false);
+    setFormError(null);
+  };
+
+  // 表单是就地展开的长块：Esc 收它，与向导／弹窗同一把手势。登记在飞时不挂这个键——
+  // 那一发还没落账，此刻收掉界面等于让人以为「取消了」而条目其实已经写进表里
+  useEffect(() => {
+    if (!formOpen || formBusy) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeForm();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [formOpen, formBusy]);
 
   const loadHealth = useCallback((refresh: boolean) => {
     setHealthBusy(true);
@@ -124,7 +209,7 @@ export function RegistryView() {
       api
         .listSpaces()
         .then((r) => {
-          setSpaces(r.spaces.map((s) => ({ id: s.id, name: s.name })));
+          setSpaces(r.spaces.map((s) => ({ id: s.id, name: s.name, rootCwd: s.rootCwd })));
           setSpacesNote(null);
         })
         .catch((e: Error) => setSpacesNote(`项目清单读不出：${e.message}`)),
@@ -203,8 +288,30 @@ export function RegistryView() {
     setFormError(null);
   };
 
-  const setValue = (key: string, v: string | boolean) =>
+  /** 每类表单的「正身格」（字段自己声明 `primary`，不拿「第一个必填」猜——头一格常是所属项目，那是作用域不是名字） */
+  const primaryFieldOf = (kind: string): string | undefined => formFieldsFor(kind)?.find((f) => f.primary)?.key;
+
+  const setValue = (key: string, v: string | boolean) => {
     setFormValues((vs) => ({ ...vs, [key]: v }));
+  };
+
+  /**
+   * 名字空着才从「正身格」派生（人填过的一个字都不动）：路径填完还要再打一遍名字，是这一页最没道理的一格。
+   * 只在**离开那一格**和**点候选牌**时代填，不在每次按键时代填——边打字边写名字会把「docs/bot-s…」的前缀
+   * 钉进名字里（第一个字符一落定就再也不覆盖了）。
+   */
+  const fillNameFromPrimary = () => {
+    const pk = primaryFieldOf(formKind);
+    if (!pk || formName.trim()) return;
+    const v = formValues[pk];
+    if (typeof v === 'string' && v.trim()) setFormName(deriveNameFromValue(v));
+  };
+
+  /** 点候选牌：填进那一格，并顺手把名字带上（候选是完整值，不存在「取到半个前缀」那件事） */
+  const pickCandidate = (f: RegistryFormField, value: string) => {
+    setValue(f.key, value);
+    if (!formName.trim()) setFormName(deriveNameFromValue(value));
+  };
 
   const submit = async () => {
     const missing = missingRequiredFields(formKind, formName, formValues);
@@ -217,7 +324,7 @@ export function RegistryView() {
       setFormError('这一类还没长表单字段，界面不登记不认识的形状');
       return;
     }
-    setBusy('form');
+    setFormBusy(true);
     try {
       await api.registryAdd(payload);
       setFormOpen(false);
@@ -230,7 +337,7 @@ export function RegistryView() {
       // 服务端的 400 一句人话原样inline挂出；已经填的内容一个字不清
       setFormError((e as Error).message);
     } finally {
-      setBusy(null);
+      setFormBusy(false);
     }
   };
 
@@ -238,7 +345,7 @@ export function RegistryView() {
     setWriteErrors((m) => ({ ...m, [id]: msg }));
 
   const toggleEnabled = async (entry: RegistryEntryView) => {
-    setBusy(entry.id);
+    setWriteOp({ id: entry.id, op: 'toggle' });
     try {
       const r = await api.registryPatch(entry.id, { enabled: !entry.enabled });
       setData((d) => (d ? { ...d, entries: d.entries.map((e) => (e.id === r.entry.id ? r.entry : e)) } : d));
@@ -246,7 +353,7 @@ export function RegistryView() {
       recordWriteError(entry.id, (e as Error).message);
       void load(); // 以服务端实态为准回滚本地显示
     } finally {
-      setBusy(null);
+      setWriteOp(null);
     }
   };
 
@@ -256,7 +363,7 @@ export function RegistryView() {
    * 于是「我刚探的这条」和「整表上次扫的」不会画成两样。
    */
   const probeOnce = async (entry: RegistryEntryView, refresh = false) => {
-    setBusy(entry.id);
+    setWriteOp({ id: entry.id, op: refresh ? 'probe-refresh' : 'probe' });
     try {
       const res = await api.registryProbe(entry.id, refresh);
       setProbed((m) => ({ ...m, [entry.id]: { res } }));
@@ -271,12 +378,12 @@ export function RegistryView() {
     } catch (e) {
       setProbed((m) => ({ ...m, [entry.id]: { err: (e as Error).message } }));
     } finally {
-      setBusy(null);
+      setWriteOp(null);
     }
   };
 
   const remove = async (entry: RegistryEntryView) => {
-    setBusy(entry.id);
+    setWriteOp({ id: entry.id, op: 'delete' });
     try {
       await api.registryDelete(entry.id);
       setDetailId((d) => (d === entry.id ? null : d));
@@ -286,7 +393,7 @@ export function RegistryView() {
       recordWriteError(entry.id, (e as Error).message);
       log('error', `注册中心：删除「${entry.name}」失败：${(e as Error).message}`);
     } finally {
-      setBusy(null);
+      setWriteOp(null);
     }
   };
 
@@ -299,8 +406,9 @@ export function RegistryView() {
     if (f.options === 'spaces') return spaces;
     if (f.options === 'gateway-profiles') return gwProfiles;
     if (f.list === 'models') return modelCandidates.map((m) => ({ id: m, name: m }));
-    if (f.list === 'space-docs') return docCandidates.map((p) => ({ id: p, name: p }));
+    if (f.list === 'space-docs') return docChoices.map((p) => ({ id: p, name: p }));
     if (f.list === 'space-repos') return repoCandidates.map((r) => ({ id: r, name: r }));
+    if (f.list === 'repo-origins') return originChoices.map((o) => ({ id: o, name: o }));
     return [];
   };
 
@@ -309,7 +417,9 @@ export function RegistryView() {
       ? 'pf-registry-model-candidates'
       : list === 'space-docs'
         ? 'pf-registry-space-docs'
-        : 'pf-registry-space-repos';
+        : list === 'repo-origins'
+          ? 'pf-registry-repo-origins'
+          : 'pf-registry-space-repos';
 
   const groups = data
     ? groupEntriesByKind(data.entries, data.knownKinds, data.viewKinds ?? [], data.kindLabels, data.viewHomes)
@@ -317,6 +427,14 @@ export function RegistryView() {
   const rejectedText = data ? rejectedSummary(data.rejected) : null;
   // 表单只问能登记的那几类：视图 kind（出厂清单与角色库那几类）没有表单形状，选它必被 server 拒，不在这里挂出来
   const kinds = registrableKinds(data?.knownKinds ?? [], data?.viewKinds ?? []);
+
+  // 点跳转栏滚到那一组。CSS 里的 prefers-reduced-motion 全局关停管不到 JS 行为，这里自己问一次
+  const jumpToGroup = (kind: string) => {
+    const el = document.getElementById(`registry-g-${kind}`);
+    if (!el) return;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
+  };
 
   return (
     <div className="registry-view">
@@ -381,6 +499,7 @@ export function RegistryView() {
             <select
               id="reg-kind"
               value={formKind}
+              autoFocus
               onChange={(ev) => switchKind(ev.target.value)}
             >
               {(kinds.length ? kinds : [formKind]).map((k) => (
@@ -450,6 +569,7 @@ export function RegistryView() {
                           value={typeof formValues[f.key] === 'string' ? (formValues[f.key] as string) : ''}
                           placeholder={f.hint}
                           onChange={(ev) => setValue(f.key, ev.target.value)}
+                          onBlur={f.primary ? fillNameFromPrimary : undefined}
                         />
                         {lid && (
                           <>
@@ -468,11 +588,62 @@ export function RegistryView() {
                                 {optionsBusy ? '刷新中…' : '刷新型号清单'}
                               </button>
                             )}
-                            {f.list === 'space-docs' && !docCandidates.length && (
+                            {/* 候选牌：路径这一格「看得见才点得动」——datalist 要人先敲一下输入框
+                                才知道底下挂了什么，而本机扫出来的那几篇本来就该摆在眼前 */}
+                            {/* 候选牌：这一格挂了什么要「看得见才点得动」——datalist 要人先敲一下输入框
+                                才知道底下有什么，而网关探出的型号、本机扫出的路径/远端仓本来就该摆在眼前。
+                                每一格有候选就摆牌（四类候选源同一画法），没候选只说这一轮没探到——候选是省手的，
+                                不是白名单：牌子永远不拦直填（server 才是判形状的那一处） */}
+                            {(fieldChoices(f).length > 0 || f.list === 'space-docs' || f.list === 'repo-origins') && (
+                            <div className="registry-picks">
+                              {fieldChoices(f)
+                                .slice(0, 8)
+                                .map((c) => (
+                                  <button
+                                    key={c.id}
+                                    type="button"
+                                    className="registry-pick"
+                                    onClick={() => pickCandidate(f, c.id)}
+                                    title={`${c.id} → 填进「${f.label}」这一格`}
+                                  >
+                                    {c.id}
+                                  </button>
+                                ))}
+                              {fieldChoices(f).length > 8 && (
+                                <span className="registry-picks-note">
+                                  另有 {fieldChoices(f).length - 8} 条：在这一格打头几个字就能筛
+                                </span>
+                              )}
+                              {(f.list === 'space-docs' || f.list === 'repo-origins') && (
+                                <button
+                                  className="link"
+                                  type="button"
+                                  disabled={scanBusy || !selectedSpaceRoot}
+                                  onClick={() => selectedSpaceRoot && scanSpaceRoot(selectedSpace, selectedSpaceRoot, true)}
+                                  title="只读扫一遍这个项目的根（stat/readdir + 三条只读 git 命令），不写盘"
+                                >
+                                  {scanBusy ? '扫描中…' : '重扫本机'}
+                                </button>
+                              )}
+                            </div>
+                            )}
+                            {f.list === 'space-docs' && (
                               <p className="settings-hint">
-                                {selectedSpace
-                                  ? candidatesNote ?? '这个项目档案里还没有登记过文档路径——直接填相对路径即可。'
-                                  : '先选项目，这里会列出它档案里已有的路径。'}
+                                {scanBusy
+                                  ? '正在扫这个项目的根…（只读，探的是盘上真有什么，不动任何文件）'
+                                  : !selectedSpace
+                                    ? '先选项目：选好就把那个项目的根扫一遍，盘上的文档直接摆成牌子。'
+                                    : !selectedSpaceRoot
+                                      ? '这个项目没配主仓根目录，本机扫不了（相对路径仍可直填，或去「项目」里补根目录）。'
+                                      : scanned?.note
+                                        ? scanned.note
+                                        : candidatesNote ??
+                                          `已扫 ${selectedSpaceRoot}：候选＝档案里登记过的 ∪ 盘上探到的，直填也照旧可走。`}
+                              </p>
+                            )}
+                            {f.list === 'models' && !modelCandidates.length && (
+                              <p className="settings-hint">
+                                {catalogNote ?? '网关还没探出型号清单（没配网关档，或探的过程失败了）——型号这一格直接填也照旧可走。'}
                               </p>
                             )}
                             {f.list === 'space-repos' && !repoCandidates.length && (
@@ -500,17 +671,11 @@ export function RegistryView() {
 
           {formError && <p className="registry-form-error">{formError}</p>}
           <div className="registry-form-ops">
-            <button
-              className="ghost"
-              onClick={() => {
-                setFormOpen(false);
-                setFormError(null);
-              }}
-            >
+            <button className="ghost" onClick={closeForm}>
               取消
             </button>
-            <button className="primary" disabled={busy === 'form'} onClick={() => void submit()}>
-              {busy === 'form' ? '登记中…' : '登记'}
+            <button className="primary" disabled={formBusy} onClick={() => void submit()}>
+              {formBusy ? '登记中…' : '登记'}
             </button>
           </div>
         </div>
@@ -518,187 +683,217 @@ export function RegistryView() {
 
       {!data && !loadError && <p className="settings-hint">读取中…</p>}
 
-      {groups.map((g) => (
-        <section className="registry-group" key={g.kind}>
-          <h3>
-            {g.label}
-            <span className="registry-count">{g.entries.length} 项</span>
-            {g.view && (
-              <span
-                className="registry-chip"
-                title={g.home ? `这一类的成员由${g.home}现算出来：不落盘、也不在这里登记` : '这一类由现算清单生成，不落盘、不登记'}
+      {/* 左侧 kinds 跳转栏（工程台：宽屏那一整条空白不是留白，是没用的版面）——
+          栏里只有「哪一类、几枚」，判据与措辞仍住在各组的表头里 */}
+      <div className="registry-body" key="body">
+        {groups.length > 1 && (
+          <nav className="registry-rail" aria-label="按能力类别跳转">
+            {groups.map((g) => (
+              <button
+                key={g.kind}
+                className="registry-rail-item"
+                onClick={() => jumpToGroup(g.kind)}
+                title={g.view ? '这一类由现算清单生成，不落盘' : undefined}
               >
-                现算清单
-              </span>
-            )}
-          </h3>
-          {g.entries.length === 0 ? (
-            <p className="settings-hint registry-empty">
-              {g.view
-                ? g.home
-                  ? `这一类的正身是${g.home}：这里没有可登记的东西，空表就是那一面此刻的读数。`
-                  : '这一类由现算清单生成，没有可登记的东西（清单为空就是正读数，不是没配好）。'
-                : `还没有登记的${g.label}——点右上「+ 登记一项」，从表单填进去。`}
-            </p>
-          ) : (
-            <table className="registry-table">
-              <thead>
-                <tr>
-                  <th>名称</th>
-                  <th>配置读数</th>
-                  <th>来源</th>
-                  <th title="停用=留着但不再被选，不是删除">启用</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {g.entries.map((e) => {
-                  const refs = refCountOf(e);
-                  const refList = refRows(e);
-                  const readout = health?.get(e.id);
-                  const probe = probed[e.id];
-                  const pNote = probeNote(probe?.res, probe?.err ?? null);
-                  const dot = healthDot(readout);
-                  const view = isViewEntry(e);
-                  const enabledCell = viewEnabledCell(e, g.home);
-                  const when = whenLabels(view, g.home);
-                  return (
-                    <Fragment key={e.id}>
-                      <tr className={e.enabled ? '' : 'registry-row-off'}>
-                        <td>
-                          <b>{e.name}</b>
-                          {refs !== null && <span className="registry-chip" title="R2 引用账">被引用 {refs}</span>}
-                          {dot && <span className={`dot ${dot}`} title={healthTitle(readout)} />}
-                        </td>
-                        <td className="registry-label">{e.label}</td>
-                        <td><span className="registry-chip">{sourceLabel(e.source)}</span></td>
-                        <td>
-                          {view ? (
-                            <span className="registry-label" title={enabledCell.title}>
-                              {enabledCell.text}
-                            </span>
-                          ) : (
-                            <input
-                              type="checkbox"
-                              checked={e.enabled}
-                              disabled={busy === e.id}
-                              title={e.enabled ? '点击停用（留着但不再被选）' : '点击启用'}
-                              onChange={() => void toggleEnabled(e)}
-                            />
-                          )}
-                        </td>
-                        <td className="registry-ops">
-                          <button
-                            className="link"
-                            onClick={() => setDetailId((d) => (d === e.id ? null : e.id))}
-                          >
-                            {detailId === e.id ? '收起' : '详情'}
-                          </button>
-                          {view ? null : (
-                            <button
-                              className="sm ghost danger"
-                              disabled={busy === e.id}
-                              onClick={() => void remove(e)}
-                              title="删除条目（禁用请用左边的开关）"
-                            >
-                              <Icon name="trash" size={12} /> 删除
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                      {detailId === e.id && (
-                        <tr className="registry-detail-row">
-                          <td colSpan={5}>
-                            <dl className="registry-detail">
-                              <dt>id</dt>
-                              <dd>
-                                <code>{e.id}</code>
-                                {view
-                                  ? `（由${g.home ?? '现算清单'}生成，不可改）`
-                                  : '（不可变；改名=重新登记）'}
-                              </dd>
-                              <dt>{when.created}</dt>
-                              <dd>{formatWhen(e.createdAt) || '—'}</dd>
-                              <dt>{when.updated}</dt>
-                              <dd>{formatWhen(e.updatedAt) || '—'}</dd>
-                              {when.note && (
-                                <>
-                                  <dt>说明</dt>
-                                  <dd>{when.note}</dd>
-                                </>
-                              )}
-                              {specRows(e.spec).map((row) => (
-                                <div key={row.key}>
-                                  <dt>{row.label}</dt>
-                                  <dd>{row.text}</dd>
-                                </div>
-                              ))}
-                              {readout && (
-                                <>
-                                  <dt>健康</dt>
-                                  <dd>
-                                    {readout.status === 'live' ? '● 在' : readout.status === 'missing' ? '○ 不在' : `? ${readout.status}`}
-                                    ：{readout.detail}
-                                    {readout.at ? `（读数时刻 ${formatWhen(readout.at) || readout.at}${readout.cached ? ' · 缓存' : ''}）` : ''}
-                                  </dd>
-                                </>
-                              )}
-                              <dt>谁在用</dt>
-                              <dd>
-                                {refList && refList.length > 0 && (
-                                  <div className="registry-refs">
-                                    {refList.map((r) => (
-                                      <div key={r.key}>{r.text}</div>
-                                    ))}
-                                  </div>
-                                )}
-                                <span className={refList === null ? 'registry-detail-note warn' : 'registry-detail-note'}>
-                                  {refNote(e, refList)}
+                <span className="registry-rail-label">{g.label}</span>
+                <span className={`registry-rail-count${g.entries.length ? '' : ' zero'}`}>{g.entries.length}</span>
+              </button>
+            ))}
+          </nav>
+        )}
+
+        <div className="registry-main">
+          {groups.map((g) => (
+            <section className="registry-group" id={`registry-g-${g.kind}`} key={g.kind}>
+              <h3>
+                {g.label}
+                <span className="registry-count">{g.entries.length} 项</span>
+                {g.view && (
+                  <span
+                    className="registry-chip"
+                    title={g.home ? `这一类的成员由${g.home}现算出来：不落盘、也不在这里登记` : '这一类由现算清单生成，不落盘、不登记'}
+                  >
+                    现算清单
+                  </span>
+                )}
+              </h3>
+              {g.entries.length === 0 ? (
+                <p className="settings-hint registry-empty">
+                  {g.view
+                    ? g.home
+                      ? `这一类的正身是${g.home}：这里没有可登记的东西，空表就是那一面此刻的读数。`
+                      : '这一类由现算清单生成，没有可登记的东西（清单为空就是正读数，不是没配好）。'
+                    : `还没有登记的${g.label}——点右上「+ 登记一项」，从表单填进去。`}
+                </p>
+              ) : (
+                <table className="registry-table">
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      <th>配置读数</th>
+                      <th>来源</th>
+                      <th title="停用=留着但不再被选，不是删除">启用</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {g.entries.map((e) => {
+                      const refs = refCountOf(e);
+                      const refList = refRows(e);
+                      const readout = health?.get(e.id);
+                      const probe = probed[e.id];
+                      const pNote = probeNote(probe?.res, probe?.err ?? null);
+                      const dot = healthDot(readout);
+                      const view = isViewEntry(e);
+                      const enabledCell = viewEnabledCell(e, g.home);
+                      const when = whenLabels(view, g.home);
+                      return (
+                        <Fragment key={e.id}>
+                          <tr className={e.enabled ? '' : 'registry-row-off'}>
+                            <td>
+                              <b>{e.name}</b>
+                              {refs !== null && <span className="registry-chip" title="R2 引用账">被引用 {refs}</span>}
+                              {dot && <span className={`dot ${dot}`} title={healthTitle(readout)} />}
+                            </td>
+                            <td className="registry-label">{e.label}</td>
+                            <td><span className="registry-chip">{sourceLabel(e.source)}</span></td>
+                            <td>
+                              {view ? (
+                                <span className="registry-label" title={enabledCell.title}>
+                                  {enabledCell.text}
                                 </span>
-                              </dd>
-                              <dt>探针</dt>
-                              <dd>
-                                <button
-                                  className="link"
-                                  disabled={busy === e.id}
-                                  onClick={() => void probeOnce(e)}
-                                  title="只探这一条（与服务端 5 分钟实探缓存共用）"
-                                >
-                                  探一次
-                                </button>
-                                <button
-                                  className="link"
-                                  disabled={busy === e.id}
-                                  onClick={() => void probeOnce(e, true)}
-                                  title="绕开实探缓存现探一遍"
-                                >
-                                  现探
-                                </button>
-                              </dd>
-                              {pNote && (
-                                <>
-                                  <dt>探针读数</dt>
-                                  <dd className={probe?.err ? 'registry-detail-fail' : undefined}>{pNote}</dd>
-                                </>
+                              ) : (
+                                <input
+                                  type="checkbox"
+                                  checked={e.enabled}
+                                  disabled={rowBusy(e.id)}
+                                  title={e.enabled ? '点击停用（留着但不再被选）' : '点击启用'}
+                                  onChange={() => void toggleEnabled(e)}
+                                />
                               )}
-                              {writeErrors[e.id] && (
-                                <>
-                                  <dt>最近写入失败</dt>
-                                  <dd className="registry-detail-fail">{writeErrors[e.id]}</dd>
-                                </>
+                            </td>
+                            <td className="registry-ops">
+                              {/* 四发写动词各有各的读数：启停与删除撞的是同一枚 id，只报 id 等于让人猜这一发是什么 */}
+                              {opBusy(e.id, 'toggle') && (
+                                <span className="registry-op-note">{e.enabled ? '停用中…' : '启用中…'}</span>
                               )}
-                            </dl>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </section>
-      ))}
+                              <button
+                                className="link"
+                                onClick={() => setDetailId((d) => (d === e.id ? null : e.id))}
+                              >
+                                {detailId === e.id ? '收起' : '详情'}
+                              </button>
+                              {view ? null : (
+                                <button
+                                  className="sm ghost danger"
+                                  disabled={rowBusy(e.id)}
+                                  onClick={() => void remove(e)}
+                                  title="删除条目（禁用请用左边的开关）"
+                                >
+                                  {opBusy(e.id, 'delete') ? '删除中…' : (
+                                    <>
+                                      <Icon name="trash" size={12} /> 删除
+                                    </>
+                                  )}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                          {detailId === e.id && (
+                            <tr className="registry-detail-row">
+                              <td colSpan={5}>
+                                <dl className="registry-detail">
+                                  <dt>id</dt>
+                                  <dd>
+                                    <code>{e.id}</code>
+                                    {view
+                                      ? `（由${g.home ?? '现算清单'}生成，不可改）`
+                                      : '（不可变；改名=重新登记）'}
+                                  </dd>
+                                  <dt>{when.created}</dt>
+                                  <dd>{formatWhen(e.createdAt) || '—'}</dd>
+                                  <dt>{when.updated}</dt>
+                                  <dd>{formatWhen(e.updatedAt) || '—'}</dd>
+                                  {when.note && (
+                                    <>
+                                      <dt>说明</dt>
+                                      <dd>{when.note}</dd>
+                                    </>
+                                  )}
+                                  {specRows(e.spec).map((row) => (
+                                    <div key={row.key}>
+                                      <dt>{row.label}</dt>
+                                      <dd>{row.text}</dd>
+                                    </div>
+                                  ))}
+                                  {readout && (
+                                    <>
+                                      <dt>健康</dt>
+                                      <dd>
+                                        {readout.status === 'live' ? '● 在' : readout.status === 'missing' ? '○ 不在' : `? ${readout.status}`}
+                                        ：{readout.detail}
+                                        {readout.at ? `（读数时刻 ${formatWhen(readout.at) || readout.at}${readout.cached ? ' · 缓存' : ''}）` : ''}
+                                      </dd>
+                                    </>
+                                  )}
+                                  <dt>谁在用</dt>
+                                  <dd>
+                                    {refList && refList.length > 0 && (
+                                      <div className="registry-refs">
+                                        {refList.map((r) => (
+                                          <div key={r.key}>{r.text}</div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <span className={refList === null ? 'registry-detail-note warn' : 'registry-detail-note'}>
+                                      {refNote(e, refList)}
+                                    </span>
+                                  </dd>
+                                  <dt>探针</dt>
+                                  <dd>
+                                    <button
+                                      className="link"
+                                      disabled={rowBusy(e.id)}
+                                      onClick={() => void probeOnce(e)}
+                                      title="只探这一条（与服务端 5 分钟实探缓存共用）"
+                                    >
+                                      {opBusy(e.id, 'probe') ? '探…中' : '探一次'}
+                                    </button>
+                                    <button
+                                      className="link"
+                                      disabled={rowBusy(e.id)}
+                                      onClick={() => void probeOnce(e, true)}
+                                      title="绕开实探缓存现探一遍"
+                                    >
+                                      {opBusy(e.id, 'probe-refresh') ? '现探中…' : '现探'}
+                                    </button>
+                                  </dd>
+                                  {pNote && (
+                                    <>
+                                      <dt>探针读数</dt>
+                                      <dd className={probe?.err ? 'registry-detail-fail' : undefined}>{pNote}</dd>
+                                    </>
+                                  )}
+                                  {writeErrors[e.id] && (
+                                    <>
+                                      <dt>最近写入失败</dt>
+                                      <dd className="registry-detail-fail">{writeErrors[e.id]}</dd>
+                                    </>
+                                  )}
+                                </dl>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </section>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
