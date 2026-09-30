@@ -932,22 +932,10 @@ export function SettingsView() {
           </div>
         </section>
 
-        <section className="settings-card" id="sec-gateway">
-          <h3>模型网关（OmniRoute 等）</h3>
+        <section className="settings-card" id="sec-gateway-redirect">
           <p className="settings-hint">
-            一站式：填地址+Key → 勾选启用 → 保存并测试。启用后所有 Agent 的模型请求统一走网关
-            （claude 未登录也能跑；pi 自动带 --provider openai）。
+            模型网关 / GitHub 凭据 / 出站通道已移至 <b>注册中心 → 配置聚合</b> 页签（侧边栏「注册」图标内）。
           </p>
-          <GatewayCard />
-        </section>
-
-        <section className="settings-card" id="sec-github">
-          <h3>GitHub 凭据</h3>
-          <p className="settings-hint">
-            供流水线内 gh 命令使用。解决企业托管账号（EMU）无法操作外部仓库的问题：
-            注入 GH_TOKEN 后，Agent 的 gh issue/pr 命令将以此身份执行。
-          </p>
-          <GithubCredCard />
         </section>
 
         <section className="settings-card" id="sec-wiki">
@@ -963,14 +951,6 @@ export function SettingsView() {
           <RolesEditor />
         </section>
 
-        <section className="settings-card" id="sec-channels">
-          <h3>出站通道</h3>
-          <p className="settings-hint">
-            运行事件（等待审批 / 完成 / 失败）会推送到下面每条已启用的通道。
-            原先的「飞书 webhook」配置会在首次读取时自动迁移为一条飞书通道，不会丢。
-          </p>
-          <ChannelsEditor />
-        </section>
       </div>
     </div>
   );
