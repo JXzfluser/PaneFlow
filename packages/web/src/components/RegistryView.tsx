@@ -53,6 +53,7 @@ export function RegistryView() {
   const [scanPromptOpen, setScanPromptOpen] = useState(false);
   const [scanPath, setScanPath] = useState('');
   const [scanRegisterBusy, setScanRegisterBusy] = useState(false);
+  const [scanPreview, setScanPreview] = useState<{ items: { kind: string; name: string; detail: string }[]; selected: Set<number> } | null>(null);
   const log = useStore((s) => s.log);
   const [data, setData] = useState<RegistryListResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -475,37 +476,85 @@ export function RegistryView() {
             <span style={{ color: 'var(--text-dim)', fontSize: 11.5 }}>
               更快的方式：给一个本地目录，自动发现里面的仓库/约定/技能，勾选后一键登记。
             </span>
-            <button style={{ marginLeft: 'auto' }} onClick={() => setScanPromptOpen(true)}>
+            <button style={{ marginLeft: 'auto' }} onClick={() => { setScanPromptOpen(true); setScanPreview(null); }}>
               🔍 扫描并一键登记
             </button>
           </div>
           {scanPromptOpen && (
             <div className="reg-scan-prompt">
               <label>要扫描的目录（绝对路径）</label>
-              <input
-                value={scanPath}
-                onChange={(e) => setScanPath(e.target.value)}
-                placeholder="/Users/you/work/my-project"
-                style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
-              />
-              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  value={scanPath}
+                  onChange={(e) => { setScanPath(e.target.value); setScanPreview(null); }}
+                  placeholder="/Users/you/work/my-project"
+                  style={{ flex: 1, background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
+                />
+                <button
+                  disabled={!scanPath.trim()}
+                  onClick={() => {
+                    api
+                      .envProbe(scanPath.trim())
+                      .then((r) => {
+                        const items = r.items ?? [];
+                        setScanPreview({ items, selected: new Set(items.map((_, i) => i)) });
+                      })
+                      .catch((e: Error) => log('error', `扫描失败：${e.message}`));
+                  }}
+                >
+                  🔍 扫描
+                </button>
+              </div>
+              {scanPreview && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ color: 'var(--text-dim)', fontSize: 11.5, marginBottom: 4 }}>
+                    发现 {scanPreview.items.length} 项，勾选要登记的：
+                  </div>
+                  <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 6 }}>
+                    {scanPreview.items.map((it, i) => (
+                      <label key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11.5, padding: '2px 4px' }}>
+                        <input
+                          type="checkbox"
+                          checked={scanPreview.selected.has(i)}
+                          onChange={(e) =>
+                            setScanPreview((p) => {
+                              if (!p) return p;
+                              const next = new Set(p.selected);
+                              if (e.target.checked) next.add(i);
+                              else next.delete(i);
+                              return { ...p, selected: next };
+                            })
+                          }
+                        />
+                        <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>{it.kind}</span>
+                        <span>{it.name}</span>
+                        <span style={{ color: 'var(--text-dim)', fontSize: 10.5, marginLeft: 'auto' }}>{it.detail}</span>
+                      </label>
+                    ))}
+                    {scanPreview.items.length === 0 && <span style={{ color: 'var(--text-dim)' }}>没发现可登记的项</span>}
+                  </div>
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                 <button
                   className="primary"
-                  disabled={scanRegisterBusy || !scanPath.trim()}
+                  disabled={scanRegisterBusy || !scanPreview || scanPreview.selected.size === 0}
                   onClick={() => {
                     const sp = selectedSpace || 'default';
                     setScanRegisterBusy(true);
-                    api.envRegister(scanPath.trim(), sp)
+                    api
+                      .envRegister(scanPath.trim(), sp, Array.from(scanPreview!.selected))
                       .then((r) => {
                         log('info', `一键登记完成：${r.registered} 项已入 ${sp} 空间档案`);
                         void refresh();
+                        setScanPreview(null);
                         setScanPromptOpen(false);
                       })
                       .catch((e: Error) => log('error', `登记失败：${e.message}`))
                       .finally(() => setScanRegisterBusy(false));
                   }}
                 >
-                  {scanRegisterBusy ? '登记中…' : '一键登记'}
+                  {scanRegisterBusy ? '登记中…' : `✓ 登记 ${scanPreview?.selected.size ?? 0} 项`}
                 </button>
                 <button onClick={() => setScanPromptOpen(false)}>取消</button>
               </div>
