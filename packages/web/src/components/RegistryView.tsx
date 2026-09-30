@@ -446,6 +446,29 @@ export function RegistryView() {
           <button style={{ border: 'none', background: mainTab === 'registry' ? 'var(--primary-bg)' : 'transparent', color: mainTab === 'registry' ? 'var(--accent)' : 'var(--text-dim)', fontWeight: mainTab === 'registry' ? 600 : 400 }} onClick={() => setMainTab('registry')}>能力清单</button>
           <button style={{ border: 'none', background: mainTab === 'config' ? 'var(--primary-bg)' : 'transparent', color: mainTab === 'config' ? 'var(--accent)' : 'var(--text-dim)', fontWeight: mainTab === 'config' ? 600 : 400 }} onClick={() => setMainTab('config')}>配置聚合</button>
         </div>
+
+        {/* R-newbie: 任务式引导——按目标找类别，替代"先懂概念再找入口" */}
+        <div className="reg-guide">
+          <div className="reg-guide-title">我想……</div>
+          <div className="reg-guide-grid">
+            <button className="reg-guide-item" onClick={() => { setFormKind('model'); setFormOpen(true); }}>
+              <span className="reg-guide-icon">🧠</span>
+              <span><b>接入一个模型</b><small>把 claude/gpt 等模型登记给 Agent 用</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => { setFormKind('skill'); setFormOpen(true); }}>
+              <span className="reg-guide-icon">📚</span>
+              <span><b>登记一份技能文档</b><small>让 Agent 按团队的作业方法干活</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => { setFormKind('rule'); setFormOpen(true); }}>
+              <span className="reg-guide-icon">📏</span>
+              <span><b>登记一条团队规则</b><small>分支命名、提交规范等硬约束</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => { setFormKind('repo'); setFormOpen(true); }}>
+              <span className="reg-guide-icon">📦</span>
+              <span><b>登记一个代码仓库</b><small>Agent 干活的领地</small></span>
+            </button>
+          </div>
+        </div>
         {mainTab === 'config' && (
           <div className="settings-view" style={{ padding: 0, marginTop: 10 }}>
             <GatewaySection />
