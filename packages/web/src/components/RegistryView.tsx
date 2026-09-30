@@ -564,29 +564,6 @@ export function RegistryView() {
           </div>
           {scanPromptOpen && (
             <div className="reg-scan-prompt">
-              <label>要扫描的目录（绝对路径）</label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  value={scanPath}
-                  onChange={(e) => { setScanPath(e.target.value); setScanPreview(null); }}
-                  placeholder="/Users/you/work/my-project"
-                  style={{ flex: 1, background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
-                />
-                <button
-                  disabled={!scanPath.trim()}
-                  onClick={() => {
-                    api
-                      .envProbe(scanPath.trim())
-                      .then((r) => {
-                        const items = r.items ?? [];
-                        setScanPreview({ items, selected: new Set(items.map((_, i) => i)) });
-                      })
-                      .catch((e: Error) => log('error', `扫描失败：${e.message}`));
-                  }}
-                >
-                  🔍 扫描
-                </button>
-              </div>
               {scanPreview && (
                 <div style={{ marginTop: 10 }}>
                   <div style={{ color: 'var(--text-dim)', fontSize: 11.5, marginBottom: 4 }}>
