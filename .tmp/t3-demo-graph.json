@@ -1,0 +1,27 @@
+{
+  "graph": {
+    "version": 1,
+    "name": "t3-demo",
+    "nodes": [
+      { "id": "start", "type": "start", "label": "开始", "config": {}, "position": { "x": 60, "y": 200 } },
+      {
+        "id": "code",
+        "type": "agent",
+        "label": "编码",
+        "config": { "agentKind": "pi", "prompt": "回复一行 pong 即可" },
+        "position": { "x": 260, "y": 200 }
+      },
+      { "id": "end", "type": "end", "label": "结束", "config": {}, "position": { "x": 460, "y": 200 } }
+    ],
+    "edges": [
+      { "id": "e1", "source": "start", "target": "code" },
+      { "id": "e2", "source": "code", "target": "end" }
+    ],
+    "requires": [
+      { "kind": "model", "id": "glmcn/glm-4.7", "hint": "编码岗吃免费位那枚" },
+      { "kind": "model", "id": "openai/gpt-5-codex", "hint": "评审要另一枚，还没登记" },
+      { "kind": "skill", "id": "读图", "hint": "这一类还没迁进注册表" }
+    ],
+    "metadata": { "description": "v14-T3 能力槽演示单" }
+  }
+}

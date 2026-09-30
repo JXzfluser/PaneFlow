@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "name": "wiki-ingest",
+  "nodes": [
+    { "id": "start", "type": "start", "label": "开始", "config": {} },
+    {
+      "id": "survey",
+      "type": "agent",
+      "label": "schema 研读 + 资料盘点 + 页面规划",
+      "config": {
+        "prompt": "你在一个 llm-wiki 知识库仓库的根目录工作。任务：把资料源「{{source}}」按本仓 CLAUDE.md 的 schema 摄取进 wiki/。\n\n摄取范围补充：{{scope}}\n\n本节点只做规划，不写任何 wiki 页面。步骤：\n1. 通读 CLAUDE.md，记住全部硬约束：目录布局（summaries/concepts/entities/syntheses/journal）、文件命名（全小写连字符）、frontmatter 必填字段（title/type/tags/created/updated/sources/confidence）、各页面类型的必需小节、Obsidian 链接约定（[[相对路径]]、无孤立页）、index.md 与 log.md 的记账义务、以及「永不修改 raw/」。\n2. 盘点资料源「{{source}}」：列出值得摄取的文档清单（优先设计文档/README/docs 目录下的 md），结合摄取范围补充挑高价值内容。查看 wiki/ 现有页面（能增量更新的绝不新建重复页）。\n3. 规划本轮要写/更新的页面集合，上限 8 页：每页给出目标路径（如 entities/xxx.md、concepts/xxx.md、summaries/xxx.md）、页面类型、标题、要点（写哪些小节、事实来源是资料源里的哪些文件）、以及需要它参与互链的既有页面。\n\n结果文件：summary=规划表（Markdown，每行：路径 | 类型 | 标题 | 要点一句话）；extra.tasks=[{name:\"<wiki 相对路径>\", brief:\"<类型+标题+要点+来源文件+互链要求>\"}]。引用资料源时给出真实存在的路径，禁止臆造。",
+        "onFail": "abort",
+        "checks": [
+          { "type": "manual", "prompt": "人工审阅页面规划：确认扇出写的页面清单合理（数量、路径、与既有页面无重复）后放行进入写页。" }
+        ]
+      }
+    },
+    {
+      "id": "fork",
+      "type": "fanout",
+      "label": "按页面展开",
+      "config": { "expand": { "from": "survey", "field": "extra.tasks" } }
+    },
+    {
+      "id": "page",
+      "type": "agent",
+      "label": "写页 {{item.name}}",
+      "config": {
+        "prompt": "在 llm-wiki 仓库根目录，按 CLAUDE.md 的 schema 创建或增量更新页面「{{item.name}}」。\n页面任务书：{{item.brief}}\n\n硬性要求（违反即返工）：\n- frontmatter 六字段齐全：title/type/tags/created/updated/sources/confidence；日期用今天（ISO 格式）；sources 指向真实存在的资料源文件路径。\n- 该页面类型的所有必需小节齐全（对照 CLAUDE.md）。\n- 事实只来自资料源与仓库内既有页面，不确定就 confidence: low 并注明；禁止编造数字与结论。\n- Obsidian 相对链接 [[...]] 至少一条指向其他页面，同时预期其他页面能回链到你（在 brief 给的互链清单内）。\n- 文件名全小写连字符；若页面已存在则增量合并并更新 updated 字段，绝不推倒重写人工补充过的内容。\n- 红线：raw/ 目录下任何文件不可修改。\n\n结果文件：summary=一句话说明建/更了什么页面含哪些小节；extra.page=\"{{item.name}}\"；extra.created=true|false。",
+        "retryCount": 1,
+        "onFail": "continue"
+      }
+    },
+    { "id": "merge", "type": "fanin", "label": "页面汇聚", "config": { "requireAll": false } },
+    {
+      "id": "index",
+      "type": "agent",
+      "label": "index + log 记账",
+      "config": {
+        "prompt": "页面规划：{{survey.artifact.summary}}\n各分支写页结果：{{page.artifact.summary}}\n\n你在 llm-wiki 仓库根目录，执行 schema 规定的记账义务：\n1. wiki/index.md：确保本轮每个成功创建/更新的页面都有条目（链接 + 一行摘要 + 更新日期）；失败或被跳过的页面不要写入。\n2. wiki/log.md：追加一条记录（ISO 时间戳 + 资料源「{{source}}」+ 本轮创建/更新的页面清单 + 发现的与既有内容的矛盾，若无可写「无矛盾」）。只追加，不改写历史。\n3. 快速自检：本轮新页面是否都至少有一条出链且被 index 收录（无孤立页）。\n\n结果文件：summary=记账结论（index 新增/更新条目数、log 追加内容、发现的矛盾）。",
+        "onFail": "abort"
+      }
+    },
+    {
+      "id": "verify",
+      "type": "agent",
+      "label": "机器核验 + 摄取报告",
+      "config": {
+        "prompt": "你在 llm-wiki 仓库根目录做摄取终审。对照规划（{{survey.artifact.summary}}）与记账结论（{{index.artifact.summary}}），逐条机器核验：\n1. 每个计划页面文件真实存在（用 shell test -f）。\n2. 每个新页面 frontmatter 六字段齐全（head -12 目测 + grep 字段名）。\n3. 文件命名全小写连字符，无空格无大写。\n4. wiki/index.md 收录了全部新页面；wiki/log.md 有本轮追加。\n5. raw/ 无改动：git status --porcelain raw/ 必须为空（若非空，如实报告为 fail，不要尝试回滚）。\n6. 抽查每个新页面的必需小节是否齐全。\n\n结果文件：extra.assertionResults=[{id:\"AC-1\"..\"AC-6\", status:\"ok|fail|n/a\", evidence:\"命令与输出要点\"}]；summary=摄取报告（做了什么/遗留什么/验证逐条状态/建议下一轮摄取的资料）。",
+        "onFail": "continue",
+        "checks": [
+          { "type": "command", "run": "test -f wiki/index.md && test -f wiki/log.md && [ -z \"$(git status --porcelain raw/ 2>/dev/null)\" ]" }
+        ]
+      }
+    },
+    { "id": "end", "type": "end", "label": "结束", "config": {} }
+  ],
+  "edges": [
+    { "id": "e1", "source": "start", "target": "survey" },
+    { "id": "e2", "source": "survey", "target": "fork" },
+    { "id": "e3", "source": "fork", "target": "page" },
+    { "id": "e4", "source": "page", "target": "merge" },
+    { "id": "e5", "source": "merge", "target": "index" },
+    { "id": "e6", "source": "index", "target": "verify" },
+    { "id": "e7", "source": "verify", "target": "end" }
+  ],
+  "metadata": {
+    "createdAt": "",
+    "updatedAt": "",
+    "description": "llm-wiki 资料摄取闭环：schema 研读+资料盘点+页面规划（人工审规划门）→ 按页动态扇出写页 → index/log 记账 → 机器核验（含 raw/ 不可动红线）→ 摄取报告。工作目录=llm-wiki 根。变量：source=资料源路径，scope=摄取范围补充。"
+  },
+  "variables": [
+    { "key": "source", "label": "资料源路径（相对工作目录，如 raw/PaneFlow）", "required": true },
+    { "key": "scope", "label": "摄取范围补充（可选：聚焦哪些文档/页面类型/上限）", "required": false }
+  ]
+}

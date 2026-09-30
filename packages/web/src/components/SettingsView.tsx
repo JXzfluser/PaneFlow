@@ -239,137 +239,7 @@ function credIdentity(g: GithubCredState): string {
   return g.login ? ` · 以 @${g.login} 身份` : ' · 用户名没探到（api.github.com 不可达或 token 缺读权限）';
 }
 
-function GithubCredCard() {
-  const log = useStore((s) => s.log);
-  const [g, setG] = useState<GithubCredState>({ tokenConfigured: false, defaultRepo: '' });
-  const [token, setToken] = useState('');
-  const [modal, setModal] = useState<ModalRequest | null>(null);
-  const refresh = () =>
-    fetchJson<GithubCredState>('GET', '/api/github/cred')
-      .then(setG)
-      .catch((e: Error) => log('error', `读取 GitHub 凭据状态失败：${e.message}`));
-  useEffect(() => {
-    void refresh();
-  }, []);
-  const [saving, setSaving] = useState(false);
-  const save = async () => {
-    setSaving(true);
-    try {
-      const d = await fetchJson<{ tokenConfigured: boolean }>('PUT', '/api/github/cred', {
-        ...(token ? { token } : {}),
-        defaultRepo: g.defaultRepo,
-      });
-      setG((x) => ({ ...x, tokenConfigured: d.tokenConfigured }));
-      log('info', 'GitHub 凭据已保存（新启动的 Agent Pane 生效）');
-      void refresh();
-    } catch (e) {
-      log('error', `保存失败：${(e as Error).message}`);
-    } finally {
-      setSaving(false);
-    }
-  };
-  const [writing, setWriting] = useState(false);
-  const [importing, setImporting] = useState(false);
-  /** U2：解绑=只清本机存的 PAT，gh 登录态兜底还在（确认走 D3 模态，报错显示在框内） */
-  const unlink = () =>
-    setModal(
-      unlinkPatRequest(async () => {
-        await fetchJson<{ unlinked: boolean }>('POST', '/api/github/cred/unlink');
-        log('info', '已解绑本机存储的 PAT');
-        void refresh();
-      }),
-    );
-  /** v9-D1：本机 gh 已登录 → 一键把 token 搬进来；拿不到时错误里自带路 A/路 B 指引 */
-  const importGh = async () => {
-    setImporting(true);
-    try {
-      const d = await fetchJson<{ imported: boolean; defaultRepo: string }>('POST', '/api/github/cred/import-gh');
-      setG((x) => ({ tokenConfigured: true, defaultRepo: x.defaultRepo || d.defaultRepo }));
-      log('info', '已从本机 gh CLI 导入 token（新启动的 Agent Pane 生效）');
-    } catch (e) {
-      log('error', `gh 导入失败：${(e as Error).message}`);
-    } finally {
-      setImporting(false);
-    }
-  };
-  /** M4：一键回写接单模板（「验收标准」锚点与服务端机检同源），409 时二次确认覆盖 */
-  const writeIntake = async (overwrite = false) => {
-    setWriting(true);
-    try {
-      const d = await fetchJson<{ written: boolean; updated?: boolean; path: string }>(
-        'POST',
-        '/api/github/intake-template',
-        overwrite ? { overwrite: true } : undefined,
-      );
-      log(
-        'info',
-        d.written
-          ? `✅ 接单模板已${d.updated ? '覆盖' : '写入'}：${d.path}（新建 Issue 时可选「PaneFlow 接单单」）`
-          : `接单模板已是最新（${d.path}），无需改动`,
-      );
-    } catch (e) {
-      const msg = (e as Error).message;
-      // 409「已存在，要覆盖得显式 overwrite」：原生的二次确认换成 D3 模态，server 那句原文直接当说明
-      if (msg.includes('overwrite')) setModal(overwriteIntakeRequest(msg, () => writeIntake(true)));
-      else log('error', `接单模板回写失败：${msg}`);
-    } finally {
-      setWriting(false);
-    }
-  };
-  return (
-    <>
-      <label>
-        GitHub Token {g.tokenConfigured && <span className="inline-ok">（已配置，留空保持不变）</span>}
-      </label>
-      <p className="settings-hint">
-        {g.source === 'stored-pat' && <>来源：本机存储的 PAT · 尾号 <code>{g.tokenTail}</code>{credIdentity(g)}{g.ghLoggedIn ? '；gh 登录态可作兜底' : ''}</>}
-        {g.source === 'gh-cli' && <>来源：本机 gh 登录态（现取现用，未写盘）{credIdentity(g)}。动作侧照常可用；想让它也喂给 Agent Pane 里的 gh，可一键导入落盘。</>}
-        {g.source === 'none' && <>来源：无。要么贴一个 PAT，要么本机 gh auth login——登录后无需任何存储即可直连。</>}
-      </p>
-      <input
-        type="password"
-        value={token}
-        onChange={(e) => setToken(e.target.value)}
-        placeholder="github_pat_… / ghp_…"
-      />
-      <label>默认仓库（owner/name）</label>
-      <input
-        value={g.defaultRepo}
-        onChange={(e) => setG((x) => ({ ...x, defaultRepo: e.target.value }))}
-        placeholder="owner/repo"
-      />
-      <div className="settings-actions">
-        <button className="primary" disabled={saving} onClick={() => void save()}>
-          {saving ? '保存中…' : '保存凭据'}
-        </button>
-        <button title="读取本机 `gh auth token` 的登录态并存入（gh 未登录会给出两条备选路）" disabled={importing} onClick={() => void importGh()}>
-          <Icon name="key" size={12} /> {importing ? '导入中…' : '从 gh CLI 一键导入'}
-        </button>
-        {g.source === 'stored-pat' && (
-          <button className="ghost" title="只清本机存的 PAT（默认仓库保留；gh 登录态兜底不受影响）" onClick={() => unlink()}>
-            解绑本机存储
-          </button>
-        )}
-        <button
-          disabled={writing || !(g.tokenConfigured || g.source === 'gh-cli')}
-          title={
-            g.tokenConfigured || g.source === 'gh-cli'
-              ? '向默认仓库写入 .github/ISSUE_TEMPLATE 接单模板（验收标准小节可被 PaneFlow 机检立约）'
-              : '先配好凭据（存 PAT 或本机 gh 登录）与默认仓库'
-          }
-          onClick={() => void writeIntake()}
-        >
-          {writing ? '回写中…' : (
-            <>
-              <Icon name="doc" size={12} /> 回写接单模板 → 默认仓库
-            </>
-          )}
-        </button>
-      </div>
-      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
-    </>
-  );
-}
+
 
 /** v10-X wiki 沉淀可见化：状态只读本地缓存（GET /api/wiki/state，零网络）；「拉取远端」显式同步 */
 interface WikiStateView {
@@ -517,249 +387,7 @@ interface SwitchCandidate {
   freeModel?: string;
 }
 
-function GatewayCard() {
-  const log = useStore((s) => s.log);
-  const [g, setG] = useState({ baseUrl: '', freeModel: '', enabled: false, keyConfigured: false });
-  const [profiles, setProfiles] = useState<GatewayProfileView[]>([]);
-  const [apiKey, setApiKey] = useState('');
-  type GatewayTestResult = { ok: boolean; models?: number; error?: string; chatOk?: boolean; chatError?: string };
-  const [testing, setTesting] = useState<{ note: string; cls: string } | null>(null);
-  const [newName, setNewName] = useState('');
-  const [swPath, setSwPath] = useState('');
-  const [swCandidates, setSwCandidates] = useState<SwitchCandidate[] | null>(null);
-  const [swPicked, setSwPicked] = useState<string[]>([]);
-  const [modal, setModal] = useState<ModalRequest | null>(null);
-  const runTest = async (): Promise<void> => {
-    setTesting({ note: '探测中…', cls: 'settings-action-note' });
-    const r = await fetchJson<GatewayTestResult>('POST', '/api/gateway/test').catch(
-      (e: Error): GatewayTestResult => ({ ok: false, error: e.message }),
-    );
-    // 列模型 ≠ 能对话：只有真实 chat completion 通过才算「可用」
-    setTesting(
-      !r.ok
-        ? { note: r.error ?? '连接失败', cls: 'settings-fail' }
-        : r.chatOk
-          ? { note: `已连通 · ${r.models} 个模型 · 对话验证通过`, cls: 'inline-ok' }
-          : { note: `能列模型但对话失败：${r.chatError ?? '原因未知'}（展开「免费档模型」换个 id）`, cls: 'settings-warn' },
-    );
-  };
-  const refresh = async (): Promise<GatewayGet> => {
-    const cfg = await fetchJson<GatewayGet>('GET', '/api/gateway');
-    setG(cfg);
-    setProfiles(cfg.profiles ?? []);
-    return cfg;
-  };
-  useEffect(() => {
-    void refresh()
-      .then((cfg) => {
-        // 开着网关进设置页就自动探测一次——结论直接摆脸上，不用用户找按钮
-        if (cfg.enabled && cfg.keyConfigured && cfg.baseUrl) void runTest();
-      })
-      .catch((e: Error) => log('error', `读取网关配置失败：${e.message}`));
-  }, []);
-  const [saving, setSaving] = useState<'' | 'save' | 'asNew'>('');
-  const save = async () => {
-    setSaving('save');
-    try {
-      await fetchJson<{ saved: boolean }>('PUT', '/api/gateway', {
-        baseUrl: g.baseUrl,
-        // 免费模型留空时给个能跑的缺省——pi 的 --model 与 claude 的 ANTHROPIC_MODEL 都吃这个
-        freeModel: g.freeModel.trim() || 'auto/best-free',
-        enabled: g.enabled,
-        ...(apiKey ? { apiKey } : {}),
-      });
-      setG((x) => ({ ...x, keyConfigured: true }));
-      setApiKey('');
-      log('info', '模型网关已保存（新启动的 Agent Pane 生效）');
-      await refresh();
-      await runTest();
-    } catch (e) {
-      log('error', `保存失败：${(e as Error).message}`);
-    } finally {
-      setSaving('');
-    }
-  };
-  /** D2：把上方表单当前内容另存为一档新网关（不动生效档） */
-  const saveAsNew = async () => {
-    setSaving('asNew');
-    try {
-      await fetchJson<{ ok: boolean; id: string }>('POST', '/api/gateway/profile', {
-        name: newName,
-        baseUrl: g.baseUrl,
-        apiKey,
-        freeModel: g.freeModel.trim() || undefined,
-        enabled: g.enabled,
-      });
-      setNewName('');
-      setApiKey('');
-      await refresh();
-      log('info', `新档「${newName}」已入列（未切生效档；要启用点它的「设为生效」）`);
-    } catch (e) {
-      log('error', `另存新档失败：${(e as Error).message}`);
-    } finally {
-      setSaving('');
-    }
-  };
-  const switchTo = async (p: GatewayProfileView) => {
-    try {
-      await fetchJson<{ ok: boolean }>('PUT', '/api/gateway/current', { id: p.id });
-      await refresh();
-      log('info', `生效档已切到「${p.name}」（pi 的 paneflow-gw 同步跟随）`);
-    } catch (e) {
-      log('error', `切档失败：${(e as Error).message}`);
-    }
-  };
-  // v14-A5-5a：这枚删除面自此问引用账——被项目钉着的档 400 点名出处。
-  // 那句拒答从前只弹一条会自己消失的 toast，现在显示在确认框内部且不关窗，人来得及读完「先改哪几处」。
-  const removeProfile = (p: GatewayProfileView) =>
-    setModal(
-      removeGatewayProfileRequest(p.name, async () => {
-        await fetchJson<{ ok: boolean }>('DELETE', `/api/gateway/profile/${encodeURIComponent(p.id)}`);
-        await refresh();
-        log('info', `已删除档「${p.name}」`);
-      }),
-    );
-  /** D3：preview 只回掩码候选；确认勾选后才落盘 */
-  const probeImport = async () => {
-    try {
-      const d = await fetchJson<{ candidates: SwitchCandidate[] }>('POST', '/api/gateway/import', { path: swPath });
-      setSwCandidates(d.candidates);
-      setSwPicked(d.candidates.map((c) => c.name));
-    } catch (e) {
-      setSwCandidates(null);
-      log('error', `识别失败：${(e as Error).message}`);
-    }
-  };
-  const applyImport = async () => {
-    try {
-      const d = await fetchJson<{ imported: string[] }>('POST', '/api/gateway/import', { path: swPath, names: swPicked });
-      setSwCandidates(null);
-      setSwPath('');
-      await refresh();
-      log('info', `已导入 ${d.imported.length} 档：${d.imported.join('、')}（都是新档，未自动切生效档）`);
-    } catch (e) {
-      log('error', `导入失败：${(e as Error).message}`);
-    }
-  };
-  return (
-    <>
-      <div className="settings-row">
-        <input
-          style={{ flex: 2, minWidth: 220 }}
-          value={g.baseUrl}
-          onChange={(e) => setG((x) => ({ ...x, baseUrl: e.target.value }))}
-          placeholder="网关地址，如 http://127.0.0.1:20128（带不带 /v1 都行）"
-          aria-label="网关地址"
-        />
-        <input
-          style={{ flex: 1, minWidth: 140 }}
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder={g.keyConfigured ? 'Key 已存 ✓（留空不改）' : 'API Key sk-…'}
-          aria-label="API Key"
-        />
-      </div>
-      <div className="gateway-row">
-        <label className="settings-check" title="注入 OPENAI_*/ANTHROPIC_* 到每个 Agent Pane；claude 经 --settings、pi 经 --provider openai 强制走网关">
-          <input type="checkbox" checked={g.enabled} onChange={(e) => setG((x) => ({ ...x, enabled: e.target.checked }))} />
-          启用：所有 Agent 统一走网关模型
-        </label>
-        <details className="settings-more">
-          <summary>免费档模型 id：{g.freeModel || 'auto/best-free（缺省）'}</summary>
-          <input
-            value={g.freeModel}
-            onChange={(e) => setG((x) => ({ ...x, freeModel: e.target.value }))}
-            placeholder="auto/best-free"
-          />
-        </details>
-      </div>
-      <div className="settings-actions">
-        {testing && <span className={testing.cls}>{testing.note}</span>}
-        <button className="primary" disabled={saving !== ''} onClick={() => void save()}>
-          <Icon name="save" size={12} /> {saving === 'save' ? '保存中…' : '保存并测试'}
-        </button>
-      </div>
-      {/* v9-D2 多网关档：上面表单编辑的是生效档；并存其他网关在下方列表里切/删 */}
-      <div className="gw-profiles">
-        <h4>网关档位</h4>
-        <p className="settings-hint">
-          共 {profiles.length} 档 · 上方表单保存 = 改生效档「{profiles.find((p) => p.isCurrent)?.name ?? '—'}」
-        </p>
-        {profiles.map((p) => (
-          <div className="gw-profile" key={p.id}>
-            <b className={p.isCurrent ? 'gw-cur' : ''}>{p.isCurrent ? '● ' : '○ '}{p.name}</b>
-            <span className="settings-hint">
-              <code>{p.baseUrl || '（无地址）'}</code> · {p.keyConfigured ? 'key ✓' : '无 key'}
-              {p.freeModel ? ` · ${p.freeModel}` : ''}
-              {p.enabled === false ? ' · 已停用' : ''}
-            </span>
-            {!p.isCurrent && (
-              <button className="sm" onClick={() => void switchTo(p)}>设为生效</button>
-            )}
-            {profiles.length > 1 && (
-              <button className="sm ghost" title="删除此档" onClick={() => removeProfile(p)}>
-                <Icon name="x" size={11} />
-              </button>
-            )}
-          </div>
-        ))}
-        <div className="settings-row">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="新档名，如「公司网关」"
-            aria-label="新档名"
-          />
-          <button
-            disabled={!newName.trim() || saving !== ''}
-            title="把上方表单里的地址/Key/模型另存为一档新网关（需要填 Key）"
-            onClick={() => void saveAsNew()}
-          >
-            {saving === 'asNew' ? '存档中…' : '＋ 另存为新档'}
-          </button>
-        </div>
-      </div>
-      <details className="settings-more">
-        <summary>从外部配置导入网关（cc Switch / 同类 switcher 的 JSON）</summary>
-        <div className="settings-row">
-          <input
-            value={swPath}
-            onChange={(e) => setSwPath(e.target.value)}
-            placeholder="配置文件绝对路径，如 /Users/you/.cc-switch/config.json"
-            aria-label="外部配置文件路径"
-          />
-          <button disabled={!swPath.trim()} onClick={() => void probeImport()}>
-            <Icon name="search" size={12} /> 识别
-          </button>
-        </div>
-        {swCandidates && (
-          <>
-            <p className="settings-hint">认出 {swCandidates.length} 个 provider（密钥只显示尾 4 位；勾选后导入为新增档）：</p>
-            {swCandidates.map((c) => (
-              <label key={c.name} className="settings-check">
-                <input
-                  type="checkbox"
-                  checked={swPicked.includes(c.name)}
-                  onChange={(e) =>
-                    setSwPicked((xs) => (e.target.checked ? [...xs, c.name] : xs.filter((x) => x !== c.name)))
-                  }
-                />
-                {c.name} · <code>{c.baseUrl}</code> · key…<code>{c.keyTail}</code>{c.freeModel ? ` · ${c.freeModel}` : ''}
-              </label>
-            ))}
-            <div className="settings-actions">
-              <button className="primary" disabled={!swPicked.length} onClick={() => void applyImport()}>
-                <Icon name="download" size={12} /> 导入勾选（{swPicked.length}）
-              </button>
-            </div>
-          </>
-        )}
-      </details>
-      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
-    </>
-  );
-}
+
 
 interface Role {
   id: string;
@@ -1345,5 +973,412 @@ export function SettingsView() {
         </section>
       </div>
     </div>
+  );
+}
+
+function GatewayCard() {
+  const log = useStore((s) => s.log);
+  const [g, setG] = useState({ baseUrl: '', freeModel: '', enabled: false, keyConfigured: false });
+  const [profiles, setProfiles] = useState<GatewayProfileView[]>([]);
+  const [apiKey, setApiKey] = useState('');
+  type GatewayTestResult = { ok: boolean; models?: number; error?: string; chatOk?: boolean; chatError?: string };
+  const [testing, setTesting] = useState<{ note: string; cls: string } | null>(null);
+  const [newName, setNewName] = useState('');
+  const [swPath, setSwPath] = useState('');
+  const [swCandidates, setSwCandidates] = useState<SwitchCandidate[] | null>(null);
+  const [swPicked, setSwPicked] = useState<string[]>([]);
+  const [modal, setModal] = useState<ModalRequest | null>(null);
+  const runTest = async (): Promise<void> => {
+    setTesting({ note: '探测中…', cls: 'settings-action-note' });
+    const r = await fetchJson<GatewayTestResult>('POST', '/api/gateway/test').catch(
+      (e: Error): GatewayTestResult => ({ ok: false, error: e.message }),
+    );
+    // 列模型 ≠ 能对话：只有真实 chat completion 通过才算「可用」
+    setTesting(
+      !r.ok
+        ? { note: r.error ?? '连接失败', cls: 'settings-fail' }
+        : r.chatOk
+          ? { note: `已连通 · ${r.models} 个模型 · 对话验证通过`, cls: 'inline-ok' }
+          : { note: `能列模型但对话失败：${r.chatError ?? '原因未知'}（展开「免费档模型」换个 id）`, cls: 'settings-warn' },
+    );
+  };
+  const refresh = async (): Promise<GatewayGet> => {
+    const cfg = await fetchJson<GatewayGet>('GET', '/api/gateway');
+    setG(cfg);
+    setProfiles(cfg.profiles ?? []);
+    return cfg;
+  };
+  useEffect(() => {
+    void refresh()
+      .then((cfg) => {
+        // 开着网关进设置页就自动探测一次——结论直接摆脸上，不用用户找按钮
+        if (cfg.enabled && cfg.keyConfigured && cfg.baseUrl) void runTest();
+      })
+      .catch((e: Error) => log('error', `读取网关配置失败：${e.message}`));
+  }, []);
+  const [saving, setSaving] = useState<'' | 'save' | 'asNew'>('');
+  const save = async () => {
+    setSaving('save');
+    try {
+      await fetchJson<{ saved: boolean }>('PUT', '/api/gateway', {
+        baseUrl: g.baseUrl,
+        // 免费模型留空时给个能跑的缺省——pi 的 --model 与 claude 的 ANTHROPIC_MODEL 都吃这个
+        freeModel: g.freeModel.trim() || 'auto/best-free',
+        enabled: g.enabled,
+        ...(apiKey ? { apiKey } : {}),
+      });
+      setG((x) => ({ ...x, keyConfigured: true }));
+      setApiKey('');
+      log('info', '模型网关已保存（新启动的 Agent Pane 生效）');
+      await refresh();
+      await runTest();
+    } catch (e) {
+      log('error', `保存失败：${(e as Error).message}`);
+    } finally {
+      setSaving('');
+    }
+  };
+  /** D2：把上方表单当前内容另存为一档新网关（不动生效档） */
+  const saveAsNew = async () => {
+    setSaving('asNew');
+    try {
+      await fetchJson<{ ok: boolean; id: string }>('POST', '/api/gateway/profile', {
+        name: newName,
+        baseUrl: g.baseUrl,
+        apiKey,
+        freeModel: g.freeModel.trim() || undefined,
+        enabled: g.enabled,
+      });
+      setNewName('');
+      setApiKey('');
+      await refresh();
+      log('info', `新档「${newName}」已入列（未切生效档；要启用点它的「设为生效」）`);
+    } catch (e) {
+      log('error', `另存新档失败：${(e as Error).message}`);
+    } finally {
+      setSaving('');
+    }
+  };
+  const switchTo = async (p: GatewayProfileView) => {
+    try {
+      await fetchJson<{ ok: boolean }>('PUT', '/api/gateway/current', { id: p.id });
+      await refresh();
+      log('info', `生效档已切到「${p.name}」（pi 的 paneflow-gw 同步跟随）`);
+    } catch (e) {
+      log('error', `切档失败：${(e as Error).message}`);
+    }
+  };
+  // v14-A5-5a：这枚删除面自此问引用账——被项目钉着的档 400 点名出处。
+  // 那句拒答从前只弹一条会自己消失的 toast，现在显示在确认框内部且不关窗，人来得及读完「先改哪几处」。
+  const removeProfile = (p: GatewayProfileView) =>
+    setModal(
+      removeGatewayProfileRequest(p.name, async () => {
+        await fetchJson<{ ok: boolean }>('DELETE', `/api/gateway/profile/${encodeURIComponent(p.id)}`);
+        await refresh();
+        log('info', `已删除档「${p.name}」`);
+      }),
+    );
+  /** D3：preview 只回掩码候选；确认勾选后才落盘 */
+  const probeImport = async () => {
+    try {
+      const d = await fetchJson<{ candidates: SwitchCandidate[] }>('POST', '/api/gateway/import', { path: swPath });
+      setSwCandidates(d.candidates);
+      setSwPicked(d.candidates.map((c) => c.name));
+    } catch (e) {
+      setSwCandidates(null);
+      log('error', `识别失败：${(e as Error).message}`);
+    }
+  };
+  const applyImport = async () => {
+    try {
+      const d = await fetchJson<{ imported: string[] }>('POST', '/api/gateway/import', { path: swPath, names: swPicked });
+      setSwCandidates(null);
+      setSwPath('');
+      await refresh();
+      log('info', `已导入 ${d.imported.length} 档：${d.imported.join('、')}（都是新档，未自动切生效档）`);
+    } catch (e) {
+      log('error', `导入失败：${(e as Error).message}`);
+    }
+  };
+  return (
+    <>
+      <div className="settings-row">
+        <input
+          style={{ flex: 2, minWidth: 220 }}
+          value={g.baseUrl}
+          onChange={(e) => setG((x) => ({ ...x, baseUrl: e.target.value }))}
+          placeholder="网关地址，如 http://127.0.0.1:20128（带不带 /v1 都行）"
+          aria-label="网关地址"
+        />
+        <input
+          style={{ flex: 1, minWidth: 140 }}
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder={g.keyConfigured ? 'Key 已存 ✓（留空不改）' : 'API Key sk-…'}
+          aria-label="API Key"
+        />
+      </div>
+      <div className="gateway-row">
+        <label className="settings-check" title="注入 OPENAI_*/ANTHROPIC_* 到每个 Agent Pane；claude 经 --settings、pi 经 --provider openai 强制走网关">
+          <input type="checkbox" checked={g.enabled} onChange={(e) => setG((x) => ({ ...x, enabled: e.target.checked }))} />
+          启用：所有 Agent 统一走网关模型
+        </label>
+        <details className="settings-more">
+          <summary>免费档模型 id：{g.freeModel || 'auto/best-free（缺省）'}</summary>
+          <input
+            value={g.freeModel}
+            onChange={(e) => setG((x) => ({ ...x, freeModel: e.target.value }))}
+            placeholder="auto/best-free"
+          />
+        </details>
+      </div>
+      <div className="settings-actions">
+        {testing && <span className={testing.cls}>{testing.note}</span>}
+        <button className="primary" disabled={saving !== ''} onClick={() => void save()}>
+          <Icon name="save" size={12} /> {saving === 'save' ? '保存中…' : '保存并测试'}
+        </button>
+      </div>
+      {/* v9-D2 多网关档：上面表单编辑的是生效档；并存其他网关在下方列表里切/删 */}
+      <div className="gw-profiles">
+        <h4>网关档位</h4>
+        <p className="settings-hint">
+          共 {profiles.length} 档 · 上方表单保存 = 改生效档「{profiles.find((p) => p.isCurrent)?.name ?? '—'}」
+        </p>
+        {profiles.map((p) => (
+          <div className="gw-profile" key={p.id}>
+            <b className={p.isCurrent ? 'gw-cur' : ''}>{p.isCurrent ? '● ' : '○ '}{p.name}</b>
+            <span className="settings-hint">
+              <code>{p.baseUrl || '（无地址）'}</code> · {p.keyConfigured ? 'key ✓' : '无 key'}
+              {p.freeModel ? ` · ${p.freeModel}` : ''}
+              {p.enabled === false ? ' · 已停用' : ''}
+            </span>
+            {!p.isCurrent && (
+              <button className="sm" onClick={() => void switchTo(p)}>设为生效</button>
+            )}
+            {profiles.length > 1 && (
+              <button className="sm ghost" title="删除此档" onClick={() => removeProfile(p)}>
+                <Icon name="x" size={11} />
+              </button>
+            )}
+          </div>
+        ))}
+        <div className="settings-row">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="新档名，如「公司网关」"
+            aria-label="新档名"
+          />
+          <button
+            disabled={!newName.trim() || saving !== ''}
+            title="把上方表单里的地址/Key/模型另存为一档新网关（需要填 Key）"
+            onClick={() => void saveAsNew()}
+          >
+            {saving === 'asNew' ? '存档中…' : '＋ 另存为新档'}
+          </button>
+        </div>
+      </div>
+      <details className="settings-more">
+        <summary>从外部配置导入网关（cc Switch / 同类 switcher 的 JSON）</summary>
+        <div className="settings-row">
+          <input
+            value={swPath}
+            onChange={(e) => setSwPath(e.target.value)}
+            placeholder="配置文件绝对路径，如 /Users/you/.cc-switch/config.json"
+            aria-label="外部配置文件路径"
+          />
+          <button disabled={!swPath.trim()} onClick={() => void probeImport()}>
+            <Icon name="search" size={12} /> 识别
+          </button>
+        </div>
+        {swCandidates && (
+          <>
+            <p className="settings-hint">认出 {swCandidates.length} 个 provider（密钥只显示尾 4 位；勾选后导入为新增档）：</p>
+            {swCandidates.map((c) => (
+              <label key={c.name} className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={swPicked.includes(c.name)}
+                  onChange={(e) =>
+                    setSwPicked((xs) => (e.target.checked ? [...xs, c.name] : xs.filter((x) => x !== c.name)))
+                  }
+                />
+                {c.name} · <code>{c.baseUrl}</code> · key…<code>{c.keyTail}</code>{c.freeModel ? ` · ${c.freeModel}` : ''}
+              </label>
+            ))}
+            <div className="settings-actions">
+              <button className="primary" disabled={!swPicked.length} onClick={() => void applyImport()}>
+                <Icon name="download" size={12} /> 导入勾选（{swPicked.length}）
+              </button>
+            </div>
+          </>
+        )}
+      </details>
+      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
+    </>
+  );
+}
+
+function GithubCredCard() {
+  const log = useStore((s) => s.log);
+  const [g, setG] = useState<GithubCredState>({ tokenConfigured: false, defaultRepo: '' });
+  const [token, setToken] = useState('');
+  const [modal, setModal] = useState<ModalRequest | null>(null);
+  const refresh = () =>
+    fetchJson<GithubCredState>('GET', '/api/github/cred')
+      .then(setG)
+      .catch((e: Error) => log('error', `读取 GitHub 凭据状态失败：${e.message}`));
+  useEffect(() => {
+    void refresh();
+  }, []);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try {
+      const d = await fetchJson<{ tokenConfigured: boolean }>('PUT', '/api/github/cred', {
+        ...(token ? { token } : {}),
+        defaultRepo: g.defaultRepo,
+      });
+      setG((x) => ({ ...x, tokenConfigured: d.tokenConfigured }));
+      log('info', 'GitHub 凭据已保存（新启动的 Agent Pane 生效）');
+      void refresh();
+    } catch (e) {
+      log('error', `保存失败：${(e as Error).message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const [writing, setWriting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  /** U2：解绑=只清本机存的 PAT，gh 登录态兜底还在（确认走 D3 模态，报错显示在框内） */
+  const unlink = () =>
+    setModal(
+      unlinkPatRequest(async () => {
+        await fetchJson<{ unlinked: boolean }>('POST', '/api/github/cred/unlink');
+        log('info', '已解绑本机存储的 PAT');
+        void refresh();
+      }),
+    );
+  /** v9-D1：本机 gh 已登录 → 一键把 token 搬进来；拿不到时错误里自带路 A/路 B 指引 */
+  const importGh = async () => {
+    setImporting(true);
+    try {
+      const d = await fetchJson<{ imported: boolean; defaultRepo: string }>('POST', '/api/github/cred/import-gh');
+      setG((x) => ({ tokenConfigured: true, defaultRepo: x.defaultRepo || d.defaultRepo }));
+      log('info', '已从本机 gh CLI 导入 token（新启动的 Agent Pane 生效）');
+    } catch (e) {
+      log('error', `gh 导入失败：${(e as Error).message}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+  /** M4：一键回写接单模板（「验收标准」锚点与服务端机检同源），409 时二次确认覆盖 */
+  const writeIntake = async (overwrite = false) => {
+    setWriting(true);
+    try {
+      const d = await fetchJson<{ written: boolean; updated?: boolean; path: string }>(
+        'POST',
+        '/api/github/intake-template',
+        overwrite ? { overwrite: true } : undefined,
+      );
+      log(
+        'info',
+        d.written
+          ? `✅ 接单模板已${d.updated ? '覆盖' : '写入'}：${d.path}（新建 Issue 时可选「PaneFlow 接单单」）`
+          : `接单模板已是最新（${d.path}），无需改动`,
+      );
+    } catch (e) {
+      const msg = (e as Error).message;
+      // 409「已存在，要覆盖得显式 overwrite」：原生的二次确认换成 D3 模态，server 那句原文直接当说明
+      if (msg.includes('overwrite')) setModal(overwriteIntakeRequest(msg, () => writeIntake(true)));
+      else log('error', `接单模板回写失败：${msg}`);
+    } finally {
+      setWriting(false);
+    }
+  };
+  return (
+    <>
+      <label>
+        GitHub Token {g.tokenConfigured && <span className="inline-ok">（已配置，留空保持不变）</span>}
+      </label>
+      <p className="settings-hint">
+        {g.source === 'stored-pat' && <>来源：本机存储的 PAT · 尾号 <code>{g.tokenTail}</code>{credIdentity(g)}{g.ghLoggedIn ? '；gh 登录态可作兜底' : ''}</>}
+        {g.source === 'gh-cli' && <>来源：本机 gh 登录态（现取现用，未写盘）{credIdentity(g)}。动作侧照常可用；想让它也喂给 Agent Pane 里的 gh，可一键导入落盘。</>}
+        {g.source === 'none' && <>来源：无。要么贴一个 PAT，要么本机 gh auth login——登录后无需任何存储即可直连。</>}
+      </p>
+      <input
+        type="password"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="github_pat_… / ghp_…"
+      />
+      <label>默认仓库（owner/name）</label>
+      <input
+        value={g.defaultRepo}
+        onChange={(e) => setG((x) => ({ ...x, defaultRepo: e.target.value }))}
+        placeholder="owner/repo"
+      />
+      <div className="settings-actions">
+        <button className="primary" disabled={saving} onClick={() => void save()}>
+          {saving ? '保存中…' : '保存凭据'}
+        </button>
+        <button title="读取本机 `gh auth token` 的登录态并存入（gh 未登录会给出两条备选路）" disabled={importing} onClick={() => void importGh()}>
+          <Icon name="key" size={12} /> {importing ? '导入中…' : '从 gh CLI 一键导入'}
+        </button>
+        {g.source === 'stored-pat' && (
+          <button className="ghost" title="只清本机存的 PAT（默认仓库保留；gh 登录态兜底不受影响）" onClick={() => unlink()}>
+            解绑本机存储
+          </button>
+        )}
+        <button
+          disabled={writing || !(g.tokenConfigured || g.source === 'gh-cli')}
+          title={
+            g.tokenConfigured || g.source === 'gh-cli'
+              ? '向默认仓库写入 .github/ISSUE_TEMPLATE 接单模板（验收标准小节可被 PaneFlow 机检立约）'
+              : '先配好凭据（存 PAT 或本机 gh 登录）与默认仓库'
+          }
+          onClick={() => void writeIntake()}
+        >
+          {writing ? '回写中…' : (
+            <>
+              <Icon name="doc" size={12} /> 回写接单模板 → 默认仓库
+            </>
+          )}
+        </button>
+      </div>
+      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------
+// R6 聚合：注册中心「配置」页复用以下区块（卡片实现留在本文件）
+// ---------------------------------------------------------------
+
+export function GatewaySection() {
+  return (
+    <section className="settings-card" id="sec-gateway">
+      <h3>模型网关（OmniRoute 等）</h3>
+      <GatewayCard />
+    </section>
+  );
+}
+
+export function GithubSection() {
+  return (
+    <section className="settings-card" id="sec-github">
+      <h3>GitHub 凭据</h3>
+      <GithubCredCard />
+    </section>
+  );
+}
+
+export function ChannelsSection() {
+  return (
+    <section className="settings-card" id="sec-channels">
+      <h3>出站通道</h3>
+      <ChannelsEditor />
+    </section>
   );
 }

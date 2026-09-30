@@ -1,0 +1,1 @@
+{"error":"模板「t3-demo」的能力槽没补齐：model → openai/gpt-5-codex（注册表里没有可用（启用中）的「模型」条目指向「openai/gpt-5-codex」 · 模板备注：评审要另一枚，还没登记）——先在「注册中心」登记缺的那几项（或改掉模板的 requires）再起单。"}

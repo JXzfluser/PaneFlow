@@ -38,6 +38,7 @@ import {
   type RegistryProbeResponse,
   type SpaceDocCandidateSource,
 } from '../registry-view.js';
+import { GatewaySection, GithubSection, ChannelsSection } from './SettingsView.jsx';
 
 /** 行上四类写动作：在飞读数按这一枚点名（同一条目的四发不能共用一句话） */
 type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
@@ -48,6 +49,7 @@ type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
  * 这里不重算 id、不校 spec 形状（必填齐没齐是 UI 礼节不是校验）、不把「缺读数」画成 0。
  */
 export function RegistryView() {
+  const [mainTab, setMainTab] = useState<string>('registry');
   const log = useStore((s) => s.log);
   const [data, setData] = useState<RegistryListResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -438,27 +440,20 @@ export function RegistryView() {
 
   return (
     <div className="registry-view">
-      <div className="registry-head">
-        <div>
-          <h2>注册中心</h2>
-          <p className="settings-hint">
-            能力清单的一张表：登记、启停、删除都走这里的表单，不用写 JSON。
-            判定全在服务端，本页只渲染它给的话。
-            {data?.schema ? ` 表内 schema 版本 v${data.schema.version}${data.schema.writtenBy ? `（${data.schema.writtenBy} 写的）` : ''}。` : ''}
-          </p>
+        <h2>注册中心</h2>
+        <p className="settings-hint">能力清单的一张表：登记、启停、删除都走这里的表单，不用写 JSON。判定全在服务端，本页只渲染它给的话。</p>
+        <div style={{ display: 'flex', gap: 2, marginTop: 4 }}>
+          <button style={{ border: 'none', background: mainTab === 'registry' ? 'var(--primary-bg)' : 'transparent', color: mainTab === 'registry' ? 'var(--accent)' : 'var(--text-dim)', fontWeight: mainTab === 'registry' ? 600 : 400 }} onClick={() => setMainTab('registry')}>能力清单</button>
+          <button style={{ border: 'none', background: mainTab === 'config' ? 'var(--primary-bg)' : 'transparent', color: mainTab === 'config' ? 'var(--accent)' : 'var(--text-dim)', fontWeight: mainTab === 'config' ? 600 : 400 }} onClick={() => setMainTab('config')}>配置聚合</button>
         </div>
-        <button className="primary" onClick={openForm}>
-          + 登记一项
-        </button>
-        <button
-          className="ghost"
-          disabled={healthBusy}
-          onClick={() => void loadHealth(true)}
-          title="绕开服务端 5 分钟实探缓存重新探一遍（表不受影响）"
-        >
-          {healthBusy ? '重探中…' : '重探健康点'}
-        </button>
-      </div>
+        {mainTab === 'config' && (
+          <div className="settings-view" style={{ padding: 0, marginTop: 10 }}>
+            <GatewaySection />
+            <GithubSection />
+            <ChannelsSection />
+          </div>
+        )}
+        {mainTab !== 'config' && (<>
 
       {loadError && (
         <p className="registry-load-fail">注册表读不出：{loadError}</p>
@@ -893,7 +888,8 @@ export function RegistryView() {
             </section>
           ))}
         </div>
-      </div>
+    </div>
+      </>)}
     </div>
   );
 }
