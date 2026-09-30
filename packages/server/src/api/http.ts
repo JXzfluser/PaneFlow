@@ -974,20 +974,20 @@ export async function buildHttpServer(deps: HttpDeps) {
   // -- v14-E1 环境发现器（**纯只读**）----------------------------------------
   // 判据全在 ./env-probe.ts（只 stat/readdir + 三条只读 git 查询，绝不写盘、绝不 fetch/checkout）；
   // 这里只把请求形状挡一道。**探测失败是读数不是客户端错误**：目录读不到也回 200 带一句人话
-  // （items:[] + error），400 只留给脏体——CLI 零判据，据此才能「server 给什么画什么」。
   app.post<{ Body: { path?: unknown }; Querystring: { space?: string } }>('/api/env/probe', async (req, reply) => {
     const raw = (req.body as { path?: unknown } | undefined)?.path;
     if (typeof raw !== 'string' || !raw.trim()) {
       return reply.code(400).send({ error: 'path 必填：要探测的目录绝对路径（E1 纯只读，不落任何登记）' });
     }
     const dir = raw.trim();
-    // 相对路径的基准是 server 进程的 cwd，不是调用方 shell 的 cwd——不猜，指路（worktreeRoot 同款口径）
     if (!path.isAbsolute(dir)) {
       return reply.code(400).send({ error: `path 必须是绝对路径（相对路径不猜基准）：${dir}` });
     }
-    // ?space= 本片不消费：E1 的判据与空间无关（探的是目录实态），这枚旗标是 E2 登记目标空间的落点
-    return await probeEnvironment(dir);
+    const probe = await probeEnvironment(dir);
+    return reply.send(probe);
   });
+
+
 
   // -- v14-E2 一次事务登记（草案→空间档案，原子写）----------------------------
   // 判据在 env-probe.ts 的 mapProbeToProfilePatch（纯函数）；这里只做 IO：
