@@ -50,6 +50,9 @@ type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
  */
 export function RegistryView() {
   const [mainTab, setMainTab] = useState<string>('registry');
+  const [scanPromptOpen, setScanPromptOpen] = useState(false);
+  const [scanPath, setScanPath] = useState('');
+  const [scanRegisterBusy, setScanRegisterBusy] = useState(false);
   const log = useStore((s) => s.log);
   const [data, setData] = useState<RegistryListResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -468,6 +471,46 @@ export function RegistryView() {
               <span><b>登记一个代码仓库</b><small>Agent 干活的领地</small></span>
             </button>
           </div>
+          <div className="reg-guide-scan">
+            <span style={{ color: 'var(--text-dim)', fontSize: 11.5 }}>
+              更快的方式：给一个本地目录，自动发现里面的仓库/约定/技能，勾选后一键登记。
+            </span>
+            <button style={{ marginLeft: 'auto' }} onClick={() => setScanPromptOpen(true)}>
+              🔍 扫描并一键登记
+            </button>
+          </div>
+          {scanPromptOpen && (
+            <div className="reg-scan-prompt">
+              <label>要扫描的目录（绝对路径）</label>
+              <input
+                value={scanPath}
+                onChange={(e) => setScanPath(e.target.value)}
+                placeholder="/Users/you/work/my-project"
+                style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button
+                  className="primary"
+                  disabled={scanRegisterBusy || !scanPath.trim()}
+                  onClick={() => {
+                    const sp = selectedSpace || 'default';
+                    setScanRegisterBusy(true);
+                    api.envRegister(scanPath.trim(), sp)
+                      .then((r) => {
+                        log('info', `一键登记完成：${r.registered} 项已入 ${sp} 空间档案`);
+                        void refresh();
+                        setScanPromptOpen(false);
+                      })
+                      .catch((e: Error) => log('error', `登记失败：${e.message}`))
+                      .finally(() => setScanRegisterBusy(false));
+                  }}
+                >
+                  {scanRegisterBusy ? '登记中…' : '一键登记'}
+                </button>
+                <button onClick={() => setScanPromptOpen(false)}>取消</button>
+              </div>
+            </div>
+          )}
         </div>
         {mainTab === 'config' && (
           <div className="settings-view" style={{ padding: 0, marginTop: 10 }}>
