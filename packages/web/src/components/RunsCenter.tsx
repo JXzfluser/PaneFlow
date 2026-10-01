@@ -151,7 +151,7 @@ function ArchivedPanel() {
             </span>
             <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{r.startedAt.slice(0, 16).replace('T', ' ')}</span>
             <div className="run-card-ops">
-              <button title="导出完整记录 JSON" onClick={() => {
+              <button title="导出完整记录 JSON" aria-label="导出完整记录 JSON" onClick={() => {
                 const a = document.createElement('a');
                 a.href = `/api/runs/${encodeURIComponent(r.runId)}/export`;
                 a.download = `${r.runId}.json`;
@@ -569,7 +569,7 @@ export function RunsCenter() {
                     )}
                   </button>
                 )}
-                <button title="导出完整记录 JSON" onClick={() => {
+                <button title="导出完整记录 JSON" aria-label="导出完整记录 JSON" onClick={() => {
                   const a = document.createElement('a');
                   a.href = `/api/runs/${r.runId}/export`;
                   a.download = `${r.runId}.json`;
@@ -587,11 +587,11 @@ export function RunsCenter() {
                   </button>
                 )}
                 {r.state === 'failed' && (
-                  <button title="从断点续跑（已完成节点直接继承，失败/未跑节点重执行）" onClick={() => resume(r)}>
+                  <button title="从断点续跑（已完成节点直接继承，失败/未跑节点重执行）" aria-label="从断点续跑（已完成节点直接继承，失败/未跑节点重执行）" onClick={() => resume(r)}>
                     <Icon name="resume" size={12} />
                   </button>
                 )}
-                <button title="在画布中打开" onClick={() => { openRun(r.runId); setView('orchestrate'); }}>
+                <button title="在画布中打开" aria-label="在画布中打开" onClick={() => { openRun(r.runId); setView('orchestrate'); }}>
                   <Icon name="external" size={12} />
                 </button>
                 {r.state === 'running' && (

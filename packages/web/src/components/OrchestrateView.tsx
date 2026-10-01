@@ -201,7 +201,7 @@ export function OrchestrateView() {
             </select>
           )}
           <div className="tb-more">
-            <button title="更多（变量 / 云端同步 / 清空）" onClick={() => setMoreOpen((v) => !v)}>
+            <button title="更多（变量 / 云端同步 / 清空）" aria-label="更多（变量 / 云端同步 / 清空）" onClick={() => setMoreOpen((v) => !v)}>
               <Icon name="more" /> 更多
             </button>
             {moreOpen && (

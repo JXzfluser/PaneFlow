@@ -88,7 +88,7 @@ h1, h2, h3, h4 { line-height: 1.2; text-wrap: balance; }
 .tb-group:last-of-type { border-right: none; }
 .topbar .brand {
   font-family: var(--font-display); font-weight: 700; font-size: 16px;
-  color: var(--text); letter-spacing: 0.5px; padding-right: 6px; white-space: nowrap;
+  color: var(--text); letter-spacing: 0.5px; padding-inline-end: 6px; white-space: nowrap;
 }
 .topbar .brand::after { content: ''; display: block; height: 2px; margin-top: 1px; background: linear-gradient(90deg, var(--accent), transparent); }
 .topbar-global .brand { font-size: 14px; }
@@ -99,7 +99,7 @@ h1, h2, h3, h4 { line-height: 1.2; text-wrap: balance; }
 }
 .topbar .spacer { flex: 1; }
 .topbar button { white-space: nowrap; flex-shrink: 0; }
-.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 4px; flex: 0 0 auto; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-inline-end: 4px; flex: 0 0 auto; }
 /* 三态不只靠颜色：红绿色盲与灰度打印下 ok/bad 会塌成同一片，而详情行本来就写 ●/○/?——
    表格这枚点用同一套形状语言（实心=在、空心环=不在、虚线环=没探得不等于不存在） */
 .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
@@ -249,7 +249,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 }
 .console-resize:hover::after { background: var(--accent); }
 .console-tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); align-items: center; font-variant-numeric: tabular-nums; }
-.console-tabs .tabs-end { margin-left: auto; display: flex; gap: 4px; padding-bottom: 4px; }
+.console-tabs .tabs-end { margin-inline-start: auto; display: flex; gap: 4px; padding-bottom: 4px; }
 .console-tabs .tabs-end button { padding: 3px 9px; font-size: 11px; color: var(--text-dim); }
 .console.collapsed .console-tabs { border-bottom: none; }
 .console-tabs button {
@@ -261,7 +261,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .log-line { white-space: pre-wrap; overflow-wrap: break-word; margin: 1px 0; }
 .log-line.error { color: var(--err); }
 .log-line.warn { color: var(--warn); }
-.log-line .ts { color: var(--text-dim); margin-right: 8px; }
+.log-line .ts { color: var(--text-dim); margin-inline-end: 8px; font-variant-numeric: tabular-nums; }
 
 /* palette */
 .palette h4 {
@@ -284,7 +284,10 @@ button.icon { padding: 4px 6px; min-width: 28px; }
   padding: 6px 8px; font: inherit; font-size: 12px;
 }
 /* 上面简写 padding 会覆盖基线的 padding-right，这里为下拉箭头补回空间 */
-.props select { padding-right: 26px; }
+.props select { padding-inline-end: 26px; appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%), linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 55%, calc(100% - 9px) 55%;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
 .props textarea { min-height: 90px; resize: vertical; }
 .props .row { display: flex; gap: 8px; }
 .props .row > div { flex: 1; }
@@ -322,7 +325,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 }
 .props .adv-toggle:hover { color: var(--accent); border-color: var(--accent); }
 .props .adv-toggle .adv-badge {
-  margin-left: auto; color: var(--accent); font-size: 10.5px;
+  margin-inline-start: auto; color: var(--accent); font-size: 10.5px;
   background: var(--primary-bg); border-radius: 8px; padding: 0 6px;
 }
 .props .adv-body {
@@ -331,7 +334,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 }
 .props .adv-body[data-open='0'] { display: none; }
 .props .adv-body .hint { margin-bottom: 2px; }
-.props .req-mark { color: var(--err); margin-left: 3px; }
+.props .req-mark { color: var(--err); margin-inline-start: 3px; }
 
 /* react flow theming */
 .react-flow { background: transparent; }
@@ -694,12 +697,15 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .runs-status, .run-card-head, .run-progress, .task-progress-text { font-variant-numeric: tabular-nums; }
 .runs-alert { color: var(--err); }
 .runs-empty { color: var(--text-dim); padding: 40px; text-align: center; }
+.runs-empty .primary { margin-top: 12px; }
+.projects-empty { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 1px 2px rgba(44, 41, 33, 0.04); }
+.runs-empty .primary { margin-top: 12px; }
 .run-card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   padding: 13px 18px; margin-bottom: 10px;
   box-shadow: 0 1px 2px rgba(44, 41, 33, 0.04);
 }
-.run-card b { font-family: var(--font-mono); font-size: 12.5px; letter-spacing: 0.3px; }
+.run-card b { font-family: var(--font-mono); font-size: 12.5px; letter-spacing: 0.3px; font-variant-numeric: tabular-nums; }
 .run-card-head { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
 /* 长模板名此前被一排 nowrap 徽标挤成逐字竖排：标题吃剩余宽度、单行省略 */
 .run-card-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-display); font-size: 13.5px; }

@@ -1303,7 +1303,7 @@ function GithubCredCard() {
         <button className="primary" disabled={saving} onClick={() => void save()}>
           {saving ? '保存中…' : '保存凭据'}
         </button>
-        <button title="读取本机 `gh auth token` 的登录态并存入（gh 未登录会给出两条备选路）" disabled={importing} onClick={() => void importGh()}>
+        <button title="读取本机 `gh auth token` 的登录态并存入（gh 未登录会给出两条备选路）" aria-label="读取本机 `gh auth token` 的登录态并存入（gh 未登录会给出两条备选路）" disabled={importing} onClick={() => void importGh()}>
           <Icon name="key" size={12} /> {importing ? '导入中…' : '从 gh CLI 一键导入'}
         </button>
         {g.source === 'stored-pat' && (
