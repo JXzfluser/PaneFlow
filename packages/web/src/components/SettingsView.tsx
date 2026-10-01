@@ -921,7 +921,7 @@ export function SettingsView() {
           <h3>环境</h3>
           {env && (
             <p className="settings-hint">
-              Herdr：{env.herdrOk ? `已连接 ${env.herdrVersion ?? ''}` : '未连接'} · 已安装 Agent：
+              Herdr：{env === null ? '检测中…' : env.herdrOk ? `已连接 ${env.herdrVersion ?? ''}` : '未连接'} · 已安装 Agent：
               {env.env.agentsInstalled.join('、') || '无'}
             </p>
           )}

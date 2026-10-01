@@ -54,12 +54,12 @@ function initialTheme(): ThemeName {
 export type AppView = 'tasks' | 'orchestrate' | 'runs' | 'projects' | 'registry' | 'settings';
 
 /** 视图白名单 + 存储键：改默认落地页时递增版本号，让老用户也吃到新默认（A2） */
-const VIEW_KEY = 'pf-view-v2';
+const VIEW_KEY = 'pf-view-v3'; // v3: 默认落点改 orchestrate
 const VIEWS: AppView[] = ['tasks', 'orchestrate', 'runs', 'projects', 'registry', 'settings'];
 
 function initialView(): AppView {
   const saved = localStorage.getItem(VIEW_KEY) as AppView | null;
-  return saved && VIEWS.includes(saved) ? saved : 'tasks';
+  return saved && VIEWS.includes(saved) ? saved : 'orchestrate';
 }
 
 export type { PfNodeData, PfNode, PfEdgeData } from './graph-serialization.js';
@@ -175,7 +175,10 @@ export const useStore = create<PfStore>((set, get) => ({
   wikiPublishTick: 0,
 
   setView: (view) => {
-    localStorage.setItem(VIEW_KEY, view);
+    // 工具页（设置/注册/项目）不记忆——它们是"去办事"的页，回应用仍是核心视图
+    if (view !== 'settings' && view !== 'registry' && view !== 'projects') {
+      localStorage.setItem(VIEW_KEY, view);
+    }
     set({ view });
   },
 
