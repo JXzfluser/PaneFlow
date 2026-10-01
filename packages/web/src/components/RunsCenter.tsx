@@ -449,7 +449,14 @@ export function RunsCenter() {
       {tab === 'archived' && <ArchivedPanel />}
       {tab === 'active' && (
         <>
-      {list.length === 0 && <div className="runs-empty">还没有运行记录。去「编」视图搭建流水线并运行。</div>}
+      {list.length === 0 && (
+        <div className="runs-empty">
+          还没有运行记录。
+          <div style={{ marginTop: 12 }}>
+            <button className="primary" onClick={() => useStore.getState().setView('tasks')}>🎯 去下发第一个任务</button>
+          </div>
+        </div>
+      )}
       {list.map((r) => {
         const p = progress(r);
         const blockedNodes = Object.values(r.nodes).filter((n) => n.state === 'blocked');
