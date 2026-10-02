@@ -1433,6 +1433,10 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .registry-count { font-size: 11px; color: var(--text-dim); font-family: var(--font-body); font-variant-numeric: tabular-nums; }
 .registry-empty { margin: 2px 0 0; }
 .registry-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.registry-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--panel);
+}
 .registry-table th {
   text-align: start; color: var(--text-dim); font-weight: 500; font-size: 10.5px;
   letter-spacing: 0.6px; text-transform: uppercase;
