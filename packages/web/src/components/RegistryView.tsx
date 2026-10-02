@@ -50,6 +50,7 @@ type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
  */
 export function RegistryView() {
   const [mainTab, setMainTab] = useState<string>('registry');
+  const [activeKind, setActiveKind] = useState<string | null>(null); // null = 全部
   const [scanPromptOpen, setScanPromptOpen] = useState(false);
   const [scanPath, setScanPath] = useState('');
   const [scanRegisterBusy, setScanRegisterBusy] = useState(false);
@@ -803,8 +804,8 @@ export function RegistryView() {
             {groups.map((g) => (
               <button
                 key={g.kind}
-                className="registry-rail-item"
-                onClick={() => jumpToGroup(g.kind)}
+                className={`registry-rail-item${activeKind === g.kind ? ' on' : ''}`}
+                onClick={() => { setActiveKind(activeKind === g.kind ? null : g.kind); jumpToGroup(g.kind); }}
                 title={g.view ? '这一类由现算清单生成，不落盘' : undefined}
               >
                 <span className="registry-rail-label">{g.label}</span>
@@ -816,7 +817,7 @@ export function RegistryView() {
 
         <div className="registry-main">
           {groups.map((g) => (
-            <section className="registry-group" id={`registry-g-${g.kind}`} key={g.kind}>
+            <section className={`registry-group${g.entries.length === 0 ? ' zero' : ''}`} id={`registry-g-${g.kind}`} key={g.kind}>
               <h3>
                 {g.label}
                 <span className="registry-count">{g.entries.length} 项</span>
