@@ -597,7 +597,14 @@ export function RegistryView() {
       )}
 
       {formOpen && (
-        <div className="registry-form">
+        <>
+        <div className="registry-form-backdrop" onClick={closeForm} />
+        <div className="registry-form" role="dialog" aria-modal="true" aria-label="登记能力">
+          <div className="registry-form-headrow">
+            <h3 className="registry-form-title">登记{kindGroupLabel(formKind, data?.kindLabels)}</h3>
+            <button className="registry-form-close" aria-label="关闭登记表单" onClick={closeForm}>✕</button>
+          </div>
+          <p className="registry-form-sub">带 * 的必填项填完即可登记，其余字段可稍后在条目上补充。</p>
           <div className="registry-form-field">
             <label htmlFor="reg-kind">能力类型</label>
             <select
@@ -783,6 +790,7 @@ export function RegistryView() {
             </button>
           </div>
         </div>
+        </>
       )}
 
       {!data && !loadError && <p className="settings-hint">读取中…</p>}
