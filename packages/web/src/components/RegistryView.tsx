@@ -51,6 +51,7 @@ type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
 export function RegistryView() {
   const [mainTab, setMainTab] = useState<string>('registry');
   const [activeKind, setActiveKind] = useState<string | null>(null); // null = 全部
+  const [kindTab, setKindTab] = useState<string | null>(null); // Tab 页签选中的类别（null=第一个）
   const [scanPromptOpen, setScanPromptOpen] = useState(false);
   const [scanPath, setScanPath] = useState('');
   const [scanRegisterBusy, setScanRegisterBusy] = useState(false);
@@ -556,6 +557,7 @@ export function RegistryView() {
               </div>
             )}
         </div>
+        </div>
         {mainTab === 'config' && (
           <div className="settings-view" style={{ padding: 0, marginTop: 10 }}>
             <GatewaySection />
@@ -563,41 +565,7 @@ export function RegistryView() {
             <ChannelsSection />
           </div>
         )}
-        {mainTab !== 'config' && (<>
-
-      {loadError && (
-        <p className="registry-load-fail">注册表读不出：{loadError}</p>
-      )}
-
-      {/* 重探在飞时不说上一轮的失败原话：那一行与「重探中」同时挂出来是两句互相打架的话 */}
-      {healthError && !healthBusy && (
-        <p className="registry-load-fail">
-          健康点读不出：{healthError}（表不受影响：那一格没点＝不知道，不是「不健康」）
-        </p>
-      )}
-
-      {healthBusy && (
-        <p className="settings-hint">
-          {health
-            ? '正在重探健康点…（下面这些点还是上一次读数）'
-            : '健康点探测中…（与型号清单同一份实探缓存，不拖读表）'}
-        </p>
-      )}
-
-      {rejectedText && data && (
-        <div className="registry-rejected">
-          <p>{rejectedText}</p>
-          <ul>
-            {data.rejected.map((r) => (
-              <li key={r.id}>
-                <code>{r.id}</code> — {r.why}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {formOpen && (
+        {formOpen && (
         <>
         <div className="registry-form-backdrop" onClick={closeForm} />
         <div className="registry-form" role="dialog" aria-modal="true" aria-label="登记能力">
@@ -794,29 +762,64 @@ export function RegistryView() {
         </>
       )}
 
+      {mainTab !== 'config' && (<>
+
+      {loadError && (
+        <p className="registry-load-fail">注册表读不出：{loadError}</p>
+      )}
+
+      {/* 重探在飞时不说上一轮的失败原话：那一行与「重探中」同时挂出来是两句互相打架的话 */}
+      {healthError && !healthBusy && (
+        <p className="registry-load-fail">
+          健康点读不出：{healthError}（表不受影响：那一格没点＝不知道，不是「不健康」）
+        </p>
+      )}
+
+      {healthBusy && (
+        <p className="settings-hint">
+          {health
+            ? '正在重探健康点…（下面这些点还是上一次读数）'
+            : '健康点探测中…（与型号清单同一份实探缓存，不拖读表）'}
+        </p>
+      )}
+
+      {rejectedText && data && (
+        <div className="registry-rejected">
+          <p>{rejectedText}</p>
+          <ul>
+            {data.rejected.map((r) => (
+              <li key={r.id}>
+                <code>{r.id}</code> — {r.why}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+
       {!data && !loadError && <p className="settings-hint">读取中…</p>}
 
       {/* 左侧 kinds 跳转栏（工程台：宽屏那一整条空白不是留白，是没用的版面）——
           栏里只有「哪一类、几枚」，判据与措辞仍住在各组的表头里 */}
       <div className="registry-body" key="body">
         {groups.length > 1 && (
-          <nav className="registry-rail" aria-label="按能力类别跳转">
+          <nav className="registry-kindtabs" aria-label="按能力类别切换">
             {groups.map((g) => (
               <button
                 key={g.kind}
-                className={`registry-rail-item${activeKind === g.kind ? ' on' : ''}`}
-                onClick={() => { setActiveKind(activeKind === g.kind ? null : g.kind); jumpToGroup(g.kind); }}
-                title={g.view ? '这一类由现算清单生成，不落盘' : undefined}
+                className={`registry-kindtab${(kindTab ?? groups[0]?.kind) === g.kind ? ' on' : ''}`}
+                onClick={() => { setKindTab(g.kind); setActiveKind(null); }}
               >
-                <span className="registry-rail-label">{g.label}</span>
-                <span className={`registry-rail-count${g.entries.length ? '' : ' zero'}`}>{g.entries.length}</span>
+                {g.label}
+                <span className={`registry-kindtab-count${g.entries.length ? '' : ' zero'}`}>{g.entries.length}</span>
               </button>
             ))}
           </nav>
         )}
 
-        <div className="registry-main">
-          {groups.map((g) => (
+        {groups
+          .filter((g) => (kindTab ?? groups[0]?.kind) === g.kind)
+          .map((g) => (
             <section className={`registry-group${g.entries.length === 0 ? ' zero' : ''}`} id={`registry-g-${g.kind}`} key={g.kind}>
               <h3>
                 {g.label}
@@ -1006,9 +1009,7 @@ export function RegistryView() {
             </section>
           ))}
         </div>
-    </div>
       </>)}
-    </div>
     </div>
   );
 }
