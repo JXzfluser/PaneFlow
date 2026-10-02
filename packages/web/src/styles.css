@@ -1432,18 +1432,24 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 }
 .registry-count { font-size: 11px; color: var(--text-dim); font-family: var(--font-body); font-variant-numeric: tabular-nums; }
 .registry-empty { margin: 2px 0 0; }
-.registry-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.registry-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
 .registry-table th {
-  text-align: start; color: var(--text-dim); font-weight: 500; font-size: 11px;
-  border-bottom: 1px solid var(--border); padding: 4px 8px;
+  text-align: start; color: var(--text-dim); font-weight: 500; font-size: 10.5px;
+  letter-spacing: 0.6px; text-transform: uppercase;
+  border-bottom: 1px solid var(--border); padding: 6px 10px;
 }
-/* 后三列是定宽的（来源／启用／操作），把宽度还给名称与配置读数——不钉死时长模型名会挤掉整列读数 */
+/* 后三列是定宽的（来源／启用／操作），把宽度还给名称与配置读数 */
 .registry-table th:nth-child(3) { width: 92px; }
 .registry-table th:nth-child(4) { width: 44px; text-align: center; }
 .registry-table th:nth-child(5) { width: 150px; }
 .registry-table td:nth-child(4) { text-align: center; }
-.registry-table td { border-bottom: 1px solid var(--border); padding: 6px 8px; vertical-align: middle; }
-.registry-table td:first-child { white-space: nowrap; }
+.registry-table td {
+  border-bottom: 1px solid var(--border); padding: 9px 10px; vertical-align: middle;
+}
+.registry-table tbody tr { transition: background 120ms ease; }
+.registry-table tbody tr:hover { background: var(--panel-2); }
+.registry-table td:first-child { white-space: nowrap; font-weight: 500; }
+.registry-table .registry-count-inline { font-family: var(--font-mono); font-size: 11px; }
 .registry-label { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); overflow-wrap: anywhere; }
 .registry-chip {
   display: inline-block; margin-left: 6px; font-size: 11px; padding: 1px 8px; border-radius: 999px;
