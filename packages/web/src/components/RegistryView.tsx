@@ -43,6 +43,38 @@ import {
 type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
 
 /**
+ * v17-F2：每类能力登记后的三步填法——说人话、给全例子。表单不再只靠字段 hint 让人猜：
+ * 「技能到底是个什么文件、MCP 命令怎么写、登记完去哪生效」这三个问题在这里答掉。
+ */
+const FORM_GUIDE: Record<string, string[]> = {
+  model: [
+    '① 配了网关就点「刷新型号清单」从探得的清单里选；没配网关直接填型号名也可以',
+    '② 起个显示名（留空会自动取型号名）',
+    '③ 登记后：画布 Agent 节点的「模型」一格就能选到它',
+  ],
+  skill: [
+    '① 选所属项目——文档路径相对这个项目的根，换项目=换文件',
+    '② 填文档路径：如 skills/review.md 或 skills/review/SKILL.md（选完项目会自动扫出盘上候选，点牌即可填）',
+    '③ 登记后：该项目跑任务时这篇文档自动注入给 Agent（当它的作业手册）',
+  ],
+  rule: [
+    '① 选所属项目 + 填文档路径（如 docs/conventions.md）',
+    '② 可限定只在某仓库/某目录生效；两格都留空 = 整个项目都守这条',
+    '③ 登记后：命中范围的节点注入上下文时都会带上它',
+  ],
+  repo: [
+    '① 选所属项目 + 填本地目录名（相对项目根，如 ChuanCloud-catalog）',
+    '② 有远端就填 owner/repo（派活时 --repo 认的也是这一串）',
+    '③ 登记后：交付家规按它拉分支、建 PR；「仓库」下拉也用它',
+  ],
+  mcp: [
+    '① 填启动命令：本机可执行文件（绝对路径或 PATH 上的名字），如 npx 或 uvx',
+    '② 参数原样存一行不拆词，如：-y @modelcontextprotocol/server-filesystem /path/to/dir',
+    '③ 登记后：模板可声明「这单需要这台 server」；工具桥接还没上，这一版先做声明账',
+  ],
+};
+
+/**
  * v14 X1 注册中心（M0 可感面）：一张表 + 一组动词，登记走表单、**永远不写 JSON**。
  * 家规：判定全在 server——label / rejected.why / 400 error 都是 server 给的一句人话，原样转述；
  * 这里不重算 id、不校 spec 形状（必填齐没齐是 UI 礼节不是校验）、不把「缺读数」画成 0。
@@ -273,12 +305,19 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
       .finally(() => setOptionsBusy(false));
   };
 
-  const openForm = () => {
-    const next = !formOpen;
-    setFormOpen(next);
-    // 首次打开探一次；**上次没读全或读挂了（note 挂着原话）也再探一次**——
-    // 只认「全空且没报过错」的话，网关修好后重开表单还是那份旧失败文案，永远等不到自愈
-    if (!next || optionsBusy) return;
+  /**
+   * 任何入口开表单都走这一枚（v17-F1）：此前引导卡直接 `setFormOpen(true)` 绕过了候选读取，
+   * 「明明有项目、下拉里却没有」就是这么来的——现在 kind 设定与候选兜底收在同一个门口，
+   * 上次没读全或读挂了（note 挂着原话）也再探一次，网关修好后重开表单能自愈。
+   */
+  const openFormWithKind = (kind?: string) => {
+    if (kind) {
+      setFormKind(kind);
+      setFormValues({});
+      setFormError(null);
+    }
+    setFormOpen(true);
+    if (optionsBusy) return;
     if (
       gwProfiles.length === 0 ||
       modelCandidates.length === 0 ||
@@ -287,6 +326,14 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
       spacesNote !== null
     )
       ensureFormOptions();
+  };
+
+  const openForm = () => {
+    if (formOpen) {
+      setFormOpen(false);
+      return;
+    }
+    openFormWithKind();
   };
 
   const switchKind = (kind: string) => {
@@ -452,25 +499,34 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
           </>
         )}
 
-        {/* R-newbie: 任务式引导——按目标找类别，替代"先懂概念再找入口" */}
+        {/* R-newbie → v17-F2：五张能力卡即登记入口——每张说清「登记了有什么用」，点了就开表单。
+            MCP 此前没有入口（只能靠胶囊 Tab 里那枚 0 项的格子找到），补上。 */}
         <div className="reg-guide">
-          <div className="reg-guide-title">我想……</div>
+          <div className="reg-guide-title">登记一项能力（都不用写 JSON）</div>
           <div className="reg-guide-grid">
-            <button className="reg-guide-item" onClick={() => { setFormKind('model'); setFormOpen(true); }}>
+            <button className="reg-guide-item" onClick={() => openFormWithKind('model')}>
               <span className="reg-guide-icon">🧠</span>
-              <span><b>接入一个模型</b><small>把 claude/gpt 等模型登记给 Agent 用</small></span>
+              <span><b>模型</b><small>登记 claude/gpt 等型号，Agent 节点才能选到它</small></span>
             </button>
-            <button className="reg-guide-item" onClick={() => { setFormKind('skill'); setFormOpen(true); }}>
+            <button className="reg-guide-item" onClick={() => openFormWithKind('skill')}>
               <span className="reg-guide-icon">📚</span>
-              <span><b>登记一份技能文档</b><small>让 Agent 按团队的作业方法干活</small></span>
+              <span><b>技能</b><small>一篇 Markdown 作业手册（如 skills/review.md），运行时自动注入给 Agent</small></span>
             </button>
-            <button className="reg-guide-item" onClick={() => { setFormKind('rule'); setFormOpen(true); }}>
+            <button className="reg-guide-item" onClick={() => openFormWithKind('rule')}>
               <span className="reg-guide-icon">📏</span>
-              <span><b>登记一条团队规则</b><small>分支命名、提交规范等硬约束</small></span>
+              <span><b>规则</b><small>团队硬约束（分支命名、提交规范），按项目/仓库生效</small></span>
             </button>
-            <button className="reg-guide-item" onClick={() => { setFormKind('repo'); setFormOpen(true); }}>
+            <button className="reg-guide-item" onClick={() => openFormWithKind('repo')}>
               <span className="reg-guide-icon">📦</span>
-              <span><b>登记一个代码仓库</b><small>Agent 干活的领地</small></span>
+              <span><b>仓库</b><small>告诉 Agent 去哪个代码仓干活，交付家规按它拉分支</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => openFormWithKind('mcp')}>
+              <span className="reg-guide-icon">🔌</span>
+              <span><b>MCP 服务</b><small>登记本机 MCP server 的启动命令（声明账，供模板声明依赖）</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => { setKindTab(null); setActiveKind(null); }}>
+              <span className="reg-guide-icon">🔍</span>
+              <span><b>全部能力</b><small>下方胶囊按类查看，含引擎/角色/模板等系统能力</small></span>
             </button>
           </div>
           <div className="reg-guide-scan">
@@ -566,6 +622,13 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
             <button className="registry-form-close" aria-label="关闭登记表单" onClick={closeForm}>✕</button>
           </div>
           <p className="registry-form-sub">带 * 的必填项填完即可登记，其余字段可稍后在条目上补充。</p>
+          {FORM_GUIDE[formKind] && (
+            <ol className="registry-form-guide">
+              {FORM_GUIDE[formKind].map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ol>
+          )}
           <div className="registry-form-field">
             <label htmlFor="reg-kind">能力类型</label>
             <select
@@ -796,16 +859,30 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
       <div className="registry-body" key="body">
         {groups.length > 1 && (
           <nav className="registry-kindtabs" aria-label="按能力类别切换">
-            {groups.map((g) => (
-              <button
-                key={g.kind}
-                className={`registry-kindtab${(kindTab ?? groups[0]?.kind) === g.kind ? ' on' : ''}`}
-                onClick={() => { setKindTab(g.kind); setActiveKind(null); }}
-              >
-                {g.label}
-                <span className={`registry-kindtab-count${g.entries.length ? '' : ' zero'}`}>{g.entries.length}</span>
-              </button>
-            ))}
+            {/* v17-F2 分两组：能登记的（有表单）在前，系统盘点（只读）在后——
+                胶囊里混一片让人分不清哪几类轮得到自己登记 */}
+            {(() => {
+              const regSet = new Set(kinds);
+              const regs = groups.filter((g) => regSet.has(g.kind));
+              const views = groups.filter((g) => !regSet.has(g.kind));
+              const pill = (g: (typeof groups)[number]) => (
+                <button
+                  key={g.kind}
+                  className={`registry-kindtab${(kindTab ?? groups[0]?.kind) === g.kind ? ' on' : ''}`}
+                  onClick={() => { setKindTab(g.kind); setActiveKind(null); }}
+                >
+                  {g.label}
+                  <span className={`registry-kindtab-count${g.entries.length ? '' : ' zero'}`}>{g.entries.length}</span>
+                </button>
+              );
+              return (
+                <>
+                  {regs.map(pill)}
+                  {regs.length > 0 && views.length > 0 && <span className="registry-kindtab-divider" title="以下是系统能力（只读盘点）" />}
+                  {views.map(pill)}
+                </>
+              );
+            })()}
           </nav>
         )}
 

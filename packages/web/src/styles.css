@@ -1412,6 +1412,22 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .board-card-title { font-size: 12px; line-height: 1.45; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .board-card-cost { font-size: 10px; color: var(--text-dim); }
 
+/* ============ v17-F2 能力注册易用性：引导步骤 / 胶囊分组 / 表单微排版 ============ */
+.registry-form-guide {
+  margin: 0 0 12px; padding: 9px 12px 9px 26px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 11.5px; color: var(--text-dim); line-height: 1.7;
+}
+.registry-kindtab-divider { width: 1px; align-self: stretch; margin: 3px 4px; background: var(--border); }
+
+/* 任务页「在哪做」：项目选择升出高级选项（选项目=自动带工作目录） */
+.tasks-where { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.tasks-where-label { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
+.tasks-where select {
+  flex: 1; max-width: 520px; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 12px;
+}
+
 /* ============ v14 X1 注册中心（M0 可感面：一张表 + 表单登记，判据全在 server） ============ */
 .registry-view { flex: 1; overflow-y: auto; padding: 20px 24px; }
 /* v15-IA 嵌入态：注册中心并入设置页「能力注册」卡——自带的滚动/内边距交还给宿主卡片 */

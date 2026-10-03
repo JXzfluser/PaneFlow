@@ -38,6 +38,7 @@ export function TasksView() {
   const setCwd = useStore((s) => s.setCwd);
   const log = useStore((s) => s.log);
   const setView = useStore((s) => s.setView);
+  const switchSpace = useStore((s) => s.switchSpace);
 
   const [task, setTask] = useState('');
   const [issueId, setIssueId] = useState('');
@@ -50,6 +51,14 @@ export function TasksView() {
   // N4：高级字段默认折叠；缺必填时自动展开（不让错误指向看不见的框）
   const [adv, setAdv] = useState(false);
   const [busy, setBusy] = useState(false);
+  // v17-T1：「在哪做」升出高级选项——选项目即带工作目录，上手不再被 cwd 绊住
+  const [spaces, setSpaces] = useState<{ id: string; name: string; rootCwd?: string }[]>([]);
+  useEffect(() => {
+    void api
+      .listSpaces()
+      .then((r) => setSpaces(r.spaces.filter((s) => s.rootCwd)))
+      .catch(() => undefined);
+  }, []);
 
   // 打开任务视图先拉一次历史（不依赖 WS 是否已推送）
   useEffect(() => {
@@ -168,6 +177,32 @@ export function TasksView() {
           onChange={(e) => setTask(e.target.value)}
           placeholder="例如：给绿化台账汇总做一次性能优化，并逐条验证结果；或：修复登录页在移动端的布局问题"
         />
+        <div className="tasks-where">
+          <span className="tasks-where-label">在哪做</span>
+          <select
+            value={spaces.find((s) => s.rootCwd && s.rootCwd === cwd.trim())?.id ?? ''}
+            onChange={(e) => {
+              const sp = spaces.find((x) => x.id === e.target.value);
+              if (!sp) return;
+              switchSpace(sp.id);
+              setCwd(sp.rootCwd ?? '');
+              log('info', `已切到项目「${sp.name}」，工作目录：${sp.rootCwd}`);
+            }}
+          >
+            <option value="">
+              {spaces.length
+                ? cwd.trim()
+                  ? '当前目录不是已登记项目的根（可在高级选项里手填）'
+                  : '选一个项目，自动带上它的工作目录'
+                : '还没有登记过项目——去「项目」新建一个'}
+            </option>
+            {spaces.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}（{s.rootCwd}）
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="tasks-enhance-row">
           <button disabled={draftBusy} onClick={() => void enhance(false)}>
             {draftBusy ? '扩写中（约 15–60 秒）…' : '✨ 扩写成完整需求'}

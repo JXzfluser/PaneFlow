@@ -177,8 +177,8 @@ const MODEL_FIELDS: RegistryFormField[] = [
  * 把候选当白名单就是把表单路堵回「先去项目档案里加路径」那一趟。
  */
 const SKILL_FIELDS: RegistryFormField[] = [
-  { key: 'space', label: '所属项目', type: 'select', required: true, options: 'spaces', hint: '相对路径以这个项目的根为基准，换项目=换文件' },
-  { key: 'file', label: '文档路径', type: 'text', required: true, primary: true, list: 'space-docs', hint: '相对项目根；可从该项目已登记的清单里选，也可直接填' },
+  { key: 'space', label: '所属项目', type: 'select', required: true, options: 'spaces', hint: '文档路径以这个项目的根为基准，换项目=换文件' },
+  { key: 'file', label: '文档路径', type: 'text', required: true, primary: true, list: 'space-docs', hint: '如 skills/review.md 或 skills/review/SKILL.md' },
   { key: 'note', label: '备注', type: 'text', hint: '这篇是干什么的（选填）' },
 ];
 
@@ -211,8 +211,8 @@ const REPO_FIELDS: RegistryFormField[] = [
 ];
 
 const MCP_FIELDS: RegistryFormField[] = [
-  { key: 'command', label: '启动命令', type: 'text', required: true, primary: true, hint: '本机可执行文件（绝对路径或 PATH 上的名字）' },
-  { key: 'args', label: '参数', type: 'text', hint: '原样存一行，PaneFlow 不解析、不拆词' },
+  { key: 'command', label: '启动命令', type: 'text', required: true, primary: true, hint: '如 npx 或 /usr/local/bin/uvx' },
+  { key: 'args', label: '参数', type: 'text', hint: '如 -y @modelcontextprotocol/server-filesystem /path/to/dir（原样一行）' },
   { key: 'note', label: '备注', type: 'text', hint: '干什么用的（这一版只做登记账，工具桥接还没上）' },
 ];
 
