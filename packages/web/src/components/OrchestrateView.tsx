@@ -241,9 +241,6 @@ export function OrchestrateView() {
               </>
             )}
           </div>
-            <button onClick={() => setView('runs')} title="打开运行中心（多流水线总览）">
-              <Icon name="clock" /> 运行中心
-            </button>
         </div>
       </div>
       {varsOpen && <VariablesEditor />}

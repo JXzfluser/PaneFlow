@@ -8,12 +8,14 @@ import { groupWikiPages, WIKI_GROUP_CAP } from '../wiki-sediment.js';
 import { Icon, type IconName } from './Icon.js';
 import { PromptModal, type ModalRequest } from './PromptModal.js';
 import { removeGatewayProfileRequest, unlinkPatRequest, overwriteIntakeRequest } from '../dialogs.js';
+import { RegistryView } from './RegistryView.jsx';
 
 /**
- * 设置页章节分两组（v13 排版分类整顿）：
- * 「运行底座」= 这机能跑起来吗（环境→模型→凭据，按上手依赖序）；
+ * 设置页章节分两组（v13 排版分类整顿 → v15-IA 配置枢纽归一）：
+ * 「运行底座」= 这机能跑起来吗（环境→模型→凭据→能力注册，按上手依赖序）；
  * 「班底与复利」= 谁在干活、留下什么（角色→沉淀→外呼）。
- * v10-W 起「项目档案」已迁往「项目」视图，这里只留全局项。
+ * v10-W 起「项目档案」已迁往「项目」视图，这里只留全局项；
+ * v15-IA 起原注册中心整体并入本页（网关/GitHub/通道不再散落两处）。
  */
 const SECTION_GROUPS: { label: string; items: { id: string; icon: IconName; label: string }[] }[] = [
   {
@@ -22,6 +24,7 @@ const SECTION_GROUPS: { label: string; items: { id: string; icon: IconName; labe
       { id: 'env', icon: 'cpu', label: '环境' },
       { id: 'gateway', icon: 'globe', label: '模型网关' },
       { id: 'github', icon: 'code', label: 'GitHub 凭据' },
+      { id: 'registry', icon: 'registry', label: '能力注册' },
     ],
   },
   {
@@ -548,9 +551,12 @@ function EquipPicker(props: {
       <div className="equip-manual open">
         <button
           className="ghost tiny"
-          onClick={() => useStore.getState().setView('registry')}
+          onClick={() => {
+            useStore.getState().setView('settings');
+            document.getElementById('sec-registry')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
         >
-          登记清单里没有？去注册中心新增
+          登记清单里没有？去下方「能力注册」新增
         </button>
       </div>
       <p className="settings-hint">{hint}</p>
@@ -932,10 +938,22 @@ export function SettingsView() {
           </div>
         </section>
 
-        <section className="settings-card" id="sec-gateway-redirect">
+        <section className="settings-card" id="sec-gateway">
+          <h3>模型网关（OmniRoute 等）</h3>
+          <GatewayCard />
+        </section>
+
+        <section className="settings-card" id="sec-github">
+          <h3>GitHub 凭据</h3>
+          <GithubCredCard />
+        </section>
+
+        <section className="settings-card" id="sec-registry">
+          <h3>能力注册</h3>
           <p className="settings-hint">
-            模型网关 / GitHub 凭据 / 出站通道已移至 <b>注册中心 → 配置聚合</b> 页签（侧边栏「注册」图标内）。
+            模型 / 技能 / 规则 / 仓库 / MCP 在这里登记，Agent 引擎、节点类型、角色、模板等系统能力同页可查——一张表管全部能力。
           </p>
+          <RegistryView embedded />
         </section>
 
         <section className="settings-card" id="sec-wiki">
@@ -949,6 +967,11 @@ export function SettingsView() {
             角色供画布 Agent 节点选择：继承默认 Agent 类型与前置提示。约定文档在「项目」视图的档案里按项目配置。
           </p>
           <RolesEditor />
+        </section>
+
+        <section className="settings-card" id="sec-channels">
+          <h3>出站通道</h3>
+          <ChannelsEditor />
         </section>
 
       </div>
@@ -1329,36 +1352,5 @@ function GithubCredCard() {
       </div>
       {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </>
-  );
-}
-
-// ---------------------------------------------------------------
-// R6 聚合：注册中心「配置」页复用以下区块（卡片实现留在本文件）
-// ---------------------------------------------------------------
-
-export function GatewaySection() {
-  return (
-    <section className="settings-card" id="sec-gateway">
-      <h3>模型网关（OmniRoute 等）</h3>
-      <GatewayCard />
-    </section>
-  );
-}
-
-export function GithubSection() {
-  return (
-    <section className="settings-card" id="sec-github">
-      <h3>GitHub 凭据</h3>
-      <GithubCredCard />
-    </section>
-  );
-}
-
-export function ChannelsSection() {
-  return (
-    <section className="settings-card" id="sec-channels">
-      <h3>出站通道</h3>
-      <ChannelsEditor />
-    </section>
   );
 }

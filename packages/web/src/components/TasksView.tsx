@@ -398,16 +398,19 @@ function RecentTasks({ onOpenRuns }: { onOpenRuns: () => void }) {
     return () => clearInterval(t);
   }, [anyQueued]);
 
-  const list = useMemo(
-    () => Object.values(runs).sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
-    [runs],
-  );
+  // v15-IA：需要人拍板的单永远排最前——「等你处理」不该被时间线淹掉
+  const list = useMemo(() => {
+    return Object.values(runs).sort(
+      (a, b) => attentionRank(a) - attentionRank(b) || b.startedAt.localeCompare(a.startedAt),
+    );
+  }, [runs]);
   const shown = list.slice(0, 8);
+  const pendingCount = list.filter((r) => attentionRank(r) === 0).length;
 
   return (
     <div className="tasks-recent">
       <div className="tasks-recent-head">
-        <b>最近任务</b>
+        <b>最近任务{pendingCount > 0 ? ` · ${pendingCount} 条等你处理` : ''}</b>
         {list.length > shown.length && (
           <button className="link" onClick={onOpenRuns}>
             查看全部 {list.length} 条 →
@@ -422,6 +425,12 @@ function RecentTasks({ onOpenRuns }: { onOpenRuns: () => void }) {
       ))}
     </div>
   );
+}
+
+/** 运行的注意级：有 blocked 节点=0（等你拍板）＞在飞=1＞终态=2（v15-IA 待办置顶用） */
+function attentionRank(r: RunRecord): number {
+  if (Object.values(r.nodes).some((n) => n.state === 'blocked')) return 0;
+  return r.state === 'running' || r.state === 'queued' ? 1 : 2;
 }
 
 function TaskCard({

@@ -38,7 +38,6 @@ import {
   type RegistryProbeResponse,
   type SpaceDocCandidateSource,
 } from '../registry-view.js';
-import { GatewaySection, GithubSection, ChannelsSection } from './SettingsView.jsx';
 
 /** 行上四类写动作：在飞读数按这一枚点名（同一条目的四发不能共用一句话） */
 type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
@@ -47,9 +46,9 @@ type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
  * v14 X1 注册中心（M0 可感面）：一张表 + 一组动词，登记走表单、**永远不写 JSON**。
  * 家规：判定全在 server——label / rejected.why / 400 error 都是 server 给的一句人话，原样转述；
  * 这里不重算 id、不校 spec 形状（必填齐没齐是 UI 礼节不是校验）、不把「缺读数」画成 0。
+ * v15-IA：整体并入「设置 → 能力注册」（配置枢纽归一），`embedded` 收起页头大标题。
  */
-export function RegistryView() {
-  const [mainTab, setMainTab] = useState<string>('registry');
+export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   const [activeKind, setActiveKind] = useState<string | null>(null); // null = 全部
   const [kindTab, setKindTab] = useState<string | null>(null); // Tab 页签选中的类别（null=第一个）
   const [scanPromptOpen, setScanPromptOpen] = useState(false);
@@ -446,12 +445,12 @@ export function RegistryView() {
 
   return (
     <div className="registry-view">
-        <h2>注册中心</h2>
-        <p className="settings-hint">能力清单的一张表：登记、启停、删除都走这里的表单，不用写 JSON。判定全在服务端，本页只渲染它给的话。</p>
-        <div style={{ display: 'flex', gap: 2, marginTop: 4 }}>
-          <button style={{ border: 'none', background: mainTab === 'registry' ? 'var(--primary-bg)' : 'transparent', color: mainTab === 'registry' ? 'var(--accent)' : 'var(--text-dim)', fontWeight: mainTab === 'registry' ? 600 : 400 }} onClick={() => setMainTab('registry')}>能力清单</button>
-          <button style={{ border: 'none', background: mainTab === 'config' ? 'var(--primary-bg)' : 'transparent', color: mainTab === 'config' ? 'var(--accent)' : 'var(--text-dim)', fontWeight: mainTab === 'config' ? 600 : 400 }} onClick={() => setMainTab('config')}>配置聚合</button>
-        </div>
+        {!embedded && (
+          <>
+            <h2>注册中心</h2>
+            <p className="settings-hint">能力清单的一张表：登记、启停、删除都走这里的表单，不用写 JSON。判定全在服务端，本页只渲染它给的话。</p>
+          </>
+        )}
 
         {/* R-newbie: 任务式引导——按目标找类别，替代"先懂概念再找入口" */}
         <div className="reg-guide">
@@ -558,13 +557,6 @@ export function RegistryView() {
             )}
         </div>
         </div>
-        {mainTab === 'config' && (
-          <div className="settings-view" style={{ padding: 0, marginTop: 10 }}>
-            <GatewaySection />
-            <GithubSection />
-            <ChannelsSection />
-          </div>
-        )}
         {formOpen && (
         <>
         <div className="registry-form-backdrop" onClick={closeForm} />
@@ -762,7 +754,7 @@ export function RegistryView() {
         </>
       )}
 
-      {mainTab !== 'config' && (<>
+      <>
 
       {loadError && (
         <p className="registry-load-fail">注册表读不出：{loadError}</p>
@@ -1009,7 +1001,7 @@ export function RegistryView() {
             </section>
           ))}
         </div>
-      </>)}
+      </>
     </div>
   );
 }
