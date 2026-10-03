@@ -6,7 +6,7 @@ import { Icon, type IconName } from './Icon.js';
 const ITEMS: { id: 'tasks' | 'orchestrate' | 'runs' | 'projects' | 'settings'; icon: IconName; label: string; title: string }[] = [
   { id: 'tasks', icon: 'pen', label: '任务', title: '任务：一句话描述需求，自动编排并执行' },
   { id: 'orchestrate', icon: 'workflow', label: '编排', title: '编排：步骤清单 / 图形画布' },
-  { id: 'runs', icon: 'play', label: '运行', title: '运行中心：多流水线总览' },
+  { id: 'runs', icon: 'clock', label: '看板', title: '看板：统计 / 审阅队列 / 五列进度板（清单模式查历史细节）' },
   { id: 'projects', icon: 'folder', label: '项目', title: '项目：总览 / 切换 / 新建（原底部下拉已升格为视图）' },
   { id: 'settings', icon: 'sliders', label: '设置', title: '设置：环境 / 网关 / GitHub / 能力注册 / 角色 / 沉淀 / 通道' },
 ];

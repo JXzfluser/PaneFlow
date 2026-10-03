@@ -3,8 +3,8 @@ import { api, connectWs, getSpace } from './api.js';
 import { useStore } from './store.js';
 import { SideNav } from './components/SideNav.jsx';
 import { TasksView } from './components/TasksView.jsx';
+import { BoardView } from './components/BoardView.jsx';
 import { OrchestrateView } from './components/OrchestrateView.jsx';
-import { RunsCenter } from './components/RunsCenter.jsx';
 import { ProjectsView } from './components/ProjectsView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import { Guide } from './components/Guide.jsx';
@@ -104,7 +104,7 @@ export function App() {
               : view === 'orchestrate'
                 ? 'ORCHESTRATE · 编排'
                 : view === 'runs'
-                  ? 'RUNS · 运行中心'
+                  ? 'BOARD · 看板'
                   : view === 'projects'
                     ? 'PROJECTS · 项目'
                     : 'SETTINGS · 设置'}
@@ -129,7 +129,7 @@ export function App() {
         </div>
         {view === 'tasks' && <TasksView />}
         {view === 'orchestrate' && <OrchestrateView />}
-        {view === 'runs' && <RunsCenter />}
+        {view === 'runs' && <BoardView />}
         {view === 'projects' && <ProjectsView />}
         {view === 'settings' && <SettingsView />}
       </div>
