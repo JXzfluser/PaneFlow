@@ -194,7 +194,7 @@ export function TasksView() {
                 ? cwd.trim()
                   ? '当前目录不是已登记项目的根（可在高级选项里手填）'
                   : '选一个项目，自动带上它的工作目录'
-                : '还没有登记过项目——去「项目」新建一个'}
+                : '还没有登记过项目——点右边「30 秒向导」建一个'}
             </option>
             {spaces.map((s) => (
               <option key={s.id} value={s.id}>
@@ -202,6 +202,11 @@ export function TasksView() {
               </option>
             ))}
           </select>
+          {spaces.length === 0 && (
+            <button className="link" onClick={() => useStore.getState().setPwOpen(true)}>
+              ⚡ 30 秒向导
+            </button>
+          )}
         </div>
         <div className="tasks-enhance-row">
           <button disabled={draftBusy} onClick={() => void enhance(false)}>

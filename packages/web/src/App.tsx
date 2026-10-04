@@ -9,6 +9,7 @@ import { ProjectsView } from './components/ProjectsView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import { Guide } from './components/Guide.jsx';
 import { EnvWizard } from './components/EnvWizard.jsx';
+import { ProjectWizard } from './components/ProjectWizard.jsx';
 import { Icon } from './components/Icon.js';
 
 let healthLogged = false; // dedupe across StrictMode double-mounts
@@ -16,6 +17,7 @@ let healthLogged = false; // dedupe across StrictMode double-mounts
 export function App() {
   const view = useStore((s) => s.view);
   const log = useStore((s) => s.log);
+  const pwOpen = useStore((s) => s.pwOpen);
   const setAgentKinds = useStore((s) => s.setAgentKinds);
   const setTemplates = useStore((s) => s.setTemplates);
   const setCwd = useStore((s) => s.setCwd);
@@ -142,6 +144,7 @@ export function App() {
           }}
         />
       )}
+      {pwOpen && <ProjectWizard />}
       {guideOpen && <Guide onClose={() => setGuideOpen(false)} />}
     </div>
   );

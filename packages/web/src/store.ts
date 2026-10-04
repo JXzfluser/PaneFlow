@@ -121,6 +121,9 @@ interface PfStore {
   setTemplates: (graphs: DagGraph[]) => void;
   /** v11-C5：沉淀发布成功后 bump wikiPublishTick，设置页卡片据此重拉状态 */
   notifyWikiPublished: () => void;
+  /** v17-W：项目新建向导的全局开关——任务页「在哪做」空态与项目页都开它（App 层挂一次） */
+  pwOpen: boolean;
+  setPwOpen: (v: boolean) => void;
   /** 批量并入运行记录（任务视图挂载时拉历史；按当前项目过滤） */
   mergeRuns: (records: RunRecord[]) => void;
   log: (level: ConsoleLog['level'], text: string) => void;
@@ -177,6 +180,9 @@ export const useStore = create<PfStore>((set, get) => ({
   graphRequires: [],
   graphMeta: {},
   wikiPublishTick: 0,
+  pwOpen: false,
+
+  setPwOpen: (v) => set({ pwOpen: v }),
 
   setView: (view) => {
     // 工具页（设置/项目）不记忆——它们是"去办事"的页，回应用仍是核心视图

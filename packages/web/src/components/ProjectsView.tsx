@@ -76,6 +76,9 @@ export function ProjectsView() {
           <button onClick={() => setEnvWizard(true)} title="从本机目录探测并登记到当前项目">
             🔍 发现环境并登记
           </button>
+          <button onClick={() => useStore.getState().setPwOpen(true)} title="起名 → 扫描登记 → 装班底，一条线走完">
+            ⚡ 30 秒向导
+          </button>
           <button className="primary" onClick={newProject}>
             + 新建项目
           </button>
