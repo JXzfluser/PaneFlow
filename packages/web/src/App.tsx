@@ -10,7 +10,6 @@ import { SettingsView } from './components/SettingsView.jsx';
 import { Guide } from './components/Guide.jsx';
 import { EnvWizard } from './components/EnvWizard.jsx';
 import { ProjectWizard } from './components/ProjectWizard.jsx';
-import { Icon } from './components/Icon.js';
 
 let healthLogged = false; // dedupe across StrictMode double-mounts
 
@@ -18,21 +17,11 @@ export function App() {
   const view = useStore((s) => s.view);
   const log = useStore((s) => s.log);
   const pwOpen = useStore((s) => s.pwOpen);
+  const guideOpen = useStore((s) => s.guideOpen);
+  const setGuideOpen = useStore((s) => s.setGuideOpen);
   const setAgentKinds = useStore((s) => s.setAgentKinds);
   const setTemplates = useStore((s) => s.setTemplates);
   const setCwd = useStore((s) => s.setCwd);
-
-  const theme = useStore((s) => s.theme);
-  const setTheme = useStore((s) => s.setTheme);
-  const toggleTheme = () => {
-    const next = theme === 'dark' ? 'light' : 'dark';
-    document.documentElement.classList.add('theme-switching');
-    setTheme(next);
-    requestAnimationFrame(() => {
-      document.documentElement.classList.remove('theme-switching');
-    });
-  };
-  const [guideOpen, setGuideOpen] = useState(false);
   const [wizard, setWizard] = useState<{
     herdrOk: boolean;
     herdrVersion: string | null;
@@ -99,7 +88,7 @@ export function App() {
       <SideNav />
       <div className="app-main-col">
         <div className="topbar topbar-global">
-          <span className="brand" style={{ fontSize: 14 }}>PaneFlow</span>
+          {/* v18-UI：品牌/主题/指南/版本迁到侧栏（vibex 式底部工具区），顶栏只留页码眉标 */}
           <span className="view-eyebrow">
             {view === 'tasks'
               ? 'TASKS · 任务'
@@ -112,22 +101,6 @@ export function App() {
                     : 'SETTINGS · 设置'}
           </span>
           <div className="spacer" />
-          <button
-            className="icon theme-toggle"
-            data-theme={theme}
-            onClick={toggleTheme}
-            title={theme === 'dark' ? '切到浅色' : '切到暗夜'}
-          >
-            {/* 日月两枚常驻，靠 opacity/scale/blur 交叉淡入——表情符硬切换没有过渡语言 */}
-            <span className="theme-face theme-sun">
-              <Icon name="sun" size={15} />
-            </span>
-            <span className="theme-face theme-moon">
-              <Icon name="moon" size={15} />
-            </span>
-          </button>
-          <button onClick={() => setGuideOpen(true)} title="使用指南">? 指南</button>
-          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>v{__PF_VERSION__}</span>
         </div>
         {view === 'tasks' && <TasksView />}
         {view === 'orchestrate' && <OrchestrateView />}

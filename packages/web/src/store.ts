@@ -47,7 +47,8 @@ function applyTheme(theme: ThemeName): void {
 
 function initialTheme(): ThemeName {
   const saved = localStorage.getItem('pf-theme') as ThemeName | null;
-  const t = saved && THEMES.some((x) => x.id === saved) ? saved : 'light'; // D5: 亮色为默认
+  // v18-UI：暗色为默认（对标 vibex 的暗色专业工具基调；显式选过亮色的用户仍留在亮色）
+  const t = saved && THEMES.some((x) => x.id === saved) ? saved : 'dark';
   applyTheme(t);
   return t;
 }
@@ -112,6 +113,8 @@ interface PfStore {
   /** 切换项目：更新 api 上下文 + 刷新模板 + 清空画布 */
   switchSpace: (id: string) => void;
   setTheme: (theme: ThemeName) => void;
+  /** v18-UI：档位切换收进 store——侧栏底部与 anywhere 都能调（applyTheme 自带过渡抑制） */
+  toggleTheme: () => void;
   setGraphVariables: (v: TemplateVariable[]) => void;
   setGraphMeta: (m: GraphMeta) => void;
   setCwd: (cwd: string) => void;
@@ -124,6 +127,9 @@ interface PfStore {
   /** v17-W：项目新建向导的全局开关——任务页「在哪做」空态与项目页都开它（App 层挂一次） */
   pwOpen: boolean;
   setPwOpen: (v: boolean) => void;
+  /** v18-UI：使用指南开关收进 store——入口从顶栏迁到侧栏底部，App 层照旧只挂一份弹窗 */
+  guideOpen: boolean;
+  setGuideOpen: (v: boolean) => void;
   /** 批量并入运行记录（任务视图挂载时拉历史；按当前项目过滤） */
   mergeRuns: (records: RunRecord[]) => void;
   log: (level: ConsoleLog['level'], text: string) => void;
@@ -181,8 +187,10 @@ export const useStore = create<PfStore>((set, get) => ({
   graphMeta: {},
   wikiPublishTick: 0,
   pwOpen: false,
+  guideOpen: false,
 
   setPwOpen: (v) => set({ pwOpen: v }),
+  setGuideOpen: (v) => set({ guideOpen: v }),
 
   setView: (view) => {
     // 工具页（设置/项目）不记忆——它们是"去办事"的页，回应用仍是核心视图
@@ -216,6 +224,10 @@ export const useStore = create<PfStore>((set, get) => ({
     localStorage.setItem('pf-theme', theme);
     applyTheme(theme);
     set({ theme });
+  },
+  toggleTheme: () => {
+    const cur = get().theme;
+    get().setTheme(cur === 'dark' ? 'light' : 'dark');
   },
 
   setCwd: (cwd) => set({ cwd }),

@@ -6,28 +6,29 @@
 }
 :root,
 [data-theme='dark'] {
-  --bg: #15130e;
-  --panel: #1d1a14;
-  --panel-2: #262218;
-  --border: #373227;
-  --text: #e4ddcd;
-  --text-dim: #998f78;
-  --accent: #8fb4e8;
-  --ok: #7bc98a;
-  --warn: #d9b25c;
-  --err: #e8837a;
-  --idle: #7a715e;
-  --edge: #443d2e;
-  --primary-bg: #2b3f63;
-  --primary-border: #44608f;
-  --chip: #262218;
-  --chip-ok: #1f2d1c;
-  --chip-warn: #322a15;
-  --chip-err: #3a221c;
-  --danger-bg: #2c1b16;
-  --sunken: #100e0a;
-  --canvas-dots: #373227;
-  --grid-line: rgba(143, 180, 232, 0.045);
+  /* v18-UI 对标 vibex：冷黑低噪声专业工具 chrome（原暖棕纸暗调整体偏移到中性绿灰） */
+  --bg: #0c0e0d;
+  --panel: #131614;
+  --panel-2: #1a1e1c;
+  --border: #262b28;
+  --text: #ccd4cb;
+  --text-dim: #8a948a;
+  --accent: #8fc9a0;
+  --ok: #6fbf7f;
+  --warn: #d4b262;
+  --err: #e0837a;
+  --idle: #6f7a6f;
+  --edge: #2c332e;
+  --primary-bg: #1d2b23;
+  --primary-border: #35543f;
+  --chip: #1a1e1c;
+  --chip-ok: #16211a;
+  --chip-warn: #241f14;
+  --chip-err: #271a17;
+  --danger-bg: #201614;
+  --sunken: #080a09;
+  --canvas-dots: #262b28;
+  --grid-line: rgba(143, 201, 160, 0.028);
 }
 [data-theme='light'] {
   --bg: #faf8f3;
@@ -654,33 +655,73 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 [data-theme='light'] .modal, [data-theme='light'] .console, [data-theme='light'] .topbar,
 [data-theme='light'] .palette, [data-theme='light'] .props { box-shadow: 0 1px 2px rgba(31,35,40,0.04); }
 
-/* side navigation (B8) */
+/* side navigation (B8 → v18-UI 对标 vibex)：190px 面板——顶部等宽字标、
+   中部圆角卡片导航（图标+中文+等宽英文小注）、底部工具与连接状态行。
+   安静 chrome 三原则：只有面板两级色、1px 结构边、无花哨阴影；激活态用
+   实底色 + 图标提亮表达（motion restraint：只有 120ms 的底色过渡）。 */
 .app-with-nav { display: flex; height: 100%; }
 .sidenav {
-  width: 56px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;
-  background: var(--panel); border-right: 1px solid var(--border); padding: 8px 0; gap: 4px;
+  width: 190px; flex-shrink: 0; display: flex; flex-direction: column;
+  background: var(--panel); border-right: 1px solid var(--border);
+  padding: 14px 10px 10px; gap: 14px;
 }
-.sidenav-brand {
-  width: 34px; height: 34px; border-radius: 8px; display: block;
-  margin-bottom: 10px;
+.sidenav-head { display: flex; align-items: center; gap: 8px; padding: 0 6px; }
+.sidenav-brand { width: 26px; height: 26px; border-radius: 7px; display: block; flex-shrink: 0; }
+.sidenav-wordmark {
+  font-family: var(--font-mono); font-size: 13.5px; font-weight: 600;
+  color: var(--text); letter-spacing: 0.3px; white-space: nowrap;
 }
+.sidenav-items { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .sidenav-item {
-  width: 44px; padding: 7px 0; border: none; background: transparent; border-radius: 8px;
-  display: flex; flex-direction: column; align-items: center; gap: 1px; color: var(--text-dim);
-  transition: background-color var(--t-fast), color var(--t-fast);
+  display: flex; align-items: center; gap: 10px; text-align: left;
+  padding: 8px 10px; border: 1px solid transparent; border-radius: 9px;
+  background: transparent; color: var(--text-dim);
+  transition: background-color var(--t-fast), color var(--t-fast), border-color var(--t-fast);
 }
 .sidenav-item:hover { background: var(--panel-2); color: var(--text); }
-.sidenav-item.active { background: var(--primary-bg); color: var(--accent); }
-.sidenav-icon { font-size: 15px; }
-.sidenav-label { font-size: 10px; }
+.sidenav-item.active {
+  background: var(--panel-2); color: var(--text); border-color: var(--border);
+}
+.sidenav-item.active .sidenav-icon { color: var(--accent); }
+.sidenav-icon { display: inline-flex; flex-shrink: 0; }
+.sidenav-text { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.sidenav-label { font-size: 12.5px; line-height: 1.35; }
+.sidenav-sub {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 1.2px;
+  color: var(--text-dim); opacity: 0.75; line-height: 1.4;
+}
+.sidenav-item.active .sidenav-sub { color: var(--accent); opacity: 0.8; }
+.sidenav-foot {
+  display: flex; flex-direction: row; align-items: center; gap: 6px;
+  padding-top: 10px; border-top: 1px solid var(--border);
+}
+.sidenav-tool {
+  display: inline-flex; align-items: center; gap: 5px;
+  min-height: 26px; padding: 4px 8px; border-radius: 7px;
+  border: 1px solid transparent; background: transparent; color: var(--text-dim);
+  font-size: 11.5px; cursor: pointer;
+  transition: background-color var(--t-fast), color var(--t-fast);
+}
+.sidenav-tool:hover { background: var(--panel-2); color: var(--text); }
+/* theme-face 两枚是绝对定位不撑宽：主题钮定成小方钮 */
+.sidenav-tool.theme-toggle { width: 28px; min-width: 28px; padding: 0; justify-content: center; }
+.sidenav-guide.on { color: var(--accent); }
+.sidenav-status {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; color: var(--text-dim); white-space: nowrap;
+}
+.sidenav-status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.sidenav-status-dot.ok { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+.sidenav-status-dot.bad { background: transparent; border: 1.5px solid var(--err); }
+.sidenav-status-dot.warn { background: transparent; border: 1.5px solid var(--warn); }
+.sidenav-status-ver { font-family: var(--font-mono); font-size: 9.5px; opacity: 0.7; }
 .app-main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
-/* global topbar for view chrome */
+/* global topbar for view chrome（v18-UI 瘦身：只留页码眉标，安静化） */
 .topbar-global { border-bottom: 1px solid var(--border); }
 .view-eyebrow {
-  font-family: var(--font-mono); font-size: 11px; letter-spacing: 1.5px;
-  color: var(--accent); border: 1px solid var(--accent);
-  border-radius: 4px; padding: 2px 9px; opacity: 0.9;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 1.8px;
+  color: var(--text-dim); padding: 0 10px; white-space: nowrap;
 }
 
 /* runs center */
@@ -1321,10 +1362,20 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 /* 进度条填充色：原先缺失，导致 fill 不可见 */
 .run-progress-fill { background: var(--accent); }
 
-/* R4.4 移动端可用性：窄屏下侧栏压缩、面板收窄、控制台保持可用 */
+/* R4.4 移动端可用性：窄屏下侧栏折叠回图标轨（字标/小注/状态文字隐藏）、面板收窄、控制台保持可用 */
 @media (max-width: 900px) {
-  .sidenav { width: 44px; }
-  .sidenav-brand { width: 28px; height: 28px; }
+  .sidenav { width: 52px; padding: 12px 6px 8px; align-items: center; }
+  .sidenav-head { flex-direction: column; gap: 6px; padding: 0; }
+  .sidenav-wordmark { display: none; }
+  .sidenav-items { width: 100%; }
+  .sidenav-item { flex-direction: column; gap: 2px; padding: 7px 0; width: 100%; text-align: center; }
+  .sidenav-text { align-items: center; }
+  .sidenav-sub { display: none; }
+  .sidenav-foot { flex-direction: column; gap: 6px; padding-top: 8px; }
+  .sidenav-guide { display: none; }
+  .sidenav-status-text { display: none; }
+  .sidenav-status-ver { display: none; }
+  .sidenav-status { margin-left: 0; }
   .palette { width: 150px; }
   .props { width: 220px; }
   .topbar .tb-group { border-right: none; }
