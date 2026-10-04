@@ -80,6 +80,15 @@ const FORM_GUIDE: Record<string, string[]> = {
  * 这里不重算 id、不校 spec 形状（必填齐没齐是 UI 礼节不是校验）、不把「缺读数」画成 0。
  * v15-IA：整体并入「设置 → 能力注册」（配置枢纽归一），`embedded` 收起页头大标题。
  */
+/** v17-F3：常用 MCP server 预设（对标 Cursor/Claude Desktop 的"从清单选，而不是默写命令"）。
+ *  命令与参数照官方 README 常见写法；落册前仍走 server 的形状校验。路径/token 是本机事，点了再改。 */
+const MCP_PRESETS: { label: string; command: string; args: string; note: string }[] = [
+  { label: '📂 本地文件', command: 'npx', args: '-y @modelcontextprotocol/server-filesystem /path/to/dir', note: '让 Agent 读写指定目录下的文件' },
+  { label: '🌐 网页抓取', command: 'uvx', args: 'mcp-server-fetch', note: '抓取网页转 Markdown 给 Agent' },
+  { label: '🧠 长期记忆', command: 'npx', args: '-y @modelcontextprotocol/server-memory', note: '知识图谱式持久记忆' },
+  { label: '🐙 GitHub', command: 'npx', args: '-y @modelcontextprotocol/server-github', note: '仓库/Issue/PR 操作（需配 GITHUB_TOKEN 环境）' },
+];
+
 export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   const [activeKind, setActiveKind] = useState<string | null>(null); // null = 全部
   const [kindTab, setKindTab] = useState<string | null>(null); // Tab 页签选中的类别（null=第一个）
@@ -237,6 +246,27 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * v17-F3「别让人抄清单」（对标 Dify/Cursor 的做法——供应商接上，型号自动全进来）：
+   * 网关探得的型号支持**批量一键导入**，登记模型不再一格一格手填。挂载时就探一次
+   * （catalog 有 5min 缓存，与设置页网关卡同源同缓存），导入动作仍逐条走 /api/registry，
+   * 判重与形状校验全在 server——重复那几条吃 400 计数跳过就好，前端不自造判据（R4）。
+   */
+  const [gwCatalog, setGwCatalog] = useState<{ id: string; models: string[]; freeModel?: string }[] | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  useEffect(() => {
+    void api
+      .gatewayCatalog()
+      .then((r) =>
+        setGwCatalog(
+          r.profiles
+            .filter((p) => !p.error && Array.isArray(p.models))
+            .map((p) => ({ id: p.id, models: p.models, freeModel: p.freeModel })),
+        ),
+      )
+      .catch(() => setGwCatalog(null));
+  }, []);
 
   const ensureFormOptions = useCallback(() => {
     setOptionsBusy(true);
@@ -482,6 +512,36 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   // 表单只问能登记的那几类：视图 kind（出厂清单与角色库那几类）没有表单形状，选它必被 server 拒，不在这里挂出来
   const kinds = registrableKinds(data?.knownKinds ?? [], data?.viewKinds ?? []);
 
+  const registeredModelIds = useMemo(
+    () => new Set(groups.find((g) => g.kind === 'model')?.entries.map((e) => e.id) ?? []),
+    [groups],
+  );
+  const gatewayModelTotal = gwCatalog?.reduce((n, p) => n + p.models.length, 0) ?? 0;
+
+  const importGatewayModels = () => {
+    setImportBusy(true);
+    let ok = 0;
+    let dup = 0;
+    const jobs: Promise<unknown>[] = [];
+    for (const p of gwCatalog ?? []) {
+      for (const m of p.models) {
+        const spec: Record<string, string | boolean> = { model: m };
+        if (p.freeModel === m) spec.freeModel = true;
+        jobs.push(
+          api
+            .registryAdd({ kind: 'model', name: m, spec })
+            .then(() => void ok++)
+            .catch(() => void dup++),
+        );
+      }
+    }
+    void Promise.allSettled(jobs).then(() => {
+      setImportBusy(false);
+      log('info', `网关型号导入完成：新增 ${ok} 枚${dup ? `，已在册/跳过 ${dup} 枚` : ''}${ok + dup > 0 ? '。点「模型」胶囊查看' : ''}`);
+      void load();
+    });
+  };
+
   // 点跳转栏滚到那一组。CSS 里的 prefers-reduced-motion 全局关停管不到 JS 行为，这里自己问一次
   const jumpToGroup = (kind: string) => {
     const el = document.getElementById(`registry-g-${kind}`);
@@ -503,38 +563,25 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
             MCP 此前没有入口（只能靠胶囊 Tab 里那枚 0 项的格子找到），补上。 */}
         <div className="reg-guide">
           <div className="reg-guide-title">登记一项能力（都不用写 JSON）</div>
-          <div className="reg-guide-grid">
-            <button className="reg-guide-item" onClick={() => openFormWithKind('model')}>
-              <span className="reg-guide-icon">🧠</span>
-              <span><b>模型</b><small>登记 claude/gpt 等型号，Agent 节点才能选到它</small></span>
-            </button>
-            <button className="reg-guide-item" onClick={() => openFormWithKind('skill')}>
-              <span className="reg-guide-icon">📚</span>
-              <span><b>技能</b><small>一篇 Markdown 作业手册（如 skills/review.md），运行时自动注入给 Agent</small></span>
-            </button>
-            <button className="reg-guide-item" onClick={() => openFormWithKind('rule')}>
-              <span className="reg-guide-icon">📏</span>
-              <span><b>规则</b><small>团队硬约束（分支命名、提交规范），按项目/仓库生效</small></span>
-            </button>
-            <button className="reg-guide-item" onClick={() => openFormWithKind('repo')}>
-              <span className="reg-guide-icon">📦</span>
-              <span><b>仓库</b><small>告诉 Agent 去哪个代码仓干活，交付家规按它拉分支</small></span>
-            </button>
-            <button className="reg-guide-item" onClick={() => openFormWithKind('mcp')}>
-              <span className="reg-guide-icon">🔌</span>
-              <span><b>MCP 服务</b><small>登记本机 MCP server 的启动命令（声明账，供模板声明依赖）</small></span>
-            </button>
-            <button className="reg-guide-item" onClick={() => { setKindTab(null); setActiveKind(null); }}>
-              <span className="reg-guide-icon">🔍</span>
-              <span><b>全部能力</b><small>下方胶囊按类查看，含引擎/角色/模板等系统能力</small></span>
-            </button>
-          </div>
+          {/* v17-F3 主路径优先：能自动进来的绝不手填——网关型号批量导入 / 项目目录扫描 */}
+          {gatewayModelTotal > 0 && (
+            <div className="reg-import">
+              <span>
+                ⚡ 网关已探得 <b>{gatewayModelTotal}</b> 个型号
+                {registeredModelIds.size > 0 ? `（已在册 ${registeredModelIds.size} 个）` : '，一枚都还没登记'}
+                ——不用手填，一键全进来：
+              </span>
+              <button className="primary" disabled={importBusy} onClick={importGatewayModels}>
+                {importBusy ? '导入中…' : `一键导入${registeredModelIds.size < gatewayModelTotal ? `（${gatewayModelTotal - registeredModelIds.size} 枚待入）` : '（查漏补缺）'}`}
+              </button>
+            </div>
+          )}
           <div className="reg-guide-scan">
             <span style={{ color: 'var(--text-dim)', fontSize: 11.5 }}>
-              更快的方式：给一个本地目录，自动发现里面的仓库/约定/技能/规则，勾选后一键登记。
+              <b>一键接入整个项目：</b>给一个本地目录，自动发现里面的仓库/约定/技能/规则，勾选后批量登记（不用抄路径）。
             </span>
             <button style={{ marginLeft: 'auto' }} onClick={() => { setScanPromptOpen(true); setScanPreview(null); }}>
-              🔍 扫描并一键登记
+              🔍 扫描项目目录
             </button>
             {scanPromptOpen && (
               <div className="reg-scan-prompt">
@@ -611,7 +658,34 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                 </div>
               </div>
             )}
-        </div>
+          </div>
+          {/* 单项登记卡：自动路径覆盖不到的，按类点卡开表单（表单里有三步引导与示例） */}
+          <div className="reg-guide-grid">
+            <button className="reg-guide-item" onClick={() => openFormWithKind('model')}>
+              <span className="reg-guide-icon">🧠</span>
+              <span><b>模型</b><small>登记 claude/gpt 等型号，Agent 节点才能选到它</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => openFormWithKind('skill')}>
+              <span className="reg-guide-icon">📚</span>
+              <span><b>技能</b><small>一篇 Markdown 作业手册（如 skills/review.md），运行时自动注入给 Agent</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => openFormWithKind('rule')}>
+              <span className="reg-guide-icon">📏</span>
+              <span><b>规则</b><small>团队硬约束（分支命名、提交规范），按项目/仓库生效</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => openFormWithKind('repo')}>
+              <span className="reg-guide-icon">📦</span>
+              <span><b>仓库</b><small>告诉 Agent 去哪个代码仓干活，交付家规按它拉分支</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => openFormWithKind('mcp')}>
+              <span className="reg-guide-icon">🔌</span>
+              <span><b>MCP 服务</b><small>登记本机 MCP server 的启动命令（内置常用模板，点选即填）</small></span>
+            </button>
+            <button className="reg-guide-item" onClick={() => { setKindTab(null); setActiveKind(null); }}>
+              <span className="reg-guide-icon">🔍</span>
+              <span><b>全部能力</b><small>下方胶囊按类查看，含引擎/角色/模板等系统能力</small></span>
+            </button>
+          </div>
         </div>
         {formOpen && (
         <>
@@ -647,6 +721,30 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
 
           {formFieldsFor(formKind) ? (
             <>
+              {/* v17-F3：MCP 不用默写命令——四枚常用模板点一下填好，改路径/贴 token 即可 */}
+              {formKind === 'mcp' && (
+                <div className="registry-form-field">
+                  <label>常用模板（点一下自动填，再改成本机路径）</label>
+                  <div className="registry-picks">
+                    {MCP_PRESETS.map((p) => (
+                      <button
+                        key={p.label}
+                        type="button"
+                        className="registry-pick"
+                        title={`${p.command} ${p.args}`}
+                        onClick={() => {
+                          setFormName(p.label.replace(/^\S+\s/, ''));
+                          setValue('command', p.command);
+                          setValue('args', p.args);
+                          setValue('note', p.note);
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="registry-form-field">
                 <label htmlFor="reg-name">{REGISTRY_NAME_FIELD.label} *</label>
                 <input
