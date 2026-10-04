@@ -969,7 +969,26 @@ export interface RunRecord {
    * 缺省=无落差（或本单没命中家规=压根不对账，与现状一字不变）。
    */
   deliveryViolations?: RunDeliveryViolation[];
+  /**
+   * v18-R2 运行权限档位（派发时人选，run 级属性——刻意**不进 contract**：契约门放行会整本
+   * 覆写 run.contract（engine contractGate），档位放里面会被洗掉）：
+   *  · readonly=只读咨询：注入只读约束块、跳过交付 worktree、门自动放行（契约门除外）、
+   *    收口撞上副作用账落 warn（只照不拦）；
+   *  · normal=常规（缺省，今天行为一字不变）；
+   *  · auto=自动放行：除契约门外全部人工门自动放行（「这单按什么约定干」的拍板权仍归人）。
+   * 缺省=normal（旧记录/未选档向后兼容，JSON 只增不改）。
+   */
+  permMode?: PermMode;
+  /**
+   * v18-R2 门自动放行计数：readonly/auto 档位下非契约门被引擎自动放行的次数，
+   * 结构化落册（externalReleases 同款姿态：不靠 500 条环形事件推导）。自动放行不是人的
+   * 决策，绝不进 attention 人等分账。缺省=本单没有自动放行（normal 档/旧记录）。
+   */
+  autoReleases?: number;
 }
+
+/** v18-R2 运行权限档位（派发体 permMode 的合法全集；执行语义见 RunRecord.permMode 注释）。 */
+export type PermMode = 'readonly' | 'normal' | 'auto';
 
 /**
  * v12-V2 人介入账本：同一节点多轮进出门（input 谈完再拦）逐次累加，合法。

@@ -37,6 +37,7 @@ export type {
   RunDeclareViolation,
   RunDeliveryWorktree,
   RunDeliveryViolation,
+  PermMode,
   ProductDecl,
   RunProduct,
   TemplateVariable,

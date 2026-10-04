@@ -130,7 +130,7 @@ export const api = {
   // 于是 server 加一个键就得改两处——漏改的那处让调用方以为字段不存在。
   dryRun: (graph: DagGraph, cwd: string, variables?: Record<string, string>) =>
     json<DryRunResult>('POST', '/api/dry-run', { graph, cwd, ...(variables ? { variables } : {}) }),
-  dispatch: (task: string, cwd: string, issueId?: string, preview = false) =>
+  dispatch: (task: string, cwd: string, issueId?: string, preview = false, permMode?: string) =>
     json<{
       runId: string;
       issueId?: string;
@@ -138,12 +138,44 @@ export const api = {
       note?: string;
       /** M1 接单门：extracted=输入自带验收标准；gate=无契约，run 会停在契约确认门（M6 template=命中的骨架戳 id@sha）；N2 autofilled=AI 已补出契约草案，仍停在确认门等人工过目 */
       contract?: { mode: 'extracted' | 'gate' | 'autofilled'; assertions?: number; template?: string };
+      /** v18-R2 档位回执（normal=键省略） */
+      permMode?: string;
     }>('POST', '/api/dispatch', {
       task,
       cwd,
       ...(issueId ? { issueId } : {}),
       ...(preview ? { preview: true } : {}),
+      ...(permMode && permMode !== 'normal' ? { permMode } : {}),
     }),
+  /**
+   * v18-R3 产物架清单与原文读取（从 RunsCenter 的两刀 fetchJson 提升为公共 api；
+   * BoardView 审阅卡的 diff 摘要同吃这两个端点——判据全在 server，这里只取数）。
+   */
+  runArtifacts: (runId: string) =>
+    json<{ runId: string; dir: string; exists: boolean; files: { name: string; size: number; mtime?: string; source: 'workspace' | 'shelf'; nodeId?: string; sha?: string; shelved?: boolean; shelfError?: string }[] }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/artifacts`,
+      undefined,
+      { raw: true },
+    ),
+  runArtifactFile: (runId: string, path: string, src: 'workspace' | 'shelf' = 'workspace') =>
+    json<{ content: string; truncated?: boolean }>(
+      'GET',
+      `/api/runs/${encodeURIComponent(runId)}/artifacts/file?path=${encodeURIComponent(path)}&src=${src}`,
+      undefined,
+      { raw: true },
+    ),
+  /** v18-R4 用量总览（跨项目/agent 聚合，窗口默认 30 天） */
+  usage: (days = 30) =>
+    json<{
+      days: number;
+      generatedAt: string;
+      totals: { runs: number; tokensIn: number; tokensOut: number };
+      byDay: { key: string; runs: number; tokensIn: number; tokensOut: number }[];
+      bySpace: { key: string; runs: number; tokensIn: number; tokensOut: number }[];
+      byKind: { key: string; runs: number; tokensIn: number; tokensOut: number }[];
+      budget: { envMaxTokens: number | null; tripRuns: number };
+    }>('GET', `/api/usage?days=${days}`, undefined, { raw: true }),
   /** v9-N3 排队全景：并发额度、占用者、排队位次（queued 卡片渲染等待原因） */
   queueStatus: () =>
     json<{

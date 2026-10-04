@@ -48,6 +48,9 @@ export function TasksView() {
   const [confirmGate, setConfirmGate] = useState(
     () => localStorage.getItem('pf-dispatch-confirm') !== '0',
   );
+  // v18-R2 运行权限档位：readonly=只读咨询 · normal=常规（缺省）· auto=自动放行。
+  // 三档口径与 server parseDispatchPermMode 同全集；选择器只管把人话摆出来，档位判据在 server。
+  const [permMode, setPermMode] = useState(() => localStorage.getItem('pf-dispatch-perm') ?? 'normal');
   // N4：高级字段默认折叠；缺必填时自动展开（不让错误指向看不见的框）
   const [adv, setAdv] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -100,7 +103,7 @@ export function TasksView() {
     }
     setBusy(true);
     try {
-      const r = await api.dispatch(task.trim(), cwd.trim(), ref ? String(ref.number) : undefined, confirmGate);
+      const r = await api.dispatch(task.trim(), cwd.trim(), ref ? String(ref.number) : undefined, confirmGate, permMode);
       log(
         'info',
         (r.issueFetched
@@ -280,6 +283,26 @@ export function TasksView() {
           </div>
         )}
         <div className="tasks-actions">
+          <div className="perm-picker" role="radiogroup" aria-label="运行权限档位" title="权限档位：常规=关键门等人；自动放行=只契约门等人；只读咨询=禁写副作用，调查类任务用">
+            {([
+              { v: 'normal', label: '🛡 常规' },
+              { v: 'auto', label: '⚡ 自动放行' },
+              { v: 'readonly', label: '📕 只读' },
+            ] as const).map((o) => (
+              <button
+                key={o.v}
+                role="radio"
+                aria-checked={permMode === o.v}
+                className={permMode === o.v ? 'on' : ''}
+                onClick={() => {
+                  setPermMode(o.v);
+                  localStorage.setItem('pf-dispatch-perm', o.v);
+                }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
           <button className="primary" disabled={busy} onClick={() => void submit()}>
             {busy ? (
               '提交中…'

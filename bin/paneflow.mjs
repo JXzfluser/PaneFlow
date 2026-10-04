@@ -14,6 +14,12 @@ const dir = path.dirname(fileURLToPath(import.meta.url));
 const first = process.argv[2];
 
 if (first === undefined || first === 'serve') {
+  // v18-R1：`paneflow serve --remote` = 绑 0.0.0.0 暴露到局域网（手机/他机配对）。
+  // 令牌鉴权由 config 的 R4.1 自动启用（PF_HOST 非 127.0.0.1 即开，PF_TOKEN 或首启自动
+  // 生成并持久化 auth-token.json）；配对地址与令牌由 server 启动时打印。显式 PF_HOST 优先。
+  if (first === 'serve' && process.argv.slice(3).includes('--remote')) {
+    process.env.PF_HOST ??= '0.0.0.0';
+  }
   process.env.PF_WEB_DIR ??= path.join(dir, '..', 'web');
   await import('../lib/server.mjs');
 } else {

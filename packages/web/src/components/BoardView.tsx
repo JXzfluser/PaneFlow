@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { runCostLabel } from '../cost.js';
 import { templateLabel } from '../template-labels.js';
+import { parseUnifiedDiff, type DiffFileSummary } from '../diff-summary.js';
 import { Icon } from './Icon.js';
 import { RunsCenter } from './RunsCenter.jsx';
 
@@ -12,6 +13,9 @@ import { RunsCenter } from './RunsCenter.jsx';
  *   主流工具的读法：状态一眼可扫（列），要人拍板的事永远浮在最上面（审阅条）。
  *   数据零新接口：全部从 runs store 纯读推导；审批动作走既有 approve 通道（人是审批者，
  *   本页只是把散在各画布里的门集中成一排放满）。
+ *   v18-R2：看板卡与审阅卡显示运行权限档位徽标（⚡自动/📕只读；常规档不显）。
+ *   v18-R3：审阅卡「改动」面板——读产物架上 kind=diff 的原文解析成「改了哪些文件」，
+ *   批准的人不打开终端也能说出这单动了什么（workspace 被回收后架侧仍在，B3 语义不破）。
  */
 const BOARD_KEY = 'pf-board-mode';
 type BoardMode = 'board' | 'list';
@@ -176,28 +180,9 @@ export function BoardView() {
             <Icon name="bell" size={13} /> 审阅队列 · {reviews.length} 项等你拍板
           </div>
           <div className="review-cards">
-            {reviews.map((it) => {
-              const key = `${it.run.runId}:${it.nodeId}`;
-              const wait = sinceLabel(it.since);
-              return (
-                <div className="review-card" key={key}>
-                  <div className="review-card-head">
-                    <b title={runTitle(it.run)}>{runTitle(it.run)}</b>
-                    <span className="review-node">{it.nodeName}</span>
-                  </div>
-                  {it.prompt && <p className="review-prompt">{it.prompt.slice(0, 120)}{it.prompt.length > 120 ? '…' : ''}</p>}
-                  <div className="review-ops">
-                    {wait && <span className="review-wait">等了 {wait}</span>}
-                    <span className="spacer" />
-                    <button className="link" onClick={() => openCanvas(it.run.runId)}>详情</button>
-                    <button disabled={acting.has(key)} onClick={() => act(it.run.runId, it.nodeId, 'reject')}>驳回</button>
-                    <button className="primary" disabled={acting.has(key)} onClick={() => act(it.run.runId, it.nodeId, 'approve')}>
-                      {acting.has(key) ? '放门中…' : '✓ 批准'}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+            {reviews.map((it) => (
+              <ReviewCard key={`${it.run.runId}:${it.nodeId}`} it={it} acting={acting} act={act} openCanvas={openCanvas} />
+            ))}
           </div>
         </div>
       )}
@@ -251,6 +236,9 @@ function BoardCard({ run, onOpen }: { run: RunRecord; onOpen: () => void }) {
     <div className="board-card" onClick={onOpen} title="打开画布查看这条编排">
       <div className="board-card-top">
         <span className={`badge ${BADGE[state] ?? ''}`}>{state === 'completed-with-failures' ? '完成（有失败）' : state === 'queued' ? '排队中' : state === 'running' ? '运行中' : state === 'completed' ? '完成' : state === 'failed' ? '失败' : '已取消'}</span>
+        {/* v18-R2 档位徽标：只有非常规档占一格（常规=今天默认，不添噪） */}
+        {run.permMode === 'auto' && <span className="badge perm-badge" title="权限档位：自动放行（契约门仍等人）">⚡自动</span>}
+        {run.permMode === 'readonly' && <span className="badge perm-badge" title="权限档位：只读咨询（禁写副作用，门自动放行）">📕只读</span>}
         <span className="board-card-id">{run.runId.slice(0, 8)}</span>
       </div>
       <b className="board-card-title">{runTitle(run)}</b>
@@ -263,6 +251,118 @@ function BoardCard({ run, onOpen }: { run: RunRecord; onOpen: () => void }) {
         </div>
       )}
       {cost && <span className="board-card-cost">{cost}</span>}
+    </div>
+  );
+}
+
+const DIFF_FETCH_LIMIT = 3;
+
+type DiffPanelState = { loading: boolean; text?: string; files?: DiffFileSummary[]; truncated?: boolean; error?: string };
+
+/**
+ * v18-R3「改动」面板：这单到目前为止架上有几份 diff、各改了哪些文件。
+ * 取材=产物架台账 kind=diff 的原文（`<nodeId>/<名>`，架侧读法与 RunsCenter 同一刀）；
+ * 没有产物/读不到如实说，不把「没采集到」说成「零改动」。
+ */
+function ReviewDiffPanel({ run }: { run: RunRecord }) {
+  const [st, setSt] = useState<DiffPanelState>({ loading: true });
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const diffProducts = Object.entries(run.nodes ?? {}).flatMap(([nodeId, rec]) =>
+        (rec.products ?? []).filter((p) => p.kind === 'diff').map((p) => ({ nodeId, name: p.name })),
+      );
+      if (!diffProducts.length) {
+        if (alive) setSt({ loading: false, text: '暂无 diff 产物——到这一步为止还没有改动被采集' });
+        return;
+      }
+      const merged = new Map<string, DiffFileSummary>();
+      let added = 0;
+      let removed = 0;
+      try {
+        for (const p of diffProducts.slice(0, DIFF_FETCH_LIMIT)) {
+          const { content } = await api.runArtifactFile(run.runId, `${p.nodeId}/${p.name}`, 'shelf');
+          const parsed = parseUnifiedDiff(content);
+          for (const f of parsed.files) {
+            const prev = merged.get(f.file) ?? { ...f };
+            prev.added += f.added;
+            prev.removed += f.removed;
+            prev.binary = prev.binary || f.binary;
+            merged.set(f.file, prev);
+          }
+          added += parsed.totalAdded;
+          removed += parsed.totalRemoved;
+        }
+        if (alive) {
+          setSt({
+            loading: false,
+            text: `${merged.size} 个文件 · +${added} −${removed}`,
+            files: [...merged.values()].sort((a, b) => b.added + b.removed - (a.added + a.removed)),
+            truncated: diffProducts.length > DIFF_FETCH_LIMIT,
+          });
+        }
+      } catch (err) {
+        if (alive) setSt({ loading: false, error: (err as Error).message });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [run.runId]);
+  if (st.loading) return <div className="review-diff">改动读取中…</div>;
+  if (st.error) return <div className="review-diff review-diff-warn">diff 读取失败：{st.error}</div>;
+  return (
+    <div className="review-diff">
+      <div className="review-diff-sum">{st.text}{st.truncated ? `（仅前 ${DIFF_FETCH_LIMIT} 份 diff）` : ''}</div>
+      {st.files && st.files.length > 0 && (
+        <div className="review-diff-files">
+          {st.files.map((f) => (
+            <span className="review-diff-file" key={f.file} title={f.file}>
+              <i>{f.file.split('/').pop()}</i>
+              <em className="add">+{f.added}</em>
+              <em className="del">−{f.removed}</em>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewCard({
+  it,
+  acting,
+  act,
+  openCanvas,
+}: {
+  it: ReviewItem;
+  acting: Set<string>;
+  act: (runId: string, nodeId: string, action: 'approve' | 'reject') => void;
+  openCanvas: (runId: string) => void;
+}) {
+  const key = `${it.run.runId}:${it.nodeId}`;
+  const wait = sinceLabel(it.since);
+  const [showDiff, setShowDiff] = useState(false);
+  return (
+    <div className="review-card">
+      <div className="review-card-head">
+        <b title={runTitle(it.run)}>{runTitle(it.run)}</b>
+        {it.run.permMode === 'auto' && <span className="badge perm-badge">⚡自动</span>}
+        {it.run.permMode === 'readonly' && <span className="badge perm-badge">📕只读</span>}
+        <span className="review-node">{it.nodeName}</span>
+      </div>
+      {it.prompt && <p className="review-prompt">{it.prompt.slice(0, 120)}{it.prompt.length > 120 ? '…' : ''}</p>}
+      {showDiff && <ReviewDiffPanel run={it.run} />}
+      <div className="review-ops">
+        {wait && <span className="review-wait">等了 {wait}</span>}
+        <span className="spacer" />
+        <button className="link" onClick={() => setShowDiff((v) => !v)}>{showDiff ? '收起改动' : '改动'}</button>
+        <button className="link" onClick={() => openCanvas(it.run.runId)}>详情</button>
+        <button disabled={acting.has(key)} onClick={() => act(it.run.runId, it.nodeId, 'reject')}>驳回</button>
+        <button className="primary" disabled={acting.has(key)} onClick={() => act(it.run.runId, it.nodeId, 'approve')}>
+          {acting.has(key) ? '放门中…' : '✓ 批准'}
+        </button>
+      </div>
     </div>
   );
 }

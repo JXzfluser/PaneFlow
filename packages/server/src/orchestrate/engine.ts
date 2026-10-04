@@ -11,6 +11,7 @@ import type {
   DagGraph,
   NodeRunRecord,
   RunContract,
+  PermMode,
   RunRecord,
   RunCost,
   NodeCost,
@@ -202,6 +203,22 @@ export type GateResult =
   | { outcome: 'released'; action: ApprovalAction }
   | { outcome: 'cancelled'; action: ApprovalAction }
   | { outcome: 'timeout'; waitedMs: number; capMs: number };
+
+/**
+ * v18-R2 七处人工门的机器名（awaitGate 必填参数——调用方报门，引擎判档位）。
+ * 自动放行的唯一豁免是 'contract'：契约门确认的是「这单按什么约定干」，拍板权不随档位走。
+ */
+export type GateKind = 'dialog' | 'clarify' | 'manual-check' | 'acceptance' | 'contract' | 'branch-guard' | 'startup';
+
+const GATE_KIND_LABELS: Record<GateKind, string> = {
+  dialog: '运行中对话框',
+  clarify: '澄清轮',
+  'manual-check': '人工检查',
+  acceptance: '验收机器门',
+  contract: '契约门',
+  'branch-guard': '分支守卫',
+  startup: '启动确认',
+};
 
 function legitGateTimeout(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0;
@@ -730,6 +747,11 @@ export class Engine {
       replay?: { of: string };
       /** v11-E1b：实验元数据（只作标注与过滤，不参与任何编排判定） */
       experiment?: RunExperimentMeta;
+      /**
+       * v18-R2 运行权限档位：readonly=只读咨询 · auto=自动放行（缺省/normal=今天行为一字不变）。
+       * 落 run.permMode（run 级，刻意不进 contract——契约门放行会整本覆写 run.contract）。
+       */
+      permMode?: PermMode;
     },
   ): Promise<RunRecord> {
     // R3.4 同 issue 幂等锁：同空间同 issue 已有运行中/排队中的流水线时拒绝重复下发（G3 起含 queued，批量派发不重复入队）
@@ -854,6 +876,8 @@ export class Engine {
       // v11-E1a/b：replay 血缘与实验标注（缺省=普通单，两键省略）
       ...(opts?.replay ? { replayOf: opts.replay.of } : {}),
       ...(opts?.experiment ? { experiment: opts.experiment } : {}),
+      // v18-R2：权限档位随单落册（缺省/normal=键省略，旧读数一字不变）
+      ...(opts?.permMode && opts.permMode !== 'normal' ? { permMode: opts.permMode } : {}),
     };
     // v12-V1 harness 披露：起单时把「本单实发配置」一次性固化进 run 头（写一次即成历史）。
     // graphSha 算的是上面已 structuredClone 的 run.graph——变量替换、I2 经验注入、C3a
@@ -1256,6 +1280,8 @@ export class Engine {
       opts?.fromFailed ? source.runId : undefined,
       {
         ...(source.contract ? { contract: structuredClone(source.contract) } : {}),
+        // v18-R2：档位随血缘继承——同契约复跑就该同档位，不 silently 落回常规
+        ...(source.permMode ? { permMode: source.permMode } : {}),
         replay: { of: source.runId },
         ...(meta && (meta.suite || meta.arm || meta.flag) ? { experiment: meta } : {}),
       },
@@ -1428,8 +1454,25 @@ export class Engine {
    *   attention 永不再经这笔结算）；进门时刻同步清空（与取消唤醒同款卫生——到期不是人的
    *   决策，绝不入 attention.gates、不把 waitMs 结算进「人等分」，v12-V2 红线）。
    * 定时器卫生：unref + 门醒即清（先出者胜，双出路不会重入），run 收口不留活定时器。
+   * v18-R2 第零出路：readonly/auto 档位下非契约门直接自动放行（gateKind 必填——七调用方
+   * 逐处报门，契约门豁免）。自动放行不是人的决策：不进 attention（不调 bookGateRelease，
+   * 与到期同款卫生）、进门留痕就地清空、run.autoReleases 计数落册（externalReleases 同款
+   * 结构化账，不靠环形事件推导）；合成 approve 交调用方走既有放行路（按键/跳过照旧）。
    */
-  private awaitGate(run: RunRecord, nodeId: string): Promise<GateResult> {
+  private awaitGate(run: RunRecord, nodeId: string, gateKind: GateKind): Promise<GateResult> {
+    if (run.permMode && run.permMode !== 'normal' && gateKind !== 'contract') {
+      run.autoReleases = (run.autoReleases ?? 0) + 1;
+      const rec = run.nodes[nodeId];
+      if (rec) rec.blockedAt = undefined;
+      this.recordEvent(
+        run,
+        'approval',
+        nodeId,
+        `权限档位自动放行（${GATE_KIND_LABELS[gateKind]}；档位=${run.permMode === 'auto' ? '自动放行' : '只读咨询'}；本单第 ${run.autoReleases} 次）——契约门仍等人，其余门按档位放行`,
+      );
+      this.persistAndNotify(run);
+      return Promise.resolve({ outcome: 'released', action: { action: 'approve' } });
+    }
     const key = `${run.runId}:${nodeId}`;
     const capMs = resolveGateTimeoutMs(run.contract, this.gateTimeoutEnv);
     return new Promise<GateResult>((resolve) => {
@@ -1582,6 +1625,17 @@ export class Engine {
       // v13-B2 ③交付约定收口对账（同款只加不改）：家规 vs 实态的两条可算落差落册 + 一条聚合 warn，
       // 收口判定/状态/watch 退出码零改动——没命中家规的单一条事件都不多。
       this.reconcileDelivery(run);
+      // v18-R2 只读档位收口对账（W3 同族，只照不拦）：只读咨询撞上副作用账 → warn 事件，
+      // 状态/退出码零改动——只读档位拦不了 agent CLI 的真动作（PaneFlow 不造沙箱），能做的是照出来。
+      if (run.permMode === 'readonly' && run.sideEffects && hasSideEffects(run.sideEffects)) {
+        this.recordEvent(
+          run,
+          'run',
+          undefined,
+          `⚠ 只读档位出现写副作用（R2 收口对账，只照不拦，单照常收口）：${sideEffectsSummary(run.sideEffects).join(' · ')}——归因为单级上界：` +
+            `副作用账没有逐节点分账，不指认是哪一格干的；只读约束已注入各 agent 节点，真实拦截不归 PaneFlow`,
+        );
+      }
       run.cost = this.computeRunCost(run); // R6a：先记账再广播（持久化含 cost）
       this.persistAndNotify(run);
       this.pumpQueue(run.spaceId ?? 'default'); // G3：终态腾出额度，队列放行
@@ -2117,10 +2171,16 @@ export class Engine {
         const holder = this.repoClaims.get(repo);
         if (holder && holder.key !== myKey) {
           if (holder.runId === run.runId) {
-            const wt = this.createWorktree(run, repo, nodeId);
-            nodeCwd = wt.path;
-            rec.worktree = wt.path;
-            this.recordEvent(run, 'node', nodeId, `同仓并发：创建隔离 worktree（${wt.branch}）`);
+            if (run.permMode === 'readonly') {
+              // v18-R2 只读档位：只读咨询不写仓，同仓并发无需 worktree 隔离——照常主检出只读，
+              // 不建分支不建目录（隔离是给「要写」的准备的）
+              this.recordEvent(run, 'node', nodeId, '只读档位：跳过同仓并发隔离 worktree（只读咨询不写仓）');
+            } else {
+              const wt = this.createWorktree(run, repo, nodeId);
+              nodeCwd = wt.path;
+              rec.worktree = wt.path;
+              this.recordEvent(run, 'node', nodeId, `同仓并发：创建隔离 worktree（${wt.branch}）`);
+            }
           } else {
             rec.state = 'queued';
             rec.error = `等待仓库锁：${repo}（被 run ${holder.runId} 的 ${holder.nodeId} 占用）`;
@@ -2317,7 +2377,7 @@ export class Engine {
         this.persistAndNotify(run);
         // v13-S4 门收编进 awaitGate（七门同款接线，后文不再逐处注释）：cancels 短路先于
         // 一切出路（旧口径零漂移）；到期 fail-closed——固定句式走既有失败路，不合成放行。
-        const decision = await this.awaitGate(run, nodeId);
+        const decision = await this.awaitGate(run, nodeId, 'dialog');
         if (this.cancels.has(run.runId)) return '已取消';
         if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
         const action = decision.action;
@@ -2373,7 +2433,7 @@ export class Engine {
           this.recordEvent(run, 'approval', nodeId, '澄清轮拦截：aligned 未通过，等待人工补充或强制放行');
           rec.blockedAt = new Date().toISOString();
           this.persistAndNotify(run);
-          const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编（S4 注释只在此说明，余五门同款）
+          const decision = await this.awaitGate(run, nodeId, 'clarify'); // v13-S4 门收编（S4 注释只在此说明，余五门同款）
           rec.blockedPrompt = undefined;
           if (this.cancels.has(run.runId)) return '已取消';
           if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
@@ -2483,7 +2543,7 @@ export class Engine {
         this.recordEvent(run, 'approval', nodeId, `人工检查：${c.prompt}`);
         rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻（放门在 approve() 结算）
         this.persistAndNotify(run);
-        const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编
+        const decision = await this.awaitGate(run, nodeId, 'manual-check'); // v13-S4 门收编
         rec.blockedPrompt = undefined;
         if (this.cancels.has(run.runId)) return '已取消';
         if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
@@ -2715,7 +2775,7 @@ export class Engine {
       this.recordEvent(run, 'approval', nodeId, `验收机器门拦截：${failed.map((f) => f.id).join('、')}`);
       rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻
       this.persistAndNotify(run);
-      const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编
+      const decision = await this.awaitGate(run, nodeId, 'acceptance'); // v13-S4 门收编
       rec.blockedPrompt = undefined;
       if (this.cancels.has(run.runId)) return '已取消';
       if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
@@ -2777,7 +2837,7 @@ export class Engine {
       );
       rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻
       this.persistAndNotify(run);
-      const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编
+      const decision = await this.awaitGate(run, nodeId, 'contract'); // v13-S4 门收编
       rec.blockedPrompt = undefined;
       if (this.cancels.has(run.runId)) return '已取消';
       if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
@@ -2888,7 +2948,7 @@ export class Engine {
       this.recordEvent(run, 'approval', nodeId, `分支守卫拦截：${cur} ≠ ${expect}`);
       rec.blockedAt = new Date().toISOString(); // v12-V2 进门时刻
       this.persistAndNotify(run);
-      const decision = await this.awaitGate(run, nodeId); // v13-S4 门收编；本函数参数名 gate 是 {agentName,timeoutMs} 载体，门出路一律叫 decision 防遮蔽
+      const decision = await this.awaitGate(run, nodeId, 'branch-guard'); // v13-S4 门收编；本函数参数名 gate 是 {agentName,timeoutMs} 载体，门出路一律叫 decision 防遮蔽
       rec.blockedPrompt = undefined;
       if (this.cancels.has(run.runId)) return '已取消';
       if (decision.outcome === 'timeout') return gateTimeoutMessage(decision.waitedMs, decision.capMs);
@@ -3084,7 +3144,7 @@ export class Engine {
         this.recordEvent(run, 'approval', rec.nodeId, '启动确认拦截：自动应答未决，等待人工按键或放行');
         rec.blockedAt = new Date().toISOString();
         this.persistAndNotify(run);
-        const decision = await this.awaitGate(run, rec.nodeId); // v13-S4 门收编；到期经 throw 收口为「启动失败：等待审批超时…」固定句式
+        const decision = await this.awaitGate(run, rec.nodeId, 'startup'); // v13-S4 门收编；到期经 throw 收口为「启动失败：等待审批超时…」固定句式
         rec.blockedPrompt = undefined;
         if (this.cancels.has(run.runId)) throw new Error('已取消');
         if (decision.outcome === 'timeout') throw new Error(gateTimeoutMessage(decision.waitedMs, decision.capMs));
@@ -3514,6 +3574,15 @@ export class Engine {
       };
     } catch {
       // profile unreadable — proceed without conventions
+    }
+    // v18-R2 只读档位约束块：放 try/catch 之外——档案读不读得出，只读约束都得进 prompt。
+    // 运行时文本非实读文件：不进 ctxFiles（ctxSha 只算实读集，V4 口径），只涨 injectedBytes。
+    if (run.permMode === 'readonly') {
+      parts.push(
+        '【只读档位】本单以「只读咨询」档位运行：只调查、只读代码、只出结论。' +
+          '禁止改动仓库文件、禁止建分支/开 PR/推送/建 Issue/覆写 Issue 等一切外部写操作；' +
+          '机检照常执行。若完成任务必须写操作，在结论里写清「需要写什么、为什么」，不要动手。',
+      );
     }
     return { block: parts.join('\n'), agentKind: role?.agentKind, ctxFiles, ...(equip ? { equip } : {}) };
   }

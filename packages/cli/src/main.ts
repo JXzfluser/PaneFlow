@@ -250,13 +250,23 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
       declareViolations?: { roleId: string; face: string; seen: string }[];
       capabilityRefs?: { kind: string; id: string; specSha: string; via?: string[] }[];
       capabilitySha?: string;
+      // v18-R2 权限档位与自动放行计数（run 级落册键；缺省=normal/旧单，整缺不显）
+      permMode?: 'readonly' | 'normal' | 'auto';
+      autoReleases?: number;
     }
   >(io, baseUrl, 'GET', `/api/runs/${encodeURIComponent(runId)}`);
   if (jsonOr(args)) {
     dump(io, run);
     return EXIT_OK;
   }
-  io.out(`run ${paint(io, '1', run.runId)} · ${run.dagName ?? '-'} · ${stateMark(io, run.state)}${run.issueId ? ` · Issue #${run.issueId}` : ''}`);
+  // v18-R2 档位渲染：中文措辞是 CLI 视图层对三枚枚举值的固定译名（枚举全集在 shared，
+  // server 不外发 label——这份映射不构成「第二份判据」，判据只有 server 落册的 permMode 本身）
+  const PERM_LABELS: Record<string, string> = { readonly: '只读咨询', normal: '常规', auto: '自动放行' };
+  io.out(
+    `run ${paint(io, '1', run.runId)} · ${run.dagName ?? '-'} · ${stateMark(io, run.state)}${run.issueId ? ` · Issue #${run.issueId}` : ''}` +
+      `${run.permMode ? ` · 权限=${PERM_LABELS[run.permMode] ?? run.permMode}` : ''}` +
+      `${run.autoReleases ? ` · 自动放行×${run.autoReleases}` : ''}`,
+  );
   // v12-V1 harness 披露行：只渲染 server 返回字段（R4），缺项跳过、整缺不显示。
   // v13-V2 等臂读数追加两枚 bit：读回=<有/无(结局)>（server 扫 graph 实态算好的，
   // false 也是正读数所以照显）+ 骨架#（剥注入块+归一路径后的指纹，两臂相等=只差读回块）。

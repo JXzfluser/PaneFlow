@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { HerdrClient } from './herdr/client.js';
 import { RealHerdrOps } from './orchestrate/herdr-ops.js';
 import { Engine } from './orchestrate/engine.js';
@@ -91,6 +92,17 @@ async function main(): Promise<void> {
   });
   console.log(`[paneflow] server listening on http://${config.host}:${config.port}`);
   console.log('[paneflow] 一键模式：浏览器打开上述地址即是画布（前端由服务端托管）');
+  if (config.host !== '127.0.0.1' && config.host !== 'localhost') {
+    // v18-R1 远程模式：把局域网可达地址逐一报出来——手机/他机配对用（令牌见下行）
+    const lans = Object.values(os.networkInterfaces())
+      .flat()
+      .filter((ni): ni is os.NetworkInterfaceInfo => Boolean(ni) && ni!.family === 'IPv4' && !ni!.internal)
+      .map((ni) => ni.address);
+    for (const ip of lans) {
+      console.log(`[paneflow] 局域网配对地址: http://${ip}:${config.port}（手机浏览器打开，首次访问填令牌）`);
+    }
+    if (!lans.length) console.log('[paneflow] 未探到局域网 IPv4 地址——手机配对请用本机 IP 手动拼地址');
+  }
   if (config.authToken) {
     console.log(`[paneflow] 访问令牌（仅此一次展示，浏览器首次访问时填入）: ${config.authToken}`);
   }

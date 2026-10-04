@@ -24,6 +24,7 @@ const SECTION_GROUPS: { label: string; items: { id: string; icon: IconName; labe
       { id: 'env', icon: 'cpu', label: '环境' },
       { id: 'gateway', icon: 'globe', label: '模型网关' },
       { id: 'github', icon: 'code', label: 'GitHub 凭据' },
+      { id: 'usage', icon: 'clock', label: '用量' },
       { id: 'registry', icon: 'registry', label: '能力注册' },
     ],
   },
@@ -241,6 +242,94 @@ function credIdentity(g: GithubCredState): string {
   if (g.source === 'none') return '';
   return g.login ? ` · 以 @${g.login} 身份` : ' · 用户名没探到（api.github.com 不可达或 token 缺读权限）';
 }
+
+/** v18-R4 用量卡：一屏回答「最近烧了多少 token、哪个项目/哪类 agent 烧的、熔断有没有打过」。 */
+type UsageReport = Awaited<ReturnType<typeof api.usage>>;
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function UsageCard() {
+  const [days, setDays] = useState(30);
+  const [data, setData] = useState<UsageReport | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setBusy(true);
+    void api
+      .usage(days)
+      .then((r) => alive && setData(r))
+      .catch(() => alive && setData(null))
+      .finally(() => alive && setBusy(false));
+    return () => {
+      alive = false;
+    };
+  }, [days]);
+  if (!data) {
+    return (
+      <div className="settings-actions">
+        <span className="settings-hint">{busy ? '用量计算中…' : '用量读数暂不可得（server /api/usage 不可达）'}</span>
+      </div>
+    );
+  }
+  const kindName = (k: string) => (k === 'unknown' ? '未落册' : k);
+  return (
+    <div className="usage-card">
+      <div className="usage-window-row">
+        {[7, 30, 90].map((d) => (
+          <button key={d} className={d === days ? 'on' : ''} disabled={busy} onClick={() => setDays(d)}>
+            近 {d} 天
+          </button>
+        ))}
+        <span className="usage-totals">
+          <b>{data.totals.runs}</b> 单 · <b>↑{fmtTokens(data.totals.tokensIn)}</b> 入 · <b>↓{fmtTokens(data.totals.tokensOut)}</b> 出
+        </span>
+      </div>
+      <table className="usage-table">
+        <thead>
+          <tr>
+            <th>项目</th>
+            <th>单数</th>
+            <th>token 入</th>
+            <th>token 出</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.bySpace.length === 0 && (
+            <tr>
+              <td colSpan={4} className="usage-empty">窗口内没有运行记录</td>
+            </tr>
+          )}
+          {data.bySpace.map((s) => (
+            <tr key={s.key}>
+              <td>{s.key === 'default' ? '默认项目' : s.key}</td>
+              <td>{s.runs}</td>
+              <td>{fmtTokens(s.tokensIn)}</td>
+              <td>{fmtTokens(s.tokensOut)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {data.byKind.length > 0 && (
+        <div className="usage-kinds">
+          {data.byKind.map((k) => (
+            <span className="usage-kind-chip" key={k.key} title={`${k.runs} 单 · ↑${k.tokensIn} ↓${k.tokensOut}`}>
+              {kindName(k.key)} × {k.runs}
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="settings-hint">
+        预算熔断（PF_RUN_MAX_TOKENS）：{data.budget.envMaxTokens === null ? '未设（关闭）' : `run 级上限 ${fmtTokens(data.budget.envMaxTokens)}`}
+        {data.budget.tripRuns > 0 ? ` · 窗口内触发过 ${data.budget.tripRuns} 次` : ' · 窗口内未触发'}
+      </p>
+    </div>
+  );
+}
+
 
 
 
@@ -946,6 +1035,12 @@ export function SettingsView() {
         <section className="settings-card" id="sec-github">
           <h3>GitHub 凭据</h3>
           <GithubCredCard />
+        </section>
+
+        <section className="settings-card" id="sec-usage">
+          <h3>用量</h3>
+          <p className="settings-hint">token 只认引擎收口落册的成本账（agent 自报累计，绝不估算）；归档单也计入。</p>
+          <UsageCard />
         </section>
 
         <section className="settings-card" id="sec-registry">

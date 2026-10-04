@@ -4,6 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <!-- v18-R1 手机/远程访问：PWA manifest（安装能力需 HTTPS，局域网 HTTP 下浏览器仍可用） -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="PaneFlow" />
     <!-- 初值=默认 light 档纸色；applyTheme 启动时按实主题 --bg 覆写 -->
     <meta name="theme-color" content="#faf8f3" />
     <title>PaneFlow — 多Agent流水线编排</title>

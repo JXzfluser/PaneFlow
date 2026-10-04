@@ -1715,3 +1715,79 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .registry-kindtab-count.zero { opacity: 0.45; }
 .registry-group { margin-bottom: 0; }
 .registry-group.zero { opacity: 1; }
+
+/* -- v18-R2 权限档位：派发选择器 + 看板/审阅徽标 ------------------------------ */
+.perm-picker {
+  display: inline-flex; gap: 4px; padding: 3px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
+}
+.perm-picker button {
+  border: none; background: transparent; color: var(--text-dim);
+  font-size: 11px; padding: 4px 9px; border-radius: 6px; cursor: pointer;
+}
+.perm-picker button.on { background: var(--primary-bg); color: var(--accent); font-weight: 600; }
+.perm-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px;
+  background: var(--primary-bg); color: var(--accent); border: 1px solid var(--accent);
+  flex-shrink: 0;
+}
+
+/* -- v18-R3 审阅卡「改动」面板 ------------------------------------------------ */
+.review-diff {
+  margin: 6px 0 2px; padding: 8px 10px;
+  border: 1px dashed var(--border); border-radius: 7px; background: var(--bg);
+  font-size: 11px;
+}
+.review-diff-warn { color: var(--warn, #b45309); }
+.review-diff-sum { font-weight: 600; margin-bottom: 5px; }
+.review-diff-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.review-diff-file {
+  display: inline-flex; align-items: center; gap: 5px;
+  max-width: 100%; padding: 2px 7px; border-radius: 5px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  font-family: var(--font-mono); font-size: 10px;
+}
+.review-diff-file i { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+.review-diff-file em { font-style: normal; }
+.review-diff-file em.add { color: var(--ok, #15803d); }
+.review-diff-file em.del { color: var(--err, #dc2626); }
+
+/* -- v18-R4 用量卡 ------------------------------------------------------------ */
+.usage-card { display: flex; flex-direction: column; gap: 10px; }
+.usage-window-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.usage-window-row button {
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text-dim);
+  font-size: 11px; padding: 4px 10px; border-radius: 7px; cursor: pointer;
+}
+.usage-window-row button.on { background: var(--primary-bg); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.usage-totals { margin-left: auto; font-size: 12px; color: var(--text-dim); }
+.usage-totals b { color: var(--text); font-variant-numeric: tabular-nums; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.usage-table th, .usage-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.usage-table th { color: var(--text-dim); font-weight: 500; font-size: 11px; }
+.usage-table td { font-variant-numeric: tabular-nums; }
+.usage-empty { color: var(--text-dim); text-align: center; padding: 12px 0; }
+.usage-kinds { display: flex; flex-wrap: wrap; gap: 5px; }
+.usage-kind-chip {
+  font-size: 10.5px; padding: 2px 8px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text-dim);
+}
+
+/* -- v18-R1 移动端：看板/审阅在手机可用（配对地址 + 令牌见 serve --remote 启动行） -- */
+@media (max-width: 640px) {
+  .board-stats { grid-template-columns: repeat(2, 1fr); }
+  .review-cards { grid-template-columns: 1fr; }
+  .review-prompt { white-space: normal; }
+  .review-ops { flex-wrap: wrap; row-gap: 6px; }
+  .review-ops .spacer { display: none; }
+  .board-cols {
+    display: flex; overflow-x: auto; scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch; padding-bottom: 8px;
+  }
+  .board-col { min-width: 78vw; scroll-snap-align: start; }
+  .board-card-top { flex-wrap: wrap; }
+  .perm-picker { flex-wrap: wrap; }
+  .tasks-actions { flex-direction: column; align-items: stretch; }
+  .usage-totals { margin-left: 0; }
+  .review-diff-file i { max-width: 40vw; }
+}

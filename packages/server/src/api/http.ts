@@ -4,7 +4,8 @@ import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag, forwardEdges, rejectEdgeNote, DECLARE_FACES, equipSlotIssueOf } from '@paneflow/shared';
-import type { DagGraph, RegistryEntry, RunExperimentMeta, RunRecord } from '@paneflow/shared';
+import type { DagGraph, RegistryEntry, RunExperimentMeta, RunRecord, PermMode } from '@paneflow/shared';
+import { computeUsageReport } from './usage.js';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
 import { Store } from '../orchestrate/store.js';
@@ -1347,7 +1348,21 @@ export async function buildHttpServer(deps: HttpDeps) {
    * 拼错的键（experment/sute…）=实验标静默失效、白跑一批单，宁拒不错放。
    * 不给 experiment 键=零判据介入，今日语义一字不变。
    */
-  const DISPATCH_BODY_KEYS = ['task', 'issueId', 'cwd', 'preview', 'experiment'];
+  const DISPATCH_BODY_KEYS = ['task', 'issueId', 'cwd', 'preview', 'experiment', 'permMode'];
+  const PERM_MODES: PermMode[] = ['readonly', 'normal', 'auto'];
+  /**
+   * v18-R2 派发档位：readonly=只读咨询 · normal=常规 · auto=自动放行（语义见 shared PermMode）。
+   * 同 experiment 的 fail-closed 姿态：拼错/越界值宁拒不收（档位静默落空=以为开了自动放行
+   * 却被门卡一夜，比 400 贵得多）。不给键=normal（今天行为一字不变）。
+   */
+  const parseDispatchPermMode = (body: Record<string, unknown> | undefined): { permMode?: PermMode; error?: string } => {
+    const raw = body?.permMode;
+    if (raw === undefined) return {};
+    if (typeof raw !== 'string' || !PERM_MODES.includes(raw as PermMode)) {
+      return { error: `permMode 只认 ${PERM_MODES.join('/')}（readonly=只读咨询 · normal=常规 · auto=自动放行；不收=整个键别给）` };
+    }
+    return { permMode: raw as PermMode };
+  };
   const parseDispatchExperiment = (
     body: Record<string, unknown> | undefined,
   ): { experiment?: RunExperimentMeta; error?: string } => {
@@ -1390,7 +1405,7 @@ export async function buildHttpServer(deps: HttpDeps) {
   };
 
   app.post<{
-    Body: { task: string; issueId?: string; cwd?: string; preview?: boolean; experiment?: unknown };
+    Body: { task: string; issueId?: string; cwd?: string; preview?: boolean; experiment?: unknown; permMode?: unknown };
     Querystring: { space?: string };
   }>(
     '/api/dispatch',
@@ -1399,6 +1414,8 @@ export async function buildHttpServer(deps: HttpDeps) {
       if (!task) return reply.code(400).send({ error: '缺少任务描述' });
       const exp = parseDispatchExperiment(req.body as Record<string, unknown> | undefined);
       if (exp.error) return reply.code(400).send({ error: exp.error });
+      const pm = parseDispatchPermMode(req.body as Record<string, unknown> | undefined);
+      if (pm.error) return reply.code(400).send({ error: pm.error });
       const store0 = spaceStore(deps, req.query.space);
       let rootCwd: string | undefined;
       let plannerAgentKind: string | undefined;
@@ -1521,7 +1538,7 @@ export async function buildHttpServer(deps: HttpDeps) {
         // M2：机检契约随单落册（run 的首个结构化产物）；无契约模式由契约门谈定后落
         // 实验标走 replay 同一条 opts 通道（engine.startRun 固化进 RunRecord.experiment，
         // 终态收口经 appendExperimentRow 自动落收数表）；两键皆空照旧传 undefined——零回归
-        contractAssertions.length || exp.experiment
+        contractAssertions.length || exp.experiment || pm.permMode
           ? {
               ...(contractAssertions.length
                 ? {
@@ -1537,6 +1554,7 @@ export async function buildHttpServer(deps: HttpDeps) {
                   }
                 : {}),
               ...(exp.experiment ? { experiment: exp.experiment } : {}),
+              ...(pm.permMode ? { permMode: pm.permMode } : {}),
             }
           : undefined,
       );
@@ -1547,6 +1565,8 @@ export async function buildHttpServer(deps: HttpDeps) {
         note: issueNote,
         // 打标回执：server 认下的实验标原样回显（不给 experiment 键=整键不出现）
         ...(run.experiment ? { experiment: run.experiment } : {}),
+        // v18-R2 档位回执：normal 不回（键省略=常规，与落册口径一致）
+        ...(run.permMode ? { permMode: run.permMode } : {}),
         // v11-A1 CLI：节点清单摘要（id/name/deps）——派活方在网页前也能报清这单要跑什么
         nodes: graph.nodes.map((n) => ({
           id: n.id,
@@ -1738,6 +1758,16 @@ export async function buildHttpServer(deps: HttpDeps) {
     if (req.query.suite) runs = runs.filter((r) => r.experiment?.suite === req.query.suite);
     if (req.query.arm) runs = runs.filter((r) => r.experiment?.arm === req.query.arm);
     return { runs };
+  });
+
+  // v18-R4 用量总览（跨项目/跨 agent 聚合，含归档——月度烧量不能因为归档就失忆）；
+  // 聚合判据全在 usage.ts 纯函数（单测口子），这里只管把账本凑齐
+  app.get<{ Querystring: { days?: string } }>('/api/usage', async (req) => {
+    const runs = Store.listSpaces(deps.dataDir).flatMap((sp) => {
+      const s = new Store(deps.dataDir, sp.id);
+      return [...s.listRuns(), ...s.listArchivedRuns()];
+    });
+    return computeUsageReport(runs, { days: Number(req.query.days) || undefined });
   });
 
   app.get<{ Params: { id: string } }>('/api/runs/:id', async (req, reply) => {
