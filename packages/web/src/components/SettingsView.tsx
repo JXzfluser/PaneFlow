@@ -11,7 +11,7 @@ import { removeGatewayProfileRequest, unlinkPatRequest, overwriteIntakeRequest }
 
 /**
  * 设置页章节分两组（v13 排版分类整顿 → v15-IA 配置枢纽归一）：
- * 「运行底座」= 这机能跑起来吗（环境→模型→凭据→能力注册，按上手依赖序）；
+ * 「运行底座」= 这机能跑起来吗（环境→模型→凭据→用量，按上手依赖序；能力注册已在「能力」页）；
  * 「班底与复利」= 谁在干活、留下什么（角色→沉淀→外呼）。
  * v10-W 起「项目档案」已迁往「项目」视图，这里只留全局项；
  * v15-IA 注册中心曾并入本页；v18-UI 按设计稿 IA 契约升回一级目的地「能力」
@@ -25,7 +25,6 @@ const SECTION_GROUPS: { label: string; items: { id: string; icon: IconName; labe
       { id: 'gateway', icon: 'globe', label: '模型网关' },
       { id: 'github', icon: 'code', label: 'GitHub 凭据' },
       { id: 'usage', icon: 'clock', label: '用量' },
-      { id: 'registry', icon: 'registry', label: '能力注册' },
     ],
   },
   {

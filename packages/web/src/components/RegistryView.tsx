@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { api, fetchJson, getSpace, type EnvProbeItem } from '../api.js';
 import { useStore } from '../store.js';
+import type { AppView } from '../store.js';
 import { Icon } from './Icon.js';
 import {
   buildRegistryPayload,
@@ -89,6 +90,26 @@ const MCP_PRESETS: { label: string; command: string; args: string; note: string 
   { label: '🐙 GitHub', command: 'npx', args: '-y @modelcontextprotocol/server-github', note: '仓库/Issue/PR 操作（需配 GITHUB_TOKEN 环境）' },
 ];
 
+/** v18 打磨：视图类能力的管理面直链——条目是镜子，正身在别处，详情里把路指过去。
+ *  check-type/node-type/agent-kind 由代码现算、没有独立管理面，不给跳（不画死链）。 */
+const VIEW_HOME_JUMPS: Record<string, { label: string; go: (setView: (v: AppView) => void) => void }> = {
+  role: {
+    label: '去设置 · 角色库',
+    go: (setView) => {
+      setView('settings');
+      requestAnimationFrame(() => document.getElementById('sec-roles')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    },
+  },
+  template: { label: '去编排页（模板即画布图）', go: (setView) => setView('orchestrate') },
+  'gateway-profile': {
+    label: '去设置 · 模型网关',
+    go: (setView) => {
+      setView('settings');
+      requestAnimationFrame(() => document.getElementById('sec-gateway')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    },
+  },
+};
+
 export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   const [activeKind, setActiveKind] = useState<string | null>(null); // null = 全部
   const [kindTab, setKindTab] = useState<string | null>(null); // Tab 页签选中的类别（null=第一个）
@@ -97,6 +118,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   const [scanRegisterBusy, setScanRegisterBusy] = useState(false);
   const [scanPreview, setScanPreview] = useState<{ items: { kind: string; name: string; detail: string }[]; selected: Set<number> } | null>(null);
   const log = useStore((s) => s.log);
+  const setView = useStore((s) => s.setView);
   const [data, setData] = useState<RegistryListResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   // 登记那一发：表单唯一一次「填完再点」的写
@@ -1150,6 +1172,16 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                                       <dd>{row.text}</dd>
                                     </div>
                                   ))}
+                                  {VIEW_HOME_JUMPS[e.kind] && (
+                                    <>
+                                      <dt>管理面</dt>
+                                      <dd>
+                                        <button className="link" onClick={() => VIEW_HOME_JUMPS[e.kind]!.go(setView)}>
+                                          {VIEW_HOME_JUMPS[e.kind]!.label}
+                                        </button>
+                                      </dd>
+                                    </>
+                                  )}
                                   {readout && (
                                     <>
                                       <dt>健康</dt>

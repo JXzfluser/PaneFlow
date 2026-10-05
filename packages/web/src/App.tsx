@@ -8,6 +8,7 @@ import { OrchestrateView } from './components/OrchestrateView.jsx';
 import { ProjectsView } from './components/ProjectsView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
 import { RegistryView } from './components/RegistryView.jsx';
+import { Icon } from './components/Icon.js';
 import { Guide } from './components/Guide.jsx';
 import { EnvWizard } from './components/EnvWizard.jsx';
 import { ProjectWizard } from './components/ProjectWizard.jsx';
@@ -20,6 +21,8 @@ export function App() {
   const pwOpen = useStore((s) => s.pwOpen);
   const guideOpen = useStore((s) => s.guideOpen);
   const setGuideOpen = useStore((s) => s.setGuideOpen);
+  const navCollapsed = useStore((s) => s.navCollapsed);
+  const setNavCollapsed = useStore((s) => s.setNavCollapsed);
   const setAgentKinds = useStore((s) => s.setAgentKinds);
   const setTemplates = useStore((s) => s.setTemplates);
   const setCwd = useStore((s) => s.setCwd);
@@ -89,7 +92,14 @@ export function App() {
       <SideNav />
       <div className="app-main-col">
         <div className="topbar topbar-global">
-          {/* v18-UI：品牌/主题/指南/版本迁到侧栏（vibex 式底部工具区），顶栏只留页码眉标 */}
+          {/* v18-UI：侧栏收缩钮住顶栏左上（VS Code/Linear 惯例位；塞侧栏头部会与字标行挤爆 180px） */}
+          <button
+            className="icon nav-collapse"
+            title={navCollapsed ? '展开侧栏' : '收起侧栏'}
+            onClick={() => setNavCollapsed(!navCollapsed)}
+          >
+            <Icon name={navCollapsed ? 'unfold' : 'fold'} size={14} />
+          </button>
           <span className="view-eyebrow">
             {view === 'tasks'
               ? 'TASKS · 任务'
