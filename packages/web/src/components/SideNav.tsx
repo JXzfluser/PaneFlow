@@ -50,6 +50,20 @@ export function SideNav() {
   const runs = useStore((s) => s.runs);
   const openRun = useStore((s) => s.openRun);
   const [spaceName, setSpaceName] = useState('');
+  // v18-UI 侧栏收缩：用户记忆（localStorage）∪ 窄屏自动——rail 一套样式两个触发源
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('pf-nav-collapsed') === '1');
+  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 900px)').matches);
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 900px)');
+    const onChange = () => setNarrow(mq.matches);
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
+  const rail = collapsed || narrow;
+  const toggleCollapsed = () => {
+    localStorage.setItem('pf-nav-collapsed', collapsed ? '0' : '1');
+    setCollapsed(!collapsed);
+  };
 
   useEffect(() => {
     void api
@@ -79,13 +93,22 @@ export function SideNav() {
       : { cls: 'ok', text: '连接正常' };
 
   return (
-    <div className="sidenav">
+    <div className={`sidenav${rail ? ' rail' : ''}`}>
       <div className="sidenav-head">
         <div className="sidenav-brandrow">
           <img className="sidenav-brand" src="/icon.svg" alt="PaneFlow" title="PaneFlow" />
           <span className="sidenav-wordmark">/paneflow</span>
           {/* 脚注式版本号：同一条行盒内略微下沉的小字——在字标下面，但不是换行 */}
           <span className="sidenav-ver">v{__PF_VERSION__}</span>
+          {!narrow && (
+            <button
+              className="sidenav-iconbtn sidenav-toggle"
+              title={rail ? '展开侧栏' : '收起侧栏'}
+              onClick={toggleCollapsed}
+            >
+              <Icon name={rail ? 'unfold' : 'fold'} size={13} />
+            </button>
+          )}
         </div>
         <button
           className="sidenav-space"

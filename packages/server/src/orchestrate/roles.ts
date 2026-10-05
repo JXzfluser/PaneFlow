@@ -97,13 +97,20 @@ export function loadRoles(dataDir: string): Role[] {
   try {
     const arr = JSON.parse(fs.readFileSync(rolesPath(dataDir), 'utf8')) as Role[];
     return Array.isArray(arr) ? arr : [];
-  } catch {
+  } catch (err) {
+    // v18 诚实读数：名册读不动≠名册是空的——静默 [] 会让「角色库空了」看起来像正常态
+    // （班底引用悬空，只剩一句小警告，谁也不知情）。这里大声说出来。
+    console.error(`[paneflow] 角色名册读取失败（按空名册继续，班底引用将悬空）：${rolesPath(dataDir)} —— ${(err as Error).message}`);
     return [];
   }
 }
 
 export function saveRoles(dataDir: string, roles: Role[]): void {
-  fs.writeFileSync(rolesPath(dataDir), JSON.stringify(roles, null, 2));
+  // v18 原子写：裸 writeFileSync 在崩溃/并发写时会留下半截 JSON——下一次 loadRoles 读不出、
+  // 静默回落 []，班底引用集体悬空且无人知情（本次「角色库空了」事故的根因类）。
+  const tmp = `${rolesPath(dataDir)}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(roles, null, 2));
+  fs.renameSync(tmp, rolesPath(dataDir));
 }
 
 /**

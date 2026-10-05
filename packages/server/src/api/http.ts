@@ -908,19 +908,28 @@ export async function buildHttpServer(deps: HttpDeps) {
   );
 
   // B1：一键装填标准五连班底（规划/实现/评审/验收/沉淀）——缺的角色补进全局库，班底整列写入空间档案
-  app.post<{ Params: { id: string } }>('/api/spaces/:id/team/standard', async (req, reply) => {
-    const store = spaceStore(deps, req.params.id);
-    const roles = ensureStandardRoles(deps.dataDir);
-    const profile = store.readProfile();
-    const next: SpaceProfile = {
-      ...profile,
-      team: roles.map((r) => ({ roleId: r.id, alias: r.name })),
-      id: req.params.id,
-    };
-    store.writeProfile(next);
-    reply.code(200);
-    return { profile: next, roleIds: roles.map((r) => r.id) };
-  });
+  // v18 ?seedOnly=1：只补角色库（ensureStandardRoles 补缺不覆盖），**不写空间班底**——
+  // 修复「班底引用悬空」用：把库补回来引用自然复位，覆写班底反而可能丢掉用户自定义成员。
+  app.post<{ Params: { id: string }; Querystring: { seedOnly?: string } }>(
+    '/api/spaces/:id/team/standard',
+    async (req, reply) => {
+      const store = spaceStore(deps, req.params.id);
+      const roles = ensureStandardRoles(deps.dataDir);
+      if (req.query.seedOnly === '1') {
+        reply.code(200);
+        return { roleIds: roles.map((r) => r.id), seededOnly: true };
+      }
+      const profile = store.readProfile();
+      const next: SpaceProfile = {
+        ...profile,
+        team: roles.map((r) => ({ roleId: r.id, alias: r.name })),
+        id: req.params.id,
+      };
+      store.writeProfile(next);
+      reply.code(200);
+      return { profile: next, roleIds: roles.map((r) => r.id) };
+    },
+  );
 
   // -- health ---------------------------------------------------------------
 

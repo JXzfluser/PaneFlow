@@ -197,6 +197,41 @@ describe('v9-B1 班底名册（team 机检 + 标准五连装填）', () => {
       await app.close();
     }
   });
+
+  // v18 自愈口：?seedOnly=1 只补角色库不写班底——修「班底引用悬空」用（覆写班底可能丢自定义成员）
+  it('seedOnly=1：角色库补缺、空间班底一字不动', async () => {
+    const dir = tmp();
+    const { app } = await buildServer(dir);
+    try {
+      await app.inject({ method: 'PUT', url: '/api/spaces/demo', headers: { host: HOST }, payload: { team: [{ roleId: 'my-own', alias: '自定义岗' }] } });
+      const res = await app.inject({ method: 'POST', url: '/api/spaces/demo/team/standard?seedOnly=1', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().seededOnly).toBe(true);
+      expect(res.json().roleIds).toHaveLength(5);
+      const profile = JSON.parse(fs.readFileSync(path.join(dir, 'spaces', 'demo', 'profile.json'), 'utf8')) as { team: { roleId: string }[] };
+      expect(profile.team).toEqual([{ roleId: 'my-own', alias: '自定义岗' }]); // 班底未被动过
+      const roles = JSON.parse(fs.readFileSync(path.join(dir, 'roles.json'), 'utf8')) as { id: string }[];
+      expect(roles).toHaveLength(5);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // v18 事故类回归：roles.json 半截 JSON（崩溃/并发写残留）→ 名册读不出曾静默成 []；
+  // team/standard 走 ensureStandardRoles（补缺不覆盖）应能把五连带回来——数据自愈路保通
+  it('roles.json 损坏（半截 JSON）后 team/standard 仍能补回标准五连', async () => {
+    const dir = tmp();
+    const { app } = await buildServer(dir);
+    try {
+      fs.writeFileSync(path.join(dir, 'roles.json'), '[{"id":"std-plann'); // 半截
+      const res = await app.inject({ method: 'POST', url: '/api/spaces/demo/team/standard?seedOnly=1', headers: { host: HOST } });
+      expect(res.statusCode).toBe(200);
+      const roles = JSON.parse(fs.readFileSync(path.join(dir, 'roles.json'), 'utf8')) as { id: string }[];
+      expect(roles.map((r) => r.id)).toEqual(['std-planner', 'std-implementer', 'std-reviewer', 'std-verifier', 'std-curator']);
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe('v13-B1 delivery 声明位（PUT 机检 + GET 原样带出）', () => {

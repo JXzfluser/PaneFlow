@@ -104,6 +104,8 @@ const ICONS = {
     </>
   ),
   chevron: <path d="M8 10l4 4 4-4" />,
+  fold: <path d="M11 6l-6 6 6 6M19 6l-6 6 6 6" />,
+  unfold: <path d="M13 6l6 6-6 6M5 6l6 6-6 6" />,
   radio: (
     <>
       <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none" />

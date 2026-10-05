@@ -1396,20 +1396,23 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 /* 进度条填充色：原先缺失，导致 fill 不可见 */
 .run-progress-fill { background: var(--accent); }
 
-/* R4.4 移动端可用性：窄屏下侧栏折叠回图标轨（字标/项目行/状态文字隐藏）、面板收窄、控制台保持可用 */
+/* v18-UI 侧栏 rail 态（类驱动，两个触发源：用户点收缩钮 ∪ ≤900px 窄屏自动）：
+   字标/版本/项目行/最近块隐藏、导航变图标轨、底栏图标纵排 */
+.sidenav.rail { width: 52px; padding: 12px 6px 8px; }
+.sidenav.rail .sidenav-head { align-items: center; padding: 0; }
+.sidenav.rail .sidenav-brandrow { flex-direction: column; gap: 6px; }
+.sidenav.rail .sidenav-wordmark,
+.sidenav.rail .sidenav-ver,
+.sidenav.rail .sidenav-space,
+.sidenav.rail .sidenav-recent { display: none; }
+.sidenav.rail .sidenav-items { width: 100%; }
+.sidenav.rail .sidenav-item { flex-direction: column; gap: 2px; padding: 7px 0; width: 100%; justify-content: center; }
+.sidenav.rail .sidenav-label { font-size: 10px; }
+.sidenav.rail .sidenav-foot { flex-direction: column; gap: 6px; }
+.sidenav-toggle { margin-left: auto; }
 @media (max-width: 900px) {
-  .sidenav { width: 52px; padding: 12px 6px 8px; }
-  .sidenav-head { align-items: center; padding: 0; }
-  .sidenav-brandrow { flex-direction: column; gap: 6px; }
-  .sidenav-wordmark { display: none; }
-  .sidenav-ver { display: none; }
-  .sidenav-spacer { min-height: 10px; }
-  .sidenav-space { display: none; }
-  .sidenav-recent { display: none; }  /* 52px 窄轨装不下文字行，最近块只在宽侧栏出现 */
-  .sidenav-items { width: 100%; }
-  .sidenav-item { flex-direction: column; gap: 2px; padding: 7px 0; width: 100%; justify-content: center; }
-  .sidenav-label { font-size: 10px; }
-  .sidenav-foot { flex-direction: column; gap: 6px; }  /* 52px 窄轨装不下一行三枚，纵向堆叠 */
+  /* 窄屏是自动 rail（用户收缩钮没有意义，藏掉）；面板收窄、控制台保持可用 */
+  .sidenav-toggle { display: none; }
   .palette { width: 150px; }
   .props { width: 220px; }
   .topbar .tb-group { border-right: none; }

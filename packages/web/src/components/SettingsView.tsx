@@ -666,6 +666,9 @@ type RoleUsage = { spaceId: string; name: string; alias?: string }[];
 
 function RolesEditor() {
   const log = useStore((s) => s.log);
+  /** v9-B1 标准五连的固定 id（自愈修复按钮的适用判据；角色定义正身在 server 的 roles.ts） */
+  const STD_TEAM_ROLE_IDS = new Set(['std-planner', 'std-implementer', 'std-reviewer', 'std-verifier', 'std-curator']);
+  const [repairing, setRepairing] = useState(false);
   /** 草稿：卡背上正在编辑的样子 */
   const [roles, setRoles] = useState<Role[]>([]);
   /** 在册：最后一次 PUT /api/roles 成功后服务端认下的样子——两者不等即「未保存」 */
@@ -923,10 +926,42 @@ function RolesEditor() {
         })}
       </div>
       {ghosts.length > 0 && (
-        <p className="bot-ghosts">
-          <Icon name="alert" size={12} /> 班底里还引用着已不在库的角色：
-          {ghosts.map(([id, ps]) => ` ${id}（${ps.map((p) => p.name).join('、')}）`).join('；')}
-        </p>
+        <div className="bot-ghosts">
+          <p>
+            <Icon name="alert" size={12} /> 班底里还引用着已不在库的角色：
+            {ghosts.map(([id, ps]) => ` ${id}（${ps.map((p) => p.name).join('、')}）`).join('；')}
+          </p>
+          {/* v18 自愈口：悬空的全是标准五连（v9-B1 固定 id）→ 角色库补缺即复位，班底一个字节不动
+              （seedOnly=1 明确不覆写班底——那里可能有用户自定义成员）。非标准角色悬空不亮此钮，
+              得人去建同名角色——界面上不假装能自动修。 */}
+          {ghosts.every(([id]) => STD_TEAM_ROLE_IDS.has(id)) && (
+            <button
+              className="ghost"
+              disabled={repairing}
+              onClick={() => {
+                const spaceId = ghosts.find(([, ps]) => ps.length > 0)?.[1][0]?.spaceId;
+                if (!spaceId) return;
+                setRepairing(true);
+                void fetchJson<unknown>('POST', `/api/spaces/${encodeURIComponent(spaceId)}/team/standard?seedOnly=1`)
+                  .then(() => fetchJson<{ roles?: Role[] }>('GET', '/api/roles'))
+                  .then((d) => {
+                    const rs = d.roles ?? [];
+                    setRoles(rs);
+                    setCommitted(rs);
+                    return fetchJson<{ usage?: Record<string, RoleUsage> }>('GET', '/api/roles/usage');
+                  })
+                  .then((d) => {
+                    setUsage(d.usage ?? {});
+                    log('info', '标准五连已补回角色库——班底悬空引用复位（班底档案未被改动）');
+                  })
+                  .catch((e: Error) => log('error', `补回失败：${e.message}`))
+                  .finally(() => setRepairing(false));
+              }}
+            >
+              {repairing ? '补回中…' : '⚡ 一键补回标准五连（修复悬空引用）'}
+            </button>
+          )}
+        </div>
       )}
       <button
         className="ghost"
