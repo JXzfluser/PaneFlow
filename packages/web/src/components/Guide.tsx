@@ -99,6 +99,15 @@ export function Guide({ onClose }: { onClose: () => void }) {
         )}
 
         <div className="close-row">
+          {/* v18-UI 指南与向导合并：指南是门——新手不用找第二处入口 */}
+          <button
+            onClick={() => {
+              onClose();
+              useStore.getState().setPwOpen(true);
+            }}
+          >
+            ⚡ 30 秒向导建项目
+          </button>
           <button className="primary" onClick={onClose}>开始使用</button>
         </div>
       </div>

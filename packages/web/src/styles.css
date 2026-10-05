@@ -655,46 +655,57 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 [data-theme='light'] .modal, [data-theme='light'] .console, [data-theme='light'] .topbar,
 [data-theme='light'] .palette, [data-theme='light'] .props { box-shadow: 0 1px 2px rgba(31,35,40,0.04); }
 
-/* side navigation (B8 → v18-UI 对标 vibex)：190px 面板——顶部等宽字标、
-   中部圆角卡片导航（图标+中文+等宽英文小注）、底部工具与连接状态行。
-   安静 chrome 三原则：只有面板两级色、1px 结构边、无花哨阴影；激活态用
-   实底色 + 图标提亮表达（motion restraint：只有 120ms 的底色过渡）。 */
+/* side navigation (B8 → v18-UI v2 对标 vibex)：188px 面板——字标+当前项目、
+   单行卡片导航、底部工具行+状态行。
+   v2 返工点：删英文小注（字距拉开的小字是噪声不是层级）；激活态柔色底不描边；
+   底栏拆两行呼吸；头部小注位换成「当前项目」真实信息（可点进项目页）。 */
 .app-with-nav { display: flex; height: 100%; }
 .sidenav {
-  width: 190px; flex-shrink: 0; display: flex; flex-direction: column;
+  width: 188px; flex-shrink: 0; display: flex; flex-direction: column;
   background: var(--panel); border-right: 1px solid var(--border);
-  padding: 14px 10px 10px; gap: 14px;
+  padding: 14px 10px 12px; gap: 12px;
 }
-.sidenav-head { display: flex; align-items: center; gap: 8px; padding: 0 6px; }
-.sidenav-brand { width: 26px; height: 26px; border-radius: 7px; display: block; flex-shrink: 0; }
+.sidenav-head { display: flex; flex-direction: column; gap: 6px; padding: 0 4px; }
+.sidenav-brandrow { display: flex; align-items: center; gap: 8px; }
+.sidenav-brand { width: 24px; height: 24px; border-radius: 6px; display: block; flex-shrink: 0; }
 .sidenav-wordmark {
-  font-family: var(--font-mono); font-size: 13.5px; font-weight: 600;
-  color: var(--text); letter-spacing: 0.3px; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 13px; font-weight: 600;
+  color: var(--text); letter-spacing: 0.2px; white-space: nowrap;
 }
-.sidenav-items { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+/* 脚注式版本号：同行行盒内略微下沉的小字——「在字标下面一点」但不是换行 */
+.sidenav-ver {
+  font-family: var(--font-mono); font-size: 9px; font-weight: 400;
+  color: var(--text-dim); opacity: 0.7; letter-spacing: 0.2px;
+  align-self: flex-end; margin: 0 0 1px 1px; white-space: nowrap;
+}
+/* 「设置沉底」的弹性占位 */
+.sidenav-spacer { flex: 1; min-height: 8px; }
+.sidenav-space {
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  max-width: 100%; padding: 2px 8px 2px 6px; border: none; border-radius: 6px;
+  background: transparent; color: var(--text-dim); font-size: 11px; cursor: pointer;
+  transition: background-color var(--t-fast), color var(--t-fast);
+}
+.sidenav-space:hover { background: var(--panel-2); color: var(--text); }
+.sidenav-space-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); opacity: 0.65; flex-shrink: 0; }
+.sidenav-space-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidenav-items { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .sidenav-item {
   display: flex; align-items: center; gap: 10px; text-align: left;
-  padding: 8px 10px; border: 1px solid transparent; border-radius: 9px;
-  background: transparent; color: var(--text-dim);
-  transition: background-color var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+  padding: 8px 10px; border: none; border-radius: 8px;
+  background: transparent; color: var(--text-dim); font-size: 13px;
+  transition: background-color var(--t-fast), color var(--t-fast);
 }
 .sidenav-item:hover { background: var(--panel-2); color: var(--text); }
-.sidenav-item.active {
-  background: var(--panel-2); color: var(--text); border-color: var(--border);
-}
+.sidenav-item.active { background: var(--primary-bg); color: var(--text); }
 .sidenav-item.active .sidenav-icon { color: var(--accent); }
-.sidenav-icon { display: inline-flex; flex-shrink: 0; }
-.sidenav-text { display: flex; flex-direction: column; gap: 0; min-width: 0; }
-.sidenav-label { font-size: 12.5px; line-height: 1.35; }
-.sidenav-sub {
-  font-family: var(--font-mono); font-size: 9px; letter-spacing: 1.2px;
-  color: var(--text-dim); opacity: 0.75; line-height: 1.4;
-}
-.sidenav-item.active .sidenav-sub { color: var(--accent); opacity: 0.8; }
+.sidenav-icon { display: inline-flex; flex-shrink: 0; color: inherit; }
+.sidenav-label { line-height: 1.4; white-space: nowrap; }
 .sidenav-foot {
-  display: flex; flex-direction: row; align-items: center; gap: 6px;
+  display: flex; flex-direction: column; gap: 8px;
   padding-top: 10px; border-top: 1px solid var(--border);
 }
+.sidenav-tools { display: flex; align-items: center; gap: 6px; }
 .sidenav-tool {
   display: inline-flex; align-items: center; gap: 5px;
   min-height: 26px; padding: 4px 8px; border-radius: 7px;
@@ -705,16 +716,11 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .sidenav-tool:hover { background: var(--panel-2); color: var(--text); }
 /* theme-face 两枚是绝对定位不撑宽：主题钮定成小方钮 */
 .sidenav-tool.theme-toggle { width: 28px; min-width: 28px; padding: 0; justify-content: center; }
-.sidenav-guide.on { color: var(--accent); }
-.sidenav-status {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
-  font-size: 10.5px; color: var(--text-dim); white-space: nowrap;
-}
+.sidenav-status { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; }
 .sidenav-status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .sidenav-status-dot.ok { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
 .sidenav-status-dot.bad { background: transparent; border: 1.5px solid var(--err); }
 .sidenav-status-dot.warn { background: transparent; border: 1.5px solid var(--warn); }
-.sidenav-status-ver { font-family: var(--font-mono); font-size: 9.5px; opacity: 0.7; }
 .app-main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 /* global topbar for view chrome（v18-UI 瘦身：只留页码眉标，安静化） */
@@ -1362,20 +1368,22 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 /* 进度条填充色：原先缺失，导致 fill 不可见 */
 .run-progress-fill { background: var(--accent); }
 
-/* R4.4 移动端可用性：窄屏下侧栏折叠回图标轨（字标/小注/状态文字隐藏）、面板收窄、控制台保持可用 */
+/* R4.4 移动端可用性：窄屏下侧栏折叠回图标轨（字标/项目行/状态文字隐藏）、面板收窄、控制台保持可用 */
 @media (max-width: 900px) {
-  .sidenav { width: 52px; padding: 12px 6px 8px; align-items: center; }
-  .sidenav-head { flex-direction: column; gap: 6px; padding: 0; }
+  .sidenav { width: 52px; padding: 12px 6px 8px; }
+  .sidenav-head { align-items: center; padding: 0; }
+  .sidenav-brandrow { flex-direction: column; gap: 6px; }
   .sidenav-wordmark { display: none; }
+  .sidenav-ver { display: none; }
+  .sidenav-spacer { min-height: 10px; }
+  .sidenav-space { display: none; }
   .sidenav-items { width: 100%; }
-  .sidenav-item { flex-direction: column; gap: 2px; padding: 7px 0; width: 100%; text-align: center; }
-  .sidenav-text { align-items: center; }
-  .sidenav-sub { display: none; }
-  .sidenav-foot { flex-direction: column; gap: 6px; padding-top: 8px; }
+  .sidenav-item { flex-direction: column; gap: 2px; padding: 7px 0; width: 100%; justify-content: center; }
+  .sidenav-label { font-size: 10px; }
+  .sidenav-foot { align-items: center; }
   .sidenav-guide { display: none; }
   .sidenav-status-text { display: none; }
   .sidenav-status-ver { display: none; }
-  .sidenav-status { margin-left: 0; }
   .palette { width: 150px; }
   .props { width: 220px; }
   .topbar .tb-group { border-right: none; }
