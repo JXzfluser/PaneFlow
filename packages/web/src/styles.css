@@ -661,9 +661,9 @@ button.icon { padding: 4px 6px; min-width: 28px; }
    底栏拆两行呼吸；头部小注位换成「当前项目」真实信息（可点进项目页）。 */
 .app-with-nav { display: flex; height: 100%; }
 .sidenav {
-  width: 188px; flex-shrink: 0; display: flex; flex-direction: column;
+  width: 204px; flex-shrink: 0; display: flex; flex-direction: column;
   background: var(--panel); border-right: 1px solid var(--border);
-  padding: 14px 10px 12px; gap: 12px;
+  padding: 16px 12px 12px; gap: 12px;
 }
 .sidenav-head { display: flex; flex-direction: column; gap: 6px; padding: 0 4px; }
 .sidenav-brandrow { display: flex; align-items: center; gap: 8px; }
@@ -691,8 +691,8 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .sidenav-space-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidenav-items { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .sidenav-item {
-  display: flex; align-items: center; gap: 10px; text-align: left;
-  padding: 8px 10px; border: none; border-radius: 8px;
+  display: flex; align-items: center; gap: 11px; text-align: left;
+  padding: 9px 12px; border: none; border-radius: 8px;
   background: transparent; color: var(--text-dim); font-size: 13px;
   transition: background-color var(--t-fast), color var(--t-fast);
 }
@@ -702,7 +702,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .sidenav-icon { display: inline-flex; flex-shrink: 0; color: inherit; }
 .sidenav-label { line-height: 1.4; white-space: nowrap; }
 .sidenav-foot {
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex; flex-direction: column; gap: 6px;
   padding-top: 10px; border-top: 1px solid var(--border);
 }
 .sidenav-tools { display: flex; align-items: center; gap: 6px; }
@@ -714,8 +714,12 @@ button.icon { padding: 4px 6px; min-width: 28px; }
   transition: background-color var(--t-fast), color var(--t-fast);
 }
 .sidenav-tool:hover { background: var(--panel-2); color: var(--text); }
-/* theme-face 两枚是绝对定位不撑宽：主题钮定成小方钮 */
-.sidenav-tool.theme-toggle { width: 28px; min-width: 28px; padding: 0; justify-content: center; }
+/* v4：主题为带文字的全宽行；两枚日月图标绝对定位，需要一个定尺寸的 relative 宿主 */
+.sidenav-theme-row { width: 100%; }
+.theme-face-host { position: relative; width: 16px; height: 16px; display: inline-flex; flex-shrink: 0; }
+.theme-face-host .theme-face { position: absolute; }
+.theme-face-host[data-theme='light'] .theme-sun,
+.theme-face-host[data-theme='dark'] .theme-moon { opacity: 1; transform: scale(1); filter: blur(0); }
 .sidenav-status { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; }
 .sidenav-status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .sidenav-status-dot.ok { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
@@ -728,6 +732,12 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .view-eyebrow {
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 1.8px;
   color: var(--text-dim); padding: 0 10px; white-space: nowrap;
+}
+
+/* v18-UI 宽屏节奏：内容视图在超宽屏上不无限拉伸（画布/编排除外——图要满幅） */
+@media (min-width: 1680px) {
+  .tasks-view, .board-view, .projects-view, .runs-center { max-width: 1500px; margin: 0 auto; width: 100%; }
+  .settings-view { max-width: 1500px; }
 }
 
 /* runs center */

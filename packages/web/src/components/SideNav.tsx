@@ -95,19 +95,17 @@ export function SideNav() {
         </button>
       </nav>
       <div className="sidenav-foot">
-        <button
-          className="icon theme-toggle sidenav-tool"
-          data-theme={theme}
-          onClick={toggleTheme}
-          title={theme === 'dark' ? '切到浅色' : '切到暗夜'}
-        >
-          {/* 日月两枚常驻，靠 opacity/scale/blur 交叉淡入——表情符硬切换没有过渡语言 */}
-          <span className="theme-face theme-sun">
-            <Icon name="sun" size={14} />
+        {/* v18-UI v4：主题做成带文字的全宽项（ alone 小方钮在宽屏侧栏里像漏摆的棋子） */}
+        <button className="sidenav-tool sidenav-theme-row" onClick={toggleTheme} title={theme === 'dark' ? '切到浅色主题' : '切到暗夜主题'}>
+          <span className="theme-face-host" data-theme={theme}>
+            <span className="theme-face theme-sun">
+              <Icon name="sun" size={14} />
+            </span>
+            <span className="theme-face theme-moon">
+              <Icon name="moon" size={14} />
+            </span>
           </span>
-          <span className="theme-face theme-moon">
-            <Icon name="moon" size={14} />
-          </span>
+          <span>{theme === 'dark' ? '暗夜主题' : '浅色主题'}</span>
         </button>
         <div
           className="sidenav-status"
