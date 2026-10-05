@@ -661,7 +661,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
    底栏拆两行呼吸；头部小注位换成「当前项目」真实信息（可点进项目页）。 */
 .app-with-nav { display: flex; height: 100%; }
 .sidenav {
-  width: 204px; flex-shrink: 0; display: flex; flex-direction: column;
+  width: 180px; flex-shrink: 0; display: flex; flex-direction: column;
   background: var(--panel); border-right: 1px solid var(--border);
   padding: 16px 12px 12px; gap: 12px;
 }
@@ -687,7 +687,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .sidenav-space:hover { background: var(--panel-2); color: var(--text); }
 .sidenav-space-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); opacity: 0.65; flex-shrink: 0; }
 .sidenav-space-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidenav-items { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.sidenav-items { display: flex; flex-direction: column; gap: 2px; }
 .sidenav-item {
   display: flex; align-items: center; gap: 11px; text-align: left;
   padding: 9px 12px; border: none; border-radius: 8px;
@@ -699,8 +699,31 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .sidenav-item.active .sidenav-icon { color: var(--accent); }
 .sidenav-icon { display: inline-flex; flex-shrink: 0; color: inherit; }
 .sidenav-label { line-height: 1.4; white-space: nowrap; }
+/* v5「最近」小块：当前项目最近几条运行——侧栏中部的空白变信息（vibex 会话清单同思路） */
+.sidenav-recent {
+  display: flex; flex-direction: column; gap: 1px;
+  padding-top: 10px; border-top: 1px solid var(--border);
+}
+.sidenav-recent-label {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 1.5px;
+  color: var(--text-dim); opacity: 0.7; padding: 0 8px 5px;
+}
+.sidenav-run {
+  display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
+  padding: 5px 8px; border: none; border-radius: 7px;
+  background: transparent; color: var(--text-dim); font-size: 11.5px; cursor: pointer;
+  transition: background-color var(--t-fast), color var(--t-fast);
+}
+.sidenav-run:hover { background: var(--panel-2); color: var(--text); }
+.sidenav-run-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.sidenav-run-dot.ok { background: var(--ok); }
+.sidenav-run-dot.working { background: var(--warn); }
+.sidenav-run-dot.err { background: var(--err); box-shadow: 0 0 5px var(--err); }
+.sidenav-run-dot.idle { background: var(--idle); }
+.sidenav-run-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidenav-foot {
   display: flex; flex-direction: row; align-items: center; gap: 6px;
+  margin-top: auto; /* 空档留给「最近」块与底栏之间，底栏永远钉在底 */
   padding-top: 10px; border-top: 1px solid var(--border);
 }
 /* v5 底部三图标：设置 / 主题 / 连接状态（悬停出人话详情） */
@@ -1382,6 +1405,7 @@ details.settings-more[open] summary { margin-bottom: 6px; }
   .sidenav-ver { display: none; }
   .sidenav-spacer { min-height: 10px; }
   .sidenav-space { display: none; }
+  .sidenav-recent { display: none; }  /* 52px 窄轨装不下文字行，最近块只在宽侧栏出现 */
   .sidenav-items { width: 100%; }
   .sidenav-item { flex-direction: column; gap: 2px; padding: 7px 0; width: 100%; justify-content: center; }
   .sidenav-label { font-size: 10px; }

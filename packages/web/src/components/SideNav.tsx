@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
+import type { RunRecord } from '@paneflow/shared';
 import { Icon, type IconName } from './Icon.js';
 
 /** 主导航四项——「设置」按用户要求沉到侧栏最底部，「指南」是顶部第一入口（合并向导）。 */
@@ -12,12 +13,31 @@ const ITEMS: { id: 'tasks' | 'orchestrate' | 'runs' | 'projects'; icon: IconName
 ];
 
 /**
- * v18-UI 侧栏 v3（对标 vibex + 用户返工）：
+ * v18-UI 侧栏 v5（对标 vibex + 用户返工）：
  *  · 版本号以脚注式小字缀在 /paneflow 行内（略微下沉的基线，不占新行）；
  *  · 「指南」升为列表第一入口（指南内可直接发起 30 秒向导——指南与向导合并，指南是门）；
- *  · 「设置」沉到侧栏最底部（高频导航只留 任务/编排/看板/项目）；
- *  · 底栏只留主题切换与连接状态行。
+ *  · 中部「最近」小块填住导航与底栏之间的竖向空档（vibex 的侧栏就是会话清单——
+ *    空白变信息：当前项目最近 5 条运行，点击直达画布；没有运行就不渲染，绝不造数）；
+ *  · 底部一行三图标：设置 / 主题 / 连接状态（悬停看详情）。
  */
+
+/** 运行状态 → 状态点色（形状语言与全站一致，不只靠颜色） */
+function runDotClass(run: RunRecord): string {
+  if (run.state === 'completed' || run.state === 'completed-with-failures') return 'ok';
+  if (run.state === 'failed') return 'err';
+  if (run.state === 'running') {
+    // 运行中但有节点卡在人工门 = 需要你，红点区别于干活中的黄点
+    return Object.values(run.nodes).some((n) => n.state === 'blocked') ? 'err' : 'working';
+  }
+  return 'idle'; // queued / cancelled / 未知
+}
+
+function runTitle(run: RunRecord): string {
+  return (
+    run.graph.metadata?.description?.trim() ||
+    (run.issueId ? `Issue #${run.issueId}` : run.dagName)
+  );
+}
 export function SideNav() {
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
@@ -27,6 +47,8 @@ export function SideNav() {
   const setGuideOpen = useStore((s) => s.setGuideOpen);
   const wsOk = useStore((s) => s.wsOk);
   const herdrOk = useStore((s) => s.herdrOk);
+  const runs = useStore((s) => s.runs);
+  const openRun = useStore((s) => s.openRun);
   const [spaceName, setSpaceName] = useState('');
 
   useEffect(() => {
@@ -35,6 +57,18 @@ export function SideNav() {
       .then((r) => setSpaceName(r.spaces.find((sp) => sp.id === space)?.name ?? space))
       .catch(() => setSpaceName(space));
   }, [space]);
+
+  // 「最近」的数据源：挂载时拉一次全量运行账（不依赖其他视图是否先挂载过）
+  useEffect(() => {
+    void api
+      .listRuns()
+      .then((r) => useStore.getState().mergeRuns(r.runs))
+      .catch(() => undefined);
+  }, []);
+
+  const recent = Object.values(runs)
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+    .slice(0, 5);
 
   // 状态行三态（形状语言与全站 ●/○/? 一致，不只靠颜色）：
   // ws 断 = ○ 连接断开；ws 通但 herdr 不可达 = ! herdr 离线；都在 = ● 连接正常
@@ -83,6 +117,25 @@ export function SideNav() {
           </button>
         ))}
       </nav>
+      {recent.length > 0 && (
+        <div className="sidenav-recent">
+          <div className="sidenav-recent-label">最近</div>
+          {recent.map((r) => (
+            <button
+              key={r.runId}
+              className="sidenav-run"
+              title={`${runTitle(r)} · ${r.state}${r.issueId ? ` · Issue #${r.issueId}` : ''}——点击打开画布`}
+              onClick={() => {
+                openRun(r.runId);
+                setView('orchestrate');
+              }}
+            >
+              <span className={`sidenav-run-dot ${runDotClass(r)}`} />
+              <span className="sidenav-run-name">{runTitle(r)}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {/* v18-UI v5：底部收成一行三个图标——设置 / 主题 / 连接状态（悬停看详情）。
           三行文字压成三枚图标，侧栏底部不再占竖向空间；「设置沉底」语义不变。 */}
       <div className="sidenav-foot">
