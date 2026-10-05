@@ -1,20 +1,20 @@
 import { useEffect, useState } from 'react';
 import { fetchJson } from '../api.js';
 import { useStore } from '../store.js';
-import { PromptModal, type ModalRequest } from './PromptModal.jsx';
 import { ProjectProfileEditor } from './ProjectProfileEditor.jsx';
 import { EnvRegister } from './EnvRegister.jsx';
 import { projectCardFacts, sortProjectsCurrentFirst, type ProjectLite } from '../project-cards.js';
 
 /** v10-V/W 项目视图：项目是一等公民——卡片墙总览 + 就地展开的档案面板（主从布局）。
  *  档案（主仓/约定/班底/钉档/Agent 选择）已从设置页迁入这里；「编辑档案」先把该项目
- *  切为当前（试跑/下发等上下文跟当前项目走，D4），再展开面板。 */
+ *  切为当前（试跑/下发等上下文跟当前项目走，D4），再展开面板。
+ *  v18-UI 建项目入口归一：「＋ 新建项目」即 30 秒向导（此前页面顶栏并排两个建项目流
+ *  ——向导 vs 旧式手填表单弹窗，互相竞争；指南内侧另有同一向导入口）。 */
 export function ProjectsView() {
   const log = useStore((s) => s.log);
   const space = useStore((s) => s.space);
   const switchSpace = useStore((s) => s.switchSpace);
   const [list, setList] = useState<ProjectLite[]>([]);
-  const [modal, setModal] = useState<ModalRequest | null>(null);
   const [editing, setEditing] = useState(false);
   const [envWizard, setEnvWizard] = useState(false);
 
@@ -28,34 +28,7 @@ export function ProjectsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const newProject = () =>
-    setModal({
-      title: '新建项目',
-      message: '运行记录与档案按项目互相隔离；编排模板全局共享。',
-      fields: [
-        {
-          key: 'id',
-          label: '项目 ID',
-          placeholder: 'my-project',
-          validate: (v) =>
-            /^[a-zA-Z0-9_-]{1,32}$/.test(v.trim()) ? null : '只能包含字母 / 数字 / - / _（≤32 字符）',
-        },
-        {
-          key: 'name',
-          label: '项目名称',
-          placeholder: '我的项目',
-          validate: (v, all) => (v.trim() || all.id?.trim() ? null : '请填写项目名称'),
-        },
-      ],
-      confirmText: '创建',
-      onSubmit: async ({ id, name }) => {
-        const sid = (id ?? '').trim();
-        await fetchJson<unknown>('POST', '/api/spaces', { id: sid, name: (name ?? '').trim() || sid });
-        await load();
-        switchSpace(sid);
-        setEditing(true);
-      },
-    });
+  const newProject = () => useStore.getState().setPwOpen(true);
 
   const openProfile = (id: string) => {
     if (id !== space) switchSpace(id);
@@ -76,10 +49,7 @@ export function ProjectsView() {
           <button onClick={() => setEnvWizard(true)} title="从本机目录探测并登记到当前项目">
             🔍 发现环境并登记
           </button>
-          <button onClick={() => useStore.getState().setPwOpen(true)} title="起名 → 扫描登记 → 装班底，一条线走完">
-            ⚡ 30 秒向导
-          </button>
-          <button className="primary" onClick={newProject}>
+          <button className="primary" onClick={newProject} title="起名 → 扫描登记 → 装班底，一条线走完">
             + 新建项目
           </button>
         </div>
@@ -151,7 +121,6 @@ export function ProjectsView() {
         <ProjectProfileEditor key={space} projectId={space} onClose={() => setEditing(false)} />
       )}
 
-      {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
       {envWizard && (
         <EnvRegister
           spaceId={space}

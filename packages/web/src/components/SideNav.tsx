@@ -97,12 +97,6 @@ export function SideNav() {
         </button>
       </div>
       <nav className="sidenav-items" aria-label="主导航">
-        <button className="sidenav-item" title="使用指南：三步跑通 + 完整教程，也可从这里发起 30 秒建项目向导" onClick={() => setGuideOpen(true)}>
-          <span className="sidenav-icon">
-            <Icon name="book" size={16} />
-          </span>
-          <span className="sidenav-label">指南</span>
-        </button>
         {ITEMS.map((it) => (
           <button
             key={it.id}
@@ -136,9 +130,16 @@ export function SideNav() {
           ))}
         </div>
       )}
-      {/* v18-UI v5：底部收成一行三个图标——设置 / 主题 / 连接状态（悬停看详情）。
-          三行文字压成三枚图标，侧栏底部不再占竖向空间；「设置沉底」语义不变。 */}
+      {/* v18-UI v6：底部一行四图标——指南 / 设置 / 主题 / 连接状态。
+          指南是动作不是目的地，不再占导航位（导航=纯目的地）；帮助住底部角落是全行业惯例。 */}
       <div className="sidenav-foot">
+        <button
+          className="sidenav-iconbtn"
+          title="使用指南：三步跑通 + 完整教程，也可从这里发起 30 秒建项目向导"
+          onClick={() => setGuideOpen(true)}
+        >
+          <Icon name="book" size={15} />
+        </button>
         <button
           className={`sidenav-iconbtn ${view === 'settings' ? 'active' : ''}`}
           title="设置：环境 / 网关 / GitHub / 用量 / 能力注册 / 角色 / 沉淀 / 通道"
