@@ -754,7 +754,7 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 
 /* v18-UI 宽屏节奏：内容视图在超宽屏上不无限拉伸（画布/编排除外——图要满幅） */
 @media (min-width: 1680px) {
-  .tasks-view, .board-view, .projects-view, .runs-center { max-width: 1500px; margin: 0 auto; width: 100%; }
+  .tasks-view, .board-view, .projects-view, .runs-center, .caps-view { max-width: 1500px; margin: 0 auto; width: 100%; }
   .settings-view { max-width: 1500px; }
 }
 
@@ -1879,3 +1879,22 @@ details.settings-more[open] summary { margin-bottom: 6px; }
   .usage-totals { margin-left: 0; }
   .review-diff-file i { max-width: 40vw; }
 }
+
+/* -- v18 能力页（注册中心升格一级目的地）与着陆总览条 ------------------------- */
+.caps-view { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; }
+/* caps-view 是滚动宿主：registry-view 自带的滚动/内边距交还（嵌入设置卡同款口径） */
+.caps-view .registry-view { flex: none; overflow: visible; padding: 0; }
+.reg-overview { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
+.reg-overview-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel-2);
+  cursor: pointer; font-size: 11.5px; color: var(--text-dim);
+  transition: border-color var(--t-fast), color var(--t-fast);
+}
+.reg-overview-chip:hover { border-color: var(--accent); color: var(--text); }
+.reg-overview-chip b { color: var(--text); font-weight: 600; }
+.reg-overview-count { font-family: var(--font-mono); font-size: 10.5px; }
+.reg-overview-health i { font-style: normal; font-size: 10px; margin-left: 4px; font-family: var(--font-mono); }
+.reg-overview-health i.ok { color: var(--ok); }
+.reg-overview-health i.bad { color: var(--err); }

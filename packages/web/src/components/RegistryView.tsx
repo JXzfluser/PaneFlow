@@ -516,6 +516,19 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
     () => new Set(groups.find((g) => g.kind === 'model')?.entries.map((e) => e.id) ?? []),
     [groups],
   );
+  // v18 着陆总览条的账面：每类条数 + 探活两态计数（health 独立一刀后到，没到=该类不显示活数）
+  const kindStats = groups
+    .filter((g) => g.entries.length > 0)
+    .map((g) => {
+      let live = 0;
+      let missing = 0;
+      for (const e of g.entries) {
+        const d = healthDot(health?.get(e.id));
+        if (d === 'ok') live += 1;
+        else if (d === 'bad') missing += 1;
+      }
+      return { kind: g.kind, label: kindGroupLabel(g.kind, data?.kindLabels), total: g.entries.length, live, missing };
+    });
   const gatewayModelTotal = gwCatalog?.reduce((n, p) => n + p.models.length, 0) ?? 0;
 
   const importGatewayModels = () => {
@@ -555,8 +568,36 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
         {!embedded && (
           <>
             <h2>注册中心</h2>
-            <p className="settings-hint">能力清单的一张表：登记、启停、删除都走这里的表单，不用写 JSON。判定全在服务端，本页只渲染它给的话。</p>
+            <p className="settings-hint">
+              能力清单的一张表：登记、启停、删除都走这里的表单，不用写 JSON。判定全在服务端，本页只渲染它给的话。
+            </p>
           </>
+        )}
+        {/* v18 升格着陆面：核心三问的账面总览——每类能力<b>说什么</b>（名字）、<b>有多少</b>（计数）、
+            <b>还在不在</b>（探活读数：绿=探通、红=探明不在；没通道的类不装读数，绝不拿灰点冒充）。
+            「谁在用」在每条的详情抽屉里（registry refs）。点胶囊即聚焦该类。 */}
+        {!embedded && kindStats.length > 0 && (
+          <div className="reg-overview">
+            {kindStats.map((s) => (
+              <button
+                key={s.kind}
+                className="reg-overview-chip"
+                onClick={() => {
+                  setKindTab(s.kind);
+                  setActiveKind(s.kind);
+                }}
+              >
+                <b>{s.label}</b>
+                <span className="reg-overview-count">{s.total}</span>
+                {(s.live > 0 || s.missing > 0) && (
+                  <span className="reg-overview-health">
+                    {s.live > 0 && <i className="ok">●{s.live}</i>}
+                    {s.missing > 0 && <i className="bad">●{s.missing}</i>}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
         )}
 
         {/* R-newbie → v17-F2：五张能力卡即登记入口——每张说清「登记了有什么用」，点了就开表单。

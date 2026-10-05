@@ -8,14 +8,14 @@ import { groupWikiPages, WIKI_GROUP_CAP } from '../wiki-sediment.js';
 import { Icon, type IconName } from './Icon.js';
 import { PromptModal, type ModalRequest } from './PromptModal.js';
 import { removeGatewayProfileRequest, unlinkPatRequest, overwriteIntakeRequest } from '../dialogs.js';
-import { RegistryView } from './RegistryView.jsx';
 
 /**
  * 设置页章节分两组（v13 排版分类整顿 → v15-IA 配置枢纽归一）：
  * 「运行底座」= 这机能跑起来吗（环境→模型→凭据→能力注册，按上手依赖序）；
  * 「班底与复利」= 谁在干活、留下什么（角色→沉淀→外呼）。
  * v10-W 起「项目档案」已迁往「项目」视图，这里只留全局项；
- * v15-IA 起原注册中心整体并入本页（网关/GitHub/通道不再散落两处）。
+ * v15-IA 注册中心曾并入本页；v18-UI 按设计稿 IA 契约升回一级目的地「能力」
+ * （注册=能力登记+配置聚合，是核心模块不是一条设置），本页回归系统级配置。
  */
 const SECTION_GROUPS: { label: string; items: { id: string; icon: IconName; label: string }[] }[] = [
   {
@@ -640,12 +640,9 @@ function EquipPicker(props: {
       <div className="equip-manual open">
         <button
           className="ghost tiny"
-          onClick={() => {
-            useStore.getState().setView('settings');
-            document.getElementById('sec-registry')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }}
+          onClick={() => useStore.getState().setView('caps')}
         >
-          登记清单里没有？去下方「能力注册」新增
+          登记清单里没有？去「能力」页新增
         </button>
       </div>
       <p className="settings-hint">{hint}</p>
@@ -1076,14 +1073,6 @@ export function SettingsView() {
           <h3>用量</h3>
           <p className="settings-hint">token 只认引擎收口落册的成本账（agent 自报累计，绝不估算）；归档单也计入。</p>
           <UsageCard />
-        </section>
-
-        <section className="settings-card" id="sec-registry">
-          <h3>能力注册</h3>
-          <p className="settings-hint">
-            模型 / 技能 / 规则 / 仓库 / MCP 在这里登记，Agent 引擎、节点类型、角色、模板等系统能力同页可查——一张表管全部能力。
-          </p>
-          <RegistryView embedded />
         </section>
 
         <section className="settings-card" id="sec-wiki">

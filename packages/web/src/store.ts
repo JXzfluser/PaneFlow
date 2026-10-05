@@ -52,13 +52,13 @@ function initialTheme(): ThemeName {
   applyTheme(t);
   return t;
 }
-export type AppView = 'tasks' | 'orchestrate' | 'runs' | 'projects' | 'settings';
+export type AppView = 'tasks' | 'orchestrate' | 'runs' | 'projects' | 'caps' | 'settings';
 
 /** 视图白名单 + 存储键：改默认落地页时递增版本号，让老用户也吃到新默认（A2）。
  *  v4：注册中心并入设置页（配置枢纽归一），旧键里的 'registry' 迁到 'settings'；
  *  v5：默认落地页改「任务」（说需求是产品正门），「运行」升格为「看板」（视图 id 不变）。 */
 const VIEW_KEY = 'pf-view-v5';
-const VIEWS: AppView[] = ['tasks', 'orchestrate', 'runs', 'projects', 'settings'];
+const VIEWS: AppView[] = ['tasks', 'orchestrate', 'runs', 'projects', 'caps', 'settings'];
 
 function initialView(): AppView {
   const saved = localStorage.getItem(VIEW_KEY) ?? localStorage.getItem('pf-view-v4') ?? localStorage.getItem('pf-view-v3');

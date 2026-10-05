@@ -4,12 +4,19 @@ import { useStore } from '../store.js';
 import type { RunRecord } from '@paneflow/shared';
 import { Icon, type IconName } from './Icon.js';
 
-/** 主导航四项——「设置」按用户要求沉到侧栏最底部，「指南」是顶部第一入口（合并向导）。 */
-const ITEMS: { id: 'tasks' | 'orchestrate' | 'runs' | 'projects'; icon: IconName; label: string; title: string }[] = [
+/** 主导航五项——「设置」按用户要求沉到侧栏最底部（图标），「能力」按设计稿 IA 契约
+ *  升回一级目的地（注册=能力登记+配置聚合）；「指南」是底部工具（合并向导入口）。 */
+const ITEMS: {
+  id: 'tasks' | 'orchestrate' | 'runs' | 'projects' | 'caps';
+  icon: IconName;
+  label: string;
+  title: string;
+}[] = [
   { id: 'tasks', icon: 'pen', label: '任务', title: '任务：一句话描述需求，自动编排并执行' },
   { id: 'orchestrate', icon: 'workflow', label: '编排', title: '编排：步骤清单 / 图形画布' },
   { id: 'runs', icon: 'clock', label: '看板', title: '看板：统计 / 审阅队列 / 五列进度板（清单模式查历史细节）' },
   { id: 'projects', icon: 'folder', label: '项目', title: '项目：总览 / 切换 / 新建（原底部下拉已升格为视图）' },
+  { id: 'caps', icon: 'registry', label: '能力', title: '注册中心：能力登记与配置聚合——每类能力说什么/谁在用/还在不在' },
 ];
 
 /**

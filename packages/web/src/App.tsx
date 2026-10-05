@@ -7,6 +7,7 @@ import { BoardView } from './components/BoardView.jsx';
 import { OrchestrateView } from './components/OrchestrateView.jsx';
 import { ProjectsView } from './components/ProjectsView.jsx';
 import { SettingsView } from './components/SettingsView.jsx';
+import { RegistryView } from './components/RegistryView.jsx';
 import { Guide } from './components/Guide.jsx';
 import { EnvWizard } from './components/EnvWizard.jsx';
 import { ProjectWizard } from './components/ProjectWizard.jsx';
@@ -98,7 +99,9 @@ export function App() {
                   ? 'BOARD · 看板'
                   : view === 'projects'
                     ? 'PROJECTS · 项目'
-                    : 'SETTINGS · 设置'}
+                    : view === 'caps'
+                      ? 'REGISTRY · 能力'
+                      : 'SETTINGS · 设置'}
           </span>
           <div className="spacer" />
         </div>
@@ -106,6 +109,12 @@ export function App() {
         {view === 'orchestrate' && <OrchestrateView />}
         {view === 'runs' && <BoardView />}
         {view === 'projects' && <ProjectsView />}
+        {/* v18-UI 注册中心升回一级目的地（设计稿 IA 契约：注册=能力登记+配置聚合） */}
+        {view === 'caps' && (
+          <div className="caps-view">
+            <RegistryView />
+          </div>
+        )}
         {view === 'settings' && <SettingsView />}
       </div>
       {wizard && (
