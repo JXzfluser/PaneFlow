@@ -82,38 +82,37 @@ export function SideNav() {
             <span className="sidenav-label">{it.label}</span>
           </button>
         ))}
-        <div className="sidenav-spacer" />
+      </nav>
+      {/* v18-UI v5：底部收成一行三个图标——设置 / 主题 / 连接状态（悬停看详情）。
+          三行文字压成三枚图标，侧栏底部不再占竖向空间；「设置沉底」语义不变。 */}
+      <div className="sidenav-foot">
         <button
-          className={`sidenav-item ${view === 'settings' ? 'active' : ''}`}
+          className={`sidenav-iconbtn ${view === 'settings' ? 'active' : ''}`}
           title="设置：环境 / 网关 / GitHub / 用量 / 能力注册 / 角色 / 沉淀 / 通道"
           onClick={() => setView('settings')}
         >
-          <span className="sidenav-icon">
-            <Icon name="sliders" size={16} />
-          </span>
-          <span className="sidenav-label">设置</span>
+          <Icon name="sliders" size={16} />
         </button>
-      </nav>
-      <div className="sidenav-foot">
-        {/* v18-UI v4：主题做成带文字的全宽项（ alone 小方钮在宽屏侧栏里像漏摆的棋子） */}
-        <button className="sidenav-tool sidenav-theme-row" onClick={toggleTheme} title={theme === 'dark' ? '切到浅色主题' : '切到暗夜主题'}>
-          <span className="theme-face-host" data-theme={theme}>
-            <span className="theme-face theme-sun">
-              <Icon name="sun" size={14} />
-            </span>
-            <span className="theme-face theme-moon">
-              <Icon name="moon" size={14} />
-            </span>
+        <button
+          className="icon theme-toggle sidenav-iconbtn"
+          data-theme={theme}
+          onClick={toggleTheme}
+          title={theme === 'dark' ? '切到浅色主题' : '切到暗夜主题'}
+        >
+          {/* 日月两枚常驻，靠 opacity/scale/blur 交叉淡入——表情符硬切换没有过渡语言 */}
+          <span className="theme-face theme-sun">
+            <Icon name="sun" size={14} />
           </span>
-          <span>{theme === 'dark' ? '暗夜主题' : '浅色主题'}</span>
+          <span className="theme-face theme-moon">
+            <Icon name="moon" size={14} />
+          </span>
         </button>
-        <div
-          className="sidenav-status"
-          title={`WS ${wsOk ? '已连接' : '断开'} · herdr ${herdrOk === false ? '不可达' : '正常'}`}
+        <span
+          className={`sidenav-iconbtn sidenav-statusbtn`}
+          title={`连接状态：WS ${wsOk ? '已连接' : '断开'} · herdr ${herdrOk === false ? '不可达' : '正常'}`}
         >
           <span className={`sidenav-status-dot ${status.cls}`} />
-          <span className="sidenav-status-text">{status.text}</span>
-        </div>
+        </span>
       </div>
     </div>
   );

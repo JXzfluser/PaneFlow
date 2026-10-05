@@ -678,8 +678,6 @@ button.icon { padding: 4px 6px; min-width: 28px; }
   color: var(--text-dim); opacity: 0.7; letter-spacing: 0.2px;
   align-self: flex-end; margin: 0 0 1px 1px; white-space: nowrap;
 }
-/* 「设置沉底」的弹性占位 */
-.sidenav-spacer { flex: 1; min-height: 8px; }
 .sidenav-space {
   display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
   max-width: 100%; padding: 2px 8px 2px 6px; border: none; border-radius: 6px;
@@ -702,24 +700,21 @@ button.icon { padding: 4px 6px; min-width: 28px; }
 .sidenav-icon { display: inline-flex; flex-shrink: 0; color: inherit; }
 .sidenav-label { line-height: 1.4; white-space: nowrap; }
 .sidenav-foot {
-  display: flex; flex-direction: column; gap: 6px;
+  display: flex; flex-direction: row; align-items: center; gap: 6px;
   padding-top: 10px; border-top: 1px solid var(--border);
 }
-.sidenav-tools { display: flex; align-items: center; gap: 6px; }
-.sidenav-tool {
-  display: inline-flex; align-items: center; gap: 5px;
-  min-height: 26px; padding: 4px 8px; border-radius: 7px;
-  border: 1px solid transparent; background: transparent; color: var(--text-dim);
-  font-size: 11.5px; cursor: pointer;
+/* v5 底部三图标：设置 / 主题 / 连接状态（悬停出人话详情） */
+.sidenav-iconbtn {
+  width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: var(--text-dim); cursor: pointer;
+  padding: 0;
   transition: background-color var(--t-fast), color var(--t-fast);
 }
-.sidenav-tool:hover { background: var(--panel-2); color: var(--text); }
-/* v4：主题为带文字的全宽行；两枚日月图标绝对定位，需要一个定尺寸的 relative 宿主 */
-.sidenav-theme-row { width: 100%; }
-.theme-face-host { position: relative; width: 16px; height: 16px; display: inline-flex; flex-shrink: 0; }
-.theme-face-host .theme-face { position: absolute; }
-.theme-face-host[data-theme='light'] .theme-sun,
-.theme-face-host[data-theme='dark'] .theme-moon { opacity: 1; transform: scale(1); filter: blur(0); }
+.sidenav-iconbtn:hover { background: var(--panel-2); color: var(--text); }
+.sidenav-iconbtn.active { background: var(--primary-bg); color: var(--accent); }
+.sidenav-statusbtn { cursor: default; }
+.sidenav-statusbtn:hover { background: transparent; color: var(--text-dim); }
 .sidenav-status { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--text-dim); white-space: nowrap; }
 .sidenav-status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .sidenav-status-dot.ok { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
@@ -1390,10 +1385,7 @@ details.settings-more[open] summary { margin-bottom: 6px; }
   .sidenav-items { width: 100%; }
   .sidenav-item { flex-direction: column; gap: 2px; padding: 7px 0; width: 100%; justify-content: center; }
   .sidenav-label { font-size: 10px; }
-  .sidenav-foot { align-items: center; }
-  .sidenav-guide { display: none; }
-  .sidenav-status-text { display: none; }
-  .sidenav-status-ver { display: none; }
+  .sidenav-foot { flex-direction: column; gap: 6px; }  /* 52px 窄轨装不下一行三枚，纵向堆叠 */
   .palette { width: 150px; }
   .props { width: 220px; }
   .topbar .tb-group { border-right: none; }
