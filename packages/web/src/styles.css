@@ -1962,3 +1962,14 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .registry-card .registry-detail dt { margin-top: 5px; font-size: 10.5px; }
 .registry-card .registry-detail dd,
 .registry-card .registry-detail dd code { overflow-wrap: anywhere; word-break: break-all; }
+
+/* v18 系统能力折叠盘点区（镜子类，正身在各自管理面） */
+.reg-sys { margin-bottom: 14px; }
+.reg-sys summary {
+  cursor: pointer; font-size: 12px; color: var(--text-dim);
+  padding: 7px 10px; border: 1px dashed var(--border); border-radius: 8px;
+  background: var(--panel); user-select: none;
+}
+.reg-sys summary:hover { color: var(--text); border-color: var(--edge); }
+.reg-sys[open] summary { border-radius: 8px 8px 0 0; }
+.reg-sys .reg-kind-grid { margin-top: 0; padding: 10px; border: 1px dashed var(--border); border-top: none; border-radius: 0 0 8px 8px; background: var(--panel); }

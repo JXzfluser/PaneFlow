@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { isRegistryViewKind, REGISTRY_KINDS, REGISTRY_VIEW_KINDS, type RegistryEntry } from '@paneflow/shared';
 import type { RegistryStore, RegistryWriteResult } from '../orchestrate/registry.js';
@@ -100,7 +103,53 @@ function guardReferenced(deps: RegistryRouteDeps, entry: RegistryEntry | undefin
   return refs.length ? { ok: false, code: 400, why: referencedWhy(action, entry.name, refs) } : { ok: true };
 }
 
+/**
+ * v18 MCP 自动发现（cc Switch 思路）：扫本机主流 agent 的 MCP 配置文件，把 command 型
+ * server 抬出来给页面一键登记。只抽 mcpServers 的名字与命令——文件里其余内容不读不回；
+ * 已在册的同名条目跳过；http/sse 型 server 不是命令账（spec={command,args}），如实列 skipped。
+ * 纯函数（home 注入）：单测用 tmp 目录fixtures，不碰真实用户配置。
+ */
+export function scanMcpConfigHome(
+  home: string,
+  knownMcpNames: Set<string>,
+): {
+  candidates: { name: string; command: string; args?: string[]; source: string }[];
+  skipped: { name: string; source: string; why: string }[];
+} {
+  const sources = [
+    { file: path.join(home, '.claude.json'), label: 'Claude Code' },
+    { file: path.join(home, '.cursor', 'mcp.json'), label: 'Cursor' },
+  ];
+  const candidates: { name: string; command: string; args?: string[]; source: string }[] = [];
+  const skipped: { name: string; source: string; why: string }[] = [];
+  for (const s of sources) {
+    let doc: { mcpServers?: unknown } | undefined;
+    try {
+      doc = JSON.parse(fs.readFileSync(s.file, 'utf8')) as { mcpServers?: unknown };
+    } catch {
+      continue; // 没装这个 agent / 文件读不出＝这一源没有候选，不是错误
+    }
+    const servers = doc?.mcpServers;
+    if (!servers || typeof servers !== 'object' || Array.isArray(servers)) continue;
+    for (const [name, def] of Object.entries(servers as Record<string, Record<string, unknown>>)) {
+      if (knownMcpNames.has(name) || candidates.some((c) => c.name === name)) continue;
+      if (typeof def?.command === 'string' && def.command.trim()) {
+        candidates.push({
+          name,
+          command: def.command.trim(),
+          ...(Array.isArray(def.args) ? { args: def.args.filter((a): a is string => typeof a === 'string') } : {}),
+          source: s.label,
+        });
+      } else if (def?.url || def?.type === 'http' || def?.type === 'sse') {
+        skipped.push({ name, source: s.label, why: 'http/sse 型 server 不是命令账，这一版登记不了' });
+      }
+    }
+  }
+  return { candidates, skipped };
+}
+
 export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRouteDeps): void {
+
   app.get<{ Querystring: { kind?: string } }>('/api/registry', async (req, reply) => {
     let snapshot;
     try {

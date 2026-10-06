@@ -169,6 +169,9 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   const [healthError, setHealthError] = useState<string | null>(null);
   // 整表那一刀在飞：按钮没这份读数就只是「点了一下没反应」——网关挂住时是几秒的静默动作
   const [healthBusy, setHealthBusy] = useState(false);
+  // v18 MCP 自动发现（cc Switch 思路）：聚焦 MCP 类时扫本机配置，候选一键登记
+  const [mcpCand, setMcpCand] = useState<{ candidates: { name: string; command: string; args?: string[]; source: string }[]; skipped: { name: string; source: string; why: string }[] } | null>(null);
+  const [mcpBusy, setMcpBusy] = useState(false);
   /**
    * X1 单枚探针（`registry probe` 的 UI 落点）：id → 刚做过的那一次回执或失败原话。
    * 与批量那一刀分家存放——批量是「整表扫一遍」，单枚是「我就问这一条」，混进同一张 map
@@ -614,7 +617,45 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
     }
     void Promise.allSettled(jobs).then(() => {
       setImportBusy(false);
-      log('info', `网关型号导入完成：新增 ${ok} 枚${dup ? `，已在册/跳过 ${dup} 枚` : ''}${ok + dup > 0 ? '。点「模型」胶囊查看' : ''}`);
+      log('info', `网关型号导入完成：新增 ${ok} 枚${dup ? `，已在册/跳过 ${dup} 枚` : ''}${ok + dup > 0 ? '。点「模型」卡查看' : ''}`);
+      void load();
+    });
+  };
+
+  // v18 MCP 自动发现：聚焦 MCP 类才扫（一次刀），候选一键逐条走 /api/registry（同名词由写入面 400 指路）
+  useEffect(() => {
+    if (activeKind !== 'mcp') return;
+    let dead = false;
+    void api
+      .mcpDiscovered()
+      .then((d) => !dead && setMcpCand(d))
+      .catch(() => !dead && setMcpCand({ candidates: [], skipped: [] }));
+    return () => {
+      dead = true;
+    };
+  }, [activeKind]);
+  const importMcpCandidates = () => {
+    setMcpBusy(true);
+    let ok = 0;
+    let fail = 0;
+    const jobs = (mcpCand?.candidates ?? []).map((c) =>
+      api
+        .registryAdd({
+          kind: 'mcp',
+          name: c.name,
+          spec: { command: c.command, ...(c.args?.length ? { args: c.args.join(' ') } : {}), note: `来自本机 ${c.source} 配置` },
+        })
+        .then(() => {
+          ok += 1;
+        })
+        .catch(() => {
+          fail += 1;
+        }),
+    );
+    void Promise.allSettled(jobs).then(() => {
+      setMcpBusy(false);
+      log('info', `MCP 自动登记完成：新增 ${ok} 个${fail ? `，失败/同名 ${fail} 个` : ''}${ok > 0 ? '。点「MCP 服务」卡查看' : ''}`);
+      setMcpCand(null);
       void load();
     });
   };
@@ -1048,51 +1089,83 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
       {/* 左侧 kinds 跳转栏（工程台：宽屏那一整条空白不是留白，是没用的版面）——
           栏里只有「哪一类、几枚」，判据与措辞仍住在各组的表头里 */}
       <div className="registry-body" key="body">
-        {/* v18 全卡片化 landing：每类一张能力卡（图标/条数/探活/条目速览），点卡聚焦该类 */}
-        {!activeKind && (
-          <div className="reg-kind-grid">
-            {kindCards.map((k) => (
-              <div
-                key={k.kind}
-                className="reg-kind-card"
-                role="button"
-                tabIndex={0}
-                onClick={() => { setKindTab(k.kind); setActiveKind(k.kind); }}
-                onKeyDown={(ev) => {
-                  if (ev.key === 'Enter' || ev.key === ' ') {
-                    ev.preventDefault();
-                    setKindTab(k.kind);
-                    setActiveKind(k.kind);
-                  }
-                }}
-              >
-                <div className="reg-kind-head">
-                  <span className="reg-kind-icon">{k.icon}</span>
-                  <b>{k.label}</b>
-                  <span className={`reg-kind-count${k.total ? '' : ' zero'}`}>{k.total}</span>
-                </div>
-                <p className="reg-kind-desc">{k.desc}</p>
-                {(k.live > 0 || k.missing > 0 || k.view) && (
-                  <div className="reg-kind-meta">
-                    {k.live > 0 && <i className="ok">● {k.live} 在</i>}
-                    {k.missing > 0 && <i className="bad">● {k.missing} 不在</i>}
-                    {k.view && <span className="registry-chip">现算清单</span>}
-                  </div>
-                )}
-                {k.preview.length > 0 && (
-                  <div className="reg-kind-preview">
-                    {k.preview.map((n) => (
-                      <span key={n}>{n}</span>
-                    ))}
-                    {k.more > 0 && <span className="more">+{k.more}</span>}
-                  </div>
-                )}
-                <div className="reg-kind-foot">{k.registrable ? '+ 登记这一类' : '查看全部 →'}</div>
+        {/* v18 全卡片化 landing：可登记五类是主角（登记/扫描入口都在卡上）；系统能力（只读盘点）
+            折叠收纳——条目是镜子，正身在各自管理面，不再与可登记类平铺让人以为有两套系统 */}
+        {!activeKind && (() => {
+          const regs = kindCards.filter((k) => k.registrable);
+          const views = kindCards.filter((k) => !k.registrable);
+          const card = (k: (typeof kindCards)[number]) => (
+            <div
+              key={k.kind}
+              className="reg-kind-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => { setKindTab(k.kind); setActiveKind(k.kind); }}
+              onKeyDown={(ev) => {
+                if (ev.key === 'Enter' || ev.key === ' ') {
+                  ev.preventDefault();
+                  setKindTab(k.kind);
+                  setActiveKind(k.kind);
+                }
+              }}
+            >
+              <div className="reg-kind-head">
+                <span className="reg-kind-icon">{k.icon}</span>
+                <b>{k.label}</b>
+                <span className={`reg-kind-count${k.total ? '' : ' zero'}`}>{k.total}</span>
               </div>
-            ))}
-          </div>
-        )}
-
+              <p className="reg-kind-desc">{k.desc}</p>
+              {(k.live > 0 || k.missing > 0 || k.view) && (
+                <div className="reg-kind-meta">
+                  {k.live > 0 && <i className="ok">● {k.live} 在</i>}
+                  {k.missing > 0 && <i className="bad">● {k.missing} 不在</i>}
+                  {k.view && <span className="registry-chip">现算清单</span>}
+                </div>
+              )}
+              {k.preview.length > 0 && (
+                <div className="reg-kind-preview">
+                  {k.preview.map((n) => (
+                    <span key={n}>{n}</span>
+                  ))}
+                  {k.more > 0 && <span className="more">+{k.more}</span>}
+                </div>
+              )}
+              <div className="reg-kind-foot">
+                {k.kind === 'skill' || k.kind === 'rule' || k.kind === 'repo' ? (
+                  <button
+                    className="link"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      setScanPromptOpen(true);
+                      setScanPreview(null);
+                    }}
+                  >
+                    🔍 扫描项目目录自动发现
+                  </button>
+                ) : (
+                  <button
+                    className="link"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      openFormWithKind(k.registrable ? k.kind : undefined);
+                    }}
+                  >
+                    {k.registrable ? '+ 登记这一类' : '查看全部 →'}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+          return (
+            <>
+              <div className="reg-kind-grid">{regs.map((k) => card(k))}</div>
+              <details className="reg-sys">
+                <summary>系统能力（只读盘点）· {views.length} 类——条目是镜子，正身在各自管理面</summary>
+                <div className="reg-kind-grid">{views.map((k) => card(k))}</div>
+              </details>
+            </>
+          );
+        })()}
         {activeKind && (
           <button
             className="link reg-back"
@@ -1108,6 +1181,22 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
             <section className={`registry-group${g.entries.length === 0 ? ' zero' : ''}`} id={`registry-g-${g.kind}`} key={g.kind}>
               {g.kind === 'model' && modelGuideBanner}
               {g.kind === 'model' && importBanner}
+              {g.kind === 'mcp' && mcpCand && mcpCand.candidates.length > 0 && (
+                <div className="reg-import">
+                  <span>
+                    🔌 本机配置里发现 <b>{mcpCand.candidates.length}</b> 个 MCP server
+                    （{[...new Set(mcpCand.candidates.map((c) => c.source))].join('、')} 配置）——主流做法是扫配置自动发现，不用手填：
+                  </span>
+                  <button className="primary" disabled={mcpBusy} onClick={importMcpCandidates}>
+                    {mcpBusy ? '登记中…' : `⚡ 一键登记 ${mcpCand.candidates.length} 个`}
+                  </button>
+                  {mcpCand.skipped.length > 0 && (
+                    <small style={{ width: '100%' }}>
+                      另发现 {mcpCand.skipped.length} 个 http/sse 型（不是命令账，这版登记不了）：{mcpCand.skipped.map((s) => s.name).join('、')}
+                    </small>
+                  )}
+                </div>
+              )}
               <h3>
                 {g.label}
                 <span className="registry-count">{g.entries.length} 项</span>

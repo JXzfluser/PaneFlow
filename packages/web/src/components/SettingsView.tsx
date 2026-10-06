@@ -1047,8 +1047,9 @@ export function SettingsView() {
           <h3>环境</h3>
           {env && (
             <p className="settings-hint">
-              Herdr：{env === null ? '检测中…' : env.herdrOk ? `已连接 ${env.herdrVersion ?? ''}` : '未连接'} · 已安装 Agent：
-              {env.env.agentsInstalled.join('、') || '无'}
+              Herdr（编排底座）：{env === null ? '检测中…' : env.herdrOk ? `已连接 ${env.herdrVersion ?? ''}` : '未连接（起单不可用，但本机 agent CLI 不受影响）'} ·
+              本机已装 Agent CLI：{env.env.agentsInstalled.length ? `${env.env.agentsInstalled.length} 个（${env.env.agentsInstalled.join('、')}）` : '无'}——
+              逐个探活盘点在「能力」页的 Agent 引擎卡
             </p>
           )}
           <div className="settings-actions">

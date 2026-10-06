@@ -176,6 +176,17 @@ export const api = {
       byKind: { key: string; runs: number; tokensIn: number; tokensOut: number }[];
       budget: { envMaxTokens: number | null; tripRuns: number };
     }>('GET', `/api/usage?days=${days}`, undefined, { raw: true }),
+  /**
+   * v18 MCP 自动发现（cc Switch 思路）：扫本机 Claude Code / Cursor 配置里的 mcpServers，
+   * 抬出 command 型候选给页面一键登记；http/sse 型如实列 skipped（不是命令账，这版不收）。
+   */
+  mcpDiscovered: () =>
+    json<{ candidates: { name: string; command: string; args?: string[]; source: string }[]; skipped: { name: string; source: string; why: string }[] }>(
+      'GET',
+      '/api/registry/mcp-discovered',
+      undefined,
+      { raw: true },
+    ),
   /** v9-N3 排队全景：并发额度、占用者、排队位次（queued 卡片渲染等待原因） */
   queueStatus: () =>
     json<{

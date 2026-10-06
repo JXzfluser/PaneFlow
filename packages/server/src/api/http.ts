@@ -948,7 +948,9 @@ export async function buildHttpServer(deps: HttpDeps) {
       const msg = err instanceof Error ? err.message.trim() : typeof err === 'string' ? err.trim() : '';
       if (msg) herdrError = msg;
     }
-    const agentsInstalled = herdrOk ? await detectInstalledAgents([...AGENT_KINDS]) : [];
+    // v18 诚实读数：agent CLI 装没装只看本机 PATH，与 herdr 死活无关——
+    // 旧实现 herdr 未连接时报「已安装 Agent：无」，把「编排底座没起」说成「机器上什么都没有」。
+    const agentsInstalled = await detectInstalledAgents([...AGENT_KINDS]);
     // AE：推荐与网关状态常备（不依赖 herdr），设置页据此显示「自动推荐：pi」
     const recommendedAgentKind = await recommendAgentKind();
     // v13-S5 账本健康可见：persistFailures=进程级内存累计（不回写正在失败的账本）；
