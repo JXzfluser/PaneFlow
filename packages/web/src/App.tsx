@@ -49,7 +49,7 @@ export function App() {
         if (!healthLogged) {
           healthLogged = true;
           log(h.herdrOk ? 'info' : 'error', `Herdr ${h.herdrOk ? '已连接' : '不可达'}：${h.herdrSocket}`);
-          log('info', '提示：第一次使用？点右上角「? 指南」查看五步上手教程');
+          log('info', '提示：第一次使用？点左下角「指南」查看三步上手教程（里面可直接发起 30 秒建项目向导）');
         }
         if (!h.herdrOk || h.env.agentsInstalled.length === 0) {
           if (!localStorage.getItem('pf-wizard-dismissed')) setWizard(h);
