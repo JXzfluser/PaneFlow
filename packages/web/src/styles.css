@@ -1710,7 +1710,8 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .registry-view section.registry-group:nth-of-type(n + 5) { animation-delay: 400ms; }
 /* 宽屏用满（工程台裁决）：左侧 kinds 跳转栏 + 右侧正文。宽栏不是装饰——
    十几组能力滚到底才看得完，跳转栏把「这一类有几枚」变成一次可见的总账 */
-.registry-body { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 0 20px; align-items: start; }
+/* v18 全卡片化：胶囊双栏布局退役，body 是单列卡片流 */
+.registry-body { display: flex; flex-direction: column; gap: 14px; }
 .registry-rail {
   position: sticky; top: 12px;
   display: flex; flex-direction: column; gap: 4px;
@@ -1899,3 +1900,65 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .reg-overview-health i { font-style: normal; font-size: 10px; margin-left: 4px; font-family: var(--font-mono); }
 .reg-overview-health i.ok { color: var(--ok); }
 .reg-overview-health i.bad { color: var(--err); }
+
+/* -- v18 能力页全卡片化：kind 卡网格 + 条目卡片（胶囊跳转栏/表格退役） ---------- */
+.reg-kind-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px;
+  margin-bottom: 14px;
+}
+.reg-kind-card {
+  display: flex; flex-direction: column; gap: 7px; text-align: left;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel-2); cursor: pointer; color: var(--text);
+  transition: border-color var(--t-fast), transform var(--t-fast), box-shadow var(--t-fast);
+}
+.reg-kind-card:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18); }
+.reg-kind-head { display: flex; align-items: center; gap: 8px; }
+.reg-kind-icon {
+  width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--primary-bg); font-size: 14px;
+}
+.reg-kind-head b { font-size: 13px; }
+.reg-kind-count {
+  margin-left: auto; font-family: var(--font-mono); font-size: 12px;
+  color: var(--accent); font-variant-numeric: tabular-nums;
+}
+.reg-kind-count.zero { color: var(--text-dim); opacity: 0.55; }
+.reg-kind-desc { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-dim); }
+.reg-kind-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.reg-kind-meta i { font-style: normal; font-size: 10.5px; font-family: var(--font-mono); }
+.reg-kind-meta i.ok { color: var(--ok); }
+.reg-kind-meta i.bad { color: var(--err); }
+.reg-kind-preview { display: flex; flex-wrap: wrap; gap: 4px; }
+.reg-kind-preview span {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 7px; border-radius: 5px; background: var(--panel); border: 1px solid var(--border);
+  font-size: 10px; font-family: var(--font-mono); color: var(--text-dim);
+}
+.reg-kind-preview span.more { border-style: dashed; }
+.reg-kind-foot { margin-top: auto; font-size: 11px; color: var(--accent); opacity: 0.85; }
+.reg-back { margin-bottom: 10px; }
+
+.registry-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.registry-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 11px 13px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--panel-2);
+  transition: border-color var(--t-fast);
+}
+.registry-card:hover { border-color: var(--edge); }
+.registry-card.open { border-color: var(--accent); }
+.registry-card.off { opacity: 0.55; }
+.registry-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.registry-card-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.registry-card-spacer { flex: 1; }
+.registry-card-label { margin: 0; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.registry-card-ops { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+.registry-card .registry-detail { margin: 4px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); }
+
+/* 卡内详情：窄卡放弃双列网格，dt/dd 单列堆叠（长 id/路径在双列里会被挤成逐字竖排） */
+.registry-card .registry-detail { grid-template-columns: 1fr; gap: 1px 0; }
+.registry-card .registry-detail dt { margin-top: 5px; font-size: 10.5px; }
+.registry-card .registry-detail dd,
+.registry-card .registry-detail dd code { overflow-wrap: anywhere; word-break: break-all; }

@@ -90,6 +90,34 @@ const MCP_PRESETS: { label: string; command: string; args: string; note: string 
   { label: '🐙 GitHub', command: 'npx', args: '-y @modelcontextprotocol/server-github', note: '仓库/Issue/PR 操作（需配 GITHUB_TOKEN 环境）' },
 ];
 
+/** v18 全卡片化：每类能力卡的图标与一句话说明（11 类全覆盖，未知类回落 🧩）。 */
+const KIND_ICON: Record<string, string> = {
+  model: '🧠',
+  skill: '📚',
+  rule: '📏',
+  repo: '📦',
+  mcp: '🔌',
+  'agent-kind': '⚙️',
+  'node-type': '⬡',
+  'check-type': '✅',
+  role: '👤',
+  template: '▦',
+  'gateway-profile': '🌐',
+};
+const KIND_DESC: Record<string, string> = {
+  model: '登记 claude/gpt 等型号，Agent 节点才能选到它',
+  skill: '一篇 Markdown 作业手册，运行时自动注入给 Agent',
+  rule: '团队硬约束（分支命名、提交规范），按项目/仓库生效',
+  repo: '告诉 Agent 去哪个代码仓干活，交付家规按它拉分支',
+  mcp: '本机 MCP server 的启动命令（声明账，供模板声明依赖）',
+  'agent-kind': '本机可驱动的编码 Agent 引擎（探活=装没装）',
+  'node-type': '编排图可用的节点种类（代码现算）',
+  'check-type': '引擎实跑得了的机检类型（代码现算）',
+  role: '班底岗位——条目是镜子，正身在角色库',
+  template: '画布图即模板——条目是镜子，正身在编排页',
+  'gateway-profile': '模型网关档位——正身在设置·网关',
+};
+
 /** v18 打磨：视图类能力的管理面直链——条目是镜子，正身在别处，详情里把路指过去。
  *  check-type/node-type/agent-kind 由代码现算、没有独立管理面，不给跳（不画死链）。 */
 const VIEW_HOME_JUMPS: Record<string, { label: string; go: (setView: (v: AppView) => void) => void }> = {
@@ -538,19 +566,32 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
     () => new Set(groups.find((g) => g.kind === 'model')?.entries.map((e) => e.id) ?? []),
     [groups],
   );
-  // v18 着陆总览条的账面：每类条数 + 探活两态计数（health 独立一刀后到，没到=该类不显示活数）
-  const kindStats = groups
-    .filter((g) => g.entries.length > 0)
-    .map((g) => {
-      let live = 0;
-      let missing = 0;
-      for (const e of g.entries) {
-        const d = healthDot(health?.get(e.id));
-        if (d === 'ok') live += 1;
-        else if (d === 'bad') missing += 1;
-      }
-      return { kind: g.kind, label: kindGroupLabel(g.kind, data?.kindLabels), total: g.entries.length, live, missing };
-    });
+  // v18 全卡片化：每类一张能力卡的账面——图标/条数/探活（绿=探通、红=探明不在；无通道不装读数）、
+  // 条目速览前 3 个名字。点击聚焦该类；胶囊跳转栏与条目表格一并退役。
+  const regSet = new Set(kinds);
+  const kindCards = groups.map((g) => {
+    let live = 0;
+    let missing = 0;
+    for (const e of g.entries) {
+      const d = healthDot(health?.get(e.id));
+      if (d === 'ok') live += 1;
+      else if (d === 'bad') missing += 1;
+    }
+    const preview = g.entries.slice(0, 3).map((e) => e.name);
+    return {
+      kind: g.kind,
+      label: kindGroupLabel(g.kind, data?.kindLabels),
+      total: g.entries.length,
+      live,
+      missing,
+      icon: KIND_ICON[g.kind] ?? '🧩',
+      desc: KIND_DESC[g.kind] ?? (g.home ? `条目由${g.home}现算` : '登记类能力'),
+      view: Boolean(g.view),
+      registrable: regSet.has(g.kind),
+      preview,
+      more: Math.max(0, g.entries.length - preview.length),
+    };
+  });
   const gatewayModelTotal = gwCatalog?.reduce((n, p) => n + p.models.length, 0) ?? 0;
 
   const importGatewayModels = () => {
@@ -594,32 +635,6 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
               能力清单的一张表：登记、启停、删除都走这里的表单，不用写 JSON。判定全在服务端，本页只渲染它给的话。
             </p>
           </>
-        )}
-        {/* v18 升格着陆面：核心三问的账面总览——每类能力<b>说什么</b>（名字）、<b>有多少</b>（计数）、
-            <b>还在不在</b>（探活读数：绿=探通、红=探明不在；没通道的类不装读数，绝不拿灰点冒充）。
-            「谁在用」在每条的详情抽屉里（registry refs）。点胶囊即聚焦该类。 */}
-        {!embedded && kindStats.length > 0 && (
-          <div className="reg-overview">
-            {kindStats.map((s) => (
-              <button
-                key={s.kind}
-                className="reg-overview-chip"
-                onClick={() => {
-                  setKindTab(s.kind);
-                  setActiveKind(s.kind);
-                }}
-              >
-                <b>{s.label}</b>
-                <span className="reg-overview-count">{s.total}</span>
-                {(s.live > 0 || s.missing > 0) && (
-                  <span className="reg-overview-health">
-                    {s.live > 0 && <i className="ok">●{s.live}</i>}
-                    {s.missing > 0 && <i className="bad">●{s.missing}</i>}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
         )}
 
         {/* R-newbie → v17-F2：五张能力卡即登记入口——每张说清「登记了有什么用」，点了就开表单。
@@ -1018,37 +1033,62 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
       {/* 左侧 kinds 跳转栏（工程台：宽屏那一整条空白不是留白，是没用的版面）——
           栏里只有「哪一类、几枚」，判据与措辞仍住在各组的表头里 */}
       <div className="registry-body" key="body">
-        {groups.length > 1 && (
-          <nav className="registry-kindtabs" aria-label="按能力类别切换">
-            {/* v17-F2 分两组：能登记的（有表单）在前，系统盘点（只读）在后——
-                胶囊里混一片让人分不清哪几类轮得到自己登记 */}
-            {(() => {
-              const regSet = new Set(kinds);
-              const regs = groups.filter((g) => regSet.has(g.kind));
-              const views = groups.filter((g) => !regSet.has(g.kind));
-              const pill = (g: (typeof groups)[number]) => (
-                <button
-                  key={g.kind}
-                  className={`registry-kindtab${(kindTab ?? groups[0]?.kind) === g.kind ? ' on' : ''}`}
-                  onClick={() => { setKindTab(g.kind); setActiveKind(null); }}
-                >
-                  {g.label}
-                  <span className={`registry-kindtab-count${g.entries.length ? '' : ' zero'}`}>{g.entries.length}</span>
-                </button>
-              );
-              return (
-                <>
-                  {regs.map(pill)}
-                  {regs.length > 0 && views.length > 0 && <span className="registry-kindtab-divider" title="以下是系统能力（只读盘点）" />}
-                  {views.map(pill)}
-                </>
-              );
-            })()}
-          </nav>
+        {/* v18 全卡片化 landing：每类一张能力卡（图标/条数/探活/条目速览），点卡聚焦该类 */}
+        {!activeKind && (
+          <div className="reg-kind-grid">
+            {kindCards.map((k) => (
+              <div
+                key={k.kind}
+                className="reg-kind-card"
+                role="button"
+                tabIndex={0}
+                onClick={() => { setKindTab(k.kind); setActiveKind(k.kind); }}
+                onKeyDown={(ev) => {
+                  if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    setKindTab(k.kind);
+                    setActiveKind(k.kind);
+                  }
+                }}
+              >
+                <div className="reg-kind-head">
+                  <span className="reg-kind-icon">{k.icon}</span>
+                  <b>{k.label}</b>
+                  <span className={`reg-kind-count${k.total ? '' : ' zero'}`}>{k.total}</span>
+                </div>
+                <p className="reg-kind-desc">{k.desc}</p>
+                {(k.live > 0 || k.missing > 0 || k.view) && (
+                  <div className="reg-kind-meta">
+                    {k.live > 0 && <i className="ok">● {k.live} 在</i>}
+                    {k.missing > 0 && <i className="bad">● {k.missing} 不在</i>}
+                    {k.view && <span className="registry-chip">现算清单</span>}
+                  </div>
+                )}
+                {k.preview.length > 0 && (
+                  <div className="reg-kind-preview">
+                    {k.preview.map((n) => (
+                      <span key={n}>{n}</span>
+                    ))}
+                    {k.more > 0 && <span className="more">+{k.more}</span>}
+                  </div>
+                )}
+                <div className="reg-kind-foot">{k.registrable ? '+ 登记这一类' : '查看全部 →'}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {activeKind && (
+          <button
+            className="link reg-back"
+            onClick={() => { setKindTab(null); setActiveKind(null); }}
+          >
+            ← 全部能力
+          </button>
         )}
 
         {groups
-          .filter((g) => (kindTab ?? groups[0]?.kind) === g.kind)
+          .filter((g) => g.kind === activeKind)
           .map((g) => (
             <section className={`registry-group${g.entries.length === 0 ? ' zero' : ''}`} id={`registry-g-${g.kind}`} key={g.kind}>
               <h3>
@@ -1069,186 +1109,164 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                     ? g.home
                       ? `这一类的正身是${g.home}：这里没有可登记的东西，空表就是那一面此刻的读数。`
                       : '这一类由现算清单生成，没有可登记的东西（清单为空就是正读数，不是没配好）。'
-                    : `还没有登记的${g.label}——点右上「+ 登记一项」，从表单填进去。`}
+                    : `还没有登记的${g.label}——点上方「+ 登记一项」，从表单填进去。`}
                 </p>
               ) : (
-                <table className="registry-table">
-                  <thead>
-                    <tr>
-                      <th>名称</th>
-                      <th>配置读数</th>
-                      <th>来源</th>
-                      <th title="停用=留着但不再被选，不是删除">启用</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {g.entries.map((e) => {
-                      const refs = refCountOf(e);
-                      const refList = refRows(e);
-                      const readout = health?.get(e.id);
-                      const probe = probed[e.id];
-                      const pNote = probeNote(probe?.res, probe?.err ?? null);
-                      const dot = healthDot(readout);
-                      const view = isViewEntry(e);
-                      const enabledCell = viewEnabledCell(e, g.home);
-                      const when = whenLabels(view, g.home);
-                      return (
-                        <Fragment key={e.id}>
-                          <tr className={e.enabled ? '' : 'registry-row-off'}>
-                            <td>
-                              <b>{e.name}</b>
-                              {refs !== null && <span className="registry-chip" title="R2 引用账">被引用 {refs}</span>}
-                              {dot && <span className={`dot ${dot}`} title={healthTitle(readout)} />}
-                            </td>
-                            <td className="registry-label">{e.label}</td>
-                            <td><span className="registry-chip">{sourceLabel(e.source)}</span></td>
-                            <td>
-                              {view ? (
-                                <span className="registry-label" title={enabledCell.title}>
-                                  {enabledCell.text}
-                                </span>
-                              ) : (
-                                <input
-                                  type="checkbox"
-                                  checked={e.enabled}
-                                  disabled={rowBusy(e.id)}
-                                  title={e.enabled ? '点击停用（留着但不再被选）' : '点击启用'}
-                                  onChange={() => void toggleEnabled(e)}
-                                />
+                <div className="registry-cards">
+                  {g.entries.map((e) => {
+                    const refs = refCountOf(e);
+                    const refList = refRows(e);
+                    const readout = health?.get(e.id);
+                    const probe = probed[e.id];
+                    const pNote = probeNote(probe?.res, probe?.err ?? null);
+                    const dot = healthDot(readout);
+                    const view = isViewEntry(e);
+                    const enabledCell = viewEnabledCell(e, g.home);
+                    const when = whenLabels(view, g.home);
+                    return (
+                      <div key={e.id} className={`registry-card${e.enabled ? '' : ' off'}${detailId === e.id ? ' open' : ''}`}>
+                        <div className="registry-card-head">
+                          {dot && <span className={`dot ${dot}`} title={healthTitle(readout)} />}
+                          <b className="registry-card-name">{e.name}</b>
+                          {refs !== null && <span className="registry-chip" title="R2 引用账">被引用 {refs}</span>}
+                          <span className="registry-chip">{sourceLabel(e.source)}</span>
+                          <span className="registry-card-spacer" />
+                          {view ? (
+                            <span className="registry-label" title={enabledCell.title}>
+                              {enabledCell.text}
+                            </span>
+                          ) : (
+                            <input
+                              type="checkbox"
+                              checked={e.enabled}
+                              disabled={rowBusy(e.id)}
+                              title={e.enabled ? '点击停用（留着但不再被选）' : '点击启用'}
+                              onChange={() => void toggleEnabled(e)}
+                            />
+                          )}
+                        </div>
+                        {e.label && <p className="registry-card-label">{e.label}</p>}
+                        <div className="registry-card-ops">
+                          {opBusy(e.id, 'toggle') && (
+                            <span className="registry-op-note">{e.enabled ? '停用中…' : '启用中…'}</span>
+                          )}
+                          <button className="link" onClick={() => setDetailId((d) => (d === e.id ? null : e.id))}>
+                            {detailId === e.id ? '收起' : '详情'}
+                          </button>
+                          {view ? null : (
+                            <button
+                              className="sm ghost danger"
+                              disabled={rowBusy(e.id)}
+                              onClick={() => void remove(e)}
+                              title="删除条目（禁用请用左边的开关）"
+                            >
+                              {opBusy(e.id, 'delete') ? '删除中…' : (
+                                <>
+                                  <Icon name="trash" size={12} /> 删除
+                                </>
                               )}
-                            </td>
-                            <td className="registry-ops">
-                              {/* 四发写动词各有各的读数：启停与删除撞的是同一枚 id，只报 id 等于让人猜这一发是什么 */}
-                              {opBusy(e.id, 'toggle') && (
-                                <span className="registry-op-note">{e.enabled ? '停用中…' : '启用中…'}</span>
+                            </button>
+                          )}
+                        </div>
+                        {detailId === e.id && (
+                          <dl className="registry-detail">
+                            <dt>id</dt>
+                            <dd>
+                              <code>{e.id}</code>
+                              {view
+                                ? `（由${g.home ?? '现算清单'}生成，不可改）`
+                                : '（不可变；改名=重新登记）'}
+                            </dd>
+                            <dt>{when.created}</dt>
+                            <dd>{formatWhen(e.createdAt) || '—'}</dd>
+                            <dt>{when.updated}</dt>
+                            <dd>{formatWhen(e.updatedAt) || '—'}</dd>
+                            {when.note && (
+                              <>
+                                <dt>说明</dt>
+                                <dd>{when.note}</dd>
+                              </>
+                            )}
+                            {specRows(e.spec).map((row) => (
+                              <div key={row.key}>
+                                <dt>{row.label}</dt>
+                                <dd>{row.text}</dd>
+                              </div>
+                            ))}
+                            {VIEW_HOME_JUMPS[e.kind] && (
+                              <>
+                                <dt>管理面</dt>
+                                <dd>
+                                  <button className="link" onClick={() => VIEW_HOME_JUMPS[e.kind]!.go(setView)}>
+                                    {VIEW_HOME_JUMPS[e.kind]!.label}
+                                  </button>
+                                </dd>
+                              </>
+                            )}
+                            {readout && (
+                              <>
+                                <dt>健康</dt>
+                                <dd>
+                                  {readout.status === 'live' ? '● 在' : readout.status === 'missing' ? '○ 不在' : `? ${readout.status}`}
+                                  ：{readout.detail}
+                                  {readout.at ? `（读数时刻 ${formatWhen(readout.at) || readout.at}${readout.cached ? ' · 缓存' : ''}）` : ''}
+                                </dd>
+                              </>
+                            )}
+                            <dt>谁在用</dt>
+                            <dd>
+                              {refList && refList.length > 0 && (
+                                <div className="registry-refs">
+                                  {refList.map((r) => (
+                                    <div key={r.key}>{r.text}</div>
+                                  ))}
+                                </div>
                               )}
+                              <span className={refList === null ? 'registry-detail-note warn' : 'registry-detail-note'}>
+                                {refNote(e, refList)}
+                              </span>
+                            </dd>
+                            <dt>探针</dt>
+                            <dd>
                               <button
                                 className="link"
-                                onClick={() => setDetailId((d) => (d === e.id ? null : e.id))}
+                                disabled={rowBusy(e.id)}
+                                onClick={() => void probeOnce(e)}
+                                title="只探这一条（与服务端 5 分钟实探缓存共用）"
                               >
-                                {detailId === e.id ? '收起' : '详情'}
+                                {opBusy(e.id, 'probe') ? '探…中' : '探一次'}
                               </button>
-                              {view ? null : (
-                                <button
-                                  className="sm ghost danger"
-                                  disabled={rowBusy(e.id)}
-                                  onClick={() => void remove(e)}
-                                  title="删除条目（禁用请用左边的开关）"
-                                >
-                                  {opBusy(e.id, 'delete') ? '删除中…' : (
-                                    <>
-                                      <Icon name="trash" size={12} /> 删除
-                                    </>
-                                  )}
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                          {detailId === e.id && (
-                            <tr className="registry-detail-row">
-                              <td colSpan={5}>
-                                <dl className="registry-detail">
-                                  <dt>id</dt>
-                                  <dd>
-                                    <code>{e.id}</code>
-                                    {view
-                                      ? `（由${g.home ?? '现算清单'}生成，不可改）`
-                                      : '（不可变；改名=重新登记）'}
-                                  </dd>
-                                  <dt>{when.created}</dt>
-                                  <dd>{formatWhen(e.createdAt) || '—'}</dd>
-                                  <dt>{when.updated}</dt>
-                                  <dd>{formatWhen(e.updatedAt) || '—'}</dd>
-                                  {when.note && (
-                                    <>
-                                      <dt>说明</dt>
-                                      <dd>{when.note}</dd>
-                                    </>
-                                  )}
-                                  {specRows(e.spec).map((row) => (
-                                    <div key={row.key}>
-                                      <dt>{row.label}</dt>
-                                      <dd>{row.text}</dd>
-                                    </div>
-                                  ))}
-                                  {VIEW_HOME_JUMPS[e.kind] && (
-                                    <>
-                                      <dt>管理面</dt>
-                                      <dd>
-                                        <button className="link" onClick={() => VIEW_HOME_JUMPS[e.kind]!.go(setView)}>
-                                          {VIEW_HOME_JUMPS[e.kind]!.label}
-                                        </button>
-                                      </dd>
-                                    </>
-                                  )}
-                                  {readout && (
-                                    <>
-                                      <dt>健康</dt>
-                                      <dd>
-                                        {readout.status === 'live' ? '● 在' : readout.status === 'missing' ? '○ 不在' : `? ${readout.status}`}
-                                        ：{readout.detail}
-                                        {readout.at ? `（读数时刻 ${formatWhen(readout.at) || readout.at}${readout.cached ? ' · 缓存' : ''}）` : ''}
-                                      </dd>
-                                    </>
-                                  )}
-                                  <dt>谁在用</dt>
-                                  <dd>
-                                    {refList && refList.length > 0 && (
-                                      <div className="registry-refs">
-                                        {refList.map((r) => (
-                                          <div key={r.key}>{r.text}</div>
-                                        ))}
-                                      </div>
-                                    )}
-                                    <span className={refList === null ? 'registry-detail-note warn' : 'registry-detail-note'}>
-                                      {refNote(e, refList)}
-                                    </span>
-                                  </dd>
-                                  <dt>探针</dt>
-                                  <dd>
-                                    <button
-                                      className="link"
-                                      disabled={rowBusy(e.id)}
-                                      onClick={() => void probeOnce(e)}
-                                      title="只探这一条（与服务端 5 分钟实探缓存共用）"
-                                    >
-                                      {opBusy(e.id, 'probe') ? '探…中' : '探一次'}
-                                    </button>
-                                    <button
-                                      className="link"
-                                      disabled={rowBusy(e.id)}
-                                      onClick={() => void probeOnce(e, true)}
-                                      title="绕开实探缓存现探一遍"
-                                    >
-                                      {opBusy(e.id, 'probe-refresh') ? '现探中…' : '现探'}
-                                    </button>
-                                  </dd>
-                                  {pNote && (
-                                    <>
-                                      <dt>探针读数</dt>
-                                      <dd className={probe?.err ? 'registry-detail-fail' : undefined}>{pNote}</dd>
-                                    </>
-                                  )}
-                                  {writeErrors[e.id] && (
-                                    <>
-                                      <dt>最近写入失败</dt>
-                                      <dd className="registry-detail-fail">{writeErrors[e.id]}</dd>
-                                    </>
-                                  )}
-                                </dl>
-                              </td>
-                            </tr>
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                              <button
+                                className="link"
+                                disabled={rowBusy(e.id)}
+                                onClick={() => void probeOnce(e, true)}
+                                title="绕开实探缓存现探一遍"
+                              >
+                                {opBusy(e.id, 'probe-refresh') ? '现探中…' : '现探'}
+                              </button>
+                            </dd>
+                            {pNote && (
+                              <>
+                                <dt>探针读数</dt>
+                                <dd className={probe?.err ? 'registry-detail-fail' : undefined}>{pNote}</dd>
+                              </>
+                            )}
+                            {writeErrors[e.id] && (
+                              <>
+                                <dt>最近写入失败</dt>
+                                <dd className="registry-detail-fail">{writeErrors[e.id]}</dd>
+                              </>
+                            )}
+                          </dl>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </section>
           ))}
-        </div>
+      </div>
       </>
     </div>
   );
