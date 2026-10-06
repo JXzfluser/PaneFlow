@@ -105,7 +105,7 @@ const KIND_ICON: Record<string, string> = {
   'gateway-profile': '🌐',
 };
 const KIND_DESC: Record<string, string> = {
-  model: '登记 claude/gpt 等型号，Agent 节点才能选到它',
+  model: '型号目录：模板能力槽按它点名、起单预检对着它判死活——配了网关可一键导入',
   skill: '一篇 Markdown 作业手册，运行时自动注入给 Agent',
   rule: '团队硬约束（分支命名、提交规范），按项目/仓库生效',
   repo: '告诉 Agent 去哪个代码仓干活，交付家规按它拉分支',
@@ -594,6 +594,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   });
   const gatewayModelTotal = gwCatalog?.reduce((n, p) => n + p.models.length, 0) ?? 0;
 
+
   const importGatewayModels = () => {
     setImportBusy(true);
     let ok = 0;
@@ -617,6 +618,31 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
       void load();
     });
   };
+
+  // v18 模型线理清：网关管「怎么连」（地址/钥匙/档位），注册中心的模型条目是「有哪些型号」的
+  // 目录——消费方=模板能力槽（requires: [{kind:'model', id:…}]）与起单预检。导入横幅抽成一份，
+  // landing 引导区与聚焦模型类两处复用；网关没探到型号时给指路横幅（不让人对空表发呆）。
+  const importBanner = gatewayModelTotal > 0 && (
+    <div className="reg-import">
+      <span>
+        ⚡ 网关已探得 <b>{gatewayModelTotal}</b> 个型号
+        {registeredModelIds.size > 0 ? `（已在册 ${registeredModelIds.size} 个）` : '，一枚都还没登记'}
+        ——不用手填，一键全进来：
+      </span>
+      <button className="primary" disabled={importBusy} onClick={importGatewayModels}>
+        {importBusy ? '导入中…' : `⚡ 导入 ${gatewayModelTotal} 个型号`}
+      </button>
+    </div>
+  );
+  const modelGuideBanner = gatewayModelTotal === 0 && activeKind === 'model' && (
+    <div className="reg-import">
+      <span>
+        这里登记的是<b>型号目录</b>：模板能力槽（requires: [{'{'}kind:'model'{'}'}]）按它点名、起单预检对着它判死活。
+        两条路：①到 <b>设置 · 模型网关</b> 配好网关（那里管「怎么连」），型号清单会自动探得、回这里一键导入；
+        ②没配网关就直接手填你确定可用的型号 id（如 claude-sonnet-4-5）。
+      </span>
+    </div>
+  );
 
   // 点跳转栏滚到那一组。CSS 里的 prefers-reduced-motion 全局关停管不到 JS 行为，这里自己问一次
   const jumpToGroup = (kind: string) => {
@@ -642,18 +668,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
         <div className="reg-guide">
           <div className="reg-guide-title">登记一项能力（都不用写 JSON）</div>
           {/* v17-F3 主路径优先：能自动进来的绝不手填——网关型号批量导入 / 项目目录扫描 */}
-          {gatewayModelTotal > 0 && (
-            <div className="reg-import">
-              <span>
-                ⚡ 网关已探得 <b>{gatewayModelTotal}</b> 个型号
-                {registeredModelIds.size > 0 ? `（已在册 ${registeredModelIds.size} 个）` : '，一枚都还没登记'}
-                ——不用手填，一键全进来：
-              </span>
-              <button className="primary" disabled={importBusy} onClick={importGatewayModels}>
-                {importBusy ? '导入中…' : `一键导入${registeredModelIds.size < gatewayModelTotal ? `（${gatewayModelTotal - registeredModelIds.size} 枚待入）` : '（查漏补缺）'}`}
-              </button>
-            </div>
-          )}
+          {importBanner}
           <div className="reg-guide-scan">
             <span style={{ color: 'var(--text-dim)', fontSize: 11.5 }}>
               <b>一键接入整个项目：</b>给一个本地目录，自动发现里面的仓库/约定/技能/规则，勾选后批量登记（不用抄路径）。
@@ -741,7 +756,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
           <div className="reg-guide-grid">
             <button className="reg-guide-item" onClick={() => openFormWithKind('model')}>
               <span className="reg-guide-icon">🧠</span>
-              <span><b>模型</b><small>登记 claude/gpt 等型号，Agent 节点才能选到它</small></span>
+              <span><b>模型</b><small>型号目录：配了网关一键导入，模板能力槽按它点名</small></span>
             </button>
             <button className="reg-guide-item" onClick={() => openFormWithKind('skill')}>
               <span className="reg-guide-icon">📚</span>
@@ -1091,6 +1106,8 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
           .filter((g) => g.kind === activeKind)
           .map((g) => (
             <section className={`registry-group${g.entries.length === 0 ? ' zero' : ''}`} id={`registry-g-${g.kind}`} key={g.kind}>
+              {g.kind === 'model' && modelGuideBanner}
+              {g.kind === 'model' && importBanner}
               <h3>
                 {g.label}
                 <span className="registry-count">{g.entries.length} 项</span>

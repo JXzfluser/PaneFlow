@@ -1222,7 +1222,11 @@ function GatewayCard() {
     }
   };
   return (
-    <>
+<>
+      <p className="settings-hint">
+        这里管「怎么连」：往哪个地址、用什么钥匙、走不走统一网关。「有哪些型号」的目录在
+        <b>「能力」页的模型卡</b>——配好网关后型号清单自动探得，去那里一键入册。
+      </p>
       <div className="settings-row">
         <input
           style={{ flex: 2, minWidth: 220 }}
