@@ -180,6 +180,14 @@ export const api = {
    * v18 MCP 自动发现（cc Switch 思路）：扫本机 Claude Code / Cursor 配置里的 mcpServers，
    * 抬出 command 型候选给页面一键登记；http/sse 型如实列 skipped（不是命令账，这版不收）。
    */
+  /** v18 模型条目的运行时使用账（最近被哪些单当过 harness.model） */
+  modelUsage: (id: string) =>
+    json<{ modelId: string; recent: { runId: string; dagName: string; state: string; startedAt: string; tokens: { input: number; output: number } | null }[] }>(
+      'GET',
+      `/api/registry/${encodeURIComponent(id)}/model-usage`,
+      undefined,
+      { raw: true },
+    ),
   mcpDiscovered: () =>
     json<{ candidates: { name: string; command: string; args?: string[]; source: string }[]; skipped: { name: string; source: string; why: string }[] }>(
       'GET',

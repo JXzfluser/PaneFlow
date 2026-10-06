@@ -7,6 +7,7 @@ import type { RegistryStore, RegistryWriteResult } from '../orchestrate/registry
 import { registryLabel } from '../orchestrate/registry-descriptors.js';
 import { viewHomeOf } from '../orchestrate/registry-view.js';
 import { readStoredGraphs, readReferenceIndex, refsForEntry, type ReferenceIndex, type RegistryReferrer } from '../orchestrate/registry-refs.js';
+import { Store } from '../orchestrate/store.js';
 import { checkGraphRequirements, requirementKindLabel } from '../orchestrate/registry-check.js';
 import { entryHealth, type EntryHealth } from './registry-health.js';
 import { referencedWhy } from '../orchestrate/registry-gate.js';
@@ -149,6 +150,42 @@ export function scanMcpConfigHome(
 }
 
 export function registerRegistryRoutes(app: FastifyInstance, deps: RegistryRouteDeps): void {
+  // v18 MCP 自动发现的读口：扫本机 Claude Code / Cursor 配置抬 command 型候选（扫描逻辑=scanMcpConfigHome 纯函数）。
+  // 为什么注册在函数体第一行：/api/registry/:id 的参数路由会吃掉未知段，静态路径必须先挂。
+  // v18 模型条目的运行时使用账：这个型号最近被哪些单真的当过运行模型（harness.model
+  // 落册账，跨项目扫运行记录含归档，取最近 5 条顺带 token 数）。纯读推导零新写路径；
+  // 「没有记录」是诚实读数（旧单可能没这枚账），前端不冒充「没人用过」。
+  app.get<{ Params: { id: string } }>('/api/registry/:id/model-usage', async (req, reply) => {
+    let entry;
+    try {
+      entry = deps.registry.readView().entries.find((e) => e.id === req.params.id);
+    } catch (err) {
+      return reply.code(500).send({ error: `注册表读不出：${(err as Error).message}` });
+    }
+    if (!entry) return reply.code(404).send({ error: `注册表里没有「${req.params.id}」，先 GET /api/registry 看现有 id` });
+    if (entry.kind !== 'model') return reply.code(400).send({ error: '只有模型条目有运行时使用账（harness.model）' });
+    const modelId = String((entry.spec as { model?: unknown }).model ?? entry.name);
+    const runs = Store.listSpaces(deps.dataDir).flatMap((sp) => {
+      const s = new Store(deps.dataDir, sp.id);
+      return [...s.listRuns(), ...s.listArchivedRuns()];
+    });
+    const recent = runs
+      .filter((r) => r.harness?.model === modelId)
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .slice(0, 5)
+      .map((r) => ({ runId: r.runId, dagName: r.dagName, state: r.state, startedAt: r.startedAt, tokens: r.cost?.tokens ?? null }));
+    return { modelId, recent };
+  });
+  app.get('/api/registry/mcp-discovered', async () => {
+    let known: Set<string>;
+    try {
+      known = new Set(deps.registry.readView().entries.filter((e) => e.kind === 'mcp').map((e) => e.name));
+    } catch {
+      known = new Set(); // 盘读不出=跳过去重（导入时同名词会被写入面 400 拦下，指路那句由页面披露）
+    }
+    return scanMcpConfigHome(os.homedir(), known);
+  });
+
 
   app.get<{ Querystring: { kind?: string } }>('/api/registry', async (req, reply) => {
     let snapshot;

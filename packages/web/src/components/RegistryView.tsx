@@ -172,6 +172,8 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   // v18 MCP 自动发现（cc Switch 思路）：聚焦 MCP 类时扫本机配置，候选一键登记
   const [mcpCand, setMcpCand] = useState<{ candidates: { name: string; command: string; args?: string[]; source: string }[]; skipped: { name: string; source: string; why: string }[] } | null>(null);
   const [mcpBusy, setMcpBusy] = useState(false);
+  // v18 模型运行时使用账：详情展开的是模型条目时拉（「最近被哪些单当过运行模型」）
+  const [modelUsage, setModelUsage] = useState<{ id: string; recent: { runId: string; dagName: string; state: string; startedAt: string; tokens: { input: number; output: number } | null }[] } | null>(null);
   /**
    * X1 单枚探针（`registry probe` 的 UI 落点）：id → 刚做过的那一次回执或失败原话。
    * 与批量那一刀分家存放——批量是「整表扫一遍」，单枚是「我就问这一条」，混进同一张 map
@@ -255,6 +257,18 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
     if (!root) return;
     return scanSpaceRoot(selectedSpace, root) as (() => void) | undefined;
   }, [formOpen, selectedSpace, spaces, scanSpaceRoot]);
+
+  useEffect(() => {
+    if (!detailId || !detailId.startsWith('model:')) return;
+    let dead = false;
+    void api
+      .modelUsage(detailId)
+      .then((d) => !dead && setModelUsage({ id: detailId, recent: d.recent }))
+      .catch(() => !dead && setModelUsage({ id: detailId, recent: [] }));
+    return () => {
+      dead = true;
+    };
+  }, [detailId]);
 
   const closeForm = () => {
     setFormOpen(false);
@@ -1299,6 +1313,21 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                                 <dd>{row.text}</dd>
                               </div>
                             ))}
+                            {e.kind === 'model' && detailId === e.id && modelUsage && modelUsage.id === e.id && (
+                              <>
+                                <dt>运行时使用</dt>
+                                <dd>
+                                  {modelUsage.recent.length === 0
+                                    ? '运行账里还没有它当过运行模型的记录（旧单可能没这枚账）'
+                                    : modelUsage.recent
+                                        .map(
+                                          (r) =>
+                                            `${r.runId}（${r.dagName} · ${r.state}${r.tokens ? ` · ↑${r.tokens.input}/↓${r.tokens.output} tok` : ''}）`,
+                                        )
+                                        .join('；')}
+                                </dd>
+                              </>
+                            )}
                             {VIEW_HOME_JUMPS[e.kind] && (
                               <>
                                 <dt>管理面</dt>
