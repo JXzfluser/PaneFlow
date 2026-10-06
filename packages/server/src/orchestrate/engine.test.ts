@@ -1154,6 +1154,24 @@ describe('A.4 prompt confirm window', () => {
     expect(Date.now() - t0).toBeLessThan(6_000);
   });
 
+  it('v18 诊断升级：终端尾部有错误特征时，stalled 错误带上那句真话（归因从谜语变可行动）', async () => {
+    await ops.startAgent('w1:p0', 'a1'); // 默认 status=idle
+    const orig = ops.readOutput.bind(ops);
+    ops.readOutput = async () => 'Error: 500 Internal Server Error\nError: Retry failed after 3 attempts';
+    try {
+      await expect(confirm('a1', 1_500)).rejects.toThrow(
+        /agent_prompt_stalled.*终端尾部检出错误特征：「Error: Retry failed after 3 attempts」/,
+      );
+    } finally {
+      ops.readOutput = orig;
+    }
+  });
+
+  it('v18 诊断升级：终端无错误特征时，stalled 指路「可能在等交互确认」', async () => {
+    await ops.startAgent('w1:p0', 'a1');
+    await expect(confirm('a1', 1_500)).rejects.toThrow(/终端尾部无错误特征，可能是 agent 在等交互确认/);
+  });
+
   it('getAgentStatus 抛错按无变化处理：窗口末判 stalled 而非冒泡', async () => {
     await ops.startAgent('w1:p0', 'a1');
     const orig = ops.getAgentStatus.bind(ops);

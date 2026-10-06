@@ -344,6 +344,26 @@ export function RunsCenter() {
     }
   };
 
+  // v18 亮点：HTML 产物就地预览（静态页面任务的「立刻看到产出」闭环）——
+  // iframe srcDoc + sandbox（不给 same-origin：脚本跑在透明源，碰不到宿主/账本）
+  const [htmlPreview, setHtmlPreview] = useState<{ key: string; name: string; content: string } | null>(null);
+  const previewHtmlArtifact = async (runId: string, f: ArtifactFile) => {
+    const key = `${runId}:${f.name}`;
+    try {
+      const d = await fetchJson<{ content: string; truncated: boolean }>(
+        'GET',
+        `/api/runs/${encodeURIComponent(runId)}/artifacts/file?path=${encodeURIComponent(f.name)}&src=${f.source ?? 'workspace'}`,
+      );
+      if (d.truncated) {
+        log('warn', '文件过大未截断预览——用「下载」看全文');
+        return;
+      }
+      setHtmlPreview({ key, name: f.name, content: d.content });
+    } catch (e) {
+      log('error', `预览读取失败：${(e as Error).message}`);
+    }
+  };
+
   const toggleTimeline = async (runId: string, liveHasEvents: boolean) => {
     if (openTl === runId) {
       setOpenTl(null);
@@ -692,6 +712,14 @@ export function RunsCenter() {
                           {(f.size / 1024).toFixed(1)} KB · {f.mtime.slice(0, 19).replace('T', ' ')}
                         </span>
                         <button onClick={() => void viewArtifact(r.runId, f)}>{artView[viewKey] ? '收起' : '查看'}</button>
+                        {/\.html?$/i.test(f.name) && (
+                          <button
+                            onClick={() => void previewHtmlArtifact(r.runId, f)}
+                            title="沙箱 iframe 里直接跑这个页面（不落盘、碰不到宿主数据）"
+                          >
+                            预览
+                          </button>
+                        )}
                         <a
                           className="artifact-dl"
                           href={`/api/runs/${encodeURIComponent(r.runId)}/artifacts/file?path=${encodeURIComponent(f.name)}&src=${f.source ?? 'workspace'}&raw=1`}
@@ -711,6 +739,19 @@ export function RunsCenter() {
         );
       })}
         </>
+      )}
+      {htmlPreview && (
+        <div className="modal-mask" onClick={() => setHtmlPreview(null)}>
+          <div className="modal html-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="html-preview-head">
+              <b>{htmlPreview.name}</b>
+              <span className="dim">沙箱预览：脚本可运行，访问不到宿主数据</span>
+              <span className="spacer" />
+              <button onClick={() => setHtmlPreview(null)}>关闭</button>
+            </div>
+            <iframe title={htmlPreview.name} srcDoc={htmlPreview.content} sandbox="allow-scripts allow-modals" className="html-preview-frame" />
+          </div>
+        </div>
       )}
       {wikiPreview && !wikiPreview.loading && wikiPreview.res && (
         <WikiPublishModal run={wikiPreview.run} preview={wikiPreview.res} onClose={() => setWikiPreview(null)} />

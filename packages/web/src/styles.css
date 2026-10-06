@@ -1973,3 +1973,9 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .reg-sys summary:hover { color: var(--text); border-color: var(--edge); }
 .reg-sys[open] summary { border-radius: 8px 8px 0 0; }
 .reg-sys .reg-kind-grid { margin-top: 0; padding: 10px; border: 1px dashed var(--border); border-top: none; border-radius: 0 0 8px 8px; background: var(--panel); }
+
+/* v18 HTML 产物沙箱预览弹窗 */
+.html-preview-modal { width: min(96vw, 1280px); height: 88vh; display: flex; flex-direction: column; padding: 10px 12px; }
+.html-preview-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.html-preview-head .spacer { flex: 1; }
+.html-preview-frame { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; }

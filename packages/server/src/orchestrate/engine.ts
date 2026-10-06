@@ -3929,7 +3929,30 @@ export class Engine {
       }
       if (status === 'working' || status === 'blocked') return;
       if (Date.now() >= deadline) {
-        throw new Error(`agent_prompt_stalled：提交后 ${confirmMs}ms 无状态变化（确认窗，末次状态 ${status}）`);
+        // v18 诊断升级：stalled ≠ 谜语——先扫终端尾部找错误特征。agent 的模型后端挂掉
+        // （500/401/429…）时状态机常常纹丝不动，旧文案把「后端在报错」说成「无状态变化」，
+        // 真话躺在终端快照里没人看见。这里把真话写进错误账：归因从谜语变成可行动的一句。
+        let tail = '';
+        try {
+          tail = await this.ops.readOutput(agentName, 40);
+        } catch {
+          /* 读不到快照就按无特征走，不掩盖 stall 本身 */
+        }
+        const errLine = tail
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => /error|failed|exception|econn|40[13]|429|500|超时|失败|重试/i.test(l))
+          .pop();
+        if (errLine) {
+          throw new Error(
+            `agent_prompt_stalled：提交后 ${confirmMs}ms 无状态变化（末次状态 ${status}）` +
+              `——终端尾部检出错误特征：「${errLine.slice(0, 160)}」（多半是 agent 的模型后端/凭据问题，打开终端预览看完整输出）`,
+          );
+        }
+        throw new Error(
+          `agent_prompt_stalled：提交后 ${confirmMs}ms 无状态变化（末次状态 ${status}）` +
+            `——终端尾部无错误特征，可能是 agent 在等交互确认；打开终端预览处理`,
+        );
       }
       await sleep(2000);
     }
