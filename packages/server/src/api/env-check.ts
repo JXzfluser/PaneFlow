@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { agentBinaryName } from './agent-kinds.js';
+import { agentBinaryName, isAgentKind } from './agent-kinds.js';
 
 interface CacheEntry {
   at: number;
@@ -154,4 +154,49 @@ export async function recommendAgentKind(): Promise<string | null> {
     if (installed.includes(kind)) return kind;
   }
   return null;
+}
+
+/**
+ * v19 打磨：「自动派活（不点名成员）」这一路会落到哪个引擎——四态读数。
+ * 抽成单源函数是因为这条梯原本长在 `/api/dispatch` 路由里：派单口要用它接单，
+ * 挑人下拉也要在派单**之前**照渲同一枚结论。两处各写一遍就会给出两个答案。
+ * 层级与 engine.resolveAgentKind 的前两级同尺（项目默认 > 本机实探），
+ * 但不含「节点/角色自绑」那两级——那要到 graph 就位（起单现场）才解得出，
+ * 所以读数文案明说「各步若自绑岗位，仍以该岗的引擎为准」，不拿这一枚冒充整单结论。
+ */
+export type AutoEngineVia = 'project-default' | 'probed' | 'none' | 'unknown';
+
+export interface AutoEngineRead {
+  /** 实探/档案解得出的那枚引擎；`none`/`unknown` 时为 null（null 是正读数「没有」，不是空串） */
+  agentKind: string | null;
+  via: AutoEngineVia;
+  /** server 现成的一句人话：这枚值从哪来（网页与 CLI 只照渲，不另造措辞） */
+  note: string;
+}
+
+export async function resolveAutoAgentKind(
+  profileDefault: string | undefined,
+  recommend: () => Promise<string | null | undefined> = recommendAgentKind,
+): Promise<AutoEngineRead> {
+  const declared = profileDefault?.trim();
+  if (declared && isAgentKind(declared)) {
+    return {
+      agentKind: declared,
+      via: 'project-default',
+      note: `引擎按项目默认解析 → ${declared}（各步若自绑岗位，仍以该岗的引擎为准）`,
+    };
+  }
+  const probed = (await recommend()) ?? null;
+  if (probed) {
+    return {
+      agentKind: probed,
+      via: 'probed',
+      note: `项目没配默认引擎，按本机实探落到 → ${probed}（各步若自绑岗位，仍以该岗的引擎为准）`,
+    };
+  }
+  return {
+    agentKind: null,
+    via: 'none',
+    note: '现在派不出单：项目没配默认引擎，本机实探也全空——装一枚引擎或在「项目」里配默认引擎',
+  };
 }

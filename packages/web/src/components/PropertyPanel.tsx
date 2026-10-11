@@ -4,6 +4,7 @@ import { useStore } from '../store.js';
 import type { CheckSpec, DagNode, EdgeCondition } from '@paneflow/shared';
 import { REJECT_LIMIT_DEFAULT, REJECT_LIMIT_MAX } from '@paneflow/shared';
 import { checkTypeButtons, blankCheck } from '../check-types.js';
+import { modelCoverNote } from '../model-note.js';
 import type { RegistryEntryView } from '../registry-view.js';
 
 type NodeConfig = DagNode['config'];
@@ -137,6 +138,7 @@ function NodePropertyPanel() {
   const nodes = useStore((s) => s.nodes);
   const updateNodeConfig = useStore((s) => s.updateNodeConfig);
   const agentKinds = useStore((s) => s.agentKinds);
+  const agentModelDialects = useStore((s) => s.agentModelDialects);
   const templateList = useStore((s) => s.templateList);
   const [roles, setRoles] = useState<{ id: string; name: string }[]>([]);
   const [advOpen, setAdvOpen] = useState(false);
@@ -148,6 +150,7 @@ function NodePropertyPanel() {
    */
   const [checkTypes, setCheckTypes] = useState<RegistryEntryView[] | null>(null);
   const [checkTypesError, setCheckTypesError] = useState<string | null>(null);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
   const loadCheckTypes = () => {
     setCheckTypes(null);
     setCheckTypesError(null);
@@ -162,6 +165,20 @@ function NodePropertyPanel() {
   useEffect(() => {
     void fetch('/api/roles').then((r) => r.json()).then((d) => setRoles(d.roles ?? []));
     loadCheckTypes();
+    // v19-M1 模型建议值：注册中心 model 条目的机器值，只作 datalist 提示；
+    // 手输任意单串照存（吃不吃是 server 方言表的账），读不到就只剩手输，不拦配置
+    void api
+      .registryList('model')
+      .then((r) =>
+        setModelOptions([
+          ...new Set(
+            r.entries
+              .map((e) => ((e.spec as { model?: string } | undefined)?.model ?? '').trim())
+              .filter((v) => v.length > 0),
+          ),
+        ]),
+      )
+      .catch(() => undefined);
   }, []);
   // 切换选中节点时重置折叠态：已配过高级项就展开，否则默认收起（B1）
   useEffect(() => {
@@ -188,6 +205,8 @@ function NodePropertyPanel() {
   /** 清单没读到就是 `null`（不是空读数）——上面那一格区分「还没读到」与「读出来是零」 */
   const checkBtns = checkTypes === null ? null : checkTypeButtons(checkTypes);
   const labelOf = (t: string) => checkBtns?.buttons.find((b) => b.type === t);
+  // 起单前判词：吃 health 的方言表读数（server 单源），拿不到/引擎认这值=null 不画
+  const modelNote = modelCoverNote(cfg.model, cfg.agentKind, agentModelDialects);
 
   return (
     <div className="props">
@@ -224,6 +243,22 @@ function NodePropertyPanel() {
               <option key={k} value={k}>{k}</option>
             ))}
           </select>
+
+          {/* v19-M1 节点级模型覆盖：解析链 节点 > 角色 > 网关 freeModel；
+              引擎吃不吃这值由 server 方言表判（判词在下方 modelNote，运行时 status 落披露事件才是权威读数） */}
+          <label title="留空=不覆盖（跟岗位或网关兜底）。引擎吃不吃这值由服务端方言表判；不认这值时不注不拦，这里与运行时都会明说">模型覆盖（可选）</label>
+          <input
+            value={cfg.model ?? ''}
+            onChange={(e) => set({ model: e.target.value.trim() || undefined })}
+            list="pf-model-options"
+            placeholder="gpt-4o 或 provider/model"
+          />
+          <datalist id="pf-model-options">
+            {modelOptions.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+          {modelNote && <div className="hint warn">{modelNote}</div>}
 
           <label>任务指令（prompt）<span className="req-mark">*</span></label>
           <textarea

@@ -4,6 +4,7 @@ import {
   type DagGraph,
   type DagNode,
   type EdgeCondition,
+  type NodeEquip,
   type NodeRunRecord,
   type NodeRunState,
 } from '@paneflow/shared';
@@ -42,6 +43,11 @@ export interface Step {
   summary?: string;
   /** 阻塞原因（人工检查 / 审批） */
   blockedPrompt?: string;
+  /**
+   * v13-W1 岗位装备账（v19 打磨透传）：运行记录里原样带出，判据在 server 注入现场——
+   * 缺省=注入现场没走到/无运行记录，画法见 equip-note.ts（与 CLI status 同款字段照渲）。
+   */
+  equip?: NodeEquip;
   node: DagNode;
 }
 
@@ -72,7 +78,12 @@ function formatCondition(source: string, c: EdgeCondition): string {
   return `依赖 ${source}`;
 }
 
-function describe(node: DagNode, deps: DagNode[]): { kind: StepKind; note: string } {
+function describe(
+  node: DagNode,
+  deps: DagNode[],
+  /** v19-R2：卡片层的角色用岗名（roleId 机器值退到画布/技术账）；拿不到名字回落 id，不编 */
+  roleNames?: Record<string, string>,
+): { kind: StepKind; note: string } {
   switch (node.type) {
     case 'start':
       return { kind: 'start', note: '流程起点' };
@@ -100,14 +111,18 @@ function describe(node: DagNode, deps: DagNode[]): { kind: StepKind; note: strin
           : '调用子流水线（具体模板由上游产物决定）',
       };
     default: {
-      const who = node.config.role ? `角色「${node.config.role}」` : node.config.agentKind ?? '未配置 Agent';
+      const who = node.config.role ? `角色「${roleNames?.[node.config.role] ?? node.config.role}」` : node.config.agentKind ?? '未配置 Agent';
       const lead = oneLine(node.config.prompt);
       return { kind: 'agent', note: lead ? `${who} · ${lead}` : who };
     }
   }
 }
 
-export function deriveSteps(graph: DagGraph, runNodes?: Record<string, NodeRunRecord>): Step[] {
+export function deriveSteps(
+  graph: DagGraph,
+  runNodes?: Record<string, NodeRunRecord>,
+  roleNames?: Record<string, string>,
+): Step[] {
   const nodes = graph.nodes ?? [];
   const edges = graph.edges ?? [];
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -134,7 +149,7 @@ export function deriveSteps(graph: DagGraph, runNodes?: Record<string, NodeRunRe
       .filter((name, i, arr) => arr.indexOf(name) === i);
     const rejected = runNodes?.[id]?.rejections?.length ?? 0;
     const depsNodes = deps.map((d) => byId.get(d)).filter((n): n is DagNode => Boolean(n));
-    const { kind, note } = describe(node, depsNodes);
+    const { kind, note } = describe(node, depsNodes, roleNames);
     const rec = runNodes?.[id];
     no += 1;
     steps.push({
@@ -150,6 +165,7 @@ export function deriveSteps(graph: DagGraph, runNodes?: Record<string, NodeRunRe
       state: rec?.state,
       summary: rec?.artifact?.summary,
       blockedPrompt: rec?.blockedPrompt,
+      equip: rec?.equip,
       node,
     });
   }

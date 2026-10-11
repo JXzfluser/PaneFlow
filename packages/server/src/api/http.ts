@@ -3,8 +3,8 @@ import type { FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import cors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
-import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag, forwardEdges, rejectEdgeNote, DECLARE_FACES, equipSlotIssueOf } from '@paneflow/shared';
-import type { DagGraph, RegistryEntry, RunExperimentMeta, RunRecord, PermMode } from '@paneflow/shared';
+import { applyVariables, machineCheckTally, renderPromptTemplate, runHasEnded, topoSort, validateDag, forwardEdges, rejectEdgeNote, DECLARE_FACES, equipSlotIssueOf, modelIdIssue } from '@paneflow/shared';
+import type { DagGraph, RegistryEntry, RunExperimentMeta, RunRecord, PermMode, RunAssignee } from '@paneflow/shared';
 import { computeUsageReport } from './usage.js';
 import type { Engine, ApprovalAction } from '../orchestrate/engine.js';
 import type { HerdrOps } from '../orchestrate/herdr-ops.js';
@@ -15,7 +15,7 @@ import { validateDelivery } from '../orchestrate/delivery.js';
 import { productShelfFile, purgeShelf, shelfRunDir } from '../orchestrate/products.js';
 import { GithubSync, loadSyncConfig, syncUnavailableReason } from './github-sync.js';
 import { loadContractLibrary, matchContractTemplate, renderContractTemplateBlock } from '../orchestrate/contract-templates.js';
-import { detectInstalledAgents, recommendAgentKind } from './env-check.js';
+import { detectInstalledAgents, recommendAgentKind, resolveAutoAgentKind } from './env-check.js';
 import {
   dispatchChannels,
   readChannels,
@@ -87,6 +87,7 @@ import { guardOnDiskDeletes } from '../orchestrate/registry-gate.js';
 // v14 A5-5b：装备槽 `{kind,id}` 定点引用的保存面闸（同一本注册表读数，判据归 registry-equip）
 import { RegistryStore } from '../orchestrate/registry.js';
 import { guardEquipRefs } from '../orchestrate/registry-equip.js';
+import { describeModelDialect } from '../orchestrate/model-dialects.js';
 // v14 前置-1：agent kind 清单只有一处真身（此处曾与 env-check 的探测表各写一份，加一种要改两处）
 import { AGENT_KINDS, isAgentKind } from './agent-kinds.js';
 
@@ -293,6 +294,15 @@ export async function buildHttpServer(deps: HttpDeps) {
         return reply.code(400).send({ error: `角色 ID 非法：${r.id}` });
       }
       if (ids.has(r.id)) return reply.code(400).send({ error: `角色 ID 重复：${r.id}` });
+      // v19-M1 岗位模型：脏形状（空白/含空格/超长）到启动现场只会静默失效或拼坏 argv——保存面拒（W1/W3 同款姿态）。
+      if ((r as { model?: unknown }).model !== undefined) {
+        const bad = modelIdIssue(r.model);
+        if (bad) {
+          return reply.code(400).send({
+            error: `角色 ${r.id} 的 model 非法：${bad}（不需要岗位覆盖就不给这个键；节点级覆盖在画布 config.model）`,
+          });
+        }
+      }
       // v13-W1 装备槽脏形状 → v14-A5-5b 两写法：判据归 shared 的 `equipSlotIssueOf`（一处措辞、一处判序），
       // 这里只把它翻成入库那一句指路。为什么必须在保存面拒：脏形状与坏引用到注入现场只会**静默失效**
       // （装备没换上却以为换上了）——B1/W1/W3 三条同一姿态。
@@ -951,6 +961,9 @@ export async function buildHttpServer(deps: HttpDeps) {
     // v18 诚实读数：agent CLI 装没装只看本机 PATH，与 herdr 死活无关——
     // 旧实现 herdr 未连接时报「已安装 Agent：无」，把「编排底座没起」说成「机器上什么都没有」。
     const agentsInstalled = await detectInstalledAgents([...AGENT_KINDS]);
+    // v19 打磨·方言账外发：每 kind 的模型通道读数（flag/levels/none）由 model-dialects 单源现算，
+    // 网页角色卡/节点面板据此在**起单前**就能说清「这值会不会被注」——判据不住前端（R4）。
+    const agentModelDialects = Object.fromEntries(AGENT_KINDS.map((k) => [k, describeModelDialect(k)]));
     // AE：推荐与网关状态常备（不依赖 herdr），设置页据此显示「自动推荐：pi」
     const recommendedAgentKind = await recommendAgentKind();
     // v13-S5 账本健康可见：persistFailures=进程级内存累计（不回写正在失败的账本）；
@@ -966,6 +979,7 @@ export async function buildHttpServer(deps: HttpDeps) {
       herdrVersion,
       herdrSocket: deps.herdrSocketPath,
       agentKinds: AGENT_KINDS,
+      agentModelDialects,
       recommendedAgentKind,
       gatewayEnabled: gatewayActive(deps.dataDir),
       persistFailures: Store.persistFailures,
@@ -1359,7 +1373,7 @@ export async function buildHttpServer(deps: HttpDeps) {
    * 拼错的键（experment/sute…）=实验标静默失效、白跑一批单，宁拒不错放。
    * 不给 experiment 键=零判据介入，今日语义一字不变。
    */
-  const DISPATCH_BODY_KEYS = ['task', 'issueId', 'cwd', 'preview', 'experiment', 'permMode'];
+  const DISPATCH_BODY_KEYS = ['task', 'issueId', 'cwd', 'preview', 'experiment', 'permMode', 'ensureCwd', 'assign'];
   const PERM_MODES: PermMode[] = ['readonly', 'normal', 'auto'];
   /**
    * v18-R2 派发档位：readonly=只读咨询 · normal=常规 · auto=自动放行（语义见 shared PermMode）。
@@ -1373,6 +1387,42 @@ export async function buildHttpServer(deps: HttpDeps) {
       return { error: `permMode 只认 ${PERM_MODES.join('/')}（readonly=只读咨询 · normal=常规 · auto=自动放行；不收=整个键别给）` };
     }
     return { permMode: raw as PermMode };
+  };
+  /**
+   * v19-R1 首条任务零前置：ensureCwd=true = 解析出的工作目录不存在时由 server 就地建目录接单
+   * （动作由调用方显式请求触发，server 不猜路径）。姿态同 permMode：脏值宁拒——
+   * 字符串 'true' 若被 truthy 放行＝没想要建目录的单悄悄建了目录。不给键=今天行为一字不变。
+   */
+  const parseDispatchEnsureCwd = (body: Record<string, unknown> | undefined): { ensureCwd?: boolean; error?: string } => {
+    const raw = body?.ensureCwd;
+    if (raw === undefined) return {};
+    if (raw !== true && raw !== false) {
+      return { error: 'ensureCwd 只认真布尔 true/false（true=工作目录不存在时就地创建；不收=整个键别给）' };
+    }
+    return { ensureCwd: raw };
+  };
+  /**
+   * v19-R4 派活挑人：assign={roleId} —— 只收这一枚形状，成员能不能接单（在班底、角色在册、
+   * 配了引擎）在 roleIndex 就位后再判（见路由内解析段）。拼错的键宁拒不错放：
+   * 「以为换人干了其实还在默认引擎」是假读数。
+   */
+  const parseDispatchAssign = (
+    body: Record<string, unknown> | undefined,
+  ): { assign?: { roleId: string }; error?: string } => {
+    const raw = body?.assign;
+    if (raw === undefined) return {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { error: 'assign 必须是 {roleId} 对象（roleId=班底名册里的角色 id——挑人=挑岗，引擎随岗解析）' };
+    }
+    const unknown = Object.keys(raw as Record<string, unknown>).filter((k) => k !== 'roleId');
+    if (unknown.length) {
+      return { error: `assign 含未知键：${unknown.join('、')}（合法只有 roleId——拼错=挑人静默失效，宁拒不错放）` };
+    }
+    const roleId = (raw as { roleId?: unknown }).roleId;
+    if (typeof roleId !== 'string' || !roleId.trim()) {
+      return { error: 'assign.roleId 必须是非空字符串（班底名册里的角色 id）' };
+    }
+    return { assign: { roleId: roleId.trim() } };
   };
   const parseDispatchExperiment = (
     body: Record<string, unknown> | undefined,
@@ -1415,8 +1465,43 @@ export async function buildHttpServer(deps: HttpDeps) {
     };
   };
 
+  /**
+   * v19 打磨：派单**之前**问一句「不点名成员时这单会落到哪个引擎」——挑人下拉的「自动」那一行读它。
+   * 判据与接单口共用 resolveAutoAgentKind（一处 ladder 两处渲），网页不自拼「档案默认 vs 本机实探」的先后。
+   * 档案读不动 = `unknown`（无从判断），与 `none`（查过了，两路都空）分家——后者才是真派不出。
+   */
+  app.get<{ Querystring: { space?: string } }>('/api/dispatch/auto-engine', async (req) => {
+    const store = spaceStore(deps, req.query.space);
+    let profileDefault: string | undefined;
+    let readable = true;
+    try {
+      profileDefault = store.readProfile().defaultAgentKind;
+    } catch {
+      readable = false;
+    }
+    if (!readable) {
+      return {
+        space: store.spaceId,
+        agentKind: null as string | null,
+        via: 'unknown' as const,
+        note: '项目档案读不动，这一路会落到哪个引擎现在无从判断',
+      };
+    }
+    const read = await resolveAutoAgentKind(profileDefault, deps.recommendAgentKind ?? recommendAgentKind);
+    return { space: store.spaceId, ...read };
+  });
+
   app.post<{
-    Body: { task: string; issueId?: string; cwd?: string; preview?: boolean; experiment?: unknown; permMode?: unknown };
+    Body: {
+      task: string;
+      issueId?: string;
+      cwd?: string;
+      preview?: boolean;
+      experiment?: unknown;
+      permMode?: unknown;
+      ensureCwd?: unknown;
+      assign?: unknown;
+    };
     Querystring: { space?: string };
   }>(
     '/api/dispatch',
@@ -1427,6 +1512,10 @@ export async function buildHttpServer(deps: HttpDeps) {
       if (exp.error) return reply.code(400).send({ error: exp.error });
       const pm = parseDispatchPermMode(req.body as Record<string, unknown> | undefined);
       if (pm.error) return reply.code(400).send({ error: pm.error });
+      const ec = parseDispatchEnsureCwd(req.body as Record<string, unknown> | undefined);
+      if (ec.error) return reply.code(400).send({ error: ec.error });
+      const asg = parseDispatchAssign(req.body as Record<string, unknown> | undefined);
+      if (asg.error) return reply.code(400).send({ error: asg.error });
       const store0 = spaceStore(deps, req.query.space);
       let rootCwd: string | undefined;
       let plannerAgentKind: string | undefined;
@@ -1441,18 +1530,38 @@ export async function buildHttpServer(deps: HttpDeps) {
         profileTeam = profile.team;
         // E'+AE：Planner agent 取空间档案默认值；缺省回落自动推荐（已装优先 pi）
         // v13-E2：两路全空不再兜底 claude——下面显式 400 指路（实探读端见 /api/health）
-        plannerAgentKind = profile.defaultAgentKind && isAgentKind(profile.defaultAgentKind)
-          ? profile.defaultAgentKind
-          : ((await (deps.recommendAgentKind ?? recommendAgentKind)()) ?? undefined);
+        // v19 打磨：这条梯抽到 resolveAutoAgentKind 单源——挑人下拉的「自动」读数与接单口同源
+        plannerAgentKind = (
+          await resolveAutoAgentKind(profile.defaultAgentKind, deps.recommendAgentKind ?? recommendAgentKind)
+        ).agentKind ?? undefined;
       } catch {
         rootCwd = undefined;
       }
       const cwd = String(req.body.cwd ?? '').trim() || rootCwd;
-      if (!cwd) return reply.code(400).send({ error: '缺少工作目录（项目未配置 rootCwd 且未指定）' });
+      if (!cwd) return reply.code(400).send({ error: '缺少工作目录（项目未配置 rootCwd 且未指定）', code: 'cwd-empty' });
+      // v19-R1 fail-fast + 一键创建：目录不存在旧样子是 engine.startRun 才抛（接单 200 后节点慢红），
+      // 现在接单现场问一次文件系统——不存在就带 code/cwd 结构化 400，网页据此摆指路卡；
+      // ensureCwd=true 才 mkdir -p（建目录是调用方点名的动作，server 绝不替人猜路径）。
+      let cwdExists = false;
+      try {
+        cwdExists = fs.statSync(cwd).isDirectory();
+      } catch {
+        cwdExists = false;
+      }
+      if (!cwdExists) {
+        if (!ec.ensureCwd) {
+          return reply.code(400).send({ error: `工作目录不存在：${cwd}`, code: 'cwd-missing', cwd });
+        }
+        try {
+          fs.mkdirSync(cwd, { recursive: true });
+        } catch (e) {
+          return reply.code(400).send({ error: `工作目录创建失败：${cwd} —— ${(e as Error).message}`, code: 'cwd-create-failed', cwd });
+        }
+      }
       // v13-E2 fail-closed：档案与实探两路都空 = 这台机器没有可派的 agent，不起必红单。
       // 显式 send 而非把 throw 交给 Fastify 默认错误序列化——那里的 body.error 是状态文本
       // 「Bad Request」，CLI 只读 body.error（cli/client.ts），指路文案会掉进 message 里没人看见。
-      if (!plannerAgentKind?.trim()) return reply.code(400).send({ error: DISPATCH_NO_AGENT_ERROR });
+      if (!plannerAgentKind?.trim()) return reply.code(400).send({ error: DISPATCH_NO_AGENT_ERROR, code: 'no-agent-kind' });
       // G1：任务文本里贴了 issue URL/#123 即自动识别编号与 repo
       let issueId = typeof req.body.issueId === 'string' ? req.body.issueId.trim() : '';
       let issueRepo: string | undefined;
@@ -1521,6 +1630,43 @@ export async function buildHttpServer(deps: HttpDeps) {
             spaceId: store0.spaceId,
           }),
         }));
+      // v19-R4 派活挑人：接单口三道判（判据全在 server，网页只是选择器）——
+      // ①必须在本项目班底名册里（挑人=挑名册上的成员，不是挑全局角色）；
+      // ②角色在册（悬空引用不接单——班底行虽滤掉悬空，profileTeam 里仍可能挂着）；
+      // ③该岗配了引擎且在本机白名单内（否则挑完人变节点启动慢红，同 E2/#106 那族漏洞）。
+      // 任一不满足 400 指路——绝不静默回落默认引擎（那是「以为换了人、其实没换」的假读数）。
+      let assignee: RunAssignee | undefined;
+      if (asg.assign) {
+        const roleId = asg.assign.roleId;
+        const member = (profileTeam ?? []).find((m) => m.roleId === roleId);
+        if (!member) {
+          return reply.code(400).send({
+            error: `要派的人「${roleId}」不在本项目班底名册里——先在「项目 → 班底」加上 TA，或换一位成员`,
+            code: 'assign-not-in-team',
+          });
+        }
+        const role = roleIndex.get(roleId);
+        if (!role) {
+          return reply.code(400).send({
+            error: `班底成员「${roleId}」引用的角色已不在角色库里（悬空引用）——先去「项目 → 班底」修好这一行再派`,
+            code: 'assign-role-dangling',
+          });
+        }
+        const assignKind = role.agentKind?.trim();
+        if (!assignKind) {
+          return reply.code(400).send({
+            error: `岗位「${role.name}」没配引擎，接不了这单——去「设置 → 角色库」给 TA 指定 agent 类型，或换一位成员`,
+            code: 'assign-no-engine',
+          });
+        }
+        if (!isAgentKind(assignKind)) {
+          return reply.code(400).send({
+            error: `岗位「${role.name}」配的引擎「${assignKind}」不被本机识别——去「设置 → 角色库」换成可用类型（见「设置 → 环境」）`,
+            code: 'assign-engine-unknown',
+          });
+        }
+        assignee = { roleId, name: role.name, agentKind: assignKind };
+      }
       const graph = buildDispatchGraph({
         task,
         issueId: issueId || undefined,
@@ -1548,8 +1694,8 @@ export async function buildHttpServer(deps: HttpDeps) {
         undefined,
         // M2：机检契约随单落册（run 的首个结构化产物）；无契约模式由契约门谈定后落
         // 实验标走 replay 同一条 opts 通道（engine.startRun 固化进 RunRecord.experiment，
-        // 终态收口经 appendExperimentRow 自动落收数表）；两键皆空照旧传 undefined——零回归
-        contractAssertions.length || exp.experiment || pm.permMode
+        // 终态收口经 appendExperimentRow 自动落收数表）；各键皆空照旧传 undefined——零回归
+        contractAssertions.length || exp.experiment || pm.permMode || assignee
           ? {
               ...(contractAssertions.length
                 ? {
@@ -1566,6 +1712,7 @@ export async function buildHttpServer(deps: HttpDeps) {
                 : {}),
               ...(exp.experiment ? { experiment: exp.experiment } : {}),
               ...(pm.permMode ? { permMode: pm.permMode } : {}),
+              ...(assignee ? { assignee } : {}),
             }
           : undefined,
       );
@@ -1578,6 +1725,8 @@ export async function buildHttpServer(deps: HttpDeps) {
         ...(run.experiment ? { experiment: run.experiment } : {}),
         // v18-R2 档位回执：normal 不回（键省略=常规，与落册口径一致）
         ...(run.permMode ? { permMode: run.permMode } : {}),
+        // v19-R4 挑人回执：没挑人不回（键省略=按四级链自动解析，与落册口径一致）
+        ...(run.assignee ? { assignee: run.assignee } : {}),
         // v11-A1 CLI：节点清单摘要（id/name/deps）——派活方在网页前也能报清这单要跑什么
         nodes: graph.nodes.map((n) => ({
           id: n.id,
@@ -1737,6 +1886,25 @@ export async function buildHttpServer(deps: HttpDeps) {
       return { nodes, edges, warnings, variables: applied.graph.variables ?? [] };
     },
   );
+
+  // v19-R6 更新记录：server 只静态读一枚随 release 打包的 CHANGELOG.md（不直读 git，
+  // 唯一判据是「哪一路找得到这枚文件」；翻成人话行是 web 侧纯函数的事）。
+  // 查找序：PF_CHANGELOG_PATH（逃生舱）→ 前端产物目录同级（免克隆包 pkg/web/）→ cwd（源码运行）。
+  app.get('/api/changelog', async (req, reply) => {
+    const paths = [
+      ...(process.env.PF_CHANGELOG_PATH ? [process.env.PF_CHANGELOG_PATH] : []),
+      ...candidates.map((c) => path.join(c, 'CHANGELOG.md')),
+      path.join(process.cwd(), 'CHANGELOG.md'),
+    ];
+    for (const p of paths) {
+      try {
+        return { markdown: fs.readFileSync(p, 'utf8'), source: p };
+      } catch {
+        /* 这一路没有，往下问 */
+      }
+    }
+    return reply.code(404).send({ error: 'CHANGELOG.md 读不到（这一版安装没带上这枚文件）——没有更新记录，不是更新记录为空' });
+  });
 
   // -- runs -------------------------------------------------------------------
 

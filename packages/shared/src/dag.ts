@@ -103,11 +103,33 @@ export const REJECT_LIMIT_MAX = 5;
 /** 打回理由进 prompt 的字节顶：否决理由写成论文会把本轮上下文挤掉，截断并明示 */
 export const REJECTION_REASON_MAX_CHARS = 1_200;
 
+/**
+ * v19-M1 模型 id 的入库尺（节点 config.model 与角色 model 共用）：
+ * 非空、无空白、≤120 字符。返回 null=合法，否则一句「哪里不对」。
+ * 为什么拒空白：这枚值要原样注进启动 argv（`--model <值>`），带空格=两枚参数，
+ * 到了引擎那里是「模型没换成 + 一句看不懂的花旗报错」，保存面先拒更便宜。
+ */
+export function modelIdIssue(value: unknown): string | null {
+  if (typeof value !== 'string') return '必须是字符串';
+  const v = value.trim();
+  if (!v) return '不能是空白（不需要覆盖就不给这个键）';
+  if (/\s/.test(v)) return '含空白（模型 id 需是单串，如 gpt-4o 或 provider/model）';
+  if (v.length > 120) return `过长（${v.length} 字符，上限 120）`;
+  return null;
+}
+
 export interface DagNodeConfig {
   /** 全局角色库的角色 id（继承 agentKind 默认与 prePrompt） */
   role?: string;
   /** Herdr agent kind, e.g. claude | codex | opencode | pi | kimi ... */
   agentKind?: string;
+  /**
+   * v19-M1 节点级模型覆盖（解析链：节点 > 角色 > 网关 freeModel 兜底）。
+   * 给了且引擎吃 `--model` 旗标（实探方言表见 server 的 model-dialects）就注进启动参数；
+   * 引擎不吃这个值（如 qodercli 只认档位枚举、或 kind 未实探）时**不注也不拦**，
+   * 落一条披露事件——与装备槽 misses 同款姿态。没通道时这枚值只是摆着，不做第二层猜测。
+   */
+  model?: string;
   /** Extra argv passed to the agent after `--` at `agent start` */
   agentArgs?: string[];
   /**
@@ -786,6 +808,12 @@ export interface NodeEquip {
    * 只在这几格非空时落册；旧单整键缺省=没有这份明细，读端回落 labels 那一行（缺≠「没落地」）。
    */
   misses?: EquipSlotMissNote[];
+  /**
+   * v19-M1 岗位模型覆盖（=角色实配的 model 原值，非解析结果）：**入 roleSha**——
+   * 「换模型=换岗位读数」，与 skills/rules 路径集同款「哪一岗挂什么配置」的账。
+   * 只在角色配了这格时落册；节点级 config.model 不住这里（它是图的账，进 graphSha/skeletonSha）。
+   */
+  model?: string;
 }
 
 /** 一格没落地的明细：哪一轴、槽原文、server 在注入现场算出的一句人话 */
@@ -980,6 +1008,13 @@ export interface RunRecord {
    */
   permMode?: PermMode;
   /**
+   * v19-R4 派活挑人回执：dispatch 体 assign={roleId} 时 server 起单现场解析好的「这单由谁干」——
+   * 成员=岗位×引擎的解析结果（判据全在接单口：必须在班底名册、角色在册且配了引擎，任一不满足 400 指路）。
+   * agentKind 进引擎解析链第 0 级（高于统一覆盖），harness.agentKind 读数自动跟随。
+   * 缺省=没挑人（按既有四级链解析，旧记录/CLI 面一字不变）。
+   */
+  assignee?: RunAssignee;
+  /**
    * v18-R2 门自动放行计数：readonly/auto 档位下非契约门被引擎自动放行的次数，
    * 结构化落册（externalReleases 同款姿态：不靠 500 条环形事件推导）。自动放行不是人的
    * 决策，绝不进 attention 人等分账。缺省=本单没有自动放行（normal 档/旧记录）。
@@ -989,6 +1024,17 @@ export interface RunRecord {
 
 /** v18-R2 运行权限档位（派发体 permMode 的合法全集；执行语义见 RunRecord.permMode 注释）。 */
 export type PermMode = 'readonly' | 'normal' | 'auto';
+
+/**
+ * v19-R4 「谁来干」解析回执（RunRecord.assignee 的形状）：接单口按班底名册+角色库解析成功后
+ * 固化进 run（写一次即成历史——岗后来改名/换引擎不改旧单读数）。
+ * agentKind 是 resolveAgentKind 的第 0 级（高于统一覆盖），引擎与节点实发同源。
+ */
+export interface RunAssignee {
+  roleId: string;
+  name: string;
+  agentKind: string;
+}
 
 /**
  * v12-V2 人介入账本：同一节点多轮进出门（input 谈完再拦）逐次累加，合法。
@@ -1405,6 +1451,14 @@ export function validateDag(graph: DagGraph): DagIssue[] {
       }
       if (!n.config.prompt || !n.config.prompt.trim()) {
         issues.push({ level: 'error', message: `Agent 节点缺少任务指令（prompt）：${n.label}`, nodeId: n.id });
+      }
+      // v19-M1 模型覆盖脏形状：给了就必须是能注进 argv 的单串（含空白/超长=配置打错，
+      // 到启动现场只会静默失效——「换了模型却没换」正是装备槽同款要防的事故）
+      if (n.config.model !== undefined) {
+        const modelBad = modelIdIssue(n.config.model);
+        if (modelBad) {
+          issues.push({ level: 'error', message: `Agent 节点 model 非法：${modelBad}（${n.label}）`, nodeId: n.id });
+        }
       }
       // v13-K1 硬引用机检（写入面 fail-closed，与 v13-V0 同款姿势）：引用了图里没有的节点=配置打错，
       // 宁可当场拒也不放行——放行了就是「下游引用一份永不存在的产物」，收口时红得莫名其妙

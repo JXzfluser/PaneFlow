@@ -13,6 +13,7 @@ import type { DagGraph, DagNode, DagNodeType, EdgeCondition, GraphRequirement, N
 import { runHasEnded } from '@paneflow/shared';
 import { autosaveChanged, graphToRfParts, rfToGraph, type GraphMeta, type PfEdgeData, type PfNode, type PfNodeData } from './graph-serialization.js';
 import { setSpace as setApiSpace, getSpace, api } from './api.js';
+import type { ModelDialectRead } from './model-note.js';
 import { validateDag } from '@paneflow/shared';
 
 export type ThemeName = 'dark' | 'light';
@@ -52,13 +53,15 @@ function initialTheme(): ThemeName {
   applyTheme(t);
   return t;
 }
-export type AppView = 'tasks' | 'orchestrate' | 'runs' | 'projects' | 'caps' | 'settings';
+export type AppView = 'tasks' | 'team' | 'orchestrate' | 'runs' | 'projects' | 'caps' | 'settings';
 
 /** 视图白名单 + 存储键：改默认落地页时递增版本号，让老用户也吃到新默认（A2）。
  *  v4：注册中心并入设置页（配置枢纽归一），旧键里的 'registry' 迁到 'settings'；
- *  v5：默认落地页改「任务」（说需求是产品正门），「运行」升格为「看板」（视图 id 不变）。 */
+ *  v5：默认落地页改「任务」（说需求是产品正门），「运行」升格为「看板」（视图 id 不变）。
+ *  v19-R7：导航终态四席（任务/班底/看板/项目）；orchestrate/caps/settings 从导航退役但
+ *  目的地仍在册——滑钮直达设置页、侧导航「工作台」组与直达路径照旧可达，白名单不删（删了=老用户的落地视图直接回退）。 */
 const VIEW_KEY = 'pf-view-v5';
-const VIEWS: AppView[] = ['tasks', 'orchestrate', 'runs', 'projects', 'caps', 'settings'];
+const VIEWS: AppView[] = ['tasks', 'team', 'orchestrate', 'runs', 'projects', 'caps', 'settings'];
 
 function initialView(): AppView {
   const saved = localStorage.getItem(VIEW_KEY) ?? localStorage.getItem('pf-view-v4') ?? localStorage.getItem('pf-view-v3');
@@ -91,6 +94,8 @@ interface PfStore {
   herdrOk: boolean | null;
   cwd: string;
   agentKinds: string[];
+  /** v19 打磨：health 灌入的每 kind 模型通道读数（server 方言账单源；旧 server 缺键=undefined 不猜） */
+  agentModelDialects?: Record<string, ModelDialectRead>;
   /** 新建节点的默认 Agent（health 灌入：本机已安装优先，见 R7-③） */
   defaultAgentKind: string;
   templateList: DagGraph[];
@@ -120,6 +125,7 @@ interface PfStore {
   setCwd: (cwd: string) => void;
   setHealth: (herdrOk: boolean | null, wsOk: boolean) => void;
   setAgentKinds: (kinds: string[]) => void;
+  setAgentModelDialects: (dialects: Record<string, ModelDialectRead>) => void;
   setDefaultAgentKind: (kind: string) => void;
   setTemplates: (graphs: DagGraph[]) => void;
   /** v11-C5：沉淀发布成功后 bump wikiPublishTick，设置页卡片据此重拉状态 */
@@ -241,6 +247,7 @@ export const useStore = create<PfStore>((set, get) => ({
   setCwd: (cwd) => set({ cwd }),
   setHealth: (herdrOk, wsOk) => set({ herdrOk, wsOk }),
   setAgentKinds: (agentKinds) => set({ agentKinds }),
+  setAgentModelDialects: (agentModelDialects) => set({ agentModelDialects }),
   setDefaultAgentKind: (defaultAgentKind) => set({ defaultAgentKind }),
   setTemplates: (templateList) => set({ templateList }),
   notifyWikiPublished: () => set((s) => ({ wikiPublishTick: s.wikiPublishTick + 1 })),

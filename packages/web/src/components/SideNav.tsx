@@ -2,21 +2,23 @@ import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 import type { RunRecord } from '@paneflow/shared';
+import { templateLabel } from '../template-labels.js';
 import { Icon, type IconName } from './Icon.js';
 
-/** 主导航五项——「设置」按用户要求沉到侧栏最底部（图标），「能力」按设计稿 IA 契约
- *  升回一级目的地（注册=能力登记+配置聚合）；「指南」是底部工具（合并向导入口）。 */
+/** v19-R7 导航终态四席——全是名词性「地方」，零配置页。
+ *  编排/能力/设置从导航退役但目的地仍在（store 视图白名单未删）：
+ *  底部滑钮直达「高级设置」页，编排台/能力注册中心是设置页侧导航的「工作台」快捷入口，
+ *  URL/直达路径照旧可达（CLI 与机检口径完全不动）。 */
 const ITEMS: {
-  id: 'tasks' | 'orchestrate' | 'runs' | 'projects' | 'caps';
+  id: 'tasks' | 'team' | 'runs' | 'projects';
   icon: IconName;
   label: string;
   title: string;
 }[] = [
   { id: 'tasks', icon: 'pen', label: '任务', title: '任务：一句话描述需求，自动编排并执行' },
-  { id: 'orchestrate', icon: 'workflow', label: '编排', title: '编排：步骤清单 / 图形画布' },
+  { id: 'team', icon: 'user', label: '班底', title: '班底：谁在、会干什么、最近干得怎么样（人即配置，读数全来自既有账）' },
   { id: 'runs', icon: 'clock', label: '看板', title: '看板：统计 / 审阅队列 / 五列进度板（清单模式查历史细节）' },
   { id: 'projects', icon: 'folder', label: '项目', title: '项目：总览 / 切换 / 新建（原底部下拉已升格为视图）' },
-  { id: 'caps', icon: 'registry', label: '能力', title: '注册中心：能力登记与配置聚合——每类能力说什么/谁在用/还在不在' },
 ];
 
 /**
@@ -42,7 +44,7 @@ function runDotClass(run: RunRecord): string {
 function runTitle(run: RunRecord): string {
   return (
     run.graph.metadata?.description?.trim() ||
-    (run.issueId ? `Issue #${run.issueId}` : run.dagName)
+    (run.issueId ? `Issue #${run.issueId}` : templateLabel(run.dagName).title)
   );
 }
 export function SideNav() {
@@ -57,6 +59,8 @@ export function SideNav() {
   const runs = useStore((s) => s.runs);
   const openRun = useStore((s) => s.openRun);
   const [spaceName, setSpaceName] = useState('');
+  // v19-R7 滑钮直达高级设置；编排台/能力注册中心也算「高级」目的地，高亮同源
+  const advActive = view === 'settings' || view === 'caps' || view === 'orchestrate';
   // v18-UI 侧栏收缩：记忆在 store（顶栏收缩钮共用）∪ 窄屏自动——rail 一套样式两个触发源
   const navCollapsed = useStore((s) => s.navCollapsed);
   const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 900px)').matches);
@@ -147,8 +151,10 @@ export function SideNav() {
           ))}
         </div>
       )}
-      {/* v18-UI v6：底部一行四图标——指南 / 设置 / 主题 / 连接状态。
+      {/* v18-UI v6：底部一行四图标——指南 / 高级 / 主题 / 连接状态。
           指南是动作不是目的地，不再占导航位（导航=纯目的地）；帮助住底部角落是全行业惯例。 */}
+      {/* v19-R7 抽屉退役：滑钮直达「高级设置」页——弹层本身就是突兀源，直达没有中间态。
+          编排台/能力注册中心收进设置页侧导航「工作台」组，目的地一个不少。 */}
       <div className="sidenav-foot">
         <button
           className="sidenav-iconbtn"
@@ -158,8 +164,8 @@ export function SideNav() {
           <Icon name="book" size={15} />
         </button>
         <button
-          className={`sidenav-iconbtn ${view === 'settings' ? 'active' : ''}`}
-          title="设置：环境 / 网关 / GitHub / 用量 / 能力注册 / 角色 / 沉淀 / 通道"
+          className={`sidenav-iconbtn ${advActive ? 'active' : ''}`}
+          title="高级设置：环境 / 模型网关 / 用量 / 角色库 / 更新记录（编排台、能力注册中心从这里进）"
           onClick={() => setView('settings')}
         >
           <Icon name="sliders" size={16} />

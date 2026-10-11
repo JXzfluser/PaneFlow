@@ -8,6 +8,14 @@ export interface Role {
   name: string;
   /** 默认 agent kind（节点未显式配置时使用） */
   agentKind?: string;
+  /**
+   * v19-M1 岗位模型：解析链「节点 > 角色 > 网关 freeModel」的中间一级。
+   * 实探方言表（server 的 model-dialects）里吃 `--model` 旗标的引擎原样注进启动参数；
+   * 不吃这值的引擎（qodercli 只认档位枚举 / kind 未实探）**不注不拦、落披露事件**——装备同款姿态。
+   * 这格入 roleSha（见 shared 的 `NodeEquip.model`）：换模型=换岗位指纹，岗位级 A/B 白捡。
+   * 入库面 `PUT /api/roles` 按 shared 的 `modelIdIssue` fail-closed；键缺省=岗位不覆盖模型。
+   */
+  model?: string;
   /** 角色前置提示（渲染在节点 prompt 之前） */
   prePrompt?: string;
   /** 角色级环境变量（如模型网关地址；节点 env 覆盖此处） */

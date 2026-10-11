@@ -241,6 +241,7 @@ L0 能干活   —— 模型与 agent 本体                          ← 厂商
 - `origin: true` → 有 `PF_CORS_ORIGINS`（逗号分隔白名单）按白名单，否则 `origin: false`（不发 CORS 头）。
 - 补 mutating 方法（POST/PUT/PATCH/DELETE）Origin 校验钩子（origin:false 堵不住 simple request）：无 Origin 放行（curl/脚本/CLI/代理）、`Origin.host === req.host` 放行（同源）、白名单放行、其余 403；URL 解析失败即拒。抽纯函数 `isAllowedOrigin` 便于单测。
 - 影响评估：生产同源托管、vite proxy、curl 全不受影响；唯一被挡的正是跨站驱动 API。反向代理改写 Host 的部署需配 `PF_CORS_ORIGINS`。
+  - 勘误（v19 打磨实测）：vite proxy **并非**不受影响——Vite 默认把转发请求的 Host 改成目标端口，于是 dev 页（`:4311`）的 Origin 与 server 看到的 Host 不同源，浏览器里每一次写操作都吃 403，而错句只落进底部控制台。修在 `packages/web/vite.config.ts`：代理显式 `changeOrigin:false`，Host 原样透传，同源判定恢复成立（跨站 Origin 与 host 不匹配的 localhost 变体照旧 403，未放宽任何判据）。
 - 测试：新建 `http-cors.test.ts`（app.inject）——跨站 GET 无 CORS 头；跨站 POST 403 且数据未创建；同源 POST 成功；白名单 OPTIONS 回显。
 
 **#4 dispatch Planner 不写死 claude（0.5 天）** — `dispatch.ts` + `http.ts` + `env-check.ts`

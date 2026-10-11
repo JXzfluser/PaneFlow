@@ -51,6 +51,12 @@ fs.cpSync(path.join(repoRoot, 'packages', 'web', 'dist'), path.join(pkgDir, 'web
 const iconSrc = path.join(repoRoot, 'packages', 'web', 'public', 'icon.svg');
 if (fs.existsSync(iconSrc)) fs.copyFileSync(iconSrc, path.join(pkgDir, 'web', 'icon.svg'));
 
+// 4b) v19-R6 更新记录随包走：/api/changelog 在 PF_WEB_DIR 同级找 CHANGELOG.md，
+//     仓库根是单一事实源（cat CHANGELOG.md 与页面同源），这里只做装配拷贝。
+const changelogSrc = path.join(repoRoot, 'CHANGELOG.md');
+if (!fs.existsSync(changelogSrc)) throw new Error('缺少 CHANGELOG.md（更新记录面断供）');
+fs.copyFileSync(changelogSrc, path.join(pkgDir, 'web', 'CHANGELOG.md'));
+
 // 5) bin：统一入口——**原样拷贝仓库根 bin/paneflow.mjs**，不在打包脚本里内联生成路由代码。
 //    （曾经内联了一份子命令白名单，产物随 CLI 演进漂移：v0.2.0 装机版 replay/experiments 掉进
 //    起服务分支。launcher 判据现在只认「无首参或 serve 才起服务」，拷贝即零漂移面。）

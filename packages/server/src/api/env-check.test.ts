@@ -4,6 +4,7 @@ import {
   detectInstalledAgents,
   probeWin32Binary,
   recommendAgentKind,
+  resolveAutoAgentKind,
   RECOMMEND_PRIORITY,
 } from './env-check.js';
 
@@ -80,5 +81,38 @@ describe('posix 路（sh -c command -v）：行为与今天一字不差', () => 
     } else {
       expect(reco).toBeNull(); // v13-E2 fail-closed 的读数前提：null 是「不知道/没有」，不是 'claude'
     }
+  });
+});
+
+describe('resolveAutoAgentKind（「自动派活会落到哪个引擎」的单源梯）', () => {
+  it('档案里的默认引擎在白名单内即 project-default，实探根本不该被调用（省一次 sh 子进程）', async () => {
+    let probed = 0;
+    const read = await resolveAutoAgentKind(' pi ', async () => {
+      probed++;
+      return 'codex';
+    });
+    expect(read).toEqual({
+      agentKind: 'pi',
+      via: 'project-default',
+      note: '引擎按项目默认解析 → pi（各步若自绑岗位，仍以该岗的引擎为准）',
+    });
+    expect(probed).toBe(0);
+  });
+
+  it('档案默认是本机不认的 kind → 与接单口同尺：不算默认，落实探那一级', async () => {
+    const read = await resolveAutoAgentKind('not-a-kind', async () => 'opencode');
+    expect(read).toMatchObject({ agentKind: 'opencode', via: 'probed' });
+    expect(read.note).toContain('按本机实探落到 → opencode');
+  });
+
+  it('两路全空 → none + agentKind null（null 是「查过了没有」，与 unknown 的「没查成」分家）', async () => {
+    const read = await resolveAutoAgentKind(undefined, async () => null);
+    expect(read.agentKind).toBeNull();
+    expect(read.via).toBe('none');
+    expect(read.note).toContain('派不出单');
+  });
+
+  it('实探返回 undefined（http deps 那张签名）也当没有，不落成 agentKind: undefined', async () => {
+    expect((await resolveAutoAgentKind('', async () => undefined)).via).toBe('none');
   });
 });

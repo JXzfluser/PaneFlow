@@ -382,7 +382,7 @@ async function cmdStatus(io: CliIo, baseUrl: string, args: Args): Promise<number
       io.out(
         eq.scope === 'space' && eq.role
           ? `    ${paint(io, '33', `⚠ 装备: ${bits} —— 该角色未配装备，正吃空间全量`)}`
-          : `    装备: ${bits}${eq.role ? ` · 岗 ${eq.role}` : ''}`,
+          : `    装备: ${bits}${eq.role ? ` · 岗 ${eq.role}` : ''}${eq.model ? ` · 模型 ${eq.model}` : ''}`,
       );
       // 没落地的格子：v14-A5-5b 起 server 在注入现场逐格算好「为什么」（整表读不出／条目挂在别的项目／
       // 形状不认…），CLI 原样渲这一句——判据与措辞都不在 CLI 侧（铁律 R4）。

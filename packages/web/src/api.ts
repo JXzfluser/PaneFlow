@@ -1,6 +1,7 @@
 import type { DagGraph, NodeRunRecord, RunEvent, RunRecord } from '@paneflow/shared';
 import type { DryRunResult } from './components/dry-run.js';
 import type { RegistryAddPayload, RegistryCheckResponse, RegistryEntryView, RegistryHealthResponse, RegistryListResponse, RegistryProbeResponse } from './registry-view.js';
+import type { ModelDialectRead } from './model-note.js';
 
 const BASE = '';
 
@@ -29,6 +30,35 @@ export function getSpace(): string {
   return currentSpace;
 }
 
+/**
+ * v19-R1 指路卡的结构化错误：server 的 400 体带 code/cwd 等取材（cwd-missing、no-agent-kind、
+ * assign-*），旧实现只取 error= 字符串、把其余字段丢掉——指路卡就摆不出来。
+ * 判据仍在 server（R4 铁律），这里只是把它的回执原样带到 UI。
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly payload: Record<string, unknown>;
+  constructor(message: string, status: number, payload: Record<string, unknown>) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.payload = payload;
+  }
+  /** server 的结构化指路信号；老端点体里没有 code → undefined（调用方按普通错误处理） */
+  get code(): string | undefined {
+    return typeof this.payload.code === 'string' ? this.payload.code : undefined;
+  }
+}
+
+async function toApiError(r: Response, method: string, path: string): Promise<ApiError> {
+  const payload = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+  return new ApiError(
+    typeof payload.error === 'string' ? payload.error : `${method} ${path} → ${r.status}`,
+    r.status,
+    payload,
+  );
+}
+
 async function json<T>(method: string, path: string, body?: unknown, opts?: { raw?: boolean }): Promise<T> {
   if (!opts?.raw) {
     const sep = path.includes('?') ? '&' : '?';
@@ -39,24 +69,18 @@ async function json<T>(method: string, path: string, body?: unknown, opts?: { ra
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!r.ok) {
-    const err = (await r.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error ?? `${method} ${path} → ${r.status}`);
-  }
+  if (!r.ok) throw await toApiError(r, method, path);
   return (await r.json()) as T;
 }
 
-/** 不带 space 上下文的原始 JSON 请求：非 2xx 抛错（错误体里的 error 优先作为消息）。 */
+/** 不带 space 上下文的原始 JSON 请求：非 2xx 抛 ApiError（错误体里的 error 优先作为消息）。 */
 export const fetchJson = <T>(method: string, path: string, body?: unknown): Promise<T> =>
   fetch(BASE + path, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   }).then(async (r) => {
-    if (!r.ok) {
-      const err = (await r.json().catch(() => ({}))) as { error?: string };
-      throw new Error(err.error ?? `${method} ${path} → ${r.status}`);
-    }
+    if (!r.ok) throw await toApiError(r, method, path);
     return (await r.json()) as T;
   });
 
@@ -87,6 +111,11 @@ export const api = {
     herdrVersion: string | null;
     herdrSocket: string;
     agentKinds: string[];
+    /**
+     * v19 打磨：每 kind 的模型通道读数（server 方言表单源现算，前端零判据）——
+     * flag=吃 --model；levels=只认档位枚举（枚举在 levels 里）；none=未实探。旧 server 没这键=读不到，不猜。
+     */
+    agentModelDialects?: Record<string, ModelDialectRead>;
     recommendedAgentKind?: string | null;
     gatewayEnabled?: boolean;
     env: { nodeVersion: string; agentsInstalled: string[]; agentsMissing: string[]; recommendedAgentKind?: string | null; gatewayEnabled?: boolean };
@@ -130,7 +159,15 @@ export const api = {
   // 于是 server 加一个键就得改两处——漏改的那处让调用方以为字段不存在。
   dryRun: (graph: DagGraph, cwd: string, variables?: Record<string, string>) =>
     json<DryRunResult>('POST', '/api/dry-run', { graph, cwd, ...(variables ? { variables } : {}) }),
-  dispatch: (task: string, cwd: string, issueId?: string, preview = false, permMode?: string) =>
+  dispatch: (
+    task: string,
+    cwd: string,
+    issueId?: string,
+    preview = false,
+    permMode?: string,
+    /** v19-R1/R4：ensureCwd=目录不存在就地创建；assignRoleId=这单点名交给班底里的某位成员 */
+    extra?: { ensureCwd?: boolean; assignRoleId?: string },
+  ) =>
     json<{
       runId: string;
       issueId?: string;
@@ -140,12 +177,16 @@ export const api = {
       contract?: { mode: 'extracted' | 'gate' | 'autofilled'; assertions?: number; template?: string };
       /** v18-R2 档位回执（normal=键省略） */
       permMode?: string;
+      /** v19-R4 挑人回执（没挑人=键省略；server 按班底×角色库解析好的「由谁干」） */
+      assignee?: { roleId: string; name: string; agentKind: string };
     }>('POST', '/api/dispatch', {
       task,
       cwd,
       ...(issueId ? { issueId } : {}),
       ...(preview ? { preview: true } : {}),
       ...(permMode && permMode !== 'normal' ? { permMode } : {}),
+      ...(extra?.ensureCwd ? { ensureCwd: true } : {}),
+      ...(extra?.assignRoleId ? { assign: { roleId: extra.assignRoleId } } : {}),
     }),
   /**
    * v18-R3 产物架清单与原文读取（从 RunsCenter 的两刀 fetchJson 提升为公共 api；
@@ -176,6 +217,9 @@ export const api = {
       byKind: { key: string; runs: number; tokensIn: number; tokensOut: number }[];
       budget: { envMaxTokens: number | null; tripRuns: number };
     }>('GET', `/api/usage?days=${days}`, undefined, { raw: true }),
+  /** v19-R6 更新记录（server 静态读一枚 CHANGELOG.md；404=这版安装没带上，页面明说不空画） */
+  changelog: () =>
+    json<{ markdown: string; source: string }>('GET', '/api/changelog', undefined, { raw: true }),
   /**
    * v18 MCP 自动发现（cc Switch 思路）：扫本机 Claude Code / Cursor 配置里的 mcpServers，
    * 抬出 command 型候选给页面一键登记；http/sse 型如实列 skipped（不是命令账，这版不收）。

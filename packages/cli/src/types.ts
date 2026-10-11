@@ -119,6 +119,8 @@ export interface NodeRunView {
     unknownSkills?: string[];
     unknownRules?: string[];
     misses?: { axis: string; slot: string; why: string }[];
+    /** v19-M1 岗位模型配置原值（server 注入现场落册、入 roleSha 取材；非空才落键，旧单整缺不显） */
+    model?: string;
   };
   /**
    * v13-K1 命名产物台账（server 在尝试收口现场实读算好，这里零判据只渲染）：

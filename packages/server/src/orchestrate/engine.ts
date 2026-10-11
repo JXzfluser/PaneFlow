@@ -26,6 +26,7 @@ import type {
   RunDeliveryWorktree,
   RegistryEntry,
   NodeRejection,
+  RunAssignee,
 } from '@paneflow/shared';
 import { applyVariables, renderPromptTemplate, renderProductRefs, topoSort, validateDag, validateRoleRefs, validateAcceptance, failedAssertionsOf, contractOf, lintUnresolvedRefs, runHasEnded, FANOUT_MAX_ITEMS_LIMIT, DECLARE_FACES, forwardEdges, isRejectEdge, downstreamOf, rejectionReasonOf, REJECT_LIMIT_DEFAULT } from '@paneflow/shared';
 import type { DeclareFace, ProductRef, RunDeclareViolation } from '@paneflow/shared';
@@ -58,6 +59,7 @@ import {
 } from './delivery.js';
 import { buildSkillBlock } from './skills.js';
 import { resolveEquipSlots } from './registry-equip.js';
+import { buildModelArgs } from './model-dialects.js';
 import {
   PRODUCT_READ_CAP,
   diffProduct,
@@ -752,6 +754,11 @@ export class Engine {
        * 落 run.permMode（run 级，刻意不进 contract——契约门放行会整本覆写 run.contract）。
        */
       permMode?: PermMode;
+      /**
+       * v19-R4 派活挑人：接单口解析好的「由谁干」回执（岗×引擎），固化进 run.assignee；
+       * agentKind 走 resolveAgentKind 第 0 级。缺省=没挑人（四级链照旧）。
+       */
+      assignee?: RunAssignee;
     },
   ): Promise<RunRecord> {
     // R3.4 同 issue 幂等锁：同空间同 issue 已有运行中/排队中的流水线时拒绝重复下发（G3 起含 queued，批量派发不重复入队）
@@ -878,6 +885,8 @@ export class Engine {
       ...(opts?.experiment ? { experiment: opts.experiment } : {}),
       // v18-R2：权限档位随单落册（缺省/normal=键省略，旧读数一字不变）
       ...(opts?.permMode && opts.permMode !== 'normal' ? { permMode: opts.permMode } : {}),
+      // v19-R4：挑人回执随单落册（没挑人=键省略，CLI/harness 口径一字不变）
+      ...(opts?.assignee ? { assignee: opts.assignee } : {}),
     };
     // v12-V1 harness 披露：起单时把「本单实发配置」一次性固化进 run 头（写一次即成历史）。
     // graphSha 算的是上面已 structuredClone 的 run.graph——变量替换、I2 经验注入、C3a
@@ -1282,6 +1291,9 @@ export class Engine {
         ...(source.contract ? { contract: structuredClone(source.contract) } : {}),
         // v18-R2：档位随血缘继承——同契约复跑就该同档位，不 silently 落回常规
         ...(source.permMode ? { permMode: source.permMode } : {}),
+        // v19-R4：挑人回执同款随血缘继承——assignee 决定 harness.agentKind，
+        // 不继承则 replay 双臂读数会抖出「引擎变了」的假漂移
+        ...(source.assignee ? { assignee: structuredClone(source.assignee) } : {}),
         replay: { of: source.runId },
         ...(meta && (meta.suite || meta.arm || meta.flag) ? { experiment: meta } : {}),
       },
@@ -2252,11 +2264,21 @@ export class Engine {
       // claude 自动附加沙箱豁免 + 网关/凭据 env（信任与 bypass 对话框经 settings 预接受）
       let startArgs = [...(cfg.agentArgs ?? [])];
       const kind = await this.resolveAgentKind(run, cfg);
+      // v19-M1 模型解析链：节点 > 角色 > （网关 freeModel 只作 pi/claude 兜底，见下）。
+      // 给了覆盖值就走方言表注 `--model`；引擎不吃这值时不注不拦、落披露事件（装备同款姿态）。
+      const explicitModel = cfg.model?.trim() || role?.model?.trim() || '';
       // AE：网关启用时 pi 走 PaneFlow 注册的 paneflow-gw provider（pi 不读 OPENAI_BASE_URL，
       // 且 openai 目录下的未知模型会绕到 api.openai.com 超时）；provider 由网关保存/启动时写入
       if (kind === 'pi' && gatewayActive(this.store.root, gwPin)) {
         const gm = readGateway(this.store.root, gwPin).freeModel;
-        startArgs = ['--provider', PI_GATEWAY_PROVIDER, ...(gm ? ['--model', gm] : []), ...startArgs];
+        const piModel = explicitModel || gm;
+        startArgs = ['--provider', PI_GATEWAY_PROVIDER, ...(piModel ? ['--model', piModel] : []), ...startArgs];
+      } else if (explicitModel) {
+        const dialect = buildModelArgs(kind, explicitModel);
+        if (dialect.args) startArgs = [...dialect.args, ...startArgs];
+        if (dialect.disclosure) {
+          this.recordEvent(run, 'node', nodeId, `⚠ 模型没注入：${dialect.disclosure}`);
+        }
       }
       if (kind === 'claude') {
         const bootstrapEnv = {
@@ -3167,12 +3189,14 @@ export class Engine {
 
   /**
    * Resolve which agent CLI to launch（AE 链）：
-   * 统一覆盖(space) > 节点指定 > 角色默认 > 空间默认 > 自动推荐（已装优先 pi）。
+   * 挑人(run.assignee) > 统一覆盖(space) > 节点指定 > 角色默认 > 空间默认 > 自动推荐（已装优先 pi）。
    * v13-#106：末端不再硬猜一枚 kind 兜底——推荐链实探全空就是「这台机器没法派单」，
    * 猜出来的 kind 只会走「启动超时（节点缺省 30 分钟硬顶）」那条慢红路，与 E2 在 Planner
    * 侧的 fail-closed 同族漏洞；这里改判即时人话报错（走既有节点失败路收 failed，watch 照按红）。
    */
   private async resolveAgentKind(run: RunRecord, cfg: DagNodeConfig): Promise<string> {
+    // v19-R4 第 0 级：这单点名由谁干——他的引擎就是这单的引擎（buildRunHarness 走同一条链，读数自动跟随）
+    if (run.assignee?.agentKind) return run.assignee.agentKind;
     const profile = this.storeFor(run).readProfile();
     const spaceDefault = profile.defaultAgentKind?.trim();
     if (profile.agentOverride && spaceDefault) return spaceDefault;
@@ -3571,6 +3595,9 @@ export class Engine {
               ],
             }
           : {}),
+        // v19-M1 岗位模型入装备账（roleSha 取材，见 shared 的 `NodeEquip.model`）：存角色的**配置原值**，
+        // 不是启动现场的解析结果——节点级 config.model 覆盖走 graph 的账，不挪进这枚岗位指纹。
+        ...(role?.model?.trim() ? { model: role.model.trim() } : {}),
       };
     } catch {
       // profile unreadable — proceed without conventions

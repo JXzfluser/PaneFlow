@@ -1,13 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DagGraph, RunRecord } from '@paneflow/shared';
-import { api, fetchJson } from '../api.js';
+import { api, ApiError, fetchJson } from '../api.js';
 import { useStore } from '../store.js';
 import { deriveSteps, hasParallel, summarizeSteps } from '../steps.js';
 import { queuedReasonText } from '../queue-view.js';
 import { ADVANCED_FIELDS, ONBOARDING_STEPS } from '../onboarding.js';
 import { templateLabel } from '../template-labels.js';
 import { Icon } from './Icon.js';
-import { addableRoles, type TeamMemberLite, type TeamRoleLite } from '../team-bar.js';
+import { addableRoles, assigneeOptions, type TeamMemberLite, type TeamRoleLite } from '../team-bar.js';
+import {
+  assigneeEquipBrief,
+  autoEngineBrief,
+  autoEngineFix,
+  type AutoEngineWire,
+  type RoleOverallMetrics,
+} from '../team-view.js';
+import { writeFailureNote } from '../write-outcome.js';
 
 /**
  * 任务视图（A 组）：把"按要求驱动编排"变成主路径。
@@ -63,6 +71,110 @@ export function TasksView() {
       .catch(() => undefined);
   }, []);
 
+  // v19-R4 谁来干：班底成员里挑执行者（候选=assigneeOptions 陈列过滤，接单三条判在 server 派单口）
+  const spaceId = useStore((s) => s.space);
+  const [assignRoleId, setAssignRoleId] = useState(() => localStorage.getItem('pf-dispatch-assign') ?? '');
+  const [members, setMembers] = useState<ReturnType<typeof assigneeOptions>>([]);
+  const [roles, setRoles] = useState<TeamRoleLite[]>([]);
+  // v19-R2 卡片层人话：编排预告里角色「std-implementer」翻成岗名（拿不到名字回落 id，不编）
+  const roleNames = useMemo(() => Object.fromEntries(roles.map((r) => [r.id, r.name])), [roles]);
+  // v19-R1 指路卡：server 带 code 的 400 在这里翻成一步修复卡——新人不再被「展开高级选项」接住
+  const [blocker, setBlocker] = useState<{ code: string; cwd?: string } | null>(null);
+  const [dirDraft, setDirDraft] = useState('');
+  const [installedKinds, setInstalledKinds] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void Promise.all([
+      fetchJson<{ team?: TeamMemberLite[] }>('GET', `/api/spaces/${encodeURIComponent(spaceId)}`).catch(
+        () => ({}) as { team?: TeamMemberLite[] },
+      ),
+      fetchJson<{ roles?: TeamRoleLite[] }>('GET', '/api/roles').catch(() => ({}) as { roles?: TeamRoleLite[] }),
+    ]).then(([p, d]) => {
+      if (!alive) return;
+      setRoles(d.roles ?? []);
+      setMembers(assigneeOptions(p.team ?? [], d.roles ?? []));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [spaceId]);
+  // 别的项目选过的人不在本班底→复位「自动」（不让陈旧选择去撞 assign-not-in-team）
+  useEffect(() => {
+    if (assignRoleId && !members.some((m) => m.roleId === assignRoleId)) setAssignRoleId('');
+  }, [members, assignRoleId]);
+  // v19 打磨：挑完人先看见 TA 上次实际吃了什么装备（岗级账按人懒取，选「自动」时一个请求都不发）
+  const profCache = useRef<Record<string, RoleOverallMetrics | 'error'>>({});
+  const [assignProf, setAssignProf] = useState<RoleOverallMetrics | 'error' | undefined>(undefined);
+  useEffect(() => {
+    if (!assignRoleId) {
+      setAssignProf(undefined);
+      return;
+    }
+    const cached = profCache.current[assignRoleId];
+    setAssignProf(cached);
+    if (cached) return;
+    let alive = true;
+    void fetchJson<{ overall?: RoleOverallMetrics }>('GET', `/api/roles/${encodeURIComponent(assignRoleId)}/profile`)
+      .then((p) => {
+        const overall = p.overall ?? { runs: 0 };
+        profCache.current[assignRoleId] = overall;
+        if (alive) setAssignProf(overall);
+      })
+      .catch(() => {
+        profCache.current[assignRoleId] = 'error';
+        if (alive) setAssignProf('error');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [assignRoleId]);
+  // v19 打磨：选「自动」时那行也是实的——server 把「不点名会落到哪个引擎」这条梯算好外发（接单口同一条）
+  const [autoEngine, setAutoEngine] = useState<AutoEngineWire | null>(null);
+  const [engineTick, setEngineTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    setAutoEngine(null);
+    void fetchJson<AutoEngineWire>('GET', `/api/dispatch/auto-engine?space=${encodeURIComponent(spaceId)}`)
+      .then((r) => {
+        if (alive) setAutoEngine(r);
+      })
+      .catch(() => {
+        /* 旧构建没这枚端点=没有读数：不画行，也不猜一句「默认引擎」 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [spaceId, engineTick]);
+  // 只有「这一路派不出单」才去问本机装了哪些引擎——平时不为一行不显示的按钮多打一次 health
+  useEffect(() => {
+    if (autoEngine?.via !== 'none') return;
+    let alive = true;
+    void api
+      .health()
+      .then((h) => {
+        if (alive) setInstalledKinds(h.env.agentsInstalled);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [autoEngine?.via]);
+  const assignBrief = assignRoleId
+    ? assignProf === 'error'
+      ? { text: '装备账读不到（server 没回这岗的账）', tone: 'dim' as const }
+      : assigneeEquipBrief(assignProf?.equip, assignProf?.runs)
+    : autoEngineBrief(autoEngine);
+  const autoFix = assignRoleId ? null : autoEngineFix(autoEngine, installedKinds);
+  // v19 打磨：这一步点了没落档，得在人眼下说一句——从前只写进底部控制台，界面看上去「什么都没发生」
+  const [fixFail, setFixFail] = useState<string | null>(null);
+  const [guideFail, setGuideFail] = useState<string | null>(null);
+  // 换项目/改目录后，指路卡说的已是旧事——收起（再点开始会重新问 server）
+  useEffect(() => {
+    setBlocker(null);
+    setGuideFail(null);
+    setFixFail(null);
+  }, [spaceId, cwd]);
+
   // 打开任务视图先拉一次历史（不依赖 WS 是否已推送）
   useEffect(() => {
     void api
@@ -91,19 +203,31 @@ export function TasksView() {
     };
   }, [refKey]);
 
-  const submit = async () => {
+  /** 下发这单的唯一路。over=指路卡的一步重发（就地创建目录/带着新引擎重试） */
+  const submit = async (over?: { cwd?: string; ensureCwd?: boolean }) => {
     if (!task.trim()) {
       log('error', '先用一句话描述要做的事');
       return;
     }
-    if (!cwd.trim()) {
-      setAdv(true); // 展开再报错：让「在哪做」字段当场可见
-      log('error', '先告诉 PaneFlow 在哪干活：展开下方「高级选项」填工作目录，或在「项目 → 编辑档案」里配置主仓根');
-      return;
-    }
+    const useCwd = (over?.cwd ?? cwd).trim();
     setBusy(true);
     try {
-      const r = await api.dispatch(task.trim(), cwd.trim(), ref ? String(ref.number) : undefined, confirmGate, permMode);
+      // v19-R1：目录为空也照发——server 拿项目档案 rootCwd 兜底；真缺了，带 code 的 400 摆指路卡。
+      // 旧实现在这里客户端拦红字（「展开高级选项填工作目录」），那是新人撞的第一面墙。
+      const r = await api.dispatch(task.trim(), useCwd, ref ? String(ref.number) : undefined, confirmGate, permMode, {
+        ensureCwd: over?.ensureCwd,
+        assignRoleId: assignRoleId || undefined,
+      });
+      setBlocker(null);
+      if (over?.ensureCwd && useCwd) {
+        // 现场铺路：刚为这单建的目录=记成项目工作目录（写 profile.rootCwd，下一条不用再填）
+        void fetchJson('PUT', `/api/spaces/${encodeURIComponent(spaceId)}`, { rootCwd: useCwd })
+          .then(() => {
+            setCwd(useCwd);
+            log('info', `已把 ${useCwd} 记为本项目工作目录，下一条不用再填`);
+          })
+          .catch(() => undefined);
+      }
       log(
         'info',
         (r.issueFetched
@@ -120,6 +244,7 @@ export function TasksView() {
                   ? `输入无可机检验收标准——已按契约骨架 ${r.contract.template} 实例化立约，运行会停在「契约接单门」等你确认；`
                   : '输入无可机检验收标准——本单会先停在「契约接单门」立约等你确认；'
                 : '') +
+          (r.assignee ? `这单由「${r.assignee.name}」干（引擎=${r.assignee.agentKind}）；` : '') +
           (confirmGate
             ? `已下发 ${r.runId}：Planner 正在规划，完成后会在这里给你「编排预告」等你确认`
             : `已下发 ${r.runId}：Planner 正在路由并直接执行`),
@@ -128,9 +253,49 @@ export function TasksView() {
       setIssueId('');
       void api.listRuns().then((x) => useStore.getState().mergeRuns(x.runs)).catch(() => undefined);
     } catch (e) {
-      log('error', `下发失败：${(e as Error).message}`);
+      const ae = e instanceof ApiError ? e : null;
+      if (ae?.code === 'cwd-empty' || ae?.code === 'cwd-missing' || ae?.code === 'no-agent-kind') {
+        setBlocker({
+          code: ae.code,
+          cwd: typeof ae.payload.cwd === 'string' ? ae.payload.cwd : undefined,
+        });
+        if (ae.code === 'no-agent-kind') {
+          void api
+            .health()
+            .then((h) => setInstalledKinds(h.env.agentsInstalled))
+            .catch(() => undefined);
+        }
+      } else {
+        log('error', `下发失败：${(e as Error).message}`);
+      }
     } finally {
       setBusy(false);
+    }
+  };
+
+  /** 指路卡「挑引擎」：档案配上 defaultAgentKind，随即把这单重发出去 */
+  const fixAgentKind = async (kind: string) => {
+    setGuideFail(null);
+    try {
+      await fetchJson('PUT', `/api/spaces/${encodeURIComponent(spaceId)}`, { defaultAgentKind: kind });
+      setBlocker(null);
+      await submit();
+    } catch (e) {
+      setGuideFail(writeFailureNote(`引擎没换成 ${kind}`, e));
+      log('error', `设置引擎失败：${(e as Error).message}`);
+    }
+  };
+
+  /** 挑人读数上的同款修复，但**不替人起单**：只把引擎写进项目默认，再重新问一次 server 落到哪一级 */
+  const pickProjectEngine = async (kind: string) => {
+    setFixFail(null);
+    try {
+      await fetchJson('PUT', `/api/spaces/${encodeURIComponent(spaceId)}`, { defaultAgentKind: kind });
+      setEngineTick((n) => n + 1);
+      log('info', `已把本项目默认引擎设为 ${kind}`);
+    } catch (e) {
+      setFixFail(writeFailureNote('这一下没落档', e));
+      log('error', `设置引擎失败：${(e as Error).message}`);
     }
   };
 
@@ -283,6 +448,25 @@ export function TasksView() {
           </div>
         )}
         <div className="tasks-actions">
+          {members.length > 0 && (
+            <label className="assign-picker" title="这单交给谁干：成员=岗位×引擎，换人只动这一枚选择器">
+              由
+              <select
+                value={assignRoleId}
+                onChange={(e) => {
+                  setAssignRoleId(e.target.value);
+                  localStorage.setItem('pf-dispatch-assign', e.target.value);
+                }}
+              >
+                <option value="">自动（按项目默认）</option>
+                {members.map((m) => (
+                  <option key={m.roleId} value={m.roleId}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <div className="perm-picker" role="radiogroup" aria-label="运行权限档位" title="权限档位：常规=关键门等人；自动放行=只契约门等人；只读咨询=禁写副作用，调查类任务用">
             {([
               { v: 'normal', label: '🛡 常规' },
@@ -313,6 +497,122 @@ export function TasksView() {
             )}
           </button>
         </div>
+        {/* v19 打磨：挑人那一刻给读数——挑了人报 TA 上次实际吃了什么装备，选「自动」报这单会落到哪个引擎（两本账都在 server） */}
+        {assignBrief && (
+          <p
+            className={`assign-brief ${assignBrief.tone}`}
+            title={
+              assignRoleId
+                ? '装备账=这岗历史上注入现场真喂进 prompt 的文档计数（server 岗级账汇总，判据不在浏览器）'
+                : '引擎读数=不点名成员时这单会落到哪个引擎（解析梯与派单口同源：项目默认 > 本机实探；各步自绑的岗位仍按该岗解析）'
+            }
+          >
+            {assignBrief.text}
+          </p>
+        )}
+        {/* v19 打磨：同一堵墙的修复卡提前到起单之前——旧路要先点「开始」撞 400 才给按钮 */}
+        {autoFix && 'offer' in autoFix ? (
+          <div className="assign-fix">
+            <span className="assign-fix-lead">本机装了这些，点一下设为本项目默认：</span>
+            {autoFix.offer.map((k) => (
+              <button key={k} disabled={busy} onClick={() => void pickProjectEngine(k)}>
+                用 {k} 干
+              </button>
+            ))}
+          </div>
+        ) : autoFix ? (
+          <div className="assign-fix">
+            <span className="assign-fix-lead">
+              先在本机装一枚 agent CLI（pi / opencode / codex / claude 任一；探测有 60 秒缓存，稍等再点）
+            </span>
+            <button disabled={busy} onClick={() => setEngineTick((n) => n + 1)}>
+              重新探一次
+            </button>
+          </div>
+        ) : null}
+        {fixFail && (
+          <p className="assign-fail" role="status">
+            {fixFail}
+          </p>
+        )}
+        {/* v19-R1 指路卡：撞墙之后不是红字，是一张一步修复卡（server 的 code 决定卡形，判据零搬家） */}
+        {blocker && (
+          <div className="tasks-guide" role="alert">
+            {blocker.code === 'cwd-missing' && (
+              <>
+                <b>这单还发不出去：工作目录不存在</b>
+                <p className="tasks-guide-line">
+                  <code>{blocker.cwd}</code> 在这台机器上还没有——可能是项目档案里登记的根挪了位置。
+                </p>
+                <div className="tasks-guide-actions">
+                  <button
+                    className="primary"
+                    disabled={busy || !blocker.cwd}
+                    onClick={() => void submit({ cwd: blocker.cwd ?? '', ensureCwd: true })}
+                  >
+                    ✔ 创建这个目录并开始
+                  </button>
+                  <span className="tasks-sub">或在下方「高级选项」改工作目录，再点一次「开始」</span>
+                </div>
+              </>
+            )}
+            {blocker.code === 'cwd-empty' && (
+              <>
+                <b>先说一句就行：这单在哪干？</b>
+                <p className="tasks-guide-line">
+                  这个项目还没有登记工作目录。给一个绝对路径（不存在就地创建），登记后下一条不用再填。
+                </p>
+                <div className="tasks-guide-actions">
+                  <input
+                    className="tasks-guide-dir"
+                    value={dirDraft}
+                    onChange={(e) => setDirDraft(e.target.value)}
+                    placeholder="/Users/you/code/my-app"
+                    aria-label="这单的工作目录"
+                  />
+                  <button
+                    className="primary"
+                    disabled={busy || !dirDraft.trim()}
+                    onClick={() => void submit({ cwd: dirDraft.trim(), ensureCwd: true })}
+                  >
+                    ▶ 开始
+                  </button>
+                </div>
+              </>
+            )}
+            {blocker.code === 'no-agent-kind' && (
+              <>
+                <b>这台机器还没有能派单的 agent 引擎</b>
+                {installedKinds.length ? (
+                  <div className="tasks-guide-actions">
+                    <span className="tasks-guide-line">挑一个，本单随即发出：</span>
+                    {installedKinds.map((k) => (
+                      <button key={k} disabled={busy} onClick={() => void fixAgentKind(k)}>
+                        用 {k} 干
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <>
+                    <p className="tasks-guide-line">
+                      先在本机装一个 agent CLI（pi / opencode / codex / claude 任一），装好后点重试。
+                    </p>
+                    <div className="tasks-guide-actions">
+                      <button disabled={busy} onClick={() => void submit()}>
+                        重试
+                      </button>
+                    </div>
+                  </>
+                )}
+                {guideFail && (
+                  <p className="assign-fail" role="status">
+                    {guideFail}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
         <div className="tasks-advanced">
           <button className="link" onClick={() => setAdv((v) => !v)}>
             {adv ? '▾ 收起高级选项' : `▸ 高级选项（${ADVANCED_FIELDS.join(' / ')}）`}
@@ -358,7 +658,7 @@ export function TasksView() {
 
       <BatchDispatch />
 
-      <RecentTasks onOpenRuns={() => setView('runs')} />
+      <RecentTasks onOpenRuns={() => setView('runs')} roleNames={roleNames} />
     </div>
   );
 }
@@ -446,7 +746,7 @@ function BatchDispatch() {
   );
 }
 
-function RecentTasks({ onOpenRuns }: { onOpenRuns: () => void }) {
+function RecentTasks({ onOpenRuns, roleNames }: { onOpenRuns: () => void; roleNames: Record<string, string> }) {
   const runs = useStore((s) => s.runs);
   const templates = useStore((s) => s.templateList);
   const [queue, setQueue] = useState<Awaited<ReturnType<typeof api.queueStatus>> | null>(null);
@@ -484,7 +784,7 @@ function RecentTasks({ onOpenRuns }: { onOpenRuns: () => void }) {
         <div className="tasks-empty">还没有任务。在上面描述一句要做的事，或从「编」里的模板库载入骨架手动运行。</div>
       )}
       {shown.map((r) => (
-        <TaskCard key={r.runId} run={r} templates={templates} queue={queue} onQueueChanged={refreshQueue} />
+        <TaskCard key={r.runId} run={r} templates={templates} queue={queue} onQueueChanged={refreshQueue} roleNames={roleNames} />
       ))}
     </div>
   );
@@ -501,11 +801,13 @@ function TaskCard({
   templates,
   queue,
   onQueueChanged,
+  roleNames,
 }: {
   run: RunRecord;
   templates: DagGraph[];
   queue: Awaited<ReturnType<typeof api.queueStatus>> | null;
   onQueueChanged: () => void;
+  roleNames: Record<string, string>;
 }) {
   const openRun = useStore((s) => s.openRun);
   const setView = useStore((s) => s.setView);
@@ -526,7 +828,7 @@ function TaskCard({
   };
   const targetName = extra.suggestedTemplate || 'builtin-generic-issue-delivery';
   const target = templates.find((t) => t.name === targetName);
-  const steps = useMemo(() => (target ? deriveSteps(target) : []), [target]);
+  const steps = useMemo(() => (target ? deriveSteps(target, undefined, roleNames) : []), [target, roleNames]);
 
   const title =
     run.graph.metadata?.description?.trim() ||
@@ -575,6 +877,8 @@ function TaskCard({
           {run.issueId ? `#${run.issueId} · ` : ''}
           {run.runId}
           {run.spaceId ? ` · ${run.spaceId}` : ''}
+          {/* v19-R4 挑人回执：人话一层（引擎指纹在详情页「技术账」，R2 分家） */}
+          {run.assignee ? ` · 由「${run.assignee.name}」干` : ''}
         </span>
         <div className="task-ops">
           <button title="在画布中查看这条编排" onClick={openCanvas}>查看编排</button>
@@ -726,8 +1030,10 @@ function ProjectTeamBar() {
   const [projName, setProjName] = useState('');
   const [roles, setRoles] = useState<TeamRoleLite[]>([]);
   const [seeding, setSeeding] = useState(false);
+  const [saveFail, setSaveFail] = useState<string | null>(null);
   useEffect(() => {
     setTeam(null);
+    setSaveFail(null);
     void fetchJson<{ team?: TeamMemberLite[]; name?: string }>('GET', `/api/spaces/${encodeURIComponent(spaceId)}`)
       .then((p) => {
         setTeam(p.team ?? []);
@@ -739,13 +1045,21 @@ function ProjectTeamBar() {
       .catch(() => undefined);
   }, [spaceId]);
   const save = (next: TeamMemberLite[]) => {
+    // v19 打磨：从前先摆出改好的样子、失败只进底部控制台——于是班底看着变了，盘上根本没变
+    const prev = team ?? [];
     setTeam(next);
-    void fetchJson<unknown>('PUT', `/api/spaces/${encodeURIComponent(spaceId)}`, { team: next }).catch((e: Error) =>
-      log('error', `班底保存失败：${e.message}`),
+    setSaveFail(null);
+    void fetchJson<unknown>('PUT', `/api/spaces/${encodeURIComponent(spaceId)}`, { team: next }).catch(
+      (e: Error) => {
+        setTeam(prev);
+        setSaveFail(writeFailureNote('班底没改动', e));
+        log('error', `班底保存失败：${e.message}`);
+      },
     );
   };
   const seedStandard = async () => {
     setSeeding(true);
+    setSaveFail(null);
     try {
       const r = await fetchJson<{ profile: { team?: TeamMemberLite[] } }>(
         'POST',
@@ -756,6 +1070,7 @@ function ProjectTeamBar() {
       setRoles(d.roles ?? []);
       log('info', '首发五连已就位：规划 / 实现 / 评审 / 验收 / 沉淀');
     } catch (e) {
+      setSaveFail(writeFailureNote('首发没装上', e));
       log('error', `装填首发失败：${(e as Error).message}`);
     } finally {
       setSeeding(false);
@@ -803,6 +1118,11 @@ function ProjectTeamBar() {
             </option>
           ))}
         </select>
+      )}
+      {saveFail && (
+        <span className="team-bar-fail" role="status">
+          {saveFail}
+        </span>
       )}
     </div>
   );

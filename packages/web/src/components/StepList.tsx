@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useStore } from '../store.js';
 import { deriveSteps, hasParallel, isParallelBranch, stateLabel, stepKindTag } from '../steps.js';
+import { equipLines } from '../equip-note.js';
 
 /**
  * 步骤清单视图（C）：同一份 DAG 的"人话"呈现。
@@ -45,6 +46,8 @@ export function StepList() {
         <ol className="steplist-body">
           {steps.map((s) => {
             const st = stateLabel(s.state);
+            // v19 打磨：运行中的装备账上网页（判据在 server 注入现场，这里照渲字段，画法与 CLI status 同款）
+            const eqLines = equipLines(s.equip);
             return (
               <li
                 key={s.id}
@@ -72,6 +75,11 @@ export function StepList() {
                   {s.blockedPrompt && (
                     <div className="step-cond blocked">等待你处理：{s.blockedPrompt}</div>
                   )}
+                  {eqLines.map((l, i) => (
+                    <div key={`eq${i}`} className={`step-equip${l.warn ? ' warn' : ''}`}>
+                      {l.text}
+                    </div>
+                  ))}
                   {s.summary && <div className="step-summary">{s.summary}</div>}
                   {s.node.config.prompt && (
                     <details className="step-prompt" onClick={(e) => e.stopPropagation()}>

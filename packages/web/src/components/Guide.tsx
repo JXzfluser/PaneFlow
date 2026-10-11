@@ -8,9 +8,13 @@ export function Guide({ onClose }: { onClose: () => void }) {
     <div className="modal-mask" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>PaneFlow 使用指南</h2>
+        {/* v19 叙事前置：先讲「组建你的 AI 班底」这个故事，机制细节退到其后。 */}
         <p style={{ color: 'var(--text-dim)' }}>
-          每个 <b>Agent 节点</b> 对应一个独立的 Herdr 终端 Pane（独立进程、独立工作目录），
-          按你定的编排确定性地串行 / 并行执行，产物经黑板交接，高危操作会被 <b>blocked 审批</b> 拦下等你放行。
+          <b>PaneFlow 是你这支 AI 班底的办公室。</b>
+          每个岗由一个 agent 引擎顶岗（pi / Claude Code / Codex… 各干各的擅长事），你只管派一句话的活——
+          它自动分工、串行并行地跑，产物经黑板交接，高危操作停在审批门等你放行。
+          谁在、会干什么、最近干得怎么样，都在「班底」页一张卡上。
+          每个岗跑在自己独立的 Herdr 终端窗口里（独立进程、独立工作目录）。
           {herdrOk === false && <b style={{ color: 'var(--err)' }}>（当前 Herdr 未连接，请先确认 Herdr server 正在运行）</b>}
         </p>
 
@@ -18,7 +22,8 @@ export function Guide({ onClose }: { onClose: () => void }) {
         <ol>
           <li>
             <span className="step-num">1</span>
-            <b>描述任务</b>：在「任务」页用一句话说清要做的事，选好工作目录，点「🎯 下发任务」。
+            <b>派活</b>：在「任务」页用一句话说清要做的事，选好「由谁来干」，点「下发任务」——
+            工作目录和模型引擎跟着项目与班底走，不用先填任何配置。
           </li>
           <li>
             <span className="step-num">2</span>
@@ -27,14 +32,14 @@ export function Guide({ onClose }: { onClose: () => void }) {
           </li>
           <li>
             <span className="step-num">3</span>
-            <b>处理审批与结果</b>：节点变红 = Agent 停在审批界面，切到<b>下方控制台的「审批」标签</b>
-            查看终端快照并放行 / 终止 / 补充指令；结束后在同一个控制台的<b>「产物汇总」标签</b>查看各节点结构化结论。
+            <b>批门与验收</b>：看板卡变红 = Agent 停在审批界面——批准 / 驳回就在卡上按，不用进详情页；
+            单收口后，看板里这条单的头部下方就是<b>验收凭据卡</b>：机检、产物、用了什么装备、等了多久、对外动了什么都写在一张卡上。
           </li>
         </ol>
 
         <p className="guide-more">
-          看进度用「运行」页；想改结构就到「编排」页——那里有 <b>清单 / 画布</b> 两种看法，
-          清单给人读，画布给结构改。
+          历史与统计都在「看板」页；想改结构，从侧栏底部滑钮进<b>高级设置</b>页、「工作台」组点<b>编排台</b>——那里有 <b>清单 / 画布</b> 两种看法，
+          清单给人读，画布给结构改。班底页看每个人的现状；要加人换岗，去「项目」页编辑档案里的班底名册。
           <button className="link" onClick={() => setFull((v) => !v)}>
             {full ? '收起完整教程' : '展开完整教程 →'}
           </button>

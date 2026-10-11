@@ -1,13 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { RunEvent, RunRecord } from '@paneflow/shared';
 import { useStore } from '../store.js';
 import { api, fetchJson } from '../api.js';
 import { runCostLabel } from '../cost.js';
+import { templateLabel } from '../template-labels.js';
+import { buildCredentialLines, credTerminalState, type ShelfInfo } from '../credentials.js';
 import { needsPublicConfirm, type WikiPreviewRes } from '../wiki-sediment.js';
 import { RunTimeline } from './RunTimeline.js';
 import { Icon, type IconName } from './Icon.js';
 import { PromptModal, type ModalRequest } from './PromptModal.js';
 import { purgeRunRequest, resumeRunRequest } from '../dialogs.js';
+import { readFailureNote, writeFailureNote } from '../write-outcome.js';
+
+/** 失败就地一句：谁按的按钮谁说话，别的卡不跟着喊（判据仍是 server 原话，措辞单源在 write-outcome） */
+function FailLine({ note }: { note?: string | null }) {
+  return note ? <p className="runs-fail" role="status">{note}</p> : null;
+}
 
 /** 运行终章徽章：状态色 + 一枚线性图符（蓝皮书批注感，不用彩色表情符）。 */
 function stateBadge(state: RunRecord['state']): { cls: string; icon: IconName | null; text: string } {
@@ -40,7 +48,45 @@ type ArtifactFile = {
   nodeLabel?: string;
   nodeState?: string;
   unverified?: boolean;
+  /** v13-K1 架侧字节上限拒收的件=false（只披露不拦），凭据卡产物行要报这一笔 */
+  shelved?: boolean;
 };
+
+/** v19-R5 验收凭据卡：收口单头部下方的一行账——「为什么信这条绿」只需指这一张卡。
+ *  文案与判据全住在 credentials.ts（纯读 + 单测），这里只做跳转接线与渲染。 */
+function CredentialsCard({
+  run,
+  shelf,
+  onShelf,
+  onTimeline,
+}: {
+  run: RunRecord;
+  shelf: ShelfInfo | undefined;
+  onShelf: () => void;
+  onTimeline: () => void;
+}) {
+  const lines = buildCredentialLines(run, shelf);
+  const prHref = run.sideEffects?.prUrl ?? run.prUrl ?? '#';
+  return (
+    <div className="run-credential" aria-label="验收凭据">
+      <span className="cred-title">验收凭据</span>
+      {lines.map((l) => (
+        <span className="cred-line" key={l.key} title={l.title}>
+          <i className="cred-k">{l.key}</i>
+          {l.jump === 'shelf' ? (
+            <button className="link" onClick={onShelf}>{l.text}</button>
+          ) : l.jump === 'timeline' ? (
+            <button className="link" onClick={onTimeline}>{l.text}</button>
+          ) : l.jump === 'pr' ? (
+            <a className="link" href={prHref} target="_blank" rel="noreferrer">{l.text}</a>
+          ) : (
+            <span>{l.text}</span>
+          )}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 function nodeDuration(r: NonNullable<ReturnType<typeof useStore.getState>['runs'][string]>, nodeId: string): number | null {
   const rec = r.nodes[nodeId];
@@ -95,19 +141,31 @@ function ArchivedPanel() {
   const [modal, setModal] = useState<ModalRequest | null>(null);
   /** 反归档按行读数：这一枚是图标按钮，点了没字就是「没点上」，人会对着同一行再按一次 */
   const [restoring, setRestoring] = useState<Record<string, boolean>>({});
+  // 列表读不成时，下面那张「没有归档记录」的空态是假话：它会把「没查成」画成「本机真没归档单」
+  const [readFail, setReadFail] = useState<string | null>(null);
+  const [rowFail, setRowFail] = useState<Record<string, string>>({});
 
   const reload = () => {
     void fetchJson<{ runs: RunRecord[] }>('GET', '/api/runs?archived=1')
-      .then((d) => setArchived(d.runs))
+      .then((d) => {
+        setArchived(d.runs);
+        setReadFail(null);
+      })
       .catch((e: Error) => {
         log('error', `读取归档列表失败：${e.message}`);
         setArchived([]);
+        setReadFail(readFailureNote('归档列表没读出来（下面那句「没有归档记录」是没读到，不是本机真没归档单）', e));
       });
   };
   useEffect(reload, []);
 
   const unarchive = async (runId: string) => {
     setRestoring((c) => ({ ...c, [runId]: true }));
+    setRowFail((c) => {
+      const next = { ...c };
+      delete next[runId];
+      return next;
+    });
     try {
       const d = await fetchJson<{ restored: boolean; run: RunRecord }>('POST', `/api/runs/${encodeURIComponent(runId)}/unarchive`);
       useStore.setState((s) => ({ runs: { ...s.runs, [d.run.runId]: d.run } }));
@@ -119,6 +177,7 @@ function ArchivedPanel() {
         delete next[runId];
         return next;
       });
+      setRowFail((c) => ({ ...c, [runId]: writeFailureNote(`#${runId} 没回到主列表（还在这张表上）`, e) }));
       log('error', `反归档失败：${(e as Error).message}`);
     }
   };
@@ -139,9 +198,15 @@ function ArchivedPanel() {
     );
 
   if (archived === null) return <div className="runs-empty">归档加载中…</div>;
-  if (archived.length === 0) return <div className="runs-empty">没有归档记录。运行卡片上按「归档」可归档到这里。</div>;
+  if (archived.length === 0 && !readFail) return <div className="runs-empty">没有归档记录。运行卡片上按「归档」可归档到这里。</div>;
   return (
     <div>
+      {readFail && (
+        <div className="runs-fail-row">
+          <FailLine note={readFail} />
+          <button onClick={reload}>再读一次</button>
+        </div>
+      )}
       {archived.map((r) => (
         <div key={r.runId} className="run-card" style={{ opacity: 0.85 }}>
           <div className="run-card-head">
@@ -171,6 +236,7 @@ function ArchivedPanel() {
               </button>
             </div>
           </div>
+          <FailLine note={rowFail[r.runId]} />
         </div>
       ))}
       {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
@@ -291,6 +357,8 @@ export function RunsCenter() {
   const [openArts, setOpenArts] = useState<string | null>(null);
   const [artLists, setArtLists] = useState<Record<string, { dir: string; exists: boolean; files: ArtifactFile[] }>>({});
   const [artView, setArtView] = useState<Record<string, string>>({});
+  /** 架账取过一次就不再来回重试（失败也是「架读不动」的读数，不是缺账） */
+  const shelfTried = useRef<Set<string>>(new Set());
 
   /**
    * 写面那一刀的在飞读数，按 runId 记（这几枚按钮点下去都是真 POST）。
@@ -299,6 +367,21 @@ export function RunsCenter() {
    * 卡片还挂着「运行中」，按钮回到原样就是请人再按一次。
    */
   const [runOp, setRunOp] = useState<Record<string, 'stop' | 'stop-done' | 'archive'>>({});
+  /**
+   * 失败就地可见：按「runId · 槽位」记，于是同一张卡上「停止没发出去」与「产物架没读出来」
+   * 各说各的，兄弟卡静默——与设置页那五张卡同一套 keying。
+   */
+  const [runFail, setRunFail] = useState<Record<string, string>>({});
+  const setFail = (runId: string, slot: 'stop' | 'archive' | 'timeline' | 'shelf' | 'html' | 'wiki', note: string | null) =>
+    setRunFail((c) => {
+      const k = `${runId}|${slot}`;
+      const next = { ...c };
+      if (note === null) delete next[k];
+      else next[k] = note;
+      return next;
+    });
+  const failOf = (runId: string, slot: 'stop' | 'archive' | 'timeline' | 'shelf' | 'html' | 'wiki') =>
+    runFail[`${runId}|${slot}`];
   const setRunOpFor = (runId: string, op: 'stop' | 'stop-done' | 'archive' | null) =>
     setRunOp((c) => {
       const next = { ...c };
@@ -313,14 +396,30 @@ export function RunsCenter() {
       return;
     }
     setOpenArts(runId);
-    if (artLists[runId]) return;
+    await loadShelf(runId);
+  };
+
+  const loadShelf = async (runId: string, manual = false) => {
+    // manual=只在人按下「再读一次」时绕过那次锁：失败不该被自动重试刷屏（凭据卡每轮都会问一遍架账）
+    if (artLists[runId] || (shelfTried.current.has(runId) && !manual)) return;
+    shelfTried.current.add(runId);
     try {
       const d = await fetchJson<{ dir: string; exists: boolean; files: ArtifactFile[] }>('GET', `/api/runs/${encodeURIComponent(runId)}/artifacts`);
       setArtLists((c) => ({ ...c, [runId]: d }));
+      setFail(runId, 'shelf', null);
     } catch (e) {
       log('error', `读取产物列表失败：${(e as Error).message}`);
+      setFail(runId, 'shelf', readFailureNote('产物架没读出来（那句「加载中」是没读到，不是这单还在落件）', e));
     }
   };
+
+  // v19-R5 凭据卡的产物行：收口单进视野就备好架账（点开卡片不等加载、缺架也说得出口）
+  useEffect(() => {
+    for (const r of Object.values(runs)) {
+      if (credTerminalState(r.state)) void loadShelf(r.runId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs]);
 
   const viewArtifact = async (runId: string, f: ArtifactFile) => {
     const key = `${runId}:${f.name}`;
@@ -359,7 +458,9 @@ export function RunsCenter() {
         return;
       }
       setHtmlPreview({ key, name: f.name, content: d.content });
+      setFail(runId, 'html', null);
     } catch (e) {
+      setFail(runId, 'html', readFailureNote(`「${f.name}」预览没读出来（预览窗没开，这单的东西没动）`, e));
       log('error', `预览读取失败：${(e as Error).message}`);
     }
   };
@@ -372,12 +473,14 @@ export function RunsCenter() {
     setOpenTl(runId);
     if (liveHasEvents || fetched[runId]) return;
     setLoadingTl(runId);
+    setFail(runId, 'timeline', null);
     try {
       const r = await api.runEvents(runId);
       setFetched((c) => ({ ...c, [runId]: r.events }));
     } catch (e) {
+      // 不把失败写成空数组：那会让时间线那句「这条运行没有事件记录」变成假话（没读到 ≠ 没动静）
       log('error', `读取事件时间线失败：${(e as Error).message}`);
-      setFetched((c) => ({ ...c, [runId]: [] }));
+      setFail(runId, 'timeline', readFailureNote('事件时间线没读出来（下面那句空是这次没读到，不是这单没动静）', e));
     } finally {
       setLoadingTl((prev) => (prev === runId ? null : prev));
     }
@@ -388,14 +491,16 @@ export function RunsCenter() {
   const runningCount = list.filter((r) => r.state === 'running').length;
   const queuedCount = list.filter((r) => r.state === 'queued').length;
 
-  const stop = async (runId: string) => {
+  const stop = async (runId: string, why: string) => {
     setRunOpFor(runId, 'stop');
+    setFail(runId, 'stop', null);
     try {
       await api.stopRun(runId);
       log('warn', `已发送停止指令：${runId}`);
       setRunOpFor(runId, 'stop-done');
     } catch (e) {
       setRunOpFor(runId, null);
+      setFail(runId, 'stop', writeFailureNote(why, e));
       log('error', `停止失败：${(e as Error).message}`);
     }
   };
@@ -403,6 +508,7 @@ export function RunsCenter() {
   // v7-A2 归档：移出主列表、记录保留。成功即把这张卡从 store 里摘掉，所以在飞读数只盖住 POST 那一段
   const archive = async (runId: string) => {
     setRunOpFor(runId, 'archive');
+    setFail(runId, 'archive', null);
     try {
       await fetchJson<{ archived: boolean }>('POST', `/api/runs/${encodeURIComponent(runId)}/archive`);
       useStore.setState((s) => {
@@ -412,6 +518,7 @@ export function RunsCenter() {
       });
     } catch (e) {
       setRunOpFor(runId, null);
+      setFail(runId, 'archive', writeFailureNote(`#${runId} 没归档（这张卡还在主列表上）`, e));
       log('error', `归档失败：${(e as Error).message}`);
     }
   };
@@ -432,11 +539,13 @@ export function RunsCenter() {
   const [wikiPreview, setWikiPreview] = useState<{ run: RunRecord; loading: boolean; res: WikiPreviewRes | null } | null>(null);
   const openWikiPreview = async (r: RunRecord) => {
     setWikiPreview({ run: r, loading: true, res: null });
+    setFail(r.runId, 'wiki', null);
     try {
       const p = await fetchJson<WikiPreviewRes>('GET', `/api/wiki/preview?runId=${encodeURIComponent(r.runId)}`);
       setWikiPreview((cur) => (cur && cur.run.runId === r.runId ? { run: r, loading: false, res: p } : cur));
     } catch (e) {
       setWikiPreview(null);
+      setFail(r.runId, 'wiki', readFailureNote('沉淀草稿没读出来（草稿窗没开，这一单没动过任何东西）', e));
       log('error', `拉取沉淀预览失败：${(e as Error).message}`);
     }
   };
@@ -496,11 +605,20 @@ export function RunsCenter() {
         return (
           <div key={r.runId} className={`run-card state-${r.state}`}>
             <div className="run-card-head">
-              <b>{r.issueId ? `#${r.issueId}` : `#${r.runId}`}</b> <span className="run-card-title">{r.dagName}</span>
+              <b>{r.issueId ? `#${r.issueId}` : `#${r.runId}`}</b>{' '}
+              {/* v19-R2 卡片层只许人话：dagName 机器值退到时间线/技术账，这里用任务描述或模板中文名 */}
+              <span className="run-card-title">{r.graph.metadata?.description?.trim() || templateLabel(r.dagName).title}</span>
               <span className={`badge ${badge.cls}`}>
                 {badge.icon && <Icon name={badge.icon} size={11} />}
                 {badge.text}
               </span>
+              {r.assignee ? (
+                <span className="artifact-chip" title={`这单点名交给「${r.assignee.name}」干（岗位 id=${r.assignee.roleId} · 引擎=${r.assignee.agentKind}）`}>
+                  由「{r.assignee.name}」干
+                </span>
+              ) : r.harness?.agentKind ? (
+                <span className="artifact-chip" title="起单时实发的引擎（未挑人：按空间默认解析）">{r.harness.agentKind} 引擎</span>
+              ) : null}
               <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{r.state === 'queued' ? `已等 ${elapsed}s` : `${elapsed}s`}</span>
               {runCostLabel(r) && (
                 <span className="run-cost-chip" title="成本账：时长/重试/tokens（unknown = agent 未自报，不估算）">{runCostLabel(r)}</span>
@@ -632,7 +750,7 @@ export function RunsCenter() {
                           ? '停止指令已发出，等这一单在节点边界收口（再点一下不会更快）'
                           : '停止'
                     }
-                    onClick={() => void stop(r.runId)}
+                    onClick={() => void stop(r.runId, `#${r.runId} 停止没发出去（它还在全速跑）`)}
                   >
                     {op ? (op === 'stop' ? '停止中…' : '等待收口…') : <Icon name="stop" size={12} />}
                   </button>
@@ -648,13 +766,25 @@ export function RunsCenter() {
                           ? '已撤回：这一单不会开跑，等列表把它收成「已取消」'
                           : '取消排队（尚未开跑，撤回即终态）'
                     }
-                    onClick={() => void stop(r.runId)}
+                    onClick={() => void stop(r.runId, `#${r.runId} 没撤回（它还留在队列里）`)}
                   >
                     {op ? (op === 'stop' ? '取消中…' : '已撤回…') : <Icon name="x" size={12} />}
                   </button>
                 )}
               </div>
             </div>
+            {/* 卡上按钮那一下的失败就地一句：停止/归档/沉淀预览各一格，谁按的谁说话 */}
+            <FailLine note={failOf(r.runId, 'stop')} />
+            <FailLine note={failOf(r.runId, 'archive')} />
+            <FailLine note={failOf(r.runId, 'wiki')} />
+            {credTerminalState(r.state) && (
+              <CredentialsCard
+                run={r}
+                shelf={artLists[r.runId]}
+                onShelf={() => void toggleArtifacts(r.runId)}
+                onTimeline={() => void toggleTimeline(r.runId, !!liveEvents?.length)}
+              />
+            )}
             <div className="run-progress">
               <div className="run-progress-bar">
                 <div
@@ -670,6 +800,7 @@ export function RunsCenter() {
               )}
               {r.spaceId && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>项目 {r.spaceId}</span>}
             </div>
+            {open && failOf(r.runId, 'timeline') && <FailLine note={failOf(r.runId, 'timeline')} />}
             {open && (
               <RunTimeline
                 compact
@@ -677,12 +808,23 @@ export function RunsCenter() {
                 startedAt={r.startedAt}
                 running={r.state === 'running'}
                 loading={loadingTl === r.runId}
-                emptyHint="这条运行没有事件记录（可能是埋点上线前的历史运行）。"
+                emptyHint={
+                  failOf(r.runId, 'timeline')
+                    ? '（时间线内容没拿到——就是上面那句，别按「没有事件记录」读。）'
+                    : '这条运行没有事件记录（可能是埋点上线前的历史运行）。'
+                }
               />
             )}
             {openArts === r.runId && (
               <div className="artifact-shelf">
-                {!artLists[r.runId] && <div className="artifact-row dim">产物列表加载中…</div>}
+                <FailLine note={failOf(r.runId, 'shelf')} />
+                {failOf(r.runId, 'shelf') && (
+                  <div className="runs-fail-row">
+                    <button onClick={() => void loadShelf(r.runId, true)}>再读一次产物架</button>
+                  </div>
+                )}
+                {!artLists[r.runId] && !failOf(r.runId, 'shelf') && <div className="artifact-row dim">产物列表加载中…</div>}
+                <FailLine note={failOf(r.runId, 'html')} />
                 {artLists[r.runId]?.exists === false && (
                   <div className="artifact-row dim">这单还没有产物文件（期望位置：{artLists[r.runId]!.dir}）。</div>
                 )}

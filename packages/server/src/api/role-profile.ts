@@ -37,6 +37,7 @@ import { machineCheckTally } from '@paneflow/shared';
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown): v is string => typeof v === 'string' && v !== '';
+const len = (v: unknown): number => (Array.isArray(v) ? v.length : 0);
 
 /** run 级通过率分母：completed / completed-with-failures / failed。
  *  cancelled 不入分母——人停的单不是岗位工作的裁决（同 v11-D3 精神：判据宁窄不浑）。 */
@@ -77,6 +78,14 @@ export interface RoleProfileMetrics {
    * 两种读法在账上同形，所以不报 0 冒充「实测零返工」。
    */
   rework?: { rejected: number; capped: number };
+  /**
+   * 装备实注账（v13-W1 equip 落册）：n=落了 equip 的该岗节点记录数（一次上场=一格），
+   * skills/rules=**实注入** prompt 的文档计数合计（读失败/超预算被跳过的引擎本来就没记进来），
+   * fullSpace=其中 scope=space 且绑了岗的格数（这格没配装备、实际吃的是项目全量），
+   * misses=没落地的装备格数（新账逐格读 misses，旧账回落 unknownSkills——与 CLI 装备行同一把尺）。
+   * 整键缺省=这岗上的单全是 W1 前旧单或注入现场没走到：不报 0 冒充「吃了零装备」。
+   */
+  equip?: { n: number; skills: number; rules: number; fullSpace: number; misses: number };
 }
 
 /** 按 roleSha（v13-W2 岗位+装备指纹）分组的账：换装备=换指纹=换一行，回退在组间对比里可见 */
@@ -144,6 +153,11 @@ export function computeRoleMetrics(samples: readonly RoleSample[]): RoleProfileM
   let mcAllPassedRuns = 0;
   let reworkRejected = 0;
   let reworkCapped = 0;
+  let eqN = 0;
+  let eqSkills = 0;
+  let eqRules = 0;
+  let eqFull = 0;
+  let eqMiss = 0;
 
   for (const { run, nodeRecords } of samples) {
     const verdict = runVerdict(run.state);
@@ -157,6 +171,15 @@ export function computeRoleMetrics(samples: readonly RoleSample[]): RoleProfileM
       for (const rj of rec.rejections ?? []) {
         reworkRejected += 1;
         if (rj?.action === 'capped') reworkCapped += 1;
+      }
+      // 装备账同样不看 state：这格吃了什么装备与它最后过没过是两本账
+      const eq = rec.equip;
+      if (eq) {
+        eqN += 1;
+        eqSkills += len(eq.skills);
+        eqRules += len(eq.rules);
+        if (eq.scope === 'space' && eq.role) eqFull += 1;
+        eqMiss += Array.isArray(eq.misses) ? len(eq.misses) : len(eq.unknownSkills);
       }
       if (!NODE_TERMINAL.has(rec.state)) continue;
       nodeN += 1;
@@ -197,6 +220,8 @@ export function computeRoleMetrics(samples: readonly RoleSample[]): RoleProfileM
   // 没有 rework 分母可报：被打回零次的节点在账上就是「整键缺省」（与 K2 前的旧单同形），
   // 硬凑一个 n 只会是 rejected 的同义反复，读者要的分母是 runs / nodePassRate.n。
   if (reworkRejected > 0) m.rework = { rejected: reworkRejected, capped: reworkCapped };
+  // 一格 equip 都没落册 → 整键省略（与 rework 同理：缺账与「吃了零」在账上不是同一件事）
+  if (eqN > 0) m.equip = { n: eqN, skills: eqSkills, rules: eqRules, fullSpace: eqFull, misses: eqMiss };
   return m;
 }
 

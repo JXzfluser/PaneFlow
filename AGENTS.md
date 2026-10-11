@@ -228,6 +228,15 @@ curl -s $BASE/api/dispatch -d '{"task":"...","experiment":{"suite":"c4","arm":"a
 #      nodes:[{id,name,type,dependsOn}],   # v11-A1 节点清单摘要
 #      experiment?:{suite,arm?,flag?}}     # 打了才回显：server 认下的实验标回执
 
+# 派单**之前**问「不点名成员时这单会落到哪个引擎」（v19 打磨；任务页挑人下拉的「自动」那一行读它）
+curl -s "$BASE/api/dispatch/auto-engine?space=S"
+#   → {space, agentKind: string|null, via: 'project-default'|'probed'|'none'|'unknown', note}
+#   梯与接单口同源（api/env-check.ts:resolveAutoAgentKind——项目默认 > 本机实探，POST /api/dispatch 里
+#   plannerAgentKind 现在也走这一枚函数），所以读数与真起单得到的 harness.agentKind 不会两处两把尺；
+#   但不含「节点/角色自绑」那两级——那要到 graph 就位才解得出，故 note 自己写明「各步若自绑岗位，
+#   仍以该岗的引擎为准」，拿它冒充整单结论是假话；`none`（查过了，两路都空=真派不出单）与
+#   `unknown`（项目档案读不动=没查成）分家，agentKind 的 null 是正读数不是空串。恒 200（这是读数面不是闸）
+
 # 列单 / 看单（:id 响应比 RunRecord 多一个只读聚合字段 awaitingApproval:{nodeIds,waiting}，
 #   waiting=true 即 watch 判 3 的显式信号——blocked/paused 节点卡住了整单；
 #   v12-V1 起单记录多 harness:{graphSha,agentKind,model?,gwProfile?}——起单时固化的实发配置，
@@ -328,7 +337,13 @@ curl -s -X PUT $BASE/api/spaces/<id> -d '{"delivery":[{"repo":"my-repo","branchF
 curl -s $BASE/api/roles/<roleId>/profile
 #   → {role:{id,name}, overall:{runs, passRate?:{n,passed}, nodePassRate?:{n,done,failed},
 #      attention?:{n,waitMs,gates:{approve,reject,input}}, tokens?:{n,input,output},
-#      machineCheck?:{n,items,verified,runsAllPassed}, rework?:{rejected,capped}}, byRoleSha?:[{roleSha, …同形状}]}
+#      machineCheck?:{n,items,verified,runsAllPassed}, rework?:{rejected,capped},
+#      equip?:{n,skills,rules,fullSpace,misses}}, byRoleSha?:[{roleSha, …同形状}]}
+#   `equip` 是 v19 起的装备实注账（网页班底卡「吃什么装备」直读它）：n=落了 equip 的该岗节点记录数（一次上场=一格），
+#   skills/rules=**实注入** prompt 的文档计数合计（读失败/超预算被跳过的引擎本来就没记进来，所以这里天然是实注不是配置），
+#   fullSpace=其中 scope=space 且绑了岗的格数（这格没配装备、实际吃的是项目全量），misses=没落地的格数
+#   （新账逐格读 misses、旧账回落 unknownSkills——与 CLI 装备行同一把尺）。不看节点 state：吃了什么装备与它过没过是两本账。
+#   一格都没落册 → 整键省略，读法两种（这岗全是 W1 前的旧单 / 注入现场没走到），所以绝不报 skills:0 冒充「吃了零装备」。
 #   口径三则：①每个指标自带分母 n，没有支持样本就整键省略（0 是正断言「一条都没过」，
 #   「不知道」不是 0）；②分组吃 roleSha（v13-W2 换装备=换指纹），没落指纹的旧单只进总账
 #   不进组，故「总账 runs ≥ Σ各组 runs」是口径事实；③返工（rework）自 v13-K2 起**有真账**：

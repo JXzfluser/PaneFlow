@@ -232,3 +232,20 @@ describe('v13-K2 否决回边形状', () => {
     expect(msgs.some((m) => m.includes('图中存在环') && m.includes('打回请用回边 reject'))).toBe(true);
   });
 });
+
+describe('v19-M1 config.model 机检（agent 节点：给了就必须是单串非空）', () => {
+  const errFor = (config: DagNodeConfig) =>
+    validateDag(oneNodeGraph(config)).filter((i) => i.level === 'error' && i.message.includes('model'));
+
+  it('合法值（含 provider/id 拼法）不报错；不给键零新增', () => {
+    expect(errFor({ model: 'gpt-4o' })).toEqual([]);
+    expect(errFor({ model: 'paneflow-gw/deepseek-r1:thinking' })).toEqual([]);
+    expect(errFor({})).toEqual([]);
+  });
+
+  it('空白/含空格/非字符串都即时红并说清为什么', () => {
+    expect(errFor({ model: '   ' })[0]?.message).toContain('不能是空白');
+    expect(errFor({ model: 'gpt 4o' })[0]?.message).toContain('含空白');
+    expect(errFor({ model: 42 as unknown as string })[0]?.message).toContain('必须是字符串');
+  });
+});

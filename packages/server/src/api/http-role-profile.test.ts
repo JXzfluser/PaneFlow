@@ -296,6 +296,36 @@ describe('GET /api/roles/:id/profile（v13-W4 角色能力账，纯读端点）'
       const { body } = await get(app, 'impl');
       expect(body.overall.runs).toBe(1);
       expect(body.overall).not.toHaveProperty('rework');
+      // 同一把尺：W1 前的旧单也没落 equip，装备账整键省略而不是「吃了零装备」
+      expect(body.overall).not.toHaveProperty('equip');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('v19 装备实注账：逐格汇总实注计数，吃全量与没落地各算一笔（不看节点 state）', async () => {
+    const g = graphOf([{ id: 'a', role: 'impl' }, { id: 'b', role: 'impl' }]);
+    const run = runOf({
+      runId: 'r-eq',
+      graph: g,
+      nodes: {
+        a: rec('done', {
+          scope: 'role',
+          role: 'impl',
+          skills: ['s1', 's2'],
+          rules: ['docs/x.md'],
+          misses: [{ axis: 'skill', slot: 'ghost', why: '不在登记清单' }],
+        }),
+        // 失败那格也吃了装备——装备账与过没过是两本账
+        b: rec('failed', { scope: 'space', role: 'impl', skills: ['a', 'b', 'c'], rules: [], unknownSkills: ['gone'] }),
+      },
+      roleSha: 'sha-eq',
+    });
+    const { app } = await buildServer([run], ['impl']);
+    try {
+      const { body } = await get(app, 'impl');
+      expect(body.overall.equip).toEqual({ n: 2, skills: 5, rules: 1, fullSpace: 1, misses: 2 });
+      expect(body.byRoleSha[0].equip).toEqual({ n: 2, skills: 5, rules: 1, fullSpace: 1, misses: 2 });
     } finally {
       await app.close();
     }

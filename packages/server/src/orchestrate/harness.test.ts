@@ -3,8 +3,10 @@ import type { DagGraph } from '@paneflow/shared';
 import {
   canonicalJson,
   computeCtxSha,
+  computeRoleSha,
   contentSha,
   ctxShaDriftDiff,
+  roleFingerprint,
   EXPERIENCE_BLOCK_HEAD_PREFIX,
   EXPERIENCE_BLOCK_TAIL_PREFIX,
   graphHasReadbackBlock,
@@ -249,5 +251,33 @@ describe('v13-V4 computeCtxSha / ctxShaDriftDiff（注入面指纹单源）', ()
     expect(ctxShaDriftDiff(src, h())).toBeNull(); // 新侧没落上（防御路/没走注入）：不猜
     expect(ctxShaDriftDiff(undefined, cur)).toBeNull();
     expect(ctxShaDriftDiff(src, undefined)).toBeNull();
+  });
+});
+
+describe('v19-M1 roleSha 取材并入岗位模型（换模型=换指纹；没配这格的旧账逐字节不变）', () => {
+  const eq = (over: { role?: string; skills?: string[]; rules?: string[]; model?: string } = {}) => ({
+    scope: 'role' as const,
+    ...(over.role ? { role: over.role } : {}),
+    skills: over.skills ?? [],
+    rules: over.rules ?? [],
+    ...(over.model ? { model: over.model } : {}),
+  });
+
+  it('同岗同装备只改 model → roleSha 必变；改回原值 → 变回来（可复算）', () => {
+    const a = computeRoleSha([eq({ role: 'r1', skills: ['s.md'], model: 'gpt-4o' })]);
+    const b = computeRoleSha([eq({ role: 'r1', skills: ['s.md'], model: 'deepseek-r1' })]);
+    expect(a).not.toBe(b);
+    expect(computeRoleSha([eq({ role: 'r1', skills: ['s.md'], model: 'gpt-4o' })])).toBe(a);
+  });
+
+  it('没配 model 的取材与加了键之前逐字节一致（旧单/干净名册不抖指纹）', () => {
+    const bare = computeRoleSha([eq({ role: 'r1', skills: ['s.md'] })]);
+    expect(bare).toBe(computeRoleSha([{ scope: 'role', role: 'r1', skills: ['s.md'], rules: [] }]));
+    expect(bare).not.toBe(computeRoleSha([eq({ role: 'r1', skills: ['s.md'], model: 'gpt-4o' })]));
+  });
+
+  it('model 走节点 config 时不进岗位账：roleFingerprint 只认 equip.model（角色的账）', () => {
+    const fp = roleFingerprint(eq({ role: 'r1', model: 'gpt-4o' }));
+    expect(fp).toEqual({ role: 'r1', skills: [], rules: [], model: 'gpt-4o' });
   });
 });

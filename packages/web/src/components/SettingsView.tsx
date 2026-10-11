@@ -3,11 +3,14 @@ import { equipSlotLabel, type RoleEquipSlot } from '@paneflow/shared';
 import { keepValidSlots, hasEquipRef, removeEquipSlot, splitEquipSlots, toggleEquipRef } from '../equip-slots.js';
 import { equipRefOptions, type EquipRefOption, type RegistryEntryView } from '../registry-view.js';
 import { api, fetchJson, type Channel, type ChannelType, type NotifyEvent } from '../api.js';
+import { modelCoverNote, type ModelDialectRead } from '../model-note.js';
+import { readFailureNote, writeFailureNote } from '../write-outcome.js';
 import { useStore } from '../store.js';
 import { groupWikiPages, WIKI_GROUP_CAP } from '../wiki-sediment.js';
 import { Icon, type IconName } from './Icon.js';
 import { PromptModal, type ModalRequest } from './PromptModal.js';
 import { removeGatewayProfileRequest, unlinkPatRequest, overwriteIntakeRequest } from '../dialogs.js';
+import { ChangelogSection } from './ChangelogCard.js';
 
 /**
  * 设置页章节分两组（v13 排版分类整顿 → v15-IA 配置枢纽归一）：
@@ -23,20 +26,30 @@ const SECTION_GROUPS: { label: string; items: { id: string; icon: IconName; labe
     items: [
       { id: 'env', icon: 'cpu', label: '环境' },
       { id: 'gateway', icon: 'globe', label: '模型网关' },
-      { id: 'github', icon: 'code', label: 'GitHub 凭据' },
       { id: 'usage', icon: 'clock', label: '用量' },
     ],
   },
   {
-    label: '班底与复利',
+    // v19-R7：GitHub 凭据/知识沉淀/出站通道已迁「项目」页宿主，这里只剩岗位与叙事
+    label: '岗位与叙事',
     items: [
       { id: 'roles', icon: 'user', label: '角色库' },
-      { id: 'wiki', icon: 'book', label: '知识沉淀' },
-      { id: 'channels', icon: 'radio', label: '出站通道' },
+      { id: 'changelog', icon: 'clock', label: '更新记录' },
     ],
   },
 ];
 const SECTIONS = SECTION_GROUPS.flatMap((g) => g.items);
+
+/** v19-R7 抽屉退役后，编排台/能力注册中心住「工作台」组——直达整页跳转，无弹层 */
+const WORKBENCH_LINKS: {
+  view: 'orchestrate' | 'caps';
+  icon: IconName;
+  label: string;
+  title: string;
+}[] = [
+  { view: 'orchestrate', icon: 'workflow', label: '编排台', title: '步骤清单 / 图形画布——DAG 是产品本体，入口降级但能力一字不减' },
+  { view: 'caps', icon: 'box', label: '能力注册中心', title: '能力条目说什么 / 谁在用 / 还在不在（引用账与探针的唯一面）' },
+];
 
 const CHANNEL_TYPES: { id: ChannelType; label: string; hint: string }[] = [
   {
@@ -55,12 +68,28 @@ const EVENT_OPTIONS: { id: NotifyEvent; label: string }[] = [
 ];
 
 /** 出站通道：把运行事件推送到外部系统（原「飞书 webhook」的通用化，旧配置会自动迁移） */
-function ChannelsEditor() {
+// v19-R7 配置退役：这三张卡的宿主已迁「项目」页（GitHub 凭据/通道→项目详情就近，沉淀→知识区）；
+// 组件仍住本模块导出复用——重写一遍只会漂移两份行为。
+export function ChannelsEditor() {
   const log = useStore((s) => s.log);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [testing, setTesting] = useState('');
+  // v19 打磨：从前这三条失败只进底部控制台，于是「保存」点了像成了、「测试」点了像发了、
+  // 通道读不出来时页面直接画成「还没有通道」——三种都没发生的事看着都发生了。
+  const [loadFail, setLoadFail] = useState<string | null>(null);
+  const [saveFail, setSaveFail] = useState<string | null>(null);
+  const [testFail, setTestFail] = useState<{ id: string; note: string } | null>(null);
   useEffect(() => {
-    void api.listChannels().then((r) => setChannels(r.channels)).catch(() => undefined);
+    void api
+      .listChannels()
+      .then((r) => {
+        setChannels(r.channels);
+        setLoadFail(null);
+      })
+      .catch((e: Error) => {
+        setLoadFail(readFailureNote('通道列表没读出来', e));
+        log('error', `通道读取失败：${e.message}`);
+      });
   }, []);
 
   const patch = (id: string, part: Partial<Channel>) =>
@@ -82,11 +111,14 @@ function ChannelsEditor() {
   const [saving, setSaving] = useState(false);
   const save = async () => {
     setSaving(true);
+    setSaveFail(null);
     try {
       const r = await api.saveChannels(channels);
       setChannels(r.channels);
       log('info', `已保存 ${r.channels.length} 条通道`);
     } catch (e) {
+      // 草稿不回滚：这里摆着的就是人刚打的字，失败清空等于替人删掉他写的内容
+      setSaveFail(writeFailureNote('通道没保存', e));
       log('error', `保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
@@ -95,10 +127,13 @@ function ChannelsEditor() {
 
   const test = async (ch: Channel) => {
     setTesting(ch.id);
+    setTestFail(null);
     try {
       await api.testChannel(ch);
       log('info', `「${ch.name}」测试消息已发出，请到接收端确认`);
     } catch (e) {
+      // 失败落在那一格的操作行上，别处不跟着喊——多通道时一句全局红字指不出是哪条没发出去
+      setTestFail({ id: ch.id, note: writeFailureNote(`「${ch.name}」测试没发出去`, e) });
       log('error', `测试失败：${(e as Error).message}`);
     } finally {
       setTesting('');
@@ -203,11 +238,21 @@ function ChannelsEditor() {
                 <Icon name="send" size={12} /> {testing === ch.id ? '发送中…' : '测试发送'}
               </button>
             </div>
+            {testFail?.id === ch.id && (
+              <p className="settings-fail" role="status">
+                {testFail.note}
+              </p>
+            )}
           </div>
         );
       })}
 
-      {channels.length === 0 && (
+      {loadFail && (
+        <p className="settings-fail" role="status">
+          {loadFail}
+        </p>
+      )}
+      {!loadFail && channels.length === 0 && (
         <p className="settings-hint">
           还没有通道。新增一条后，运行的「等待审批 / 完成 / 失败」就会自动推送过去。
         </p>
@@ -221,6 +266,11 @@ function ChannelsEditor() {
           {saving ? '保存中…' : '保存通道'}
         </button>
       </div>
+      {saveFail && (
+        <p className="settings-fail" role="status">
+          {saveFail}
+        </p>
+      )}
     </>
   );
 }
@@ -344,22 +394,31 @@ interface WikiStateView {
   syncedAt: string;
 }
 
-function WikiSedimentCard() {
+export function WikiSedimentCard() {
   const log = useStore((s) => s.log);
   // v11-C5：执行中心发布成功会 bump 这个计数——卡片订阅它即时重拉，不再等手动刷新
   const wikiPublishTick = useStore((s) => s.wikiPublishTick);
   const [st, setSt] = useState<WikiStateView | null>(null);
   const [noRepo, setNoRepo] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  // 「读取中…」在读取失败时会永远挂着——那不是在读，是没读成，两种态得分开画
+  const [readFail, setReadFail] = useState<string | null>(null);
+  const [syncFail, setSyncFail] = useState<string | null>(null);
   const refresh = () =>
     fetchJson<WikiStateView>('GET', '/api/wiki/state')
       .then((d) => {
         setSt(d);
         setNoRepo(false);
+        setReadFail(null);
       })
       .catch((e: Error) => {
-        if (e.message.includes('默认仓库')) setNoRepo(true);
-        else log('error', `读取 wiki 沉淀状态失败：${e.message}`);
+        if (e.message.includes('默认仓库')) {
+          setNoRepo(true);
+          setReadFail(null);
+          return;
+        }
+        setReadFail(readFailureNote('沉淀页没读出来', e));
+        log('error', `读取 wiki 沉淀状态失败：${e.message}`);
       });
   useEffect(() => {
     void refresh();
@@ -367,12 +426,15 @@ function WikiSedimentCard() {
   }, [wikiPublishTick]);
   const sync = async () => {
     setSyncing(true);
+    setSyncFail(null);
     try {
       const d = await fetchJson<WikiStateView>('POST', '/api/wiki/sync', {});
       setSt(d);
       setNoRepo(false);
+      setReadFail(null);
       log('info', `wiki 沉淀已同步：${d.pageCount} 页在库`);
     } catch (e) {
+      setSyncFail(writeFailureNote('沉淀没同步', e));
       log('error', `wiki 同步失败：${(e as Error).message}`);
     } finally {
       setSyncing(false);
@@ -397,7 +459,14 @@ function WikiSedimentCard() {
           <Icon name="external" size={11} />
         </a>
       )}
-      {!st && <p className="settings-hint">读取中…</p>}
+      {!st &&
+        (readFail ? (
+          <p className="settings-fail" role="status">
+            {readFail}
+          </p>
+        ) : (
+          <p className="settings-hint">读取中…</p>
+        ))}
       {st && st.pageCount === 0 && (
         <p className="settings-hint">
           还没有沉淀页：到「执行中心」给一条绿单点赞，即可把结论推到仓库 llm-wiki/ 目录。扩写需求时会自动读本仓沉淀页进上下文。
@@ -448,6 +517,11 @@ function WikiSedimentCard() {
           <Icon name="refresh" size={12} /> {syncing ? '同步中…' : '从远端拉最新沉淀'}
         </button>
       </div>
+      {syncFail && (
+        <p className="settings-fail" role="status">
+          {syncFail}
+        </p>
+      )}
     </div>
   );
 }
@@ -497,6 +571,12 @@ interface Role {
   rules?: RoleEquipSlot[];
   /** v13-W3 授权声明三面（声明非强制：只入 prompt + 收口对账，拦不了真动作） */
   declares?: Record<string, boolean>;
+  /**
+   * v19-M1 岗位模型（解析链：节点 > 角色 > 网关 freeModel 兜底）。
+   * 吃 `--model` 旗标的引擎原样注进启动参数；不吃的（qodercli 档位枚举/未实探 kind）
+   * 不注不拦、status 事件里说清「这一格没生效」——判据在 server 的方言表，这里只编辑。
+   */
+  model?: string;
 }
 
 /** v13-W3 授权面：与 shared 的 DECLARE_FACES 同集，界面上只这三格 */
@@ -675,14 +755,20 @@ function RolesEditor() {
   const [spaceNames, setSpaceNames] = useState<{ id: string; name: string }[]>([]);
   const [usage, setUsage] = useState<Record<string, RoleUsage>>({});
   const [agentKinds, setAgentKinds] = useState<string[]>([]);
+  /** v19 打磨：health 的每 kind 模型通道读数（server 方言账单源）；旧 server 缺键=undefined，判词一律不画 */
+  const [modelDialects, setModelDialects] = useState<Record<string, ModelDialectRead> | undefined>();
   useEffect(() => {
     void fetchJson<{ roles?: Role[] }>('GET', '/api/roles')
       .then((d) => {
         const rs = d.roles ?? [];
         setRoles(rs);
         setCommitted(rs);
+        setReadFailRoles(null);
       })
-      .catch((e: Error) => log('error', `读取角色库失败：${e.message}`));
+      .catch((e: Error) => {
+        setReadFailRoles(readFailureNote('角色库没读出来（下面这张表是空的，不代表本机没有岗位）', e));
+        log('error', `读取角色库失败：${e.message}`);
+      });
     // 部署数只是角标信息：拉不到不报错，阵容照画
     void fetchJson<{ usage?: Record<string, RoleUsage> }>('GET', '/api/roles/usage')
       .then((d) => setUsage(d.usage ?? {}))
@@ -701,20 +787,73 @@ function RolesEditor() {
       .registryList()
       .then((d) => setRegistryEntries(d.entries))
       .catch(() => undefined);
-    void api.health().then((h) => setAgentKinds(h.agentKinds));
+    void api
+      .health()
+      .then((h) => {
+        setAgentKinds(h.agentKinds);
+        setModelDialects(h.agentModelDialects);
+      });
   }, []);
-  /** 整库 PUT（/api/roles 是全量替换语义）；成功才把草稿升格为在册，失败留在未保存态 */
-  const save = (next: Role[], note: string) => {
+  /** 自愈口：整链分两段报账——补回这一发没成，和补回成了但清单没重读出来，是两句不同的话 */
+  const repairStd = async (spaceId: string | undefined) => {
+    if (!spaceId) return;
+    setRepairing(true);
+    setRepairFail(null);
+    try {
+      await fetchJson<unknown>('POST', `/api/spaces/${encodeURIComponent(spaceId)}/team/standard?seedOnly=1`);
+      log('info', '标准五连已补回角色库——班底悬空引用复位（班底档案未被改动）');
+    } catch (e) {
+      setRepairFail(writeFailureNote('标准五连没补回', e));
+      log('error', `补回失败：${(e as Error).message}`);
+      setRepairing(false);
+      return;
+    }
+    try {
+      const d = await fetchJson<{ roles?: Role[] }>('GET', '/api/roles');
+      const rs = d.roles ?? [];
+      // 只补名册里缺的那几岗，别把人正在卡的背上没保存的草稿一起覆盖掉
+      setRoles((prev) => [...prev, ...rs.filter((r) => !prev.some((p) => p.id === r.id))]);
+      setCommitted(rs);
+      setUsage((await fetchJson<{ usage?: Record<string, RoleUsage> }>('GET', '/api/roles/usage')).usage ?? {});
+      setReadFailRoles(null);
+    } catch (e) {
+      // 落盘的补回已经成了，这里失败的只是重读：不能说成「没补回」
+      setReadFailRoles(readFailureNote('补回之后名册没重读出来（补回本身已落盘，刷新即见）', e));
+      log('error', `补回后重读失败：${(e as Error).message}`);
+    } finally {
+      setRepairing(false);
+    }
+  };
+  /** 整库 PUT（/api/roles 是全量替换语义）；成功才把草稿升格为在册，失败留在未保存态。
+   *  failKey=这张卡的 role id：一句失败只挂在按下的那张卡脚上，别的卡不跟着喊红。 */
+  const [saveFail, setSaveFail] = useState<{ key: string; note: string } | null>(null);
+  const [repairFail, setRepairFail] = useState<string | null>(null);
+  // 名册读不出来时页面会画成「一个角色都没有」——那是两件事，得分开说
+  const [readFailRoles, setReadFailRoles] = useState<string | null>(null);
+  const save = (next: Role[], note: string, why: string, failKey: string) => {
+    const prev = roles;
     setRoles(next);
+    setSaveFail(null);
     void fetchJson<unknown>('PUT', '/api/roles', { roles: next })
       .then(() => {
         setCommitted(next);
         log('info', note);
       })
-      .catch((e: Error) => log('error', `保存失败，改动还在草稿里：${e.message}`));
+      .catch((e: Error) => {
+        // 失败就把列表摆回按之前：删掉的卡不能因为「没落盘」还缺席，新增的卡也不能留下幻影；
+        // 编辑型（saveCard）的 next 就是当前草稿，这一撤一放等于没动，● 未保存 那颗点照在
+        setRoles(prev);
+        setSaveFail({ key: failKey, note: writeFailureNote(why, e) });
+        log('error', `保存失败，改动还在草稿里：${e.message}`);
+      });
   };
   const saveCard = (role: Role) =>
-    save(roles, `角色「${role.name}」已保存（装备槽改了要重跑单才生效——roleSha 在注入现场取值）`);
+    save(
+      roles,
+      `角色「${role.name}」已保存（装备槽改了要重跑单才生效——roleSha 在注入现场取值）`,
+      `角色「${role.name}」没保存`,
+      role.id,
+    );
   const discardCard = (id: string) =>
     setRoles((rs) => rs.map((r) => (r.id === id ? (committed.find((c) => c.id === id) ?? r) : r)));
   const patch = (id: string, part: Partial<Role>) =>
@@ -734,9 +873,17 @@ function RolesEditor() {
   const readEntries = registryEntries ?? [];
   const skillRefOptions = equipRefOptions(readEntries, 'skill', spaceNames);
   const docRefOptions = equipRefOptions(readEntries, 'rule', spaceNames);
+  // v19-M1 岗位模型的可选项=注册中心 model 条目的机器值（spec.model，网关 freeModel 同款写法）；
+  // 只是 datalist 提示，手输任意单串照样能存——吃不吃这值是 server 方言表的账（页上不判据，R4）
+  const modelOptions = [...new Set(readEntries.filter((e) => e.kind === 'model').map((e) => (e.spec as { model?: string }).model?.trim()).filter((v): v is string => !!v))];
   return (
     <>
-      {roles.length === 0 && (
+      {readFailRoles && (
+        <p className="settings-fail" role="status">
+          {readFailRoles}
+        </p>
+      )}
+      {!readFailRoles && roles.length === 0 && (
         <p className="settings-hint">
           班底还是空的。到「项目」视图打开档案点「一键装填标准五连」，五个首发 bot（规划/实现/评审/验收/沉淀）就会到位。
         </p>
@@ -746,6 +893,8 @@ function RolesEditor() {
           const on = usage[r.id] ?? [];
           const dirty = isDirty(r);
           const equipped = r.skills !== undefined || r.rules !== undefined;
+          // 起单前判词（server 方言表读数；拿不到=undefined，不画）：岗位模型配了但引擎不吃这值的落差
+          const modelNote = modelCoverNote(r.model, r.agentKind, modelDialects);
           const persona = (r.prePrompt ?? '')
             .split('\n')
             .map((l) => l.trim())
@@ -759,6 +908,16 @@ function RolesEditor() {
                 <div className="bot-id">
                   <strong>{r.name}</strong>
                   <span className="bot-meta">{r.agentKind ? <code>{r.agentKind}</code> : '默认 Agent'}</span>
+                  {/* v19-M1 岗位模型摆到卡面：换模型=换岗位读数（入 roleSha），看得见才算配过；
+                      配了但引擎不认这值（server 方言表读数）→ 卡面同色警示，判词全文在 title */}
+                  {r.model?.trim() && (
+                    <span
+                      className={modelNote ? 'bot-meta attn' : 'bot-meta'}
+                      title={modelNote ?? '岗位模型覆盖（解析链：节点 > 角色 > 网关 freeModel）'}
+                    >
+                      模型 <code>{r.model.trim()}</code>
+                    </span>
+                  )}
                   {/* v13-W1 三轴划界的可见面：没配装备槽的岗其实在吃项目全量，这事实摊开在卡面上 */}
                   <span className="bot-meta">
                     {r.skills === undefined && r.rules === undefined
@@ -805,6 +964,17 @@ function RolesEditor() {
                     </option>
                   ))}
                 </select>
+                {/* v19-M1 岗位模型：给了就注 `--model`（引擎吃不吃由 server 方言表判，不吃只披露）；
+                    留空=不覆盖，跟网关 freeModel 兜底。建议值取注册中心 model 条目，也能手输。 */}
+                <label>岗位模型（可选；留空跟网关兜底）</label>
+                <input
+                  value={r.model ?? ''}
+                  onChange={(e) => patch(r.id, { model: e.target.value.trim() || undefined })}
+                  list="pf-model-options"
+                  placeholder="gpt-4o 或 provider/model（吃 --model 的引擎原样注入）"
+                  title="解析链：节点 > 角色 > 网关 freeModel；引擎不吃这值时不注不拦、status 落披露事件"
+                />
+                {modelNote && <div className="settings-hint attn">{modelNote}</div>}
                 <textarea
                   value={r.prePrompt ?? ''}
                   onChange={(e) => patch(r.id, { prePrompt: e.target.value })}
@@ -910,17 +1080,35 @@ function RolesEditor() {
                   </button>
                   <button
                     className="ghost"
-                    onClick={() => save(roles.filter((x) => x.id !== r.id), `角色「${r.name}」已删除`)}
+                    onClick={() =>
+                      save(
+                        roles.filter((x) => x.id !== r.id),
+                        `角色「${r.name}」已删除`,
+                        `角色「${r.name}」没删除`,
+                        r.id,
+                      )
+                    }
                     title="从角色库删除（各项目班底里的引用会悬空，界面会标出）"
                   >
                     <Icon name="trash" size={12} /> 删除角色
                   </button>
                 </div>
               </details>
+              {saveFail?.key === r.id && (
+                <p className="settings-fail" role="status">
+                  {/* 挂在卡面而非卡背里：按钮在展开的卡背上按，但人收起卡背之后这句仍得看得见 */}
+                  {saveFail.note}
+                </p>
+              )}
             </div>
           );
         })}
       </div>
+      <datalist id="pf-model-options">
+        {modelOptions.map((m) => (
+          <option key={m} value={m} />
+        ))}
+      </datalist>
       {ghosts.length > 0 && (
         <div className="bot-ghosts">
           <p>
@@ -935,27 +1123,16 @@ function RolesEditor() {
               className="ghost"
               disabled={repairing}
               onClick={() => {
-                const spaceId = ghosts.find(([, ps]) => ps.length > 0)?.[1][0]?.spaceId;
-                if (!spaceId) return;
-                setRepairing(true);
-                void fetchJson<unknown>('POST', `/api/spaces/${encodeURIComponent(spaceId)}/team/standard?seedOnly=1`)
-                  .then(() => fetchJson<{ roles?: Role[] }>('GET', '/api/roles'))
-                  .then((d) => {
-                    const rs = d.roles ?? [];
-                    setRoles(rs);
-                    setCommitted(rs);
-                    return fetchJson<{ usage?: Record<string, RoleUsage> }>('GET', '/api/roles/usage');
-                  })
-                  .then((d) => {
-                    setUsage(d.usage ?? {});
-                    log('info', '标准五连已补回角色库——班底悬空引用复位（班底档案未被改动）');
-                  })
-                  .catch((e: Error) => log('error', `补回失败：${e.message}`))
-                  .finally(() => setRepairing(false));
+                void repairStd(ghosts.find(([, ps]) => ps.length > 0)?.[1][0]?.spaceId);
               }}
             >
               {repairing ? '补回中…' : '⚡ 一键补回标准五连（修复悬空引用）'}
             </button>
+          )}
+          {repairFail && (
+            <p className="settings-fail" role="status">
+              {repairFail}
+            </p>
           )}
         </div>
       )}
@@ -963,11 +1140,17 @@ function RolesEditor() {
         className="ghost"
         onClick={() => {
           const next = [...roles, { id: `role-${Date.now().toString(36)}`, name: `角色 ${roles.length + 1}` }];
-          save(next, '已新增角色（名字与人设在卡背上补，补完记得「保存这张卡」）');
+          // 失败就把这张空卡从列表里撤回去（key 用 '__new__'：卡都没落成，没有卡脚可以挂那句话）
+          save(next, '已新增角色（名字与人设在卡背上补，补完记得「保存这张卡」）', '新角色没落库', '__new__');
         }}
       >
         + 新增角色
       </button>
+      {saveFail?.key === '__new__' && (
+        <p className="settings-fail" role="status">
+          {saveFail.note}
+        </p>
+      )}
     </>
   );
 }
@@ -985,6 +1168,7 @@ export function SettingsView() {
   // 这一枚探测要现起子进程问本机装了哪些 agent（herdr 也在里面），不是瞬时——点了没说「在探」就会被再按一次
   const [envBusy, setEnvBusy] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
 
   const probeEnv = () => {
     setEnvBusy(true);
@@ -998,31 +1182,42 @@ export function SettingsView() {
     void probeEnv();
   }, []);
 
-  // 滚动时高亮当前章节
+  // 滚动时高亮当前章节。滚动宿主随断点变（宽屏=.settings-body，窄屏=整页 .settings-view），
+  // 所以不绑死某个元素——document 捕获阶段收所有 scroller 的 scroll（scroll 不冒泡但可捕获）。
   useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    const onScroll = () => {
+    const onScroll = (e?: Event) => {
       let cur = SECTIONS[0]?.id ?? 'channels';
       for (const s of SECTIONS) {
         const node = document.getElementById(`sec-${s.id}`);
         if (node && node.getBoundingClientRect().top <= 140) cur = s.id;
       }
+      // 最后一节可能永远够不到判定线（页底剩余高度不够）——滚到底即视为到达，
+      // 否则点「更新记录」高亮会停在倒数第二节，读数指错章节。
+      const sc = e?.target as HTMLElement | null;
+      if (sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight <= 4) {
+        cur = SECTIONS[SECTIONS.length - 1]?.id ?? cur;
+      }
       setActive(cur);
+      // 钉住态才给阴影（better-ui：深度靠阴影、边框只做结构）——宽屏导航是并排栏不是浮层，
+      // 页面容器永不滚动，这枚类恒为 false，静置态零变化。
+      const page = document.querySelector('.settings-view');
+      navRef.current?.classList.toggle('stuck', (page?.scrollTop ?? 0) > 2);
     };
-    el.addEventListener('scroll', onScroll, { passive: true });
+    document.addEventListener('scroll', onScroll, { passive: true, capture: true });
     onScroll();
-    return () => el.removeEventListener('scroll', onScroll);
+    return () => document.removeEventListener('scroll', onScroll, { capture: true });
   }, []);
 
-  const jump = (id: string) => {
+  const jump = (id: string, pill?: HTMLElement) => {
     setActive(id);
+    // 窄屏导航是钉住的横向滚动条：被点的钮若滚出视野，先把它带回可视区（只横不动竖）
+    pill?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
     document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   return (
     <div className="settings-view">
-      <nav className="settings-nav" aria-label="设置章节">
+      <nav className="settings-nav" ref={navRef} aria-label="设置章节">
         {SECTION_GROUPS.map((g) => (
           <div className="settings-nav-group" key={g.label}>
             <span className="settings-nav-grouplabel">{g.label}</span>
@@ -1030,7 +1225,7 @@ export function SettingsView() {
               <button
                 key={s.id}
                 className={`settings-nav-item${active === s.id ? ' on' : ''}`}
-                onClick={() => jump(s.id)}
+                onClick={(e) => jump(s.id, e.currentTarget)}
               >
                 <span className="settings-nav-icon">
                   <Icon name={s.icon} size={13} />
@@ -1040,6 +1235,28 @@ export function SettingsView() {
             ))}
           </div>
         ))}
+        {/* v19-R7 抽屉退役：编排台/能力注册中心的入口收进这里——是整页跳转不是弹层，
+            侧导航的既定语言（一行一个目的地）复用，不设第二套交互形状。
+            ↗ 离页标：同列的章节钮是页内滚动，这两枚会把整页换掉——两种行为必须一眼可分。 */}
+        <div className="settings-nav-group">
+          <span className="settings-nav-grouplabel">工作台</span>
+          {WORKBENCH_LINKS.map((l) => (
+            <button
+              key={l.view}
+              className="settings-nav-item settings-nav-exit"
+              title={l.title}
+              onClick={() => useStore.getState().setView(l.view)}
+            >
+              <span className="settings-nav-icon">
+                <Icon name={l.icon} size={13} />
+              </span>
+              {l.label}
+              <span className="settings-nav-exitmark" aria-hidden>
+                <Icon name="external" size={10} />
+              </span>
+            </button>
+          ))}
+        </div>
       </nav>
 
       <div className="settings-body" ref={bodyRef}>
@@ -1064,20 +1281,10 @@ export function SettingsView() {
           <GatewayCard />
         </section>
 
-        <section className="settings-card" id="sec-github">
-          <h3>GitHub 凭据</h3>
-          <GithubCredCard />
-        </section>
-
         <section className="settings-card" id="sec-usage">
           <h3>用量</h3>
           <p className="settings-hint">token 只认引擎收口落册的成本账（agent 自报累计，绝不估算）；归档单也计入。</p>
           <UsageCard />
-        </section>
-
-        <section className="settings-card" id="sec-wiki">
-          <h3>知识沉淀（wiki 复利）</h3>
-          <WikiSedimentCard />
         </section>
 
         <section className="settings-card" id="sec-roles">
@@ -1088,10 +1295,11 @@ export function SettingsView() {
           <RolesEditor />
         </section>
 
-        <section className="settings-card" id="sec-channels">
-          <h3>出站通道</h3>
-          <ChannelsEditor />
-        </section>
+        {/* v19-R7 配置退役：GitHub 凭据/知识沉淀/出站通道三张卡的宿主在「项目」页
+            （凭据与通道→项目详情就近、沉淀→知识区）；组件仍由本模块导出，两处同一实现。 */}
+
+        {/* v19-R6 更新记录：读 /api/changelog（与仓库根 CHANGELOG.md 同源），缺文件明说 */}
+        <ChangelogSection />
 
       </div>
     </div>
@@ -1136,11 +1344,20 @@ function GatewayCard() {
         // 开着网关进设置页就自动探测一次——结论直接摆脸上，不用用户找按钮
         if (cfg.enabled && cfg.keyConfigured && cfg.baseUrl) void runTest();
       })
-      .catch((e: Error) => log('error', `读取网关配置失败：${e.message}`));
+      .catch((e: Error) => {
+        setProfileFail(readFailureNote('网关配置没读出来（上面那几个空框不等于「没配」，是没读到）', e));
+        log('error', `读取网关配置失败：${e.message}`);
+      });
   }, []);
+  // 四条写路径各有落点：保存 / 另存新档 / 切生效档 / 导入——一句全局红字在长页面上等于没说
+  const [saveFail, setSaveFail] = useState<string | null>(null);
+  const [asNewFail, setAsNewFail] = useState<string | null>(null);
+  const [profileFail, setProfileFail] = useState<string | null>(null);
+  const [importFail, setImportFail] = useState<string | null>(null);
   const [saving, setSaving] = useState<'' | 'save' | 'asNew'>('');
   const save = async () => {
     setSaving('save');
+    setSaveFail(null);
     try {
       await fetchJson<{ saved: boolean }>('PUT', '/api/gateway', {
         baseUrl: g.baseUrl,
@@ -1152,17 +1369,25 @@ function GatewayCard() {
       setG((x) => ({ ...x, keyConfigured: true }));
       setApiKey('');
       log('info', '模型网关已保存（新启动的 Agent Pane 生效）');
+    } catch (e) {
+      setSaveFail(writeFailureNote('模型网关没保存', e));
+      log('error', `保存失败：${(e as Error).message}`);
+      setSaving('');
+      return;
+    }
+    // 保存成了，后面的重读/探测再失败也只说明「页上还没刷新」，不能报「没保存」
+    setSaving('');
+    try {
       await refresh();
       await runTest();
     } catch (e) {
-      log('error', `保存失败：${(e as Error).message}`);
-    } finally {
-      setSaving('');
+      setProfileFail(readFailureNote('网关已保存，但档位清单没重读出来（刷新即见）', e));
     }
   };
   /** D2：把上方表单当前内容另存为一档新网关（不动生效档） */
   const saveAsNew = async () => {
     setSaving('asNew');
+    setAsNewFail(null);
     try {
       await fetchJson<{ ok: boolean; id: string }>('POST', '/api/gateway/profile', {
         name: newName,
@@ -1173,21 +1398,34 @@ function GatewayCard() {
       });
       setNewName('');
       setApiKey('');
-      await refresh();
       log('info', `新档「${newName}」已入列（未切生效档；要启用点它的「设为生效」）`);
     } catch (e) {
+      setAsNewFail(writeFailureNote(`新档「${newName}」没入列`, e));
       log('error', `另存新档失败：${(e as Error).message}`);
-    } finally {
       setSaving('');
+      return;
+    }
+    setSaving('');
+    try {
+      await refresh();
+    } catch (e) {
+      setProfileFail(readFailureNote('新档已入列，但档位清单没重读出来（刷新即见）', e));
     }
   };
   const switchTo = async (p: GatewayProfileView) => {
+    setProfileFail(null);
     try {
       await fetchJson<{ ok: boolean }>('PUT', '/api/gateway/current', { id: p.id });
-      await refresh();
       log('info', `生效档已切到「${p.name}」（pi 的 paneflow-gw 同步跟随）`);
     } catch (e) {
+      setProfileFail(writeFailureNote(`没切到「${p.name}」（● 仍是上一次的生效档）`, e));
       log('error', `切档失败：${(e as Error).message}`);
+      return;
+    }
+    try {
+      await refresh();
+    } catch (e) {
+      setProfileFail(readFailureNote(`已切到「${p.name}」，但清单没重读出来（刷新即见）`, e));
     }
   };
   // v14-A5-5a：这枚删除面自此问引用账——被项目钉着的档 400 点名出处。
@@ -1202,24 +1440,36 @@ function GatewayCard() {
     );
   /** D3：preview 只回掩码候选；确认勾选后才落盘 */
   const probeImport = async () => {
+    setImportFail(null);
     try {
       const d = await fetchJson<{ candidates: SwitchCandidate[] }>('POST', '/api/gateway/import', { path: swPath });
       setSwCandidates(d.candidates);
       setSwPicked(d.candidates.map((c) => c.name));
     } catch (e) {
       setSwCandidates(null);
+      // 认不出来是「这文件没读出 provider」，不是「这文件里没有网关」——候选列表空着时这句更要紧
+      setImportFail(writeFailureNote('这份配置没认出档来', e));
       log('error', `识别失败：${(e as Error).message}`);
     }
   };
   const applyImport = async () => {
+    setImportFail(null);
+    const d = await fetchJson<{ imported: string[] }>('POST', '/api/gateway/import', {
+      path: swPath,
+      names: swPicked,
+    }).catch((e: Error) => {
+      setImportFail(writeFailureNote('这几档没导入', e));
+      log('error', `导入失败：${e.message}`);
+      return null;
+    });
+    if (!d) return;
+    setSwCandidates(null);
+    setSwPath('');
+    log('info', `已导入 ${d.imported.length} 档：${d.imported.join('、')}（都是新档，未自动切生效档）`);
     try {
-      const d = await fetchJson<{ imported: string[] }>('POST', '/api/gateway/import', { path: swPath, names: swPicked });
-      setSwCandidates(null);
-      setSwPath('');
       await refresh();
-      log('info', `已导入 ${d.imported.length} 档：${d.imported.join('、')}（都是新档，未自动切生效档）`);
     } catch (e) {
-      log('error', `导入失败：${(e as Error).message}`);
+      setImportFail(readFailureNote(`已导入 ${d.imported.length} 档，但档位清单没重读出来（刷新即见）`, e));
     }
   };
   return (
@@ -1265,6 +1515,11 @@ function GatewayCard() {
           <Icon name="save" size={12} /> {saving === 'save' ? '保存中…' : '保存并测试'}
         </button>
       </div>
+      {saveFail && (
+        <p className="settings-fail" role="status">
+          {saveFail}
+        </p>
+      )}
       {/* v9-D2 多网关档：上面表单编辑的是生效档；并存其他网关在下方列表里切/删 */}
       <div className="gw-profiles">
         <h4>网关档位</h4>
@@ -1289,6 +1544,11 @@ function GatewayCard() {
             )}
           </div>
         ))}
+        {profileFail && (
+          <p className="settings-fail" role="status">
+            {profileFail}
+          </p>
+        )}
         <div className="settings-row">
           <input
             value={newName}
@@ -1304,6 +1564,11 @@ function GatewayCard() {
             {saving === 'asNew' ? '存档中…' : '＋ 另存为新档'}
           </button>
         </div>
+        {asNewFail && (
+          <p className="settings-fail" role="status">
+            {asNewFail}
+          </p>
+        )}
       </div>
       <details className="settings-more">
         <summary>从外部配置导入网关（cc Switch / 同类 switcher 的 JSON）</summary>
@@ -1340,27 +1605,46 @@ function GatewayCard() {
             </div>
           </>
         )}
+        {importFail && (
+          <p className="settings-fail" role="status">
+            {importFail}
+          </p>
+        )}
       </details>
       {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </>
   );
 }
 
-function GithubCredCard() {
+export function GithubCredCard() {
   const log = useStore((s) => s.log);
   const [g, setG] = useState<GithubCredState>({ tokenConfigured: false, defaultRepo: '' });
   const [token, setToken] = useState('');
   const [modal, setModal] = useState<ModalRequest | null>(null);
+  // 「来源：无」在读失败时也会画出来——那是没读到，不是本机真没凭据
+  const [readFail, setReadFail] = useState<string | null>(null);
+  const [writeFail, setWriteFail] = useState<string | null>(null);
   const refresh = () =>
     fetchJson<GithubCredState>('GET', '/api/github/cred')
-      .then(setG)
-      .catch((e: Error) => log('error', `读取 GitHub 凭据状态失败：${e.message}`));
+      .then((d) => {
+        setG(d);
+        setReadFail(null);
+        return d;
+      })
+      .catch((e: Error) => {
+        setReadFail(
+          readFailureNote('GitHub 凭据状态没读出来（下面没写出来源：这是没读到，不代表本机真没凭据）', e),
+        );
+        log('error', `读取 GitHub 凭据状态失败：${e.message}`);
+        return null;
+      });
   useEffect(() => {
     void refresh();
   }, []);
   const [saving, setSaving] = useState(false);
   const save = async () => {
     setSaving(true);
+    setWriteFail(null);
     try {
       const d = await fetchJson<{ tokenConfigured: boolean }>('PUT', '/api/github/cred', {
         ...(token ? { token } : {}),
@@ -1370,6 +1654,8 @@ function GithubCredCard() {
       log('info', 'GitHub 凭据已保存（新启动的 Agent Pane 生效）');
       void refresh();
     } catch (e) {
+      // token 输入框不清空：没落盘还把人打的 PAT 一起抹掉，等于逼人再抄一遍
+      setWriteFail(writeFailureNote('凭据没保存', e));
       log('error', `保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
@@ -1389,11 +1675,14 @@ function GithubCredCard() {
   /** v9-D1：本机 gh 已登录 → 一键把 token 搬进来；拿不到时错误里自带路 A/路 B 指引 */
   const importGh = async () => {
     setImporting(true);
+    setWriteFail(null);
     try {
       const d = await fetchJson<{ imported: boolean; defaultRepo: string }>('POST', '/api/github/cred/import-gh');
       setG((x) => ({ tokenConfigured: true, defaultRepo: x.defaultRepo || d.defaultRepo }));
       log('info', '已从本机 gh CLI 导入 token（新启动的 Agent Pane 生效）');
     } catch (e) {
+      // server 那句里带着两条备选路（gh 未登录 / 拿不到 token），原文照渲就是最有用的一行
+      setWriteFail(writeFailureNote('gh 的登录态没搬进来', e));
       log('error', `gh 导入失败：${(e as Error).message}`);
     } finally {
       setImporting(false);
@@ -1402,6 +1691,7 @@ function GithubCredCard() {
   /** M4：一键回写接单模板（「验收标准」锚点与服务端机检同源），409 时二次确认覆盖 */
   const writeIntake = async (overwrite = false) => {
     setWriting(true);
+    if (!overwrite) setWriteFail(null);
     try {
       const d = await fetchJson<{ written: boolean; updated?: boolean; path: string }>(
         'POST',
@@ -1418,7 +1708,11 @@ function GithubCredCard() {
       const msg = (e as Error).message;
       // 409「已存在，要覆盖得显式 overwrite」：原生的二次确认换成 D3 模态，server 那句原文直接当说明
       if (msg.includes('overwrite')) setModal(overwriteIntakeRequest(msg, () => writeIntake(true)));
-      else log('error', `接单模板回写失败：${msg}`);
+      else {
+        // overwrite 那一发是在模态里重试的，失败由模态内部呈现（不关窗），这里再挂一句就是重复报账
+        if (!overwrite) setWriteFail(writeFailureNote('接单模板没回写', e));
+        log('error', `接单模板回写失败：${msg}`);
+      }
     } finally {
       setWriting(false);
     }
@@ -1433,6 +1727,11 @@ function GithubCredCard() {
         {g.source === 'gh-cli' && <>来源：本机 gh 登录态（现取现用，未写盘）{credIdentity(g)}。动作侧照常可用；想让它也喂给 Agent Pane 里的 gh，可一键导入落盘。</>}
         {g.source === 'none' && <>来源：无。要么贴一个 PAT，要么本机 gh auth login——登录后无需任何存储即可直连。</>}
       </p>
+      {readFail && (
+        <p className="settings-fail" role="status">
+          {readFail}
+        </p>
+      )}
       <input
         type="password"
         value={token}
@@ -1473,6 +1772,11 @@ function GithubCredCard() {
           )}
         </button>
       </div>
+      {writeFail && (
+        <p className="settings-fail" role="status">
+          {writeFail}
+        </p>
+      )}
       {modal && <PromptModal req={modal} onClose={() => setModal(null)} />}
     </>
   );

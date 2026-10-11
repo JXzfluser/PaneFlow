@@ -95,6 +95,22 @@ describe('deriveSteps（DAG → 可读步骤）', () => {
     expect(steps.find((s) => s.id === 'verify')!.state).toBeUndefined();
   });
 
+  it('v19 打磨：运行记录的岗位装备账原样透传（缺键不造空账）', () => {
+    const runNodes: Record<string, NodeRunRecord> = {
+      align: {
+        nodeId: 'align',
+        state: 'done',
+        attempts: 1,
+        equip: { scope: 'role', role: 'r-align', skills: ['docs/s.md'], rules: [], model: 'gpt-4o' },
+      },
+      impl: { nodeId: 'impl', state: 'done', attempts: 1 },
+    };
+    const steps = deriveSteps(deliveryLikeGraph(), runNodes);
+    expect(steps.find((s) => s.id === 'align')!.equip).toEqual(runNodes.align!.equip);
+    // 没有装备账的记录=注入现场没走到，step.equip 保持 undefined（不是空对象）
+    expect(steps.find((s) => s.id === 'impl')!.equip).toBeUndefined();
+  });
+
   it('v13-K2 打回回边：不进依赖、不改拓扑序，另立一格说清谁能打回它', () => {
     // 节点数组刻意打乱顺序：清单顺序必须由**前向图**拓扑出来。
     // 回边若混进拓扑输入，topoSort 判成环返回 null → 清单退化成这个乱序数组（看得见的错）。

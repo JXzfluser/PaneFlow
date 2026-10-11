@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { runCostLabel } from '../cost.js';
 import { templateLabel } from '../template-labels.js';
+import { boardLiveView } from '../board-live.js';
 import { parseUnifiedDiff, type DiffFileSummary } from '../diff-summary.js';
 import { Icon } from './Icon.js';
 import { RunsCenter } from './RunsCenter.jsx';
@@ -215,7 +216,7 @@ export function BoardView() {
                 <div className="board-col-cards">
                   {cards.length === 0 && <div className="board-col-empty">空</div>}
                   {cards.map((r) => (
-                    <BoardCard key={r.runId} run={r} onOpen={() => openCanvas(r.runId)} />
+                    <BoardCard key={r.runId} run={r} onOpen={() => openCanvas(r.runId)} acting={acting} act={act} />
                   ))}
                 </div>
               </div>
@@ -227,11 +228,25 @@ export function BoardView() {
   );
 }
 
-function BoardCard({ run, onOpen }: { run: RunRecord; onOpen: () => void }) {
+function BoardCard({
+  run,
+  onOpen,
+  acting,
+  act,
+}: {
+  run: RunRecord;
+  onOpen: () => void;
+  acting: Set<string>;
+  act: (runId: string, nodeId: string, action: 'approve' | 'reject') => void;
+}) {
   const state = run.state;
   const prog = progressOf(run);
   const cost = runCostLabel(run);
   const active = state === 'running' || state === 'queued';
+  // v19-R8 卡上就地看清：在跑谁 + 最后三笔事件 + 等你批的门（取数全在 board-live.ts，
+  // 数据=store 里 WS 推来的整本 run，零新接口零新轮询）
+  const live = boardLiveView(run);
+  const showLive = run.state === 'running' || live.nowLine !== null || live.gate !== null;
   return (
     <div className="board-card" onClick={onOpen} title="打开画布查看这条编排">
       <div className="board-card-top">
@@ -248,6 +263,40 @@ function BoardCard({ run, onOpen }: { run: RunRecord; onOpen: () => void }) {
             <div className="run-progress-fill" style={{ width: `${prog.pct}%` }} />
           </div>
           <span className="task-progress-text">{prog.done}/{prog.total} 步</span>
+        </div>
+      )}
+      {showLive && (
+        <div className="board-card-live" onClick={(e) => e.stopPropagation()}>
+          {live.nowLine && <div className="live-now" title={live.nowLine}>{live.nowLine}</div>}
+          {live.lines.length > 0 && (
+            <div className="live-lines">
+              {live.lines.map((ev, i) => (
+                <div className="live-line" key={`${ev.at}-${i}`} title={`${ev.at.slice(11, 19).replace('T', ' ')} · ${ev.text}`}>
+                  <span className="live-at">{ev.at.slice(11, 16)}</span>
+                  <span className="live-tx">{ev.text.length > 42 ? `${ev.text.slice(0, 42)}…` : ev.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {live.quiet && live.lines.length === 0 && <div className="live-line dim">事件还没推到（这一单暂时没动静账）</div>}
+          {live.gate && (
+            <div className="board-card-gate">
+              <span className="gate-ask" title={live.gate.ask}>{live.gate.ask}</span>
+              <button
+                disabled={acting.has(`${run.runId}:${live.gate.nodeId}`)}
+                onClick={(e) => { e.stopPropagation(); act(run.runId, live.gate!.nodeId, 'reject'); }}
+              >
+                驳回
+              </button>
+              <button
+                className="primary"
+                disabled={acting.has(`${run.runId}:${live.gate.nodeId}`)}
+                onClick={(e) => { e.stopPropagation(); act(run.runId, live.gate!.nodeId, 'approve'); }}
+              >
+                {acting.has(`${run.runId}:${live.gate.nodeId}`) ? '放门中…' : '批准'}
+              </button>
+            </div>
+          )}
         </div>
       )}
       {cost && <span className="board-card-cost">{cost}</span>}

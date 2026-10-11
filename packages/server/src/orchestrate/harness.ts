@@ -189,6 +189,9 @@ export function ctxShaDriftDiff(
  *  · unknownSkills：装备槽引用了登记清单外的项（虽不注入，但它变了=这岗的配置确实被改过）；
  *  · unknownRules（v14-A5-5b）：同一枚判序给岗位文档槽——它从前没有披露通道，所以只在非空时才进取材，
  *    干净名册与旧单的 roleSha 逐字节不变（宁缺毋假：不给没落册的格子补一枚空数组冒充「配过」）。
+ *  · model（v19-M1）：岗位配置的模型原值——「换模型=换岗位读数」是这格入账的唯一理由，
+ *    于是「两臂骨架#相等 ∧ roleSha 不等 ∧ 只差这格」即岗位级模型 A/B 的机器证。
+ *    同样只在非空时才进取材：干净名册与旧单逐字节不变。
  * scope（role/space 兼容带）不入指纹：它由「槽有没有配过」推得、与路径集冗余，
  * 算进去会让「配了一格内容等价的槽」也换指纹，破「同装备=同指纹」那半条判据。
  * `misses`（v14-A5-5b 那句「为什么没落地」的明细）同样不入指纹，理由比 scope 更硬：它的取材是
@@ -200,6 +203,8 @@ export interface RoleEquipFingerprint {
   rules: string[];
   unknownSkills?: string[];
   unknownRules?: string[];
+  /** v19-M1 岗位模型配置原值（非空才进取材；判据见上方注释块） */
+  model?: string;
 }
 
 /** NodeEquip → 指纹取材：装备账是注入现场落册的现成结构，这里只做剥字段与归一 */
@@ -210,6 +215,7 @@ export function roleFingerprint(equip: NodeEquip): RoleEquipFingerprint {
     rules: [...equip.rules],
     ...(equip.unknownSkills?.length ? { unknownSkills: [...equip.unknownSkills] } : {}),
     ...(equip.unknownRules?.length ? { unknownRules: [...equip.unknownRules] } : {}),
+    ...(equip.model ? { model: equip.model } : {}),
   };
 }
 

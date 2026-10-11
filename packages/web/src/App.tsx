@@ -3,6 +3,7 @@ import { api, connectWs, getSpace } from './api.js';
 import { useStore } from './store.js';
 import { SideNav } from './components/SideNav.jsx';
 import { TasksView } from './components/TasksView.jsx';
+import { TeamView } from './components/TeamView.jsx';
 import { BoardView } from './components/BoardView.jsx';
 import { OrchestrateView } from './components/OrchestrateView.jsx';
 import { ProjectsView } from './components/ProjectsView.jsx';
@@ -17,6 +18,7 @@ let healthLogged = false; // dedupe across StrictMode double-mounts
 
 export function App() {
   const view = useStore((s) => s.view);
+  const setView = useStore((s) => s.setView);
   const log = useStore((s) => s.log);
   const pwOpen = useStore((s) => s.pwOpen);
   const guideOpen = useStore((s) => s.guideOpen);
@@ -44,6 +46,8 @@ export function App() {
       .then((h) => {
         useStore.getState().setHealth(h.herdrOk, useStore.getState().wsOk);
         setAgentKinds(h.agentKinds);
+        // v19 打磨：模型通道读数（旧 server 没这键就留 undefined——界面按「读不到」不画判词，不猜）
+        if (h.agentModelDialects) useStore.getState().setAgentModelDialects(h.agentModelDialects);
         // 默认 Agent：AE 自动推荐（已装优先 pi）> 本机已装首个 > 服务端清单首个（R7-③ 去前端硬编码）
         useStore.getState().setDefaultAgentKind(h.recommendedAgentKind ?? h.env.agentsInstalled[0] ?? h.agentKinds[0] ?? '');
         if (!healthLogged) {
@@ -101,21 +105,38 @@ export function App() {
             <Icon name={navCollapsed ? 'unfold' : 'fold'} size={14} />
           </button>
           <span className="view-eyebrow">
+            {/* v19-R7 抽屉退役的补偿：编排台/能力注册中心从「工作台」整页跳走后，
+                顶栏面包屑给出常驻的「来路」——父级可点，回高级设置不用摸侧栏滑钮 */}
+            {(view === 'orchestrate' || view === 'caps') && (
+              <>
+                <button
+                  className="eyebrow-crumb"
+                  onClick={() => setView('settings')}
+                  title="返回高级设置（编排台与能力注册中心都从那里进）"
+                >
+                  SETTINGS · 高级设置
+                </button>
+                <span className="eyebrow-sep">/</span>
+              </>
+            )}
             {view === 'tasks'
               ? 'TASKS · 任务'
-              : view === 'orchestrate'
-                ? 'ORCHESTRATE · 编排'
-                : view === 'runs'
-                  ? 'BOARD · 看板'
-                  : view === 'projects'
-                    ? 'PROJECTS · 项目'
-                    : view === 'caps'
-                      ? 'REGISTRY · 能力'
-                      : 'SETTINGS · 设置'}
+              : view === 'team'
+                ? 'TEAM · 班底'
+                : view === 'orchestrate'
+                  ? 'ORCHESTRATE · 编排'
+                  : view === 'runs'
+                    ? 'BOARD · 看板'
+                    : view === 'projects'
+                      ? 'PROJECTS · 项目'
+                      : view === 'caps'
+                        ? 'REGISTRY · 能力'
+                        : 'SETTINGS · 高级设置'}
           </span>
           <div className="spacer" />
         </div>
         {view === 'tasks' && <TasksView />}
+        {view === 'team' && <TeamView />}
         {view === 'orchestrate' && <OrchestrateView />}
         {view === 'runs' && <BoardView />}
         {view === 'projects' && <ProjectsView />}

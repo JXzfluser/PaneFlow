@@ -435,6 +435,25 @@ describe('runs / status / approve', () => {
     expect(cOut).toContain('装备: 技能 1 · 岗位文档 1');
   });
 
+  it('v19-M1 装备行尾部跟岗位模型：server 落册了 model 键才显这一截，旧单整缺不显（缺≠「岗位没配模型的否定读数」）', async () => {
+    const withEquip = (equip: unknown) => ({
+      runId: 'r-ml',
+      state: 'completed',
+      dagName: 'g',
+      nodes: { a: { nodeId: 'a', state: 'done', equip } },
+    });
+    const { fetchImpl } = stubFetch([
+      { body: withEquip({ scope: 'role', role: 'r-arm', skills: ['a.md'], rules: [], model: 'gpt-4o' }) },
+      { body: withEquip({ scope: 'role', role: 'r-arm', skills: ['a.md'], rules: [] }) },
+    ]);
+    const withModel = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-ml'], withModel.io)).toBe(0);
+    expect(withModel.lines.join('\n')).toContain('装备: 技能 1 · 岗位文档 0 · 岗 r-arm · 模型 gpt-4o');
+    const legacy = makeIo({ fetch: fetchImpl });
+    expect(await main(['status', 'r-ml'], legacy.io)).toBe(0);
+    expect(legacy.lines.join('\n')).not.toContain('模型');
+  });
+
   it('v13-K1 status 产物行：命名产物清单照单渲染（sha·KB 都是 server 实算），未上架的件照实标注；没产物整缺不显', async () => {
     const base = {
       runId: 'r-k1',
