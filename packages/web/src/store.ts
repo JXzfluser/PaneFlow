@@ -167,8 +167,16 @@ interface PfStore {
   setActiveRun: (runId: string | null) => void;
   /** 从运行中心打开某次运行：载入其图并镜像状态（跨空间自动切换） */
   openRun: (runId: string) => void;
-  approve: (runId: string, nodeId: string, action: 'approve' | 'reject' | 'input', text?: string) => void;
+  /**
+   * 审批三键（放行/驳回/补料）：返回真结果——`ok:true` 是 server 收了这一发，
+   * `ok:false` 带原始错误（`status`/`payload.error` 由调用面交给 writeFailureNote）。
+   * 批门是人按的最后一道闸，「在发」读数必须跟着这枚结果走，不靠计时器猜（v19 步骤十二）。
+   */
+  approve: (runId: string, nodeId: string, action: 'approve' | 'reject' | 'input', text?: string) => Promise<GateResult>;
 }
+
+/** 审批回执：不抛错（抛了就是「谁忘了 catch 谁静默」），把成败原样交回调用面 */
+export type GateResult = { ok: true } | { ok: false; err: unknown };
 
 let nodeSeq = 1;
 
@@ -502,14 +510,19 @@ export const useStore = create<PfStore>((set, get) => ({
     get().log('info', `已打开运行 ${run.runId}（模板：${run.dagName}）`);
   },
 
-  approve: (runId, nodeId, action, text) => {
-    void import('./api.js').then(({ api }) =>
-      api
-        .approve(runId, nodeId, text ? { action, text } : { action })
-        .then(() => get().log('info', `已提交审批动作「${action}」：${nodeId}`))
-        .catch((e) => get().log('error', `审批提交失败：${String(e.message ?? e)}`)),
-    );
-  },
+  approve: (runId, nodeId, action, text): Promise<GateResult> =>
+    import('./api.js')
+      .then(({ api }) => api.approve(runId, nodeId, text ? { action, text } : { action }))
+      .then(
+        () => {
+          get().log('info', `已提交审批动作「${action}」：${nodeId}`);
+          return { ok: true } as const;
+        },
+        (err: unknown) => {
+          get().log('error', `审批提交失败：${String((err as Error).message ?? err)}`);
+          return { ok: false, err } as const;
+        },
+      ),
 }));
 
 export function graphIssues(): string[] {

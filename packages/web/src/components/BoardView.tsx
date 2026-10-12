@@ -5,6 +5,7 @@ import { useStore } from '../store.js';
 import { runCostLabel } from '../cost.js';
 import { templateLabel } from '../template-labels.js';
 import { boardLiveView } from '../board-live.js';
+import { writeFailureNote } from '../write-outcome.js';
 import { parseUnifiedDiff, type DiffFileSummary } from '../diff-summary.js';
 import { Icon } from './Icon.js';
 import { RunsCenter } from './RunsCenter.jsx';
@@ -100,6 +101,15 @@ export function BoardView() {
     localStorage.getItem(BOARD_KEY) === 'list' ? 'list' : 'board',
   );
   const [acting, setActing] = useState<Set<string>>(new Set());
+  /** 批门失败就地一句：按 `runId:nodeId` 记，同一单另一道门的卡不跟着喊 */
+  const [gateFail, setGateFail] = useState<Record<string, string>>({});
+  const setGateFailFor = (key: string, note: string | null) =>
+    setGateFail((c) => {
+      const next = { ...c };
+      if (note === null) delete next[key];
+      else next[key] = note;
+      return next;
+    });
 
   // 打开看板先拉一次全量运行账（不依赖 WS 推送是否齐全）
   useEffect(() => {
@@ -132,9 +142,21 @@ export function BoardView() {
   const act = (runId: string, nodeId: string, action: 'approve' | 'reject') => {
     const key = `${runId}:${nodeId}`;
     setActing((s) => new Set(s).add(key));
-    approve(runId, nodeId, action);
-    // 放门后 WS 会推新状态；只把「在发」读数保留一小段，防连点
-    setTimeout(() => setActing((s) => { const n = new Set(s); n.delete(key); return n; }), 1500);
+    setGateFailFor(key, null);
+    void approve(runId, nodeId, action).then((res) => {
+      const settle = () => setActing((s) => { const n = new Set(s); n.delete(key); return n; });
+      if (res.ok) {
+        // 放门后 WS 才推新状态：这 1.5 秒只是防连点的读数，不是对结果的猜测——server 已经收了这一发
+        setTimeout(settle, 1500);
+        return;
+      }
+      // 没成：按钮当场回到原样（门还在等你），server 的原话落在这一格下面
+      settle();
+      setGateFailFor(
+        key,
+        writeFailureNote(action === 'approve' ? '这一下没批出去（门还在等你）' : '这一下没驳回（门还在等你）', res.err),
+      );
+    });
   };
 
   const openCanvas = (runId: string) => {
@@ -182,7 +204,7 @@ export function BoardView() {
           </div>
           <div className="review-cards">
             {reviews.map((it) => (
-              <ReviewCard key={`${it.run.runId}:${it.nodeId}`} it={it} acting={acting} act={act} openCanvas={openCanvas} />
+              <ReviewCard key={`${it.run.runId}:${it.nodeId}`} it={it} acting={acting} gateFail={gateFail} act={act} openCanvas={openCanvas} />
             ))}
           </div>
         </div>
@@ -216,7 +238,7 @@ export function BoardView() {
                 <div className="board-col-cards">
                   {cards.length === 0 && <div className="board-col-empty">空</div>}
                   {cards.map((r) => (
-                    <BoardCard key={r.runId} run={r} onOpen={() => openCanvas(r.runId)} acting={acting} act={act} />
+                    <BoardCard key={r.runId} run={r} onOpen={() => openCanvas(r.runId)} acting={acting} gateFail={gateFail} act={act} />
                   ))}
                 </div>
               </div>
@@ -232,11 +254,13 @@ function BoardCard({
   run,
   onOpen,
   acting,
+  gateFail,
   act,
 }: {
   run: RunRecord;
   onOpen: () => void;
   acting: Set<string>;
+  gateFail: Record<string, string>;
   act: (runId: string, nodeId: string, action: 'approve' | 'reject') => void;
 }) {
   const state = run.state;
@@ -295,6 +319,11 @@ function BoardCard({
               >
                 {acting.has(`${run.runId}:${live.gate.nodeId}`) ? '放门中…' : '批准'}
               </button>
+              {gateFail[`${run.runId}:${live.gate.nodeId}`] && (
+                <p className="gate-fail" role="status">
+                  {gateFail[`${run.runId}:${live.gate.nodeId}`]}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -381,11 +410,13 @@ function ReviewDiffPanel({ run }: { run: RunRecord }) {
 function ReviewCard({
   it,
   acting,
+  gateFail,
   act,
   openCanvas,
 }: {
   it: ReviewItem;
   acting: Set<string>;
+  gateFail: Record<string, string>;
   act: (runId: string, nodeId: string, action: 'approve' | 'reject') => void;
   openCanvas: (runId: string) => void;
 }) {
@@ -412,6 +443,11 @@ function ReviewCard({
           {acting.has(key) ? '放门中…' : '✓ 批准'}
         </button>
       </div>
+      {gateFail[key] && (
+        <p className="gate-fail" role="status">
+          {gateFail[key]}
+        </p>
+      )}
     </div>
   );
 }

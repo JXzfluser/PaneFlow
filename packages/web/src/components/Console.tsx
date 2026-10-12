@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { runCostLabel } from '../cost.js';
 import { useStore } from '../store.js';
+import { writeFailureNote } from '../write-outcome.js';
 import { RunTimeline } from './RunTimeline.js';
 
 type Tab = 'console' | 'timeline' | 'approval' | 'terminal' | 'summary';
@@ -188,6 +189,27 @@ function ApprovalCard({ runId, nodeId, snapshots }: { runId: string; nodeId: str
   const derived = snapshots?.length ? snapshots[snapshots.length - 1]!.text : null;
   const [terminal, setTerminal] = useState(derived ?? '(加载中…)');
   const [freeText, setFreeText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [gateFail, setGateFail] = useState<string | null>(null);
+
+  /** 审批三键的同一发：结果就地一句（server 原话），补料那句在失败时留在输入框里不丢 */
+  const press = (action: 'approve' | 'reject' | 'input', text?: string) => {
+    setBusy(true);
+    setGateFail(null);
+    void approve(runId, nodeId, action, text).then((res) => {
+      setBusy(false);
+      if (res.ok) {
+        if (action === 'input') setFreeText('');
+        return;
+      }
+      setGateFail(
+        writeFailureNote(
+          action === 'approve' ? '这一下没批出去（门还在等你）' : action === 'reject' ? '这一下没驳回（门还在等你）' : '补充指令没发出去（那句话还在框里）',
+          res.err,
+        ),
+      );
+    });
+  };
 
   useEffect(() => {
     if (derived !== null) {
@@ -206,19 +228,18 @@ function ApprovalCard({ runId, nodeId, snapshots }: { runId: string; nodeId: str
       <div className="t">⛔ 节点「{node?.data.dagNode.label ?? nodeId}」等待人工审批</div>
       <div className="pre">{terminal.slice(-1200)}</div>
       <div className="actions">
-        <button className="primary" onClick={() => approve(runId, nodeId, 'approve')}>✓ 放行</button>
-        <button className="danger" onClick={() => approve(runId, nodeId, 'reject')}>✗ 终止任务</button>
+        <button className="primary" disabled={busy} onClick={() => press('approve')}>{busy ? '发送中…' : '✓ 放行'}</button>
+        <button className="danger" disabled={busy} onClick={() => press('reject')}>✗ 终止任务</button>
         <input
           placeholder="或向 Agent 发送补充指令…"
           value={freeText}
+          disabled={busy}
           onChange={(e) => setFreeText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && freeText.trim()) {
-              approve(runId, nodeId, 'input', freeText.trim());
-              setFreeText('');
-            }
+            if (e.key === 'Enter' && freeText.trim()) press('input', freeText.trim());
           }}
         />
+        {gateFail && <p className="gate-fail" role="status">{gateFail}</p>}
       </div>
     </div>
   );

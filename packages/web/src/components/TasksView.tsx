@@ -813,6 +813,20 @@ function TaskCard({
   const setView = useStore((s) => s.setView);
   const approve = useStore((s) => s.approve);
   const [showPlan, setShowPlan] = useState(true);
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateFail, setGateFail] = useState<string | null>(null);
+  /** 契约门那两枚按钮同样「按下去就知道成没成」：读数跟着 server 的回执，不跟着计时器（v19 步骤十二） */
+  const pressGate = (action: 'approve' | 'reject') => {
+    setGateBusy(true);
+    setGateFail(null);
+    void approve(run.runId, 'planner', action).then((res) => {
+      setGateBusy(false);
+      if (res.ok) return;
+      setGateFail(
+        writeFailureNote(action === 'approve' ? '这一下没批出去（门还在等你）' : '这次下发没取消（门还在等你）', res.err),
+      );
+    });
+  };
 
   const all = Object.values(run.nodes);
   const done = all.filter((n) => ['done', 'failed', 'skipped', 'cancelled'].includes(n.state)).length;
@@ -961,11 +975,12 @@ function TaskCard({
             </p>
           )}
           <div className="plan-gate-actions">
-            <button onClick={() => approve(run.runId, 'planner', 'reject')}>取消这次下发</button>
-            <button className="primary" onClick={() => approve(run.runId, 'planner', 'approve')}>
-              ✔ 确认，开始执行
+            <button disabled={gateBusy} onClick={() => pressGate('reject')}>取消这次下发</button>
+            <button className="primary" disabled={gateBusy} onClick={() => pressGate('approve')}>
+              {gateBusy ? '发送中…' : '✔ 确认，开始执行'}
             </button>
           </div>
+          {gateFail && <p className="gate-fail" role="status">{gateFail}</p>}
           {planner.blockedPrompt && <div className="plan-gate-prompt">{planner.blockedPrompt}</div>}
         </div>
       )}
