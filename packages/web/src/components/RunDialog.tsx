@@ -2,7 +2,12 @@ import { useState } from 'react';
 import type { DagGraph } from '@paneflow/shared';
 import type { DryRunResult } from './dry-run.js';
 import { api } from '../api.js';
+import { useActionNote } from '../action-note.js';
 import { useStore } from '../store.js';
+import { writeFailureNote } from '../write-outcome.js';
+
+/** 两枚按钮撞同一面墙就说同一句话（两处两张脸是新的坑） */
+const NO_CWD_NOTE = '请先填写流水线工作目录（须已存在）';
 
 /**
  * Run dialog: collects pipeline cwd + declared template variables, replaces
@@ -32,17 +37,32 @@ export function RunDialog({
   const [preview, setPreview] = useState<DryRunResult | null>(null);
 
   const missing = variables.filter((v) => v.required && !values[v.key]?.trim());
+  // 这一位上的两句前置检查描的是「此刻这个目录 + 此刻这几格必填值」。打包**逐格现值**而不是
+  // 「缺哪几格」那串：只填掉两格缺参里的一格，那句「缺少必填参数：A、B」就成了半旧的话，
+  // 宁可当场撤下让人再按一次（再按得到的才是当下那份名单）。
+  const note = useActionNote(
+    `${cwd.trim()}|${variables
+      .filter((v) => v.required)
+      .map((v) => `${v.key}=${values[v.key]?.trim() ?? ''}`)
+      .join('&')}`,
+  );
 
   const dryRun = async () => {
     if (!cwd.trim()) {
-      log('error', '请先填写流水线工作目录');
+      log('error', NO_CWD_NOTE);
+      note.notePrecheck(NO_CWD_NOTE);
       return;
     }
+    note.clearNote();
     setDlgOp('dry');
     try {
       setPreview(await api.dryRun(graph, cwd.trim(), values));
     } catch (e) {
+      // 预演是只读的，没成就是这份清单没生成——旧的那份还挂在上面，所以说清「上面那份是上一次的」
       log('error', `预演失败：${(e as Error).message}`);
+      note.noteResult(
+        writeFailureNote(preview ? '预演没成（上面那份还是上一次点出来的）' : '预演没成', e),
+      );
     } finally {
       setDlgOp((cur) => (cur === 'dry' ? '' : cur));
     }
@@ -50,13 +70,18 @@ export function RunDialog({
 
   const submit = async () => {
     if (!cwd.trim()) {
-      log('error', '请填写流水线工作目录（须已存在）');
+      const why = NO_CWD_NOTE;
+      log('error', why);
+      note.notePrecheck(why);
       return;
     }
     if (missing.length) {
-      log('error', `缺少必填参数：${missing.map((v) => v.label).join('、')}`);
+      const why = `缺少必填参数：${missing.map((v) => v.label).join('、')}`;
+      log('error', why);
+      note.notePrecheck(why);
       return;
     }
+    note.clearNote();
     setDlgOp('start');
     try {
       const { run } = await api.startRun(graph, cwd.trim(), values, issueId.trim() || undefined);
@@ -66,6 +91,7 @@ export function RunDialog({
     } catch (e) {
       setDlgOp((cur) => (cur === 'start' ? '' : cur));
       log('error', `启动失败：${(e as Error).message}`);
+      note.noteResult(writeFailureNote('这单没起', e, '这单起没起不确定，刷新看单列的读数'));
     }
   };
 
@@ -142,6 +168,11 @@ export function RunDialog({
               </div>
             )}
           </div>
+        )}
+        {note.note && (
+          <p className="dlg-fail" role="status">
+            {note.note.text}
+          </p>
         )}
         <div className="close-row">
           <button onClick={onClose}>取消</button>
