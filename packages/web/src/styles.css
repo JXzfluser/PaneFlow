@@ -970,13 +970,18 @@ button.tl-node:hover { border-color: var(--accent); color: var(--accent); }
 .inline-ok { color: var(--ok); }
 .settings-warn { color: var(--warn); }
 /* 动作点上的就地一句：全站同一条尺（同字号/同行距/同折行），只换颜色与住在哪个动作点——
-   失败句（设置页五张卡、运行中心卡、班底条、挑引擎格、审批三键、排队两键、下发·扩写·批量三下）与成功回执共用这一条规则 */
+   失败句（设置页五张卡、运行中心卡、班底条、挑引擎格、审批三键、排队两键、下发·扩写·批量三下、顶栏四枚、模板导入）与成功回执共用这一条规则 */
 .settings-fail, .runs-fail, .gate-fail, .assign-fail, .team-bar-fail, .queue-fail,
-.dispatch-fail, .enhance-fail, .batch-fail, .gate-ok, .queue-ok {
+.dispatch-fail, .enhance-fail, .batch-fail, .topbar-fail, .topbar-warn, .pal-fail, .gate-ok, .queue-ok {
   font-size: 12px; line-height: 1.6; margin: 6px 0 0; text-wrap: pretty;
 }
 .settings-fail, .runs-fail, .gate-fail, .assign-fail, .team-bar-fail, .queue-fail,
-.dispatch-fail, .enhance-fail, .batch-fail { color: var(--err); }
+.dispatch-fail, .enhance-fail, .batch-fail, .topbar-fail, .pal-fail { color: var(--err); }
+/* 顶栏那句独占一条：横条自己不带下边距，句子要贴齐组内容的左边缘（10px 条边距 + 10px 组内边距） */
+.topbar-fail, .topbar-warn { margin: 0; padding: 6px 20px 0; }
+.topbar-warn { color: var(--warn); }
+/* 窄栏里那句要包得住长文件名：按字符断，别让「导入」那一行被撑破 */
+.pal-fail { overflow-wrap: anywhere; }
 .gate-ok, .queue-ok { color: var(--ok); }
 /* 操作栏里那一枚是行内读数（跟着按钮居中），单独成行的失败句才用上面的下移间距 */
 .settings-actions .settings-fail, .runs-fail-row .runs-fail { margin: 0; }

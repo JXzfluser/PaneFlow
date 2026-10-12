@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import { writeFailureNote } from '../write-outcome.js';
 import { graphIssues, useStore } from '../store.js';
 import { Canvas } from './Canvas.jsx';
 import { StepList } from './StepList.jsx';
@@ -12,6 +13,17 @@ import { Icon } from './Icon.js';
 
 type PaneMode = 'list' | 'canvas';
 const PANE_KEY = 'pf-pane-mode';
+
+/**
+ * 顶栏那一行就地读数。`about`+`at` 只在**描述当前状态的预检句**上出现（记下按下那一刻那一维的读数，
+ * 该维一变就撤）；写失败句没有它——那一按成没成是过去的事实，不随画布改写。
+ */
+interface TopNote {
+  tone: 'fail' | 'warn';
+  text: string;
+  about?: 'graph' | 'name' | 'cwd';
+  at?: string;
+}
 
 export function OrchestrateView() {
   const graphName = useStore((s) => s.graphName);
@@ -42,6 +54,29 @@ export function OrchestrateView() {
    * POST 回来时画布上还挂着「运行中」，读数那一刻抹掉就是请人再按一次。
    */
   const [topOp, setTopOp] = useState<'' | 'save' | 'stop' | 'stop-done' | 'push' | 'pull'>('');
+  /**
+   * 顶栏这六句就地读数（v19 步骤十六）：顶栏是一行高的横条，失败从前只进底部控制台，
+   * 画面上就是「按下去没反应」。一句只跟着最后一次按下——顶栏同一时刻只可能有一枚在飞，
+   * 不必像卡片那样按 key 分家。红=这一下没成；黄=没配/可以配（不是失败，别拿红冒充）。
+   */
+  const [topNote, setTopNote] = useState<TopNote | null>(null);
+  const noteFail = (text: string, about?: TopNote['about'], at?: string) =>
+    setTopNote(about ? { tone: 'fail', text, about, at } : { tone: 'fail', text });
+
+  /**
+   * 预检句描述的是「此刻这张图 / 这个名字 / 这个目录」，这三样一改它就变成旧话——画布被修好了还挂着
+   * 「无法启动：开始节点只有一个都没有」，比没有读数更坏。所以跟着**读数所描述的那一维**消失，不靠计时器；
+   * 写失败那句（「模板没保存（画布上的改动还在）」）记的是刚才那一按，改画布不洗它。
+   * 图那一维直接用 `graphIssues()` 的输出质检（它变=那句读数该变），不替 validateDag 猜哪些字段算数。
+   */
+  const graphFp = useStore(() => graphIssues().join('|'));
+  useEffect(() => {
+    setTopNote((cur) => {
+      if (!cur?.about) return cur;
+      const now = cur.about === 'graph' ? graphFp : cur.about === 'name' ? graphName.trim() : cwd.trim();
+      return now === cur.at ? cur : null;
+    });
+  }, [graphFp, graphName, cwd]);
 
   const switchPane = (mode: PaneMode) => {
     localStorage.setItem(PANE_KEY, mode);
@@ -51,18 +86,24 @@ export function OrchestrateView() {
   const run = () => {
     const issues = graphIssues();
     if (issues.length) {
-      log('error', `无法启动：${issues.join('；')}`);
+      const why = `无法启动：${issues.join('；')}`;
+      log('error', why);
+      noteFail(why, 'graph', graphFp);
       return;
     }
     if (!cwd.trim()) {
-      log('error', '请先填写流水线工作目录（须已存在），或到「项目 → 编辑档案」配置主仓根');
+      const why = '请先填写流水线工作目录（须已存在），或到「项目 → 编辑档案」配置主仓根';
+      log('error', why);
+      noteFail(why, 'cwd', cwd.trim());
       return;
     }
+    setTopNote(null);
     setRunDialogOpen(true);
   };
 
   const stop = async () => {
     if (!activeRunId) return;
+    setTopNote(null);
     setTopOp('stop');
     try {
       await api.stopRun(activeRunId);
@@ -70,6 +111,8 @@ export function OrchestrateView() {
       setTopOp('stop-done');
     } catch (e) {
       setTopOp('');
+      // 与运行中心那枚「停止」同一个动词、同一句前缀（同一个动作不许两张脸）
+      noteFail(writeFailureNote('停止没发出去（它还在全速跑）', e));
       log('error', `停止失败：${(e as Error).message}`);
     }
   };
@@ -77,15 +120,19 @@ export function OrchestrateView() {
   const saveTemplate = async () => {
     const name = graphName.trim();
     if (!name || name === '未命名流水线') {
-      log('error', '请先在顶栏输入框填写模板名（字母/数字/-/_）再保存');
+      const why = '请先在顶栏输入框填写模板名（字母/数字/-/_）再保存';
+      log('error', why);
+      noteFail(why, 'name', name);
       return;
     }
+    setTopNote(null);
     setTopOp('save');
     try {
       await api.saveGraph({ ...toGraph(), name });
       setTemplates((await api.listGraphs()).graphs);
       log('info', `模板「${name}」已保存`);
     } catch (e) {
+      noteFail(writeFailureNote('模板没保存（画布上的改动还在）', e));
       log('error', `保存失败：${(e as Error).message}`);
     } finally {
       setTopOp((cur) => (cur === 'save' ? '' : cur));
@@ -99,29 +146,36 @@ export function OrchestrateView() {
   };
 
   const syncPush = async () => {
+    setTopNote(null);
     setTopOp('push');
     try {
       const st = await api.syncStatus();
       if (!st.configured) {
-        log('warn', '模板云端同步未启用：请到设置页配置 GitHub Token 与默认目标仓库（owner/name）；环境变量 PF_GITHUB_REPO/PF_GITHUB_TOKEN 亦可，env 优先');
+        const why =
+          '模板云端同步未启用：请到设置页配置 GitHub Token 与默认目标仓库（owner/name）；环境变量 PF_GITHUB_REPO/PF_GITHUB_TOKEN 亦可，env 优先';
+        setTopNote({ tone: 'warn', text: why });
+        log('warn', why);
         closeMenuWhenSettled('push');
         return;
       }
       await api.syncPush();
       log('info', `模板云端同步已启动（异步推送到 ${st.repo}）`);
     } catch (e) {
+      noteFail(writeFailureNote('模板没推出去', e, '推没推成不确定，云端那边要看提交记录'));
       log('error', `模板同步失败：${(e as Error).message}`);
     }
     closeMenuWhenSettled('push');
   };
 
   const syncPull = async () => {
+    setTopNote(null);
     setTopOp('pull');
     try {
       const r = await api.syncPull();
       setTemplates((await api.listGraphs()).graphs);
       log('info', `已拉取 ${r.imported.length} 个云端模板${r.failed.length ? `，失败 ${r.failed.length}` : ''}`);
     } catch (e) {
+      noteFail(writeFailureNote('云端模板没拉下来（本地清单照旧）', e));
       log('error', `拉取失败：${(e as Error).message}`);
     }
     closeMenuWhenSettled('pull');
@@ -243,6 +297,12 @@ export function OrchestrateView() {
           </div>
         </div>
       </div>
+      {/* v19 步骤十六：顶栏那一行放不下长句，失败/未配那句紧跟在顶栏下面独占一条（菜单一关就没人说了） */}
+      {topNote && (
+        <p className={topNote.tone === 'warn' ? 'topbar-warn' : 'topbar-fail'} role="status">
+          {topNote.text}
+        </p>
+      )}
       {varsOpen && <VariablesEditor />}
       <div className="main">
         <Palette />

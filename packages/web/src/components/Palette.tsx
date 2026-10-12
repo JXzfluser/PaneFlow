@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import { writeFailureNote } from '../write-outcome.js';
 import { useStore } from '../store.js';
 import type { DagGraph, DagNodeType } from '@paneflow/shared';
 import { PromptModal, type ModalRequest } from './PromptModal.jsx';
@@ -28,6 +29,8 @@ export function Palette() {
   const [advOpen, setAdvOpen] = useState(false);
   /** 导入模板那一发是真写盘（本地读文件 + POST /api/graphs + 刷列表），慢的时候「导入」得改口说话，不然就是没点上 */
   const [importing, setImporting] = useState(false);
+  /** v19 步骤十六：导入没成也要在「导入」下面说一句——从前只进底部控制台，窄栏里看着就是没反应 */
+  const [importFail, setImportFail] = useState<string | null>(null);
   /**
    * v14-T3 预检读数（一次拿全部模板，不是一卡一发请求）。`null` = 还没读到/读失败了——
    * 那时带槽的卡画「预检没读出」灰字，**绝不画 ✓**：缺口最坏的样子就是看着没事。
@@ -145,13 +148,30 @@ export function Palette() {
 
   const importTpl = async (file: File) => {
     setImporting(true);
+    setImportFail(null);
     try {
-      const graph = JSON.parse(await file.text()) as DagGraph;
-      if (graph?.version !== 1 || !Array.isArray(graph.nodes)) throw new Error('不是有效的 PaneFlow 模板');
+      const text = await file.text();
+      let graph: DagGraph;
+      try {
+        graph = JSON.parse(text) as DagGraph;
+      } catch {
+        // 这一步压根没走到 server：说的是这个文件，不是服务——别套 writeFailureNote（那会扯出「连不上 server」的假话）
+        const why = `「${file.name}」不是能解析的 JSON，导入要的是 server 导出的那份模板文件`;
+        setImportFail(why);
+        log('error', `导入失败：${why}`);
+        return;
+      }
+      if (graph?.version !== 1 || !Array.isArray(graph.nodes)) {
+        const why = `「${file.name}」形状不对：模板要有 version: 1 和 nodes 数组`;
+        setImportFail(why);
+        log('error', `导入失败：${why}`);
+        return;
+      }
       await api.saveGraph(graph);
       await refresh();
       log('info', `已导入模板「${graph.name}」`);
     } catch (e) {
+      setImportFail(writeFailureNote(`「${file.name}」没导进来`, e, '导没导成不确定，刷新看模板清单'));
       log('error', `导入失败：${(e as Error).message}`);
     } finally {
       setImporting(false);
@@ -179,6 +199,11 @@ export function Palette() {
           />
         </label>
       </h4>
+      {importFail && (
+        <p className="pal-fail" role="status">
+          {importFail}
+        </p>
+      )}
       {(graphs ?? []).map((g) => {
         const label = templateLabel(g.name, g.metadata.description);
         const loaded = g.name === graphName;
