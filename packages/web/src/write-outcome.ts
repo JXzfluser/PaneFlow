@@ -43,3 +43,12 @@ export function gateReleaseNote(action: 'approve' | 'reject' | 'input'): string 
   if (action === 'reject') return '已驳回——server 收了这一发（等这一步的账推上来）';
   return '指令已送到——server 收了这一发（等这一步的账推上来）';
 }
+
+/**
+ * 插队（提到队首）成了要说的那句（v19 步骤十四）。server 认了这一刻，卡上「你排第 N 位」
+ * 要等下一次排队读数才翻过来——那段窗口从前是纯静默，按钮弹回原样就像没按到。
+ * 刻意不写「已是队首」：位次真不真到 1，只有排队读数说了算，这句只到「收了这一发」。
+ */
+export function queuePromoteNote(): string {
+  return '插队这一发 server 收了（位次等下一次排队读数）';
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gateReleaseNote, readFailureNote, writeFailureNote } from './write-outcome.js';
+import { gateReleaseNote, queuePromoteNote, readFailureNote, writeFailureNote } from './write-outcome.js';
 
 describe('writeFailureNote（写操作失败要说在人眼下，不再只落底部控制台）', () => {
   it('server 给了人话：原话照渲，浏览器不另编一句判词', () => {
@@ -58,5 +58,15 @@ describe('gateReleaseNote（放门成了也要在动作点上说一句，四面�
     for (const a of ['approve', 'reject', 'input'] as const) {
       expect(gateReleaseNote(a)).not.toMatch(/已完|已通过|成功结束/);
     }
+  });
+});
+
+describe('queuePromoteNote（插队成了也说一句，但不替排队读数背书）', () => {
+  it('只到「server 收了这一发」，位次怎么翻由下一次排队读数说', () => {
+    expect(queuePromoteNote()).toBe('插队这一发 server 收了（位次等下一次排队读数）');
+  });
+
+  it('不声称已经站到队首：那是排队读数的事，不是这一发的回执', () => {
+    expect(queuePromoteNote()).not.toMatch(/已是队首|已到队首|已插到队首/);
   });
 });

@@ -15,7 +15,7 @@ import {
   type AutoEngineWire,
   type RoleOverallMetrics,
 } from '../team-view.js';
-import { gateReleaseNote, writeFailureNote } from '../write-outcome.js';
+import { gateReleaseNote, queuePromoteNote, writeFailureNote } from '../write-outcome.js';
 
 /**
  * 任务视图（A 组）：把"按要求驱动编排"变成主路径。
@@ -865,12 +865,19 @@ function TaskCard({
    * 就是请人对着同一行再按一次，所以撤回分「在发」与「已发待刷新」两态。
    */
   const [queueOp, setQueueOp] = useState<'' | 'promote' | 'cancel' | 'cancel-sent'>('');
+  // 成败那句落在按钮下面这一行（v19 步骤十四）：从前只进底部控制台，这张卡看上去就是「点了没反应」
+  const [queueFail, setQueueFail] = useState<string | null>(null);
+  const [queueOk, setQueueOk] = useState<string | null>(null);
   const promote = async () => {
     setQueueOp('promote');
+    setQueueFail(null);
+    setQueueOk(null);
     try {
       await api.promoteRun(run.runId);
       onQueueChanged();
+      setQueueOk(queuePromoteNote());
     } catch (e) {
+      setQueueFail(writeFailureNote('没提到队首（位次照旧）', e));
       useStore.getState().log('error', `提队首失败：${(e as Error).message}`);
     } finally {
       setQueueOp((cur) => (cur === 'promote' ? '' : cur));
@@ -878,15 +885,25 @@ function TaskCard({
   };
   const cancelQueued = async () => {
     setQueueOp('cancel');
+    setQueueFail(null);
+    setQueueOk(null);
     try {
       await api.stopRun(run.runId);
       onQueueChanged();
       setQueueOp('cancel-sent');
     } catch (e) {
       setQueueOp('');
+      setQueueFail(writeFailureNote('没撤回（它还留在队列里）', e));
       useStore.getState().log('error', `取消失败：${(e as Error).message}`);
     }
   };
+
+  // 插队那句跟着排队读数走：位次真翻到队首（或这一单已离开队列）就撤掉——不靠计时器猜
+  useEffect(() => {
+    if (!queueOk) return;
+    const entry = queue?.queued.find((q) => q.runId === run.runId);
+    if (!entry || entry.position <= 1) setQueueOk(null);
+  }, [queue, run.runId, queueOk]);
 
   const openCanvas = () => {
     openRun(run.runId);
@@ -947,6 +964,8 @@ function TaskCard({
               {queueOp === 'cancel' ? '取消中…' : queueOp === 'cancel-sent' ? '已撤回，等刷新…' : '✕ 取消排队'}
             </button>
           </div>
+          {queueOk && <p className="queue-ok" role="status">{queueOk}</p>}
+          {queueFail && <p className="queue-fail" role="status">{queueFail}</p>}
         </div>
       )}
 
