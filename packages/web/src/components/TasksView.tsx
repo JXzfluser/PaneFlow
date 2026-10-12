@@ -15,7 +15,7 @@ import {
   type AutoEngineWire,
   type RoleOverallMetrics,
 } from '../team-view.js';
-import { writeFailureNote } from '../write-outcome.js';
+import { gateReleaseNote, writeFailureNote } from '../write-outcome.js';
 
 /**
  * 任务视图（A 组）：把"按要求驱动编排"变成主路径。
@@ -815,13 +815,19 @@ function TaskCard({
   const [showPlan, setShowPlan] = useState(true);
   const [gateBusy, setGateBusy] = useState(false);
   const [gateFail, setGateFail] = useState<string | null>(null);
+  const [gateOk, setGateOk] = useState<string | null>(null);
   /** 契约门那两枚按钮同样「按下去就知道成没成」：读数跟着 server 的回执，不跟着计时器（v19 步骤十二） */
   const pressGate = (action: 'approve' | 'reject') => {
     setGateBusy(true);
     setGateFail(null);
+    setGateOk(null);
     void approve(run.runId, 'planner', action).then((res) => {
       setGateBusy(false);
-      if (res.ok) return;
+      if (res.ok) {
+        // 这一发 server 收了，但预告卡要等账本推上来才撤——中间那句「成了」得摆在门旁边（v19 步骤十三）
+        setGateOk(gateReleaseNote(action));
+        return;
+      }
       setGateFail(
         writeFailureNote(action === 'approve' ? '这一下没批出去（门还在等你）' : '这次下发没取消（门还在等你）', res.err),
       );
@@ -836,6 +842,11 @@ function TaskCard({
   // 编排预告：下发链路的 planner 停在人工门禁上
   const planner = run.nodes['planner'];
   const gateOpen = Boolean(planner && planner.state === 'blocked' && isManualGated(run));
+  // 门一撤那句回执就跟着作废：门将来重开（打回后 planner 再次 blocked）是新的一次等待，
+  // 不继承上一轮的成功读数——留着就是假话
+  useEffect(() => {
+    if (!gateOpen) setGateOk(null);
+  }, [gateOpen]);
   const extra = (planner?.artifact?.extra ?? {}) as {
     taskBrief?: string;
     suggestedTemplate?: string;
@@ -980,6 +991,7 @@ function TaskCard({
               {gateBusy ? '发送中…' : '✔ 确认，开始执行'}
             </button>
           </div>
+          {gateOk && <p className="gate-ok" role="status">{gateOk}</p>}
           {gateFail && <p className="gate-fail" role="status">{gateFail}</p>}
           {planner.blockedPrompt && <div className="plan-gate-prompt">{planner.blockedPrompt}</div>}
         </div>

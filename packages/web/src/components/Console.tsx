@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { runCostLabel } from '../cost.js';
 import { useStore } from '../store.js';
-import { writeFailureNote } from '../write-outcome.js';
+import { gateReleaseNote, writeFailureNote } from '../write-outcome.js';
 import { RunTimeline } from './RunTimeline.js';
 
 type Tab = 'console' | 'timeline' | 'approval' | 'terminal' | 'summary';
@@ -191,15 +191,19 @@ function ApprovalCard({ runId, nodeId, snapshots }: { runId: string; nodeId: str
   const [freeText, setFreeText] = useState('');
   const [busy, setBusy] = useState(false);
   const [gateFail, setGateFail] = useState<string | null>(null);
+  const [gateOk, setGateOk] = useState<string | null>(null);
 
   /** 审批三键的同一发：结果就地一句（server 原话），补料那句在失败时留在输入框里不丢 */
   const press = (action: 'approve' | 'reject' | 'input', text?: string) => {
     setBusy(true);
     setGateFail(null);
+    setGateOk(null);
     void approve(runId, nodeId, action, text).then((res) => {
       setBusy(false);
       if (res.ok) {
         if (action === 'input') setFreeText('');
+        // 成了也要在按钮旁边说一句：这张卡要等 WS 把节点状态推上来才消失，那段窗口不能是静默
+        setGateOk(gateReleaseNote(action));
         return;
       }
       setGateFail(
@@ -239,6 +243,7 @@ function ApprovalCard({ runId, nodeId, snapshots }: { runId: string; nodeId: str
             if (e.key === 'Enter' && freeText.trim()) press('input', freeText.trim());
           }}
         />
+        {gateOk && <p className="gate-ok" role="status">{gateOk}</p>}
         {gateFail && <p className="gate-fail" role="status">{gateFail}</p>}
       </div>
     </div>

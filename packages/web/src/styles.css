@@ -969,16 +969,19 @@ button.tl-node:hover { border-color: var(--accent); color: var(--accent); }
 .settings-hint { color: var(--text-dim); font-size: 12px; margin: 0 0 8px; line-height: 1.7; }
 .inline-ok { color: var(--ok); }
 .settings-warn { color: var(--warn); }
-/* 失败就地一句：全站同一条尺（同色/同字号/同行距），只换住在哪个动作点——
-   设置页五张卡、运行中心卡、班底条、挑引擎格、审批三键共用这一条规则 */
-.settings-fail, .runs-fail, .gate-fail, .assign-fail, .team-bar-fail {
-  color: var(--err); font-size: 12px; line-height: 1.6; margin: 6px 0 0; text-wrap: pretty;
+/* 动作点上的就地一句：全站同一条尺（同字号/同行距/同折行），只换颜色与住在哪个动作点——
+   失败句（设置页五张卡、运行中心卡、班底条、挑引擎格、审批三键）与放门成功回执共用这一条规则 */
+.settings-fail, .runs-fail, .gate-fail, .assign-fail, .team-bar-fail, .gate-ok {
+  font-size: 12px; line-height: 1.6; margin: 6px 0 0; text-wrap: pretty;
 }
+.settings-fail, .runs-fail, .gate-fail, .assign-fail, .team-bar-fail { color: var(--err); }
+.gate-ok { color: var(--ok); }
 /* 操作栏里那一枚是行内读数（跟着按钮居中），单独成行的失败句才用上面的下移间距 */
 .settings-actions .settings-fail, .runs-fail-row .runs-fail { margin: 0; }
 .runs-fail-row { display: flex; align-items: center; gap: 8px; }
-/* 弹性按钮行里的失败句独占一条，别把按钮挤扁 */
-.board-card-gate .gate-fail, .approval-card .actions .gate-fail, .team-bar-fail { flex-basis: 100%; }
+/* 弹性按钮行里的读数句独占一条，别把按钮挤扁 */
+.board-card-gate .gate-fail, .approval-card .actions .gate-fail, .team-bar-fail,
+.board-card-gate .gate-ok, .approval-card .actions .gate-ok { flex-basis: 100%; }
 /* 行内技术标识（URL/路径/尾号/agentKind）：等宽 + 可断行，不混在正文衬线里 */
 .settings-body code {
   font-family: var(--font-mono); font-size: 11.5px;

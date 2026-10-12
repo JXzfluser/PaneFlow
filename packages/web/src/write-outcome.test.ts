@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFailureNote, writeFailureNote } from './write-outcome.js';
+import { gateReleaseNote, readFailureNote, writeFailureNote } from './write-outcome.js';
 
 describe('writeFailureNote（写操作失败要说在人眼下，不再只落底部控制台）', () => {
   it('server 给了人话：原话照渲，浏览器不另编一句判词', () => {
@@ -43,5 +43,20 @@ describe('readFailureNote（读失败 ≠ 没有内容：两种画法得分开�
     expect(readFailureNote('沉淀页没读出来', { status: 502, message: 'GET /api/wiki/state → 502', payload: {} })).toBe(
       '沉淀页没读出来：server 回 502 且没给原因（这是没读成，不是「没有内容」）',
     );
+  });
+});
+
+describe('gateReleaseNote（放门成了也要在动作点上说一句，四面共用这一枚）', () => {
+  it('三种按键各说各的话，但都只到「server 收了这一发」', () => {
+    expect(gateReleaseNote('approve')).toBe('已放行——server 收了这一发（等这一步的账推上来）');
+    expect(gateReleaseNote('reject')).toBe('已驳回——server 收了这一发（等这一步的账推上来）');
+    expect(gateReleaseNote('input')).toBe('指令已送到——server 收了这一发（等这一步的账推上来）');
+  });
+
+  it('不替后面的状态背书：句子里不承诺这一格最后跑成什么', () => {
+    // 200 只等于「等门的引擎被叫醒了」；节点收口成什么是账本推上来之后的事
+    for (const a of ['approve', 'reject', 'input'] as const) {
+      expect(gateReleaseNote(a)).not.toMatch(/已完|已通过|成功结束/);
+    }
   });
 });

@@ -32,3 +32,14 @@ export function readFailureNote(action: string, err: unknown): string {
   if ('said' in r) return `${action}：${r.said}`;
   return `${action}：server 回 ${r.bare} 且没给原因（这是没读成，不是「没有内容」）`;
 }
+
+/**
+ * 批门按下之后成了要说的那句（v19 步骤十三）。200 说的是「这一发 server 收了、等门的引擎被叫醒了」，
+ * 而门从画面上撤下要等账本推上来——中间那段窗口以前是纯静默，人只能猜自己那一下按没按到。
+ * 措辞单源：四面（看板卡 / 审阅队列 / 审批卡 / 契约门）共用这一枚函数，免得长成四张脸。
+ */
+export function gateReleaseNote(action: 'approve' | 'reject' | 'input'): string {
+  if (action === 'approve') return '已放行——server 收了这一发（等这一步的账推上来）';
+  if (action === 'reject') return '已驳回——server 收了这一发（等这一步的账推上来）';
+  return '指令已送到——server 收了这一发（等这一步的账推上来）';
+}

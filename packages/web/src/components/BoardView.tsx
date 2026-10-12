@@ -5,7 +5,7 @@ import { useStore } from '../store.js';
 import { runCostLabel } from '../cost.js';
 import { templateLabel } from '../template-labels.js';
 import { boardLiveView } from '../board-live.js';
-import { writeFailureNote } from '../write-outcome.js';
+import { gateReleaseNote, writeFailureNote } from '../write-outcome.js';
 import { parseUnifiedDiff, type DiffFileSummary } from '../diff-summary.js';
 import { Icon } from './Icon.js';
 import { RunsCenter } from './RunsCenter.jsx';
@@ -103,6 +103,8 @@ export function BoardView() {
   const [acting, setActing] = useState<Set<string>>(new Set());
   /** 批门失败就地一句：按 `runId:nodeId` 记，同一单另一道门的卡不跟着喊 */
   const [gateFail, setGateFail] = useState<Record<string, string>>({});
+  /** 批门成了也当场说一句：同样按 `runId:nodeId` 记，账本推上来、这道门撤下时它随门一起消失 */
+  const [gateOk, setGateOk] = useState<Record<string, string>>({});
   const setGateFailFor = (key: string, note: string | null) =>
     setGateFail((c) => {
       const next = { ...c };
@@ -110,6 +112,29 @@ export function BoardView() {
       else next[key] = note;
       return next;
     });
+  const setGateOkFor = (key: string, note: string | null) =>
+    setGateOk((c) => {
+      const next = { ...c };
+      if (note === null) delete next[key];
+      else next[key] = note;
+      return next;
+    });
+
+  // 回执跟着它那道门走：这一格不再 blocked（门撤了）就抹掉那句——打回重开同一道门时，
+  // 新的一次等待不继承上一轮的成功读数（留着就是假话）
+  useEffect(() => {
+    setGateOk((cur) => {
+      const keys = Object.keys(cur);
+      if (keys.length === 0) return cur;
+      const open = new Set<string>();
+      for (const r of Object.values(runs)) {
+        for (const n of Object.values(r.nodes)) if (n.state === 'blocked') open.add(`${r.runId}:${n.nodeId}`);
+      }
+      const kept = keys.filter((k) => open.has(k));
+      if (kept.length === keys.length) return cur;
+      return Object.fromEntries(kept.map((k) => [k, cur[k] as string]));
+    });
+  }, [runs]);
 
   // 打开看板先拉一次全量运行账（不依赖 WS 推送是否齐全）
   useEffect(() => {
@@ -143,11 +168,14 @@ export function BoardView() {
     const key = `${runId}:${nodeId}`;
     setActing((s) => new Set(s).add(key));
     setGateFailFor(key, null);
+    setGateOkFor(key, null);
     void approve(runId, nodeId, action).then((res) => {
       const settle = () => setActing((s) => { const n = new Set(s); n.delete(key); return n; });
       if (res.ok) {
         // 放门后 WS 才推新状态：这 1.5 秒只是防连点的读数，不是对结果的猜测——server 已经收了这一发
         setTimeout(settle, 1500);
+        // 但「收了这一发」得让人当场看见，不然这段窗口和「没按到」在画面上同一个样子
+        setGateOkFor(key, gateReleaseNote(action));
         return;
       }
       // 没成：按钮当场回到原样（门还在等你），server 的原话落在这一格下面
@@ -204,7 +232,7 @@ export function BoardView() {
           </div>
           <div className="review-cards">
             {reviews.map((it) => (
-              <ReviewCard key={`${it.run.runId}:${it.nodeId}`} it={it} acting={acting} gateFail={gateFail} act={act} openCanvas={openCanvas} />
+              <ReviewCard key={`${it.run.runId}:${it.nodeId}`} it={it} acting={acting} gateFail={gateFail} gateOk={gateOk} act={act} openCanvas={openCanvas} />
             ))}
           </div>
         </div>
@@ -238,7 +266,7 @@ export function BoardView() {
                 <div className="board-col-cards">
                   {cards.length === 0 && <div className="board-col-empty">空</div>}
                   {cards.map((r) => (
-                    <BoardCard key={r.runId} run={r} onOpen={() => openCanvas(r.runId)} acting={acting} gateFail={gateFail} act={act} />
+                    <BoardCard key={r.runId} run={r} onOpen={() => openCanvas(r.runId)} acting={acting} gateFail={gateFail} gateOk={gateOk} act={act} />
                   ))}
                 </div>
               </div>
@@ -255,12 +283,14 @@ function BoardCard({
   onOpen,
   acting,
   gateFail,
+  gateOk,
   act,
 }: {
   run: RunRecord;
   onOpen: () => void;
   acting: Set<string>;
   gateFail: Record<string, string>;
+  gateOk: Record<string, string>;
   act: (runId: string, nodeId: string, action: 'approve' | 'reject') => void;
 }) {
   const state = run.state;
@@ -319,6 +349,11 @@ function BoardCard({
               >
                 {acting.has(`${run.runId}:${live.gate.nodeId}`) ? '放门中…' : '批准'}
               </button>
+              {gateOk[`${run.runId}:${live.gate.nodeId}`] && (
+                <p className="gate-ok" role="status">
+                  {gateOk[`${run.runId}:${live.gate.nodeId}`]}
+                </p>
+              )}
               {gateFail[`${run.runId}:${live.gate.nodeId}`] && (
                 <p className="gate-fail" role="status">
                   {gateFail[`${run.runId}:${live.gate.nodeId}`]}
@@ -411,12 +446,14 @@ function ReviewCard({
   it,
   acting,
   gateFail,
+  gateOk,
   act,
   openCanvas,
 }: {
   it: ReviewItem;
   acting: Set<string>;
   gateFail: Record<string, string>;
+  gateOk: Record<string, string>;
   act: (runId: string, nodeId: string, action: 'approve' | 'reject') => void;
   openCanvas: (runId: string) => void;
 }) {
@@ -443,6 +480,11 @@ function ReviewCard({
           {acting.has(key) ? '放门中…' : '✓ 批准'}
         </button>
       </div>
+      {gateOk[key] && (
+        <p className="gate-ok" role="status">
+          {gateOk[key]}
+        </p>
+      )}
       {gateFail[key] && (
         <p className="gate-fail" role="status">
           {gateFail[key]}
