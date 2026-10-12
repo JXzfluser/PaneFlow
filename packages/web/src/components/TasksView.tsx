@@ -16,6 +16,7 @@ import {
   type RoleOverallMetrics,
 } from '../team-view.js';
 import { gateReleaseNote, queuePromoteNote, writeFailureNote } from '../write-outcome.js';
+import { useActionNote } from '../action-note.js';
 
 /**
  * 任务视图（A 组）：把"按要求驱动编排"变成主路径。
@@ -168,16 +169,18 @@ export function TasksView() {
   // v19 打磨：这一步点了没落档，得在人眼下说一句——从前只写进底部控制台，界面看上去「什么都没发生」
   const [fixFail, setFixFail] = useState<string | null>(null);
   const [guideFail, setGuideFail] = useState<string | null>(null);
-  // v19 打磨步骤十五：上手链第一下（下发）与它前面的扩写也走同一条尺——两种失败各住在自己的按钮下面
-  const [dispatchFail, setDispatchFail] = useState<string | null>(null);
-  const [enhanceFail, setEnhanceFail] = useState<string | null>(null);
+  // v19 打磨步骤十五：上手链第一下（下发）与它前面的扩写也走同一条尺——两种失败各住在自己的按钮下面。
+  // 步骤十六把寿命判据收进 useActionNote：「先用一句话描述…」描的是此刻的任务框，一打字就该撤下；
+  // 「这单没发出去」是刚才那一按的结果，打字不洗它，只被下一次按下顶掉。
+  const dispatchNote = useActionNote(task.trim());
+  const enhanceNote = useActionNote(task.trim());
   // 换项目/改目录后，指路卡说的已是旧事——收起（再点开始会重新问 server）
   useEffect(() => {
     setBlocker(null);
     setGuideFail(null);
     setFixFail(null);
-    setDispatchFail(null);
-    setEnhanceFail(null);
+    dispatchNote.clearNote();
+    enhanceNote.clearNote();
   }, [spaceId, cwd]);
 
   // 打开任务视图先拉一次历史（不依赖 WS 是否已推送）
@@ -213,11 +216,11 @@ export function TasksView() {
     if (!task.trim()) {
       const why = '先用一句话描述要做的事';
       log('error', why);
-      setDispatchFail(why);
+      dispatchNote.notePrecheck(why);
       return;
     }
     const useCwd = (over?.cwd ?? cwd).trim();
-    setDispatchFail(null);
+    dispatchNote.clearNote();
     setBusy(true);
     try {
       // v19-R1：目录为空也照发——server 拿项目档案 rootCwd 兜底；真缺了，带 code 的 400 摆指路卡。
@@ -274,7 +277,7 @@ export function TasksView() {
             .catch(() => undefined);
         }
       } else {
-        setDispatchFail(writeFailureNote('这单没发出去', e, '这单起没起不确定，刷新看单列的读数'));
+        dispatchNote.noteResult(writeFailureNote('这单没发出去', e, '这单起没起不确定，刷新看单列的读数'));
         log('error', `下发失败：${(e as Error).message}`);
       }
     } finally {
@@ -313,10 +316,10 @@ export function TasksView() {
     if (!task.trim()) {
       const why = '先写一句原始需求，再点扩写';
       log('error', why);
-      setEnhanceFail(why);
+      enhanceNote.notePrecheck(why);
       return;
     }
-    setEnhanceFail(null);
+    enhanceNote.clearNote();
     setDraftBusy(true);
     try {
       const r = await api.enhanceIssue(task.trim(), cwd.trim() || undefined, deep);
@@ -324,7 +327,7 @@ export function TasksView() {
       const wikiNote = r.wikiPages ? `（带了 ${r.wikiPages} 页 wiki 沉淀进上下文）` : '';
       log('info', `${deep ? '深档扩写完成：两稿择优' : '扩写完成：草稿可编辑'}${wikiNote}，改完采纳即可下发`);
     } catch (e) {
-      setEnhanceFail(writeFailureNote('扩写没成（草稿没生成，任务框里的字没动）', e));
+      enhanceNote.noteResult(writeFailureNote('扩写没成（草稿没生成，任务框里的字没动）', e));
       log('error', `扩写失败：${(e as Error).message}`);
     } finally {
       setDraftBusy(false);
@@ -398,9 +401,9 @@ export function TasksView() {
           </button>
           <span className="tasks-sub">写得不具体也没关系：AI 会结合你的项目补出背景、细节和能逐条核对的验收标准，你改完采纳即可</span>
         </div>
-        {enhanceFail && (
+        {enhanceNote.note && (
           <p className="enhance-fail" role="status">
-            {enhanceFail}
+            {enhanceNote.note.text}
           </p>
         )}
         {draft && (
@@ -516,9 +519,9 @@ export function TasksView() {
           </button>
         </div>
         {/* v19 打磨步骤十五：下发这一下的失败住在按钮正下方（server 的原话照渲，判据零搬家） */}
-        {dispatchFail && (
+        {dispatchNote.note && (
           <p className="dispatch-fail" role="status">
-            {dispatchFail}
+            {dispatchNote.note.text}
           </p>
         )}
         {/* v19 打磨：挑人那一刻给读数——挑了人报 TA 上次实际吃了什么装备，选「自动」报这单会落到哪个引擎（两本账都在 server） */}
@@ -697,23 +700,24 @@ function BatchDispatch() {
   const [issues, setIssues] = useState('');
   const [repo, setRepo] = useState('');
   const [busy, setBusy] = useState(false);
-  // v19 打磨步骤十五：这一批没发出去也要在按下那枚按钮下面说一句——从前只进底部控制台
-  const [fail, setFail] = useState<string | null>(null);
+  // v19 打磨步骤十五：这一批没发出去也要在按下那枚按钮下面说一句——从前只进底部控制台。
+  // 步骤十六接同一把尺：两句前置提示描的是此刻的编号列／工作目录，填上就自己撤下；失败句是那一按的结果，不改它。
+  const failNote = useActionNote(`${issues.trim()}|${cwd.trim()}`);
 
   const submit = async () => {
     if (!issues.trim()) {
       const why = '批量派发需要一列 issue 编号（换行或逗号分隔）';
       log('error', why);
-      setFail(why);
+      failNote.notePrecheck(why);
       return;
     }
     if (!cwd.trim()) {
       const why = '请先填写工作目录，或在「项目 → 编辑档案」里配置主仓根';
       log('error', why);
-      setFail(why);
+      failNote.notePrecheck(why);
       return;
     }
-    setFail(null);
+    failNote.clearNote();
     setBusy(true);
     try {
       const r = await api.dispatchBatch(tpl, issues.trim(), cwd.trim(), repo.trim() || undefined);
@@ -727,7 +731,7 @@ function BatchDispatch() {
         void api.listRuns().then((x) => useStore.getState().mergeRuns(x.runs)).catch(() => undefined);
       }
     } catch (e) {
-      setFail(writeFailureNote('这批没发出去', e, '这批起没起不确定，刷新看单列的读数'));
+      failNote.noteResult(writeFailureNote('这批没发出去', e, '这批起没起不确定，刷新看单列的读数'));
       log('error', `批量派发失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
@@ -736,7 +740,7 @@ function BatchDispatch() {
 
   return (
     <div className="tasks-batch">
-      <button className="link" onClick={() => { if (open) setFail(null); setOpen((v) => !v); }}>
+      <button className="link" onClick={() => { if (open) failNote.clearNote(); setOpen((v) => !v); }}>
         {open ? '▾ 收起批量派发' : '▸ 批量派发：一个模板 × 一列 issue 编号（一单变一批）'}
       </button>
       {open && (
@@ -772,9 +776,9 @@ function BatchDispatch() {
               每单自动注入 Issue 正文；带「验收标准」小节的直接机检入契约；项目并发满了自动排队不冲垮营地
             </span>
           </div>
-          {fail && (
+          {failNote.note && (
             <p className="batch-fail" role="status">
-              {fail}
+              {failNote.note.text}
             </p>
           )}
         </div>
