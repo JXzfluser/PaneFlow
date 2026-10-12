@@ -168,11 +168,16 @@ export function TasksView() {
   // v19 打磨：这一步点了没落档，得在人眼下说一句——从前只写进底部控制台，界面看上去「什么都没发生」
   const [fixFail, setFixFail] = useState<string | null>(null);
   const [guideFail, setGuideFail] = useState<string | null>(null);
+  // v19 打磨步骤十五：上手链第一下（下发）与它前面的扩写也走同一条尺——两种失败各住在自己的按钮下面
+  const [dispatchFail, setDispatchFail] = useState<string | null>(null);
+  const [enhanceFail, setEnhanceFail] = useState<string | null>(null);
   // 换项目/改目录后，指路卡说的已是旧事——收起（再点开始会重新问 server）
   useEffect(() => {
     setBlocker(null);
     setGuideFail(null);
     setFixFail(null);
+    setDispatchFail(null);
+    setEnhanceFail(null);
   }, [spaceId, cwd]);
 
   // 打开任务视图先拉一次历史（不依赖 WS 是否已推送）
@@ -206,10 +211,13 @@ export function TasksView() {
   /** 下发这单的唯一路。over=指路卡的一步重发（就地创建目录/带着新引擎重试） */
   const submit = async (over?: { cwd?: string; ensureCwd?: boolean }) => {
     if (!task.trim()) {
-      log('error', '先用一句话描述要做的事');
+      const why = '先用一句话描述要做的事';
+      log('error', why);
+      setDispatchFail(why);
       return;
     }
     const useCwd = (over?.cwd ?? cwd).trim();
+    setDispatchFail(null);
     setBusy(true);
     try {
       // v19-R1：目录为空也照发——server 拿项目档案 rootCwd 兜底；真缺了，带 code 的 400 摆指路卡。
@@ -266,6 +274,7 @@ export function TasksView() {
             .catch(() => undefined);
         }
       } else {
+        setDispatchFail(writeFailureNote('这单没发出去', e, '这单起没起不确定，刷新看单列的读数'));
         log('error', `下发失败：${(e as Error).message}`);
       }
     } finally {
@@ -302,9 +311,12 @@ export function TasksView() {
   /** N1：一句话 → 网关扩写成 issue 草稿（浅=一次；深=两稿择优），草稿可编辑后采纳 */
   const enhance = async (deep: boolean) => {
     if (!task.trim()) {
-      log('error', '先写一句原始需求，再点扩写');
+      const why = '先写一句原始需求，再点扩写';
+      log('error', why);
+      setEnhanceFail(why);
       return;
     }
+    setEnhanceFail(null);
     setDraftBusy(true);
     try {
       const r = await api.enhanceIssue(task.trim(), cwd.trim() || undefined, deep);
@@ -312,6 +324,7 @@ export function TasksView() {
       const wikiNote = r.wikiPages ? `（带了 ${r.wikiPages} 页 wiki 沉淀进上下文）` : '';
       log('info', `${deep ? '深档扩写完成：两稿择优' : '扩写完成：草稿可编辑'}${wikiNote}，改完采纳即可下发`);
     } catch (e) {
+      setEnhanceFail(writeFailureNote('扩写没成（草稿没生成，任务框里的字没动）', e));
       log('error', `扩写失败：${(e as Error).message}`);
     } finally {
       setDraftBusy(false);
@@ -385,6 +398,11 @@ export function TasksView() {
           </button>
           <span className="tasks-sub">写得不具体也没关系：AI 会结合你的项目补出背景、细节和能逐条核对的验收标准，你改完采纳即可</span>
         </div>
+        {enhanceFail && (
+          <p className="enhance-fail" role="status">
+            {enhanceFail}
+          </p>
+        )}
         {draft && (
           <div className="enhance-draft">
             <div className="enhance-draft-head">
@@ -497,6 +515,12 @@ export function TasksView() {
             )}
           </button>
         </div>
+        {/* v19 打磨步骤十五：下发这一下的失败住在按钮正下方（server 的原话照渲，判据零搬家） */}
+        {dispatchFail && (
+          <p className="dispatch-fail" role="status">
+            {dispatchFail}
+          </p>
+        )}
         {/* v19 打磨：挑人那一刻给读数——挑了人报 TA 上次实际吃了什么装备，选「自动」报这单会落到哪个引擎（两本账都在 server） */}
         {assignBrief && (
           <p
@@ -673,16 +697,23 @@ function BatchDispatch() {
   const [issues, setIssues] = useState('');
   const [repo, setRepo] = useState('');
   const [busy, setBusy] = useState(false);
+  // v19 打磨步骤十五：这一批没发出去也要在按下那枚按钮下面说一句——从前只进底部控制台
+  const [fail, setFail] = useState<string | null>(null);
 
   const submit = async () => {
     if (!issues.trim()) {
-      log('error', '批量派发需要一列 issue 编号（换行或逗号分隔）');
+      const why = '批量派发需要一列 issue 编号（换行或逗号分隔）';
+      log('error', why);
+      setFail(why);
       return;
     }
     if (!cwd.trim()) {
-      log('error', '请先填写工作目录，或在「项目 → 编辑档案」里配置主仓根');
+      const why = '请先填写工作目录，或在「项目 → 编辑档案」里配置主仓根';
+      log('error', why);
+      setFail(why);
       return;
     }
+    setFail(null);
     setBusy(true);
     try {
       const r = await api.dispatchBatch(tpl, issues.trim(), cwd.trim(), repo.trim() || undefined);
@@ -696,6 +727,7 @@ function BatchDispatch() {
         void api.listRuns().then((x) => useStore.getState().mergeRuns(x.runs)).catch(() => undefined);
       }
     } catch (e) {
+      setFail(writeFailureNote('这批没发出去', e, '这批起没起不确定，刷新看单列的读数'));
       log('error', `批量派发失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
@@ -704,7 +736,7 @@ function BatchDispatch() {
 
   return (
     <div className="tasks-batch">
-      <button className="link" onClick={() => setOpen((v) => !v)}>
+      <button className="link" onClick={() => { if (open) setFail(null); setOpen((v) => !v); }}>
         {open ? '▾ 收起批量派发' : '▸ 批量派发：一个模板 × 一列 issue 编号（一单变一批）'}
       </button>
       {open && (
@@ -740,6 +772,11 @@ function BatchDispatch() {
               每单自动注入 Issue 正文；带「验收标准」小节的直接机检入契约；项目并发满了自动排队不冲垮营地
             </span>
           </div>
+          {fail && (
+            <p className="batch-fail" role="status">
+              {fail}
+            </p>
+          )}
         </div>
       )}
     </div>

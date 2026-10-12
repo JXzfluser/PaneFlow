@@ -25,6 +25,29 @@ describe('writeFailureNote（写操作失败要说在人眼下，不再只落底
     ).toBe('班底没改动：server 回 500 且没给原因（改没改成不确定，刷新看盘上的读数）');
   });
 
+  it('起单那两枚换自己的落点说法：它不是在「改」什么，说「改没改成」是句听不懂的话', () => {
+    const err = { status: 503, message: 'POST /api/dispatch → 503', payload: {} };
+    expect(writeFailureNote('这单没发出去', err, '这单起没起不确定，刷新看单列的读数')).toBe(
+      '这单没发出去：server 回 503 且没给原因（这单起没起不确定，刷新看单列的读数）',
+    );
+    expect(writeFailureNote('这批没发出去', err, '这批起没起不确定，刷新看单列的读数')).toBe(
+      '这批没发出去：server 回 503 且没给原因（这批起没起不确定，刷新看单列的读数）',
+    );
+  });
+
+  it('换了说法也不换口径：只说落点读不到，绝不替 server 断言起没起', () => {
+    const err = { status: 500, message: 'POST /api/dispatch/batch → 500', payload: {} };
+    const note = writeFailureNote('这批没发出去', err, '这批起没起不确定，刷新看单列的读数');
+    expect(note).not.toMatch(/一定没|肯定没|一单没起|已经起了|没落盘/);
+    // 尾巴只在 5xx 那一路出现：4xx 与「server 给了原因」那两路本来就有确定说法，不叠第二句
+    expect(writeFailureNote('这批没发出去', { status: 400, payload: {} }, '这批起没起不确定')).toBe(
+      '这批没发出去：server 回 400 且没给原因',
+    );
+    expect(writeFailureNote('这批没发出去', { status: 400, payload: { error: '一次最多 20 个 issue' } }, '这批起没起不确定')).toBe(
+      '这批没发出去：一次最多 20 个 issue',
+    );
+  });
+
   it('连不上（无 status）：说的是连不上，不拿 Failed to fetch 冒充原因', () => {
     expect(writeFailureNote('首发没装上', new TypeError('Failed to fetch'))).toBe(
       '首发没装上：连不上本机服务（server 没在跑？）',

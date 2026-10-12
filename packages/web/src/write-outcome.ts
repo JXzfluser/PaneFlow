@@ -15,13 +15,18 @@ function readable(err: unknown): Readable {
   return said ? { said } : { bare: e.status };
 }
 
-export function writeFailureNote(action: string, err: unknown): string {
+/**
+ * 一次写请求失败后要说的那句。`pending` 是**这一枚动词**落点不可考时的人话（「改没改成不确定…」只在
+ * 真的在「改」什么东西时说不通，起单那两枚要的是「这单起没起」）——只换尾巴的说法，不换判据：
+ * 浏览器仍然只说「这一发的落点读不到」，绝不替 server 断言盘上动没动。缺省沿用全站那句旧话。
+ */
+export function writeFailureNote(action: string, err: unknown, pending?: string): string {
   const r = readable(err);
   if (r === 'offline') return `${action}：连不上本机服务（server 没在跑？）`;
   if ('said' in r) return `${action}：${r.said}`;
   // 5xx 且无原因：写端是「先校验后落笔」，但这一发的落点不可考，就不替它保证盘上没动
   return r.bare >= 500
-    ? `${action}：server 回 ${r.bare} 且没给原因（改没改成不确定，刷新看盘上的读数）`
+    ? `${action}：server 回 ${r.bare} 且没给原因（${pending ?? '改没改成不确定，刷新看盘上的读数'}）`
     : `${action}：server 回 ${r.bare} 且没给原因`;
 }
 
