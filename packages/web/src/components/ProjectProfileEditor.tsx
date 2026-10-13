@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api, fetchJson } from '../api.js';
 import { useStore } from '../store.js';
+import { useActionNote } from '../action-note.js';
+import { readFailureNote, writeFailureNote } from '../write-outcome.js';
 
 /** v10-W 项目档案编辑器：从设置页整段迁入「项目」视图——档案是「每个项目一份」的配置，
  *  跟着项目卡走才顺。约定：只编辑当前项目（父级「编辑档案」先切换再展开，D4 全站响应式）。 */
@@ -53,16 +55,21 @@ interface GatewayProfileView {
 
 /** v9-D2 项目钉档：本项目 Agent 固定用某档网关（全局切档不受影响）；「跟随全局」= current */
 function GatewayPinField({ value, onChange }: { value: string; onChange: (id: string) => void }) {
-  const log = useStore((s) => s.log);
   const [profiles, setProfiles] = useState<GatewayProfileView[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
-  useEffect(() => {
-    void fetchJson<{ profiles?: GatewayProfileView[]; current: string | null }>('GET', '/api/gateway')
+  // 读不成时下拉只剩「跟随全局」，看着就像「本机一档都没配」——那是假话，得顶掉空态说话
+  const [readFail, setReadFail] = useState<string | null>(null);
+  const load = () =>
+    fetchJson<{ profiles?: GatewayProfileView[]; current: string | null }>('GET', '/api/gateway')
       .then((d) => {
         setProfiles(d.profiles ?? []);
         setCurrent(d.current);
+        setReadFail(null);
       })
-      .catch((e: Error) => log('error', `读取网关档位失败：${e.message}`));
+      .catch((e: Error) => setReadFail(readFailureNote('网关档位没读成', e)));
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const dangling = Boolean(value) && !profiles.some((p) => p.id === value);
   return (
@@ -86,6 +93,12 @@ function GatewayPinField({ value, onChange }: { value: string; onChange: (id: st
         ))}
         {dangling && <option value="__dangling__">{value}（已删除，暂跟随全局）</option>}
       </select>
+      {readFail && (
+        <div className="settings-fail-row">
+          <p className="settings-fail" role="status">{readFail}</p>
+          <button onClick={() => void load()}>再读一次</button>
+        </div>
+      )}
     </>
   );
 }
@@ -336,13 +349,22 @@ function TeamEditor({
   const log = useStore((s) => s.log);
   const [roles, setRoles] = useState<Role[]>([]);
   const [busy, setBusy] = useState(false);
+  // 角色库读不成时下拉只剩「（选角色）」，看着就像「全局库是空的」——先顶掉那个空态
+  const [rolesFail, setRolesFail] = useState<string | null>(null);
+  // 装填与试跑共用这一位（它们抢同一份名册与同一个目录），各说各在干什么
+  const note = useActionNote(`${rootCwd?.trim() ?? ''}|${team.map((m) => m.roleId).join(',')}`);
+  const [tryoutOk, setTryoutOk] = useState<string | null>(null);
 
   const loadRoles = () =>
     fetchJson<{ roles?: Role[] }>('GET', '/api/roles')
-      .then((d) => setRoles(d.roles ?? []))
-      .catch((e: Error) => log('error', `读取角色库失败：${e.message}`));
+      .then((d) => {
+        setRoles(d.roles ?? []);
+        setRolesFail(null);
+      })
+      .catch((e: Error) => setRolesFail(readFailureNote('角色库没读成', e)));
   useEffect(() => {
     void loadRoles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const patch = (idx: number, part: Partial<TeamMember>) =>
@@ -350,6 +372,7 @@ function TeamEditor({
   const remove = (idx: number) => onChange(team.filter((_, i) => i !== idx));
 
   const installStandard = async () => {
+    note.clearNote();
     setBusy(true);
     try {
       const r = await fetchJson<{ profile: { team?: TeamMember[] } }>(
@@ -360,23 +383,28 @@ function TeamEditor({
       await loadRoles(); // 标准角色可能刚补进全局库
       log('info', '标准五连已装填（规划/实现/评审/验收/沉淀）——记得点「保存档案」');
     } catch (e) {
-      log('error', `装填失败：${(e as Error).message}`);
+      note.noteResult(
+        writeFailureNote('五连没装填（班底那一列照旧）', e, '装没装不确定，刷新看班底的读数'),
+      );
     } finally {
       setBusy(false);
     }
   };
 
   /** B3 单人试跑：start→agent(role)→end 的最小图，走现链路 */
-  const tryout = async (m: TeamMember) => {
+  const tryout = async (m: TeamMember, idx: number) => {
     if (!m.roleId) {
-      log('error', '这一位还没选角色');
+      // 指着那一行说，不写「成员「（还没选角色）」」这种自绕的称呼
+      note.notePrecheck(`班底第 ${idx + 1} 位还没选角色——先在那一行挑一个岗`);
       return;
     }
     if (!rootCwd?.trim()) {
-      log('error', '单人试跑需要工作目录：先在上方填主仓根');
+      note.notePrecheck('单人试跑要有工作目录：先在上方「主仓根目录」填一个已存在的目录');
       return;
     }
     const name = m.alias || roles.find((r) => r.id === m.roleId)?.name || m.roleId;
+    note.clearNote();
+    setTryoutOk(null);
     const now = new Date().toISOString();
     try {
       const r = await api.startRun(
@@ -405,8 +433,10 @@ function TeamEditor({
         rootCwd.trim(),
       );
       log('info', `已发起「${name}」的试跑（${r.runId}）——去「运 · 运行」页看结果`);
+      // 这句只到「server 收下单」为止：这一位最后说得怎么样，是看板上的账
+      setTryoutOk(`已发起「${name}」的试跑（${r.runId}）——进度在看板`);
     } catch (e) {
-      log('error', `试跑失败：${(e as Error).message}`);
+      note.noteResult(writeFailureNote(`试跑「${name}」没起`, e, '这单起没起不确定，刷新看单列的读数'));
     }
   };
 
@@ -445,7 +475,7 @@ function TeamEditor({
               placeholder="备注（可选：擅长边界）"
               className="team-note"
             />
-            <button className="link" onClick={() => void tryout(m)} title="单节点 run：只让这一位跑一句自我介绍">
+            <button className="link" onClick={() => void tryout(m, i)} title="单节点 run：只让这一位跑一句自我介绍">
               ▶ 试跑
             </button>
             <button className="link" onClick={() => remove(i)} title="移出班底">
@@ -462,6 +492,22 @@ function TeamEditor({
           🪄 {busy ? '装填中…' : '一键装填标准五连'}
         </button>
       </div>
+      {rolesFail && (
+        <div className="settings-fail-row">
+          <p className="settings-fail" role="status">{rolesFail}</p>
+          <button onClick={() => void loadRoles()}>再读一次</button>
+        </div>
+      )}
+      {note.note && (
+        <p className="settings-fail" role="status">
+          {note.note.text}
+        </p>
+      )}
+      {tryoutOk && (
+        <p className="team-ok" role="status">
+          {tryoutOk}
+        </p>
+      )}
     </>
   );
 }
@@ -476,17 +522,40 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
     recommendedAgentKind?: string | null;
     env: { agentsInstalled: string[] };
   } | null>(null);
-  const [discover, setDiscover] = useState<{ markdowns: string[]; skills: string[]; repos: string[] } | null>(null);
+  const [discover, setDiscover] = useState<{ root: string; markdowns: string[]; skills: string[]; repos: string[] } | null>(null);
+  const [discoverFail, setDiscoverFail] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [recentRoots, setRecentRoots] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('pf-recent-roots') ?? '[]') as string[]; } catch { return []; }
   });
   const [browseDir, setBrowseDir] = useState<string | null>(null);
   const [browseList, setBrowseList] = useState<string[] | null>(null);
+  const [browseFail, setBrowseFail] = useState<string | null>(null);
+  // 实探读不成时「默认 Agent」那一排会只剩一枚「自动（检测中…）」——永远在检测就是假话
+  const [envFail, setEnvFail] = useState<string | null>(null);
+  // 档案读不成时面板会永远停在「读取档案中…」——那是比空态更坏的假话（看着还在加载）
+  const [profileFail, setProfileFail] = useState<string | null>(null);
   // 保存结果就地回执：日志面板默认收起，只 log() 等于「点了没反应」——成败都要在按钮旁边说一句
   const [saveState, setSaveState] = useState<{ ok: boolean; text: string } | null>(null);
   // 那一笔 PUT 是全字段回写（档案大、server 要过形状闸），慢的时候有——按钮不说话就是「没点上」，人就会再按一次
   const [savingProfile, setSavingProfile] = useState(false);
+
+  const loadProfile = () =>
+    fetchJson<SpaceProfile>('GET', `/api/spaces/${encodeURIComponent(projectId)}`)
+      .then((p) => {
+        setProfile(p);
+        setProfileFail(null);
+      })
+      .catch((e: Error) => setProfileFail(readFailureNote(`项目「${projectId}」的档案没读成`, e)));
+
+  const loadEnv = () =>
+    api
+      .health()
+      .then((h) => {
+        setEnv({ herdrOk: h.herdrOk, recommendedAgentKind: h.recommendedAgentKind, env: { agentsInstalled: h.env.agentsInstalled } });
+        setEnvFail(null);
+      })
+      .catch((e: Error) => setEnvFail(readFailureNote('本机装了哪些 Agent 没读成', e)));
 
   useEffect(() => {
     setProfile(null);
@@ -494,14 +563,13 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
     setBrowsing(false);
     setBrowseDir(null);
     setBrowseList(null);
+    setBrowseFail(null);
+    setDiscoverFail(null);
+    setEnvFail(null);
+    setProfileFail(null);
     setSaveState(null);
-    // AE：默认项目也要能配「项目默认 Agent/统一覆盖」——档案照常读取（表单仅呈现可配项）
-    void fetchJson<SpaceProfile>('GET', `/api/spaces/${encodeURIComponent(projectId)}`)
-      .then(setProfile)
-      .catch((e: Error) => log('error', `读取项目档案失败：${e.message}`));
-    void api.health().then((h) =>
-      setEnv({ herdrOk: h.herdrOk, recommendedAgentKind: h.recommendedAgentKind, env: { agentsInstalled: h.env.agentsInstalled } }),
-    );
+    void loadProfile();
+    void loadEnv();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -510,8 +578,38 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
       const d = await fetchJson<{ entries?: string[]; dir?: string }>('GET', `/api/fs/browse?path=${encodeURIComponent(dir)}`);
       setBrowseList(d.entries ?? []);
       setBrowseDir(d.dir ?? dir);
-    } catch {
-      setBrowseList([]);
+      setBrowseFail(null);
+    } catch (e) {
+      // 空列表在这里有两种读法：这一层真没子目录，还是这一发没读成——不能都画成「没有」
+      setBrowseList(null);
+      setBrowseFail(readFailureNote('这一层目录没读成', e));
+    }
+  };
+
+  /** 「发现」扫的是 server 那一侧**已保存**的档案根（`?root=` 早就不接受客户端任意值——防的是任意路径披露）。
+   *  这一发必须带 `?space=`：不带时 server 回落 default 项目，于是「在编辑 demo 的档案、列出来的却是 default 的文档」，
+   *  勾一下就把别的项目的路径登记进本项目。扫完把 server 回的那个 root 摆在标题上，人就知道这列是从哪儿读的。 */
+  const runDiscover = async () => {
+    setDiscoverFail(null);
+    try {
+      const d = await fetchJson<{ root?: string; markdowns?: string[]; skills?: string[]; repos?: string[] }>(
+        'GET',
+        `/api/fs/discover?space=${encodeURIComponent(projectId)}`,
+      );
+      const markdowns = d.markdowns ?? [];
+      setDiscover({ root: d.root ?? '', markdowns, skills: d.skills ?? [], repos: d.repos ?? [] });
+      // auto-select conventions on first discovery
+      setProfile((p) =>
+        p
+          ? {
+              ...p,
+              conventionFiles: p.conventionFiles ?? markdowns.filter((f) => /AGENTS|CLAUDE/i.test(f)),
+              skills: p.skills ?? [],
+            }
+          : p,
+      );
+    } catch (e) {
+      setDiscoverFail(readFailureNote('这一列没扫出来', e));
     }
   };
 
@@ -564,7 +662,11 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
       });
     } catch (e) {
       log('error', `保存失败：${(e as Error).message}`);
-      setSaveState({ ok: false, text: `保存失败：${(e as Error).message}（改动还在表单里，按指路改完再存）` });
+      setSaveState({
+        ok: false,
+        // 原话照渲（e.message 在代理洗体会变成「PUT /api/… → 500」这种形状串，人读不懂）
+        text: writeFailureNote('档案没保存（改动还在表单里）', e, '存没存不确定，刷新看档案的读数'),
+      });
     } finally {
       setSavingProfile(false);
     }
@@ -592,7 +694,7 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
           className={`agent-chip${!profile?.defaultAgentKind ? ' on' : ''}`}
           onClick={() => pickKind('')}
         >
-          自动{env?.recommendedAgentKind ? ` · ${env.recommendedAgentKind}` : '（检测中…）'}
+          自动{env?.recommendedAgentKind ? ` · ${env.recommendedAgentKind}` : envFail ? '（没读到）' : '（检测中…）'}
         </button>
         {installedKinds.map((k) => (
           <button
@@ -607,7 +709,14 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
           </button>
         ))}
       </div>
-      {otherKinds.length > 0 && (
+      {envFail && (
+        <div className="settings-fail-row">
+          <p className="settings-fail" role="status">{envFail}</p>
+          <button onClick={() => void loadEnv()}>再读一次</button>
+        </div>
+      )}
+      {/* 实探没读成时不说「本机未装」——那是拿「不知道」冒充实测结论 */}
+      {!envFail && otherKinds.length > 0 && (
         <details className="settings-more">
           <summary>本机未装的 {otherKinds.length} 个 CLI（谨慎选择，点了起不来）</summary>
           <div className="agent-chips">
@@ -661,7 +770,14 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
         </button>
       </div>
       {!profile ? (
-        <p className="settings-hint">读取档案中…</p>
+        profileFail ? (
+          <div className="settings-fail-row">
+            <p className="settings-fail" role="status">{profileFail}</p>
+            <button onClick={() => void loadProfile()}>再读一次</button>
+          </div>
+        ) : (
+          <p className="settings-hint">读取档案中…</p>
+        )
       ) : projectId === 'default' ? (
         <>
           <p className="settings-hint">
@@ -685,7 +801,16 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
               onChange={(e) => setProfile((p) => (p ? { ...p, rootCwd: e.target.value } : p))}
               placeholder="/home/user/work/my-project"
             />
-            <button onClick={() => setBrowsing((b) => !b)}>📁 浏览</button>
+            {/* 打开就得拉一次列表：旧写法只置 browsing，面板从此停在「加载中…」且一枚目录都点不到 */}
+            <button
+              onClick={() => {
+                const open = !browsing;
+                setBrowsing(open);
+                if (open && browseList === null) void loadBrowse(browseDir ?? '');
+              }}
+            >
+              📁 浏览
+            </button>
           </div>
           <div className="settings-row wrap recent-roots">
             <span className="settings-hint">最近：</span>
@@ -729,38 +854,34 @@ export function ProjectProfileEditor({ projectId, onClose }: { projectId: string
                   📁 {d}
                 </div>
               ))}
-              {browseList === null && <span className="settings-hint">加载中…</span>}
+              {/* 这一层读不成时不能停在「加载中…」，也不能画成空列表——那是「这一层没有子目录」 */}
+              {browseFail ? (
+                <div className="settings-fail-row">
+                  <p className="settings-fail" role="status">{browseFail}</p>
+                  <button onClick={() => void loadBrowse(browseDir || '')}>再读一次</button>
+                </div>
+              ) : (
+                browseList === null && <span className="settings-hint">加载中…</span>
+              )}
             </div>
           )}
-          <button
-            className="ghost"
-            onClick={() =>
-              void fetchJson<{ error?: string; markdowns?: string[]; skills?: string[]; repos?: string[] }>(
-                'GET',
-                `/api/fs/discover?root=${encodeURIComponent(profile.rootCwd ?? '')}`,
-              )
-                .then((d) => {
-                  if (d.error) {
-                    log('error', d.error);
-                    return;
-                  }
-                  setDiscover({ markdowns: d.markdowns ?? [], skills: d.skills ?? [], repos: d.repos ?? [] });
-                  // auto-select conventions on first discovery
-                  setProfile((p) =>
-                    p
-                      ? {
-                          ...p,
-                          conventionFiles: p.conventionFiles ?? (d.markdowns ?? []).filter((f) => /AGENTS|CLAUDE/i.test(f)),
-                          skills: p.skills ?? [],
-                        }
-                      : p,
-                  );
-                })
-                .catch((e: Error) => log('error', `发现失败：${e.message}`))
-            }
-          >
+          <button className="ghost" onClick={() => void runDiscover()}>
             🔍 发现约定文档与技能
           </button>
+          {discoverFail && (
+            <div className="settings-fail-row">
+              <p className="settings-fail" role="status">{discoverFail}</p>
+              <button onClick={() => void runDiscover()}>再扫一次</button>
+            </div>
+          )}
+          {/* server 扫的是它那一侧**已保存**的根，不是输入框里这串——不一致时下面每一列的出处都要说清 */}
+          {discover && (
+            <p className="settings-hint">
+              扫的是 <code>{discover.root || '（server 没回根目录）'}</code>
+              {discover.root !== (profile.rootCwd ?? '') &&
+                ' ——输入框那串还没存，改完先「保存档案」再扫，不然勾上的是别的目录里的东西'}
+            </p>
+          )}
           {discover && (
             <div className="settings-discover">
               <div>
