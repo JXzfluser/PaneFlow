@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { gateReleaseNote, queuePromoteNote, readFailureNote, writeFailureNote } from './write-outcome.js';
+import {
+  batchDispatchNotes,
+  gateReleaseNote,
+  queuePromoteNote,
+  readFailureNote,
+  writeFailureNote,
+} from './write-outcome.js';
 
 describe('writeFailureNote（写操作失败要说在人眼下，不再只落底部控制台）', () => {
   it('server 给了人话：原话照渲，浏览器不另编一句判词', () => {
@@ -91,5 +97,46 @@ describe('queuePromoteNote（插队成了也说一句，但不替排队读数背
 
   it('不声称已经站到队首：那是排队读数的事，不是这一发的回执', () => {
     expect(queuePromoteNote()).not.toMatch(/已是队首|已到队首|已插到队首/);
+  });
+});
+
+describe('batchDispatchNotes（200 但带残缺：成了几单与哪几单没起，一维一行）', () => {
+  it('整批都起了：只有绿色那句，且不替后面的状态背书', () => {
+    expect(
+      batchDispatchNotes({ dispatched: 5, queued: 2, failed: [] }),
+    ).toEqual({ ok: '这批起了 5 单（其中 2 单排队，位次在看板）', fail: null });
+    expect(batchDispatchNotes({ dispatched: 5, queued: 0, failed: [] }).ok).toBe('这批起了 5 单');
+    // 「起了」到 server 建单为止：跑成什么是账本推上来之后的事
+    for (const ok of ['这批起了 5 单', '这批起了 5 单（其中 2 单排队，位次在看板）']) {
+      expect(ok).not.toMatch(/跑成|完成|成功结束/);
+    }
+  });
+
+  it('半批漏了：两句同时在，绿的只说成了的、红的逐单照抄 server 原话', () => {
+    const r = {
+      dispatched: 3,
+      queued: 0,
+      failed: [
+        { issue: 163, error: 'Issue 读取失败：gh: Not Found' },
+        { issue: 165, error: '并发闸忙不过来' },
+      ],
+    };
+    expect(batchDispatchNotes(r)).toEqual({
+      ok: '这批起了 3 单',
+      fail: '这 2 单没起：#163 Issue 读取失败：gh: Not Found；#165 并发闸忙不过来',
+    });
+  });
+
+  it('一单都没起：不发绿色那句——「起了 0 单」借的是成功的形状', () => {
+    expect(batchDispatchNotes({ dispatched: 0, queued: 0, failed: [{ issue: 7, error: '没读到这一单' }] })).toEqual({
+      ok: null,
+      fail: '这 1 单没起：#7 没读到这一单',
+    });
+  });
+
+  it('server 只给了码没写原因：明说它没写，不留个空尾巴让人猜', () => {
+    expect(batchDispatchNotes({ dispatched: 1, queued: 0, failed: [{ issue: 9, error: '  ' }] }).fail).toBe(
+      '这 1 单没起：#9 server 没写原因',
+    );
   });
 });

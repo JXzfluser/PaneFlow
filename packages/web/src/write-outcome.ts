@@ -57,3 +57,27 @@ export function gateReleaseNote(action: 'approve' | 'reject' | 'input'): string 
 export function queuePromoteNote(): string {
   return '插队这一发 server 收了（位次等下一次排队读数）';
 }
+
+/**
+ * 「200 但带残缺」这一类（v19 步骤二十）：server 在同一发回执里把成了的与没起的都数清楚了
+ * （批量派发 = `dispatched` + `failed[{issue,error}]`），可画面上从前只有底部控制台那一句，
+ * 而编号列整列被清空——没起的那几单连同它们的编号一起从屏幕上消失，读数就此洗绿。
+ * 尺子：一维一行。成了的那部分只说「起了几单」（不替它们最后跑成什么背书），没起的逐单照渲 server 原话；
+ * 两维不合句——合在一条里就是拿「起了 3 单」把「漏了 2 单」压低。
+ * `dispatched` 为 0 时不发绿色那句：「起了 0 单」借的是成功的形状，而这一按什么都没起。
+ */
+export function batchDispatchNotes(r: {
+  dispatched: number;
+  queued: number;
+  failed: { issue: number; error: string }[];
+}): { ok: string | null; fail: string | null } {
+  const ok = r.dispatched
+    ? `这批起了 ${r.dispatched} 单${r.queued ? `（其中 ${r.queued} 单排队，位次在看板）` : ''}`
+    : null;
+  const fail = r.failed.length
+    ? `这 ${r.failed.length} 单没起：${r.failed
+        .map((f) => `#${f.issue} ${f.error.trim() || 'server 没写原因'}`)
+        .join('；')}`
+    : null;
+  return { ok, fail };
+}

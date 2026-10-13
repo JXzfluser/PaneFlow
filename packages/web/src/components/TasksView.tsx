@@ -15,7 +15,7 @@ import {
   type AutoEngineWire,
   type RoleOverallMetrics,
 } from '../team-view.js';
-import { gateReleaseNote, queuePromoteNote, writeFailureNote } from '../write-outcome.js';
+import { batchDispatchNotes, gateReleaseNote, queuePromoteNote, writeFailureNote } from '../write-outcome.js';
 import { useActionNote } from '../action-note.js';
 
 /**
@@ -690,7 +690,7 @@ export function TasksView() {
   );
 }
 
-/** G3 批量派发：一个模板 × 一列 issue 编号 → N 个 run（并发满了自动排队，去「运」页看位次） */
+/** G3 批量派发：一个模板 × 一列 issue 编号 → N 个 run（并发满了自动排队，位次去看板） */
 function BatchDispatch() {
   const cwd = useStore((s) => s.cwd);
   const log = useStore((s) => s.log);
@@ -703,6 +703,11 @@ function BatchDispatch() {
   // v19 打磨步骤十五：这一批没发出去也要在按下那枚按钮下面说一句——从前只进底部控制台。
   // 步骤十六接同一把尺：两句前置提示描的是此刻的编号列／工作目录，填上就自己撤下；失败句是那一按的结果，不改它。
   const failNote = useActionNote(`${issues.trim()}|${cwd.trim()}`);
+  /**
+   * 步骤二十：一按之后的「成了几单」读数 + server 报回来的没起编号。
+   * 失败/残缺那句住 failNote（同一动作位只挂一句），成了的落点单独一位——两维各有形状，才不至于一句盖掉另一句。
+   */
+  const [batched, setBatched] = useState<{ ok: string | null; retry: number[] } | null>(null);
 
   const submit = async () => {
     if (!issues.trim()) {
@@ -718,6 +723,7 @@ function BatchDispatch() {
       return;
     }
     failNote.clearNote();
+    setBatched(null);
     setBusy(true);
     try {
       const r = await api.dispatchBatch(tpl, issues.trim(), cwd.trim(), repo.trim() || undefined);
@@ -726,10 +732,13 @@ function BatchDispatch() {
         `批量派发 ${tpl}：成功 ${r.dispatched} 单${r.queued ? `（其中 ${r.queued} 单排队中）` : ''}` +
           (r.failed.length ? `；失败 ${r.failed.length}：${r.failed.map((f) => `#${f.issue} ${f.error}`).join('；')}` : ''),
       );
-      if (r.dispatched) {
-        setIssues('');
-        void api.listRuns().then((x) => useStore.getState().mergeRuns(x.runs)).catch(() => undefined);
-      }
+      const notes = batchDispatchNotes(r);
+      // 残缺那句与成功那句可以同时在：这一批起了 3 单、另有 2 单没起，两件事都得在眼前
+      if (notes.fail) failNote.noteResult(notes.fail);
+      setBatched({ ok: notes.ok, retry: r.failed.map((f) => f.issue) });
+      if (r.dispatched) void api.listRuns().then((x) => useStore.getState().mergeRuns(x.runs)).catch(() => undefined);
+      // 只有整批都起了才清列：有漏的把那一列留着，清掉就是把「哪几单没起」的证据一起抹了
+      if (!r.failed.length) setIssues('');
     } catch (e) {
       failNote.noteResult(writeFailureNote('这批没发出去', e, '这批起没起不确定，刷新看单列的读数'));
       log('error', `批量派发失败：${(e as Error).message}`);
@@ -740,7 +749,16 @@ function BatchDispatch() {
 
   return (
     <div className="tasks-batch">
-      <button className="link" onClick={() => { if (open) failNote.clearNote(); setOpen((v) => !v); }}>
+      <button
+        className="link"
+        onClick={() => {
+          if (open) {
+            failNote.clearNote();
+            setBatched(null);
+          }
+          setOpen((v) => !v);
+        }}
+      >
         {open ? '▾ 收起批量派发' : '▸ 批量派发：一个模板 × 一列 issue 编号（一单变一批）'}
       </button>
       {open && (
@@ -776,10 +794,27 @@ function BatchDispatch() {
               每单自动注入 Issue 正文；带「验收标准」小节的直接机检入契约；项目并发满了自动排队不冲垮营地
             </span>
           </div>
+          {batched?.ok && (
+            <p className="batch-ok" role="status">
+              {batched.ok}
+            </p>
+          )}
           {failNote.note && (
             <p className="batch-fail" role="status">
               {failNote.note.text}
             </p>
+          )}
+          {/* 没起的编号是 server 报回来的，这里只照抄；按不按由人决定，所以它是按钮不是自动重发 */}
+          {!!batched?.retry.length && (
+            <div>
+              <button
+                className="ghost"
+                onClick={() => setIssues(batched.retry.join('\n'))}
+                title={`替换整列：#${batched.retry.join(' #')}——已起了的那几行会一起被换掉`}
+              >
+                那一列换成没起的 {batched.retry.length} 单
+              </button>
+            </div>
           )}
         </div>
       )}
