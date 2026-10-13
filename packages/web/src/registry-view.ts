@@ -130,6 +130,15 @@ export function viewEnabledCell(entry: RegistryEntryView, home?: string): { text
   };
 }
 
+/**
+ * 行上那枚启停开关按下之后要说的那半句（v19 步骤二十一）：开关此刻是开着的就是要停用，
+ * 关着的就是要启用——两下是相反的动作，写成一句人就分不清自己按的哪一下。
+ * 读的是 server 回的那份 `enabled`（`!entry.enabled` 也正是提交过去的值），措辞不算判据。
+ */
+export function toggleFailAction(entry: Pick<RegistryEntryView, 'enabled'>): string {
+  return entry.enabled ? '停用没成（它还在被选）' : '启用没成（它还是不参与）';
+}
+
 // ---------------------------------------------------------------------------
 // 表单字段：从 kind 的 spec 形状「长」出来（与 shared 的 `RegistrySpecMap` 逐 kind 对齐）。
 // 没定义字段的 kind 返回 null——界面对它明说「不登记不认识的形状」，绝不临场发明字段。

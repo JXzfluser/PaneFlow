@@ -25,6 +25,7 @@ import {
   requirementDetail,
   spaceDocCandidates,
   spaceRepoCandidates,
+  toggleFailAction,
   sourceLabel,
   specRows,
   viewEnabledCell,
@@ -655,6 +656,22 @@ describe('viewEnabledCell（视图项的启停格：照读 server 的 enabled，
   it('非视图项不走这里（组件对它们画的是真开关）：`enabled:false` 在这里同样是「停用中」，两种读数分家', () => {
     expect(viewEnabledCell(entry({ enabled: false })).text).toBe('停用中');
     expect(viewEnabledCell(entry({ enabled: true })).text).toBe('—');
+  });
+});
+
+describe('toggleFailAction（行上启停开关没成时的半句，v19 步骤二十一）', () => {
+  it('开关此刻开着＝这一按是要停用；关着＝要启用。两下方向说反，人就分不清自己按的哪一下', () => {
+    expect(toggleFailAction(entry({ enabled: true }))).toBe('停用没成（它还在被选）');
+    expect(toggleFailAction(entry({ enabled: false }))).toBe('启用没成（它还是不参与）');
+    expect(toggleFailAction(entry({ enabled: true }))).not.toContain('启用');
+    expect(toggleFailAction(entry({ enabled: false }))).not.toContain('停用');
+  });
+
+  it('半句只说这一发没出去与它现在的状态，绝不冒充「改回去了」也不报「已停用」（判据在 server）', () => {
+    for (const note of [toggleFailAction(entry({ enabled: true })), toggleFailAction(entry({ enabled: false }))]) {
+      expect(note).toMatch(/没成/);
+      expect(note).not.toMatch(/已停用|已启用|成功|已保存/);
+    }
   });
 });
 

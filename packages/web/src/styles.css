@@ -970,14 +970,14 @@ button.tl-node:hover { border-color: var(--accent); color: var(--accent); }
 .inline-ok { color: var(--ok); }
 .settings-warn { color: var(--warn); }
 /* 动作点上的就地一句：全站同一条尺（同字号/同行距/同折行），只换颜色与住在哪个动作点——
-   失败句（设置页五张卡、运行中心卡、班底条、挑引擎格、审批三键、排队两键、下发·扩写·批量三下、顶栏四枚、模板导入、运行对话框、项目档案面板）
+   失败句（设置页五张卡、运行中心卡、班底条、挑引擎格、审批三键、排队两键、下发·扩写·批量三下、顶栏四枚、模板导入、运行对话框、项目档案面板、注册中心那一行与登记表单）
    与成功回执共用这一条规则；「成了几单」与「哪几单没起」是同一按的两维，各占一行、各用自己的色 */
 .settings-fail, .runs-fail, .gate-fail, .assign-fail, .team-bar-fail, .queue-fail,
-.dispatch-fail, .enhance-fail, .batch-fail, .topbar-fail, .topbar-warn, .pal-fail, .dlg-fail, .gate-ok, .queue-ok, .team-ok, .batch-ok {
+.dispatch-fail, .enhance-fail, .batch-fail, .topbar-fail, .topbar-warn, .pal-fail, .dlg-fail, .registry-row-fail, .registry-form-error, .gate-ok, .queue-ok, .team-ok, .batch-ok {
   font-size: 12px; line-height: 1.6; margin: 6px 0 0; text-wrap: pretty;
 }
 .settings-fail, .runs-fail, .gate-fail, .assign-fail, .team-bar-fail, .queue-fail,
-.dispatch-fail, .enhance-fail, .batch-fail, .topbar-fail, .pal-fail, .dlg-fail { color: var(--err); }
+.dispatch-fail, .enhance-fail, .batch-fail, .topbar-fail, .pal-fail, .dlg-fail, .registry-row-fail, .registry-form-error { color: var(--err); }
 /* 对话框那句住在 .modal p 的尺子里（class+元素 比单枚 class 硬，全站那条够不到它）：
    这里按回同一条尺，只把边距换成贴按钮行的——字号/行距/颜色三样跟上面一致 */
 .modal .dlg-fail {
@@ -2119,6 +2119,9 @@ details.settings-more[open] summary { margin-bottom: 6px; }
 .registry-card-spacer { flex: 1; }
 .registry-card-label { margin: 0; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .registry-card-ops { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+/* 启停/删除没成那一句（尺子住在上面的共用规则里）：卡内已有 6px gap，不再自己加边距；
+   server 的 400 原话带 `spaces.default.team[0].roleId` 那种键路径，300px 窄卡要按字符断才包得住 */
+.registry-row-fail { margin: 0; overflow-wrap: anywhere; }
 .registry-card .registry-detail { margin: 4px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); }
 
 /* 卡内详情：窄卡放弃双列网格，dt/dd 单列堆叠（长 id/路径在双列里会被挤成逐字竖排） */

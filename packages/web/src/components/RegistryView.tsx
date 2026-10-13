@@ -26,6 +26,7 @@ import {
   registrableKinds,
   spaceDocCandidates,
   spaceRepoCandidates,
+  toggleFailAction,
   REGISTRY_NAME_FIELD,
   sourceLabel,
   specRows,
@@ -39,6 +40,7 @@ import {
   type RegistryProbeResponse,
   type SpaceDocCandidateSource,
 } from '../registry-view.js';
+import { readFailureNote, writeFailureNote } from '../write-outcome.js';
 
 /** 行上四类写动作：在飞读数按这一枚点名（同一条目的四发不能共用一句话） */
 type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';
@@ -159,8 +161,12 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   const rowBusy = (id: string) => writeOp?.id === id;
   const opBusy = (id: string, op: RowOp) => writeOp?.id === id && writeOp.op === op;
   const [detailId, setDetailId] = useState<string | null>(null);
-  // 对某条目最近一次写失败的服务端原文（进详情抽屉披露，不 toast 完就蒸发）
-  const [writeErrors, setWriteErrors] = useState<Record<string, string>>({});
+  /**
+   * 行上那一枚开关／删除按下没成要说的那句，按条目 id 分家（谁按的行谁说话，兄弟行静默）。
+   * v19 步骤二十一：从前这句只进详情抽屉（得先把那行展开才看得见）和底部控制台，
+   * 画面上的读数就是「删除按了一下，什么都没发生」——现在落在被按的那一行下面。
+   */
+  const [rowFails, setRowFails] = useState<Record<string, string>>({});
   /**
    * R4 健康点：**独立一刀、后于表到达**（`/api/registry` 保持纯读盘）。
    * `null` 且无错＝还在探（那一格什么都不画，不画灰点冒充「不健康」）；读不出只说健康点这一刀，表照常。
@@ -294,7 +300,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
         setHealth(healthIndex(r));
         setHealthError(null);
       })
-      .catch((e: Error) => setHealthError(e.message))
+      .catch((e) => setHealthError(readFailureNote('健康点读不出', e)))
       .finally(() => setHealthBusy(false));
   }, []);
 
@@ -305,7 +311,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
         setData(r);
         setLoadError(null);
       })
-      .catch((e: Error) => setLoadError(e.message))
+      .catch((e) => setLoadError(readFailureNote('注册表读不出', e)))
       // 表先到、点后到：健康那一刀不 await——网关挂掉时表照样读得出，只有点缺着（R4 分刀的理由）
       .finally(() => void loadHealth(false)),
   [loadHealth]);
@@ -477,31 +483,51 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
     }
     setFormBusy(true);
     try {
-      await api.registryAdd(payload);
+      const r = await api.registryAdd(payload);
       setFormOpen(false);
       setFormName('');
       setFormValues({});
       setFormError(null);
+      // 同上：200 带回来的条目先上表，整表回读只是校对——回读失败时不能让人以为「没登记上」
+      setData((d) => (d ? { ...d, entries: [...d.entries, r.entry] } : d));
       await load();
       log('info', `注册中心：已登记「${payload.name}」`);
     } catch (e) {
       // 服务端的 400 一句人话原样inline挂出；已经填的内容一个字不清
-      setFormError((e as Error).message);
+      setFormError(writeFailureNote('这一枚没登记进去', e));
     } finally {
       setFormBusy(false);
     }
   };
 
-  const recordWriteError = (id: string, msg: string) =>
-    setWriteErrors((m) => ({ ...m, [id]: msg }));
+  const recordRowFail = (id: string, note: string) => setRowFails((m) => ({ ...m, [id]: note }));
+  const clearRowFail = (id: string) =>
+    setRowFails((m) => {
+      if (!(id in m)) return m;
+      return Object.fromEntries(Object.entries(m).filter(([k]) => k !== id));
+    });
+
+  /**
+   * 失败句的寿命：表上查无此枚就撤——删除成功（或别处撤了它）之后还挂着「这一枚没删掉」，
+   * 是给一条已经不存在的条目说话。判据是 server 回的那份清单，不数秒。
+   */
+  useEffect(() => {
+    if (!data) return;
+    setRowFails((m) => {
+      const ids = new Set(data.entries.map((e) => e.id));
+      const next = Object.fromEntries(Object.entries(m).filter(([id]) => ids.has(id)));
+      return Object.keys(next).length === Object.keys(m).length ? m : next;
+    });
+  }, [data]);
 
   const toggleEnabled = async (entry: RegistryEntryView) => {
     setWriteOp({ id: entry.id, op: 'toggle' });
+    clearRowFail(entry.id);
     try {
       const r = await api.registryPatch(entry.id, { enabled: !entry.enabled });
       setData((d) => (d ? { ...d, entries: d.entries.map((e) => (e.id === r.entry.id ? r.entry : e)) } : d));
     } catch (e) {
-      recordWriteError(entry.id, (e as Error).message);
+      recordRowFail(entry.id, writeFailureNote(toggleFailAction(entry), e));
       void load(); // 以服务端实态为准回滚本地显示
     } finally {
       setWriteOp(null);
@@ -533,15 +559,24 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
     }
   };
 
+  /**
+   * 删除那一按（v19 步骤二十一）。三条没成路此前只有底部控制台知道：被引用 400（server 点名出处）、
+   * 引用账扫不出 500、连不上服务——判据一句都不在浏览器，这里只把 server 的原话摆到被按的那一行。
+   * 成了不另说一句：这一行本来就该从表上消失，画面自己就是回执。
+   */
   const remove = async (entry: RegistryEntryView) => {
     setWriteOp({ id: entry.id, op: 'delete' });
+    clearRowFail(entry.id);
     try {
-      await api.registryDelete(entry.id);
+      const r = await api.registryDelete(entry.id);
+      // 200 就是「这一枚没了」的读数：先按 server 交回的条目把行撤下，再等整表回读——
+      // 回读那一发万一失败，表上继续摆着一条已经删掉的条目才是假话
+      setData((d) => (d ? { ...d, entries: d.entries.filter((e) => e.id !== r.deleted.id) } : d));
       setDetailId((d) => (d === entry.id ? null : d));
       await load();
       log('info', `注册中心：已删除「${entry.name}」`);
     } catch (e) {
-      recordWriteError(entry.id, (e as Error).message);
+      recordRowFail(entry.id, writeFailureNote('这一枚没删掉', e));
       log('error', `注册中心：删除「${entry.name}」失败：${(e as Error).message}`);
     } finally {
       setWriteOp(null);
@@ -1050,7 +1085,11 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
             <p className="settings-hint">这一类还没长表单字段，界面不登记不认识的形状。</p>
           )}
 
-          {formError && <p className="registry-form-error">{formError}</p>}
+          {formError && (
+            <p className="registry-form-error" role="status">
+              {formError}
+            </p>
+          )}
           <div className="registry-form-ops">
             <button className="ghost" onClick={closeForm}>
               取消
@@ -1064,16 +1103,21 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
       )}
 
       <>
-
       {loadError && (
-        <p className="registry-load-fail">注册表读不出：{loadError}</p>
+        <p className="registry-load-fail" role="status">
+          {loadError}
+        </p>
       )}
 
-      {/* 重探在飞时不说上一轮的失败原话：那一行与「重探中」同时挂出来是两句互相打架的话 */}
+      {/* 重探在飞时不说上一轮的失败原话：那一行与「重探中」同时挂出来是两句互相打架的话。
+          原话与「它影响哪一格」分两行——合在一条里就是两层括号叠着说同一件「没点成不等于不健康」 */}
       {healthError && !healthBusy && (
-        <p className="registry-load-fail">
-          健康点读不出：{healthError}（表不受影响：那一格没点＝不知道，不是「不健康」）
-        </p>
+        <>
+          <p className="registry-load-fail" role="status">
+            {healthError}
+          </p>
+          <p className="settings-hint">表不受影响：那一格没点＝不知道，不是「不健康」</p>
+        </>
       )}
 
       {healthBusy && (
@@ -1288,6 +1332,12 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                             </button>
                           )}
                         </div>
+                        {/* 启停／删除那一按没成：句子落在被按的这一行，展开详情才看得见的披露等于没有 */}
+                        {rowFails[e.id] && (
+                          <p className="registry-row-fail" role="status">
+                            {rowFails[e.id]}
+                          </p>
+                        )}
                         {detailId === e.id && (
                           <dl className="registry-detail">
                             <dt>id</dt>
@@ -1384,12 +1434,6 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                               <>
                                 <dt>探针读数</dt>
                                 <dd className={probe?.err ? 'registry-detail-fail' : undefined}>{pNote}</dd>
-                              </>
-                            )}
-                            {writeErrors[e.id] && (
-                              <>
-                                <dt>最近写入失败</dt>
-                                <dd className="registry-detail-fail">{writeErrors[e.id]}</dd>
                               </>
                             )}
                           </dl>
