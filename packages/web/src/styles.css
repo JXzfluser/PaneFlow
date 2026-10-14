@@ -970,10 +970,10 @@ button.tl-node:hover { border-color: var(--accent); color: var(--accent); }
 .inline-ok { color: var(--ok); }
 .settings-warn { color: var(--warn); }
 /* 动作点上的就地一句：全站同一条尺（同字号/同行距/同折行），只换颜色与住在哪个动作点——
-   失败句（设置页五张卡、运行中心卡、班底条、挑引擎格、审批三键、排队两键、下发·扩写·批量三下、顶栏四枚、模板导入、运行对话框、项目档案面板、注册中心那一行与登记表单）
+   失败句（设置页五张卡、运行中心卡、班底条、挑引擎格、审批三键、排队两键、下发·扩写·批量三下、顶栏四枚、模板导入、运行对话框、项目档案面板、注册中心那一行与登记表单、扫描弹窗两排按钮）
    与成功回执共用这一条规则；「成了几单」与「哪几单没起」是同一按的两维，各占一行、各用自己的色 */
 .settings-fail, .runs-fail, .gate-fail, .assign-fail, .team-bar-fail, .queue-fail,
-.dispatch-fail, .enhance-fail, .batch-fail, .topbar-fail, .topbar-warn, .pal-fail, .dlg-fail, .registry-row-fail, .registry-form-error, .gate-ok, .queue-ok, .team-ok, .batch-ok {
+.dispatch-fail, .enhance-fail, .batch-fail, .topbar-fail, .topbar-warn, .pal-fail, .dlg-fail, .registry-row-fail, .registry-form-error, .gate-ok, .queue-ok, .team-ok, .batch-ok, .scan-ok, .scan-warn {
   font-size: 12px; line-height: 1.6; margin: 6px 0 0; text-wrap: pretty;
 }
 .settings-fail, .runs-fail, .gate-fail, .assign-fail, .team-bar-fail, .queue-fail,
@@ -988,8 +988,10 @@ button.tl-node:hover { border-color: var(--accent); color: var(--accent); }
 .topbar-fail, .topbar-warn { margin: 0; padding: 6px 20px 0; }
 .topbar-warn { color: var(--warn); }
 /* 窄栏里那句要包得住长文件名、server 原话里的 URL 也要包得住：按字符断，别让那一行被撑破 */
-.pal-fail, .batch-fail { overflow-wrap: anywhere; }
-.gate-ok, .queue-ok, .team-ok, .batch-ok { color: var(--ok); }
+.pal-fail, .batch-fail, .reg-scan-prompt .settings-fail, .reg-scan-prompt .scan-warn { overflow-wrap: anywhere; }
+.gate-ok, .queue-ok, .team-ok, .batch-ok, .scan-ok { color: var(--ok); }
+/* 扫描弹窗那两行：绿=登记成了几项，黄=server 在同一发 200 里交代「这些项没档案字段可落，只披露」 */
+.scan-warn { color: var(--warn); }
 /* 操作栏里那一枚是行内读数（跟着按钮居中），单独成行的失败句才用上面的下移间距 */
 .settings-actions .settings-fail, .runs-fail-row .runs-fail, .settings-fail-row .settings-fail { margin: 0; }
 .runs-fail-row, .settings-fail-row { display: flex; align-items: center; gap: 8px; }

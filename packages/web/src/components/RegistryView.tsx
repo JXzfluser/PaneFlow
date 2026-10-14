@@ -24,6 +24,7 @@ import {
   refRows,
   rejectedSummary,
   registrableKinds,
+  scanRegisterOutcome,
   spaceDocCandidates,
   spaceRepoCandidates,
   toggleFailAction,
@@ -147,6 +148,20 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   const [scanPath, setScanPath] = useState('');
   const [scanRegisterBusy, setScanRegisterBusy] = useState(false);
   const [scanPreview, setScanPreview] = useState<{ items: { kind: string; name: string; detail: string }[]; selected: Set<number> } | null>(null);
+  /**
+   * 扫描弹窗那两下的失败句，各落在自己那排按钮下面（v19 步骤二十二）：从前「🔍 扫描」「✓ 登记 N 项」
+   * 没成只写进底部控制台，面板看上去就是按下去没反应。读与写分两枚——它们说的是两个动词。
+   */
+  const [scanReadFail, setScanReadFail] = useState<string | null>(null);
+  const [scanWriteFail, setScanWriteFail] = useState<string | null>(null);
+  /**
+   * 登记成功后的回执（v19 步骤二十二）：server 在同一发 200 里还会带 `warnings`（「N 项只披露不登记」
+   * 这类没档案字段可落的项）。从前弹窗一收、这些句子只剩底部控制台，人看到的是「登记好了」而没起的那几项
+   * 从屏幕上消失——所以有话要交代时这扇窗不自己关。
+   */
+  const [scanResult, setScanResult] = useState<{ ok: string | null; warn: string[] } | null>(null);
+  /** 扫描在飞：这一发没回来时按钮改口「扫描中…」并 disable，否则「按了没反应」和没按一模一样 */
+  const [scanProbeBusy, setScanProbeBusy] = useState(false);
   const log = useStore((s) => s.log);
   const setView = useStore((s) => s.setView);
   const [data, setData] = useState<RegistryListResponse | null>(null);
@@ -242,9 +257,9 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
           if (dead) return;
           setScan({ space: id, items: r.items ?? [], note: r.error ?? null });
         })
-        .catch((e: Error) => {
+        .catch((e) => {
           if (dead) return;
-          setScan({ space: id, items: [], note: `本机探测没回话：${e.message}` });
+          setScan({ space: id, items: [], note: readFailureNote('本机探测没回话', e) });
         })
         .finally(() => {
           if (!dead) setScanBusy(false);
@@ -279,6 +294,21 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
   const closeForm = () => {
     setFormOpen(false);
     setFormError(null);
+  };
+
+  /** 扫描弹窗的开与收都不带旧读数：收掉再重开不翻上一轮的账（与批量面板同款寿命） */
+  const openScanPrompt = () => {
+    setScanPromptOpen(true);
+    setScanPreview(null);
+    setScanReadFail(null);
+    setScanWriteFail(null);
+    setScanResult(null);
+  };
+  const closeScanPrompt = () => {
+    setScanPromptOpen(false);
+    setScanReadFail(null);
+    setScanWriteFail(null);
+    setScanResult(null);
   };
 
   // 表单是就地展开的长块：Esc 收它，与向导／弹窗同一把手势。登记在飞时不挂这个键——
@@ -347,14 +377,14 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
       api
         .gatewayProfiles()
         .then((r) => setGwProfiles(r.profiles.map((p) => ({ id: p.id, name: p.name }))))
-        .catch((e: Error) => setCatalogNote(`网关档清单读不出：${e.message}`)),
+        .catch((e) => setCatalogNote(readFailureNote('网关档清单读不出', e))),
       api
         .listSpaces()
         .then((r) => {
           setSpaces(r.spaces.map((s) => ({ id: s.id, name: s.name, rootCwd: s.rootCwd })));
           setSpacesNote(null);
         })
-        .catch((e: Error) => setSpacesNote(`项目清单读不出：${e.message}`)),
+        .catch((e) => setSpacesNote(readFailureNote('项目清单读不出', e))),
       api
         .gatewayCatalog()
         .then((r) => {
@@ -362,7 +392,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
           const errs = r.profiles.filter((p) => p.error).map((p) => `${p.name}：${p.error}`);
           setCatalogNote(errs.length ? `型号探得不全：${errs.join('；')}` : null);
         })
-        .catch((e: Error) => setCatalogNote(`型号清单探读失败：${e.message}`)),
+        .catch((e) => setCatalogNote(readFailureNote('型号清单探读失败', e))),
     ]).then(() => setOptionsBusy(false));
   }, []);
 
@@ -383,11 +413,11 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
         setRepoCandidates(spaceRepoCandidates([p], id));
         setCandidatesNote(null);
       })
-      .catch((e: Error) => {
+      .catch((e) => {
         if (dead) return;
         setDocCandidates([]);
         setRepoCandidates([]);
-        setCandidatesNote(`这个项目的文档与仓库清单读不出：${e.message}（路径仍可直填）`);
+        setCandidatesNote(`${readFailureNote('这个项目的文档与仓库清单读不出', e)}——路径仍可直填`);
       });
     return () => {
       dead = true;
@@ -404,7 +434,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
         const errs = r.profiles.filter((p) => p.error).map((p) => `${p.name}：${p.error}`);
         setCatalogNote(errs.length ? `型号探得不全：${errs.join('；')}` : null);
       })
-      .catch((e: Error) => setCatalogNote(`型号清单刷新失败：${e.message}`))
+      .catch((e) => setCatalogNote(readFailureNote('型号清单刷新失败', e)))
       .finally(() => setOptionsBusy(false));
   };
 
@@ -553,7 +583,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
         });
       }
     } catch (e) {
-      setProbed((m) => ({ ...m, [entry.id]: { err: (e as Error).message } }));
+      setProbed((m) => ({ ...m, [entry.id]: { err: readFailureNote('探针没回话', e) } }));
     } finally {
       setWriteOp(null);
     }
@@ -763,7 +793,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
             <span style={{ color: 'var(--text-dim)', fontSize: 11.5 }}>
               <b>一键接入整个项目：</b>给一个本地目录，自动发现里面的仓库/约定/技能/规则，勾选后批量登记（不用抄路径）。
             </span>
-            <button style={{ marginLeft: 'auto' }} onClick={() => { setScanPromptOpen(true); setScanPreview(null); }}>
+            <button style={{ marginLeft: 'auto' }} onClick={openScanPrompt}>
               🔍 扫描项目目录
             </button>
             {scanPromptOpen && (
@@ -776,18 +806,36 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                     placeholder="/Users/you/work/my-project"
                     style={{ flex: 1, background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '7px 9px', font: 'inherit' }}
                   />
-                  <button disabled={!scanPath.trim()} onClick={() => {
+                  <button disabled={!scanPath.trim() || scanProbeBusy} onClick={() => {
+                    setScanReadFail(null);
+                    setScanWriteFail(null);
+                    setScanResult(null);
+                    setScanProbeBusy(true);
                     api.envProbe(scanPath.trim())
                       .then((r) => {
                         const items = r.items ?? [];
                         setScanPreview({ items, selected: new Set(items.map((_, i) => i)) });
+                        // server 用 **200 + `error`** 说「这个目录我读不到」（不存在/没权限）。这一发没走出
+                        // 请求失败那一类，从前只剩底部控制台，画面上是「没发现可登记的项」——那是在替
+                        // 「读不到」冒充「这里没东西」（缺≠零，v19 步骤二十二）
+                        setScanReadFail(r.error?.trim() || null);
                       })
-                      .catch((e: Error) => log('error', `扫描失败：${e.message}`));
+                      .catch((e) => {
+                        setScanReadFail(readFailureNote('这个目录没扫成', e));
+                        log('error', `扫描失败：${(e as Error).message}`);
+                      })
+                      .finally(() => setScanProbeBusy(false));
                   }}>
-                    🔍 扫描
+                    {scanProbeBusy ? '扫描中…' : '🔍 扫描'}
                   </button>
                 </div>
-                {scanPreview && (
+                {scanReadFail && (
+                  <p className="settings-fail" role="status">
+                    {scanReadFail}
+                  </p>
+                )}
+                {/* 「发现 0 项，勾选要登记的」是成功形状的话：这一发若是「读不到」，这份清单整块不摆（上面那句红字说话） */}
+                {scanPreview && (scanPreview.items.length > 0 || !scanReadFail) && (
                   <div style={{ marginTop: 10 }}>
                     <div style={{ color: 'var(--text-dim)', fontSize: 11.5, marginBottom: 4 }}>
                       发现 {scanPreview.items.length} 项，勾选要登记的：
@@ -813,7 +861,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                           <span style={{ color: 'var(--text-dim)', fontSize: 10.5, marginLeft: 'auto' }}>{it.detail}</span>
                         </label>
                       ))}
-                      {scanPreview.items.length === 0 && <span style={{ color: 'var(--text-dim)' }}>没发现可登记的项</span>}
+                      {scanPreview.items.length === 0 && !scanReadFail && <span style={{ color: 'var(--text-dim)' }}>没发现可登记的项</span>}
                     </div>
                   </div>
                 )}
@@ -824,21 +872,44 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                     onClick={() => {
                       const sp = getSpace();
                       setScanRegisterBusy(true);
+                      setScanWriteFail(null);
+                      setScanReadFail(null);
                       api.envRegister(scanPath.trim(), sp, Array.from(scanPreview!.selected))
                         .then((r) => {
+                          const outcome = scanRegisterOutcome(r, sp);
                           log('info', `一键登记完成：${r.registered} 项已入 ${sp} 空间档案`);
                           void load();
                           setScanPreview(null);
-                          setScanPromptOpen(false);
+                          // 有账要交代就别关窗：一收等于把「N 项只披露不登记」这句话擦成一次干净的成功
+                          setScanResult(outcome.warn.length || outcome.ok ? outcome : null);
+                          if (outcome.warn.length === 0) closeScanPrompt();
                         })
-                        .catch((e: Error) => log('error', `登记失败：${e.message}`))
+                        .catch((e) => {
+                          setScanWriteFail(
+                            writeFailureNote('这几项没登记进去', e, '这几项进没进档案不确定，刷新看项目档案的读数'),
+                          );
+                          log('error', `登记失败：${(e as Error).message}`);
+                        })
                         .finally(() => setScanRegisterBusy(false));
                     }}
                   >
                     {scanRegisterBusy ? '登记中…' : `✓ 登记 ${scanPreview?.selected.size ?? 0} 项`}
                   </button>
-                  <button onClick={() => setScanPromptOpen(false)}>取消</button>
+                  <button onClick={closeScanPrompt}>取消</button>
                 </div>
+                {scanWriteFail && (
+                  <p className="settings-fail" role="status">
+                    {scanWriteFail}
+                  </p>
+                )}
+                {scanResult && (
+                  <>
+                    {scanResult.ok && <p className="scan-ok" role="status">{scanResult.ok}</p>}
+                    {scanResult.warn.map((w, i) => (
+                      <p key={i} className="scan-warn" role="status">{w}</p>
+                    ))}
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -1194,8 +1265,7 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                     className="link"
                     onClick={(ev) => {
                       ev.stopPropagation();
-                      setScanPromptOpen(true);
-                      setScanPreview(null);
+                      openScanPrompt();
                     }}
                   >
                     🔍 扫描项目目录自动发现
@@ -1433,7 +1503,9 @@ export function RegistryView({ embedded = false }: { embedded?: boolean }) {
                             {pNote && (
                               <>
                                 <dt>探针读数</dt>
-                                <dd className={probe?.err ? 'registry-detail-fail' : undefined}>{pNote}</dd>
+                                <dd className={probe?.err ? 'registry-detail-fail' : undefined} role={probe?.err ? 'status' : undefined}>
+                                  {pNote}
+                                </dd>
                               </>
                             )}
                           </dl>

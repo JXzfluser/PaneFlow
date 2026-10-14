@@ -139,6 +139,24 @@ export function toggleFailAction(entry: Pick<RegistryEntryView, 'enabled'>): str
   return entry.enabled ? '停用没成（它还在被选）' : '启用没成（它还是不参与）';
 }
 
+/**
+ * 扫描弹窗「✓ 登记 N 项」那一下的成功回执（v19 步骤二十二），两维各占一行：
+ *  - `ok`：server 报成了几项、落到哪份档案（`registered` 为 0 时**不发绿句**——「已登记 0 项」借的是
+ *    成功的形状，而这一按什么都没起，与批量派发那条同一把尺）；
+ *  - `warn`：server 在同一发 200 里交代的「只披露不登记」项（check/workflow/worktree 没有档案字段可落）。
+ *    从前这一发一成功就关窗，`warnings` 只剩底部控制台一句——人看到「登记好了」而没起的项从屏幕上消失。
+ * 措辞住在这里，组件只渲；server 的原话（`warnings[]`）照抄不改写。
+ */
+export function scanRegisterOutcome(
+  r: { registered: number; warnings?: string[] | null },
+  space: string,
+): { ok: string | null; warn: string[] } {
+  return {
+    ok: r.registered ? `已登记 ${r.registered} 项进「${space}」档案` : null,
+    warn: (r.warnings ?? []).map((w) => w.trim()).filter(Boolean),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 表单字段：从 kind 的 spec 形状「长」出来（与 shared 的 `RegistrySpecMap` 逐 kind 对齐）。
 // 没定义字段的 kind 返回 null——界面对它明说「不登记不认识的形状」，绝不临场发明字段。
@@ -575,12 +593,13 @@ export interface RegistryProbeResponse {
  * 「探一次」按钮下面那一句。四种读数四句话（上一格的健康行只吃 `health` 读数，
  * 这里说的是它说不出来的那三件事）：
  *  - 没点过 → `''`（不画「等待探测」占位，那一格本来就不存在）；
- *  - 请求失败 → server/网络的原话；
+ *  - 请求失败 → 单源措辞件拼好的整句（`write-outcome.ts#readFailureNote`）原样渲，这里不再拼前缀
+ *    （两处各写一遍「探针没回话」就是两张措辞表，v19 步骤二十二）；
  *  - 回了却没 `health` 键 → **这一类没有探针通道**，不是「不健康」（拿它画灰点就是替人判死）；
  *  - 回了且有读数 → 读数已并进上面那一格，这里只说刚做过这一次（不重复贴同一段人话）。
  */
 export function probeNote(res: RegistryProbeResponse | undefined, failed: string | null): string {
-  if (failed) return `探针没回话：${failed}`;
+  if (failed) return failed;
   if (!res) return '';
   if (!res.health) return '这一类没有探针通道（注册表对它没有「实探」这一说，不是它不健康）。';
   return `刚探过一次（回执时刻 ${formatWhen(res.at) || res.at}），读数见上一格。`;

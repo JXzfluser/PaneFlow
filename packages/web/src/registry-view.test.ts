@@ -21,6 +21,7 @@ import {
   refRows,
   rejectedSummary,
   registrableKinds,
+  scanRegisterOutcome,
   requirementBadge,
   requirementDetail,
   spaceDocCandidates,
@@ -34,6 +35,7 @@ import {
   type RegistryEntryView,
   type RegistryProbeResponse,
 } from './registry-view';
+import { readFailureNote } from './write-outcome';
 
 const entry = (over: Partial<RegistryEntryView> = {}): RegistryEntryView => ({
   id: 'model:gpt-4o',
@@ -676,6 +678,32 @@ describe('toggleFailAction（行上启停开关没成时的半句，v19 步骤�
 });
 
 /**
+ * v19 步骤二十二：扫描弹窗「✓ 登记 N 项」那一下的成功回执。
+ * server 在同一发 200 里同时给了「成了几项」和「哪些项没档案字段可落」——只渲前者等于把后半截洗掉。
+ */
+describe('scanRegisterOutcome（登记成功那发的两维读数，v19 步骤二十二）', () => {
+  it('成了几项、落到哪份档案——句子只到 server 报的计数，不替它保证跑起来', () => {
+    expect(scanRegisterOutcome({ registered: 23, warnings: [] }, 'noroot')).toEqual({
+      ok: '已登记 23 项进「noroot」档案',
+      warn: [],
+    });
+    expect(scanRegisterOutcome({ registered: 23 }, 'demo').ok).toContain('23');
+  });
+
+  it('一项没起就不发绿句（「已登记 0 项」借的是成功的形状）；同发的 warnings 照样要说', () => {
+    const r = scanRegisterOutcome({ registered: 0, warnings: ['3 项只披露不登记（check 无对应档案字段）'] }, 'default');
+    expect(r.ok).toBeNull();
+    expect(r.warn).toEqual(['3 项只披露不登记（check 无对应档案字段）']);
+    expect(scanRegisterOutcome({ registered: 0, warnings: [] }, 'default')).toEqual({ ok: null, warn: [] });
+  });
+
+  it('warnings 是 server 原话：逐条 trim 后留正文，空串/空白不占一行；没这键也不当成「零毛病」以外的东西', () => {
+    expect(scanRegisterOutcome({ registered: 2, warnings: ['  甲  ', '', '   ', '乙'] }, 's').warn).toEqual(['甲', '乙']);
+    expect(scanRegisterOutcome({ registered: 2, warnings: null }, 's').warn).toEqual([]);
+  });
+});
+
+/**
  * v14-X1 全量第一件：详情抽屉里的「引用者清单」。
  * web 只把 server 随条目发下的 `refs` 排版成人话，零判据：`face` 原样画（中文对照表住在
  * server 的 400 文案里，这里再抄一份就是两张表——CLI 同一把尺）。
@@ -725,10 +753,16 @@ describe('probeNote（单枚探针回执：失败 / 无通道 / 有读数 分得
     ...over,
   });
 
-  it('没点过不画占位；请求失败原话挂出（失败优先于读数——两样都在时报的是那件坏消息）', () => {
+  it('没点过不画占位；失败句由单源措辞件拼好，这里原样渲（自己再拼一次前缀就是两张措辞表）', () => {
     expect(probeNote(undefined, null)).toBe('');
-    expect(probeNote(res(), '网关 503')).toBe('探针没回话：网关 503');
-    expect(probeNote(undefined, '网络断了')).toBe('探针没回话：网络断了');
+    expect(probeNote(res(), readFailureNote('探针没回话', { status: 503 }))).toBe(
+      '探针没回话：server 回 503 且没给原因（这是没读成，不是「没有内容」）',
+    );
+    expect(probeNote(undefined, '探针没回话：连不上本机服务（server 没在跑？）')).toBe(
+      '探针没回话：连不上本机服务（server 没在跑？）',
+    );
+    // 失败优先于读数：两样都在时报的是那件坏消息
+    expect(probeNote(res({ health: { status: 'live', detail: '在' } }), '探针没回话：网关 503')).toBe('探针没回话：网关 503');
   });
 
   it('回了却没 health 键 = 这一类没有探针通道，不是「不健康」（拿它画灰点是替人判死）', () => {
