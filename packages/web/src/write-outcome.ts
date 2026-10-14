@@ -81,3 +81,21 @@ export function batchDispatchNotes(r: {
     : null;
   return { ok, fail };
 }
+
+/**
+ * 扫描弹窗 / 新建向导那一下「✓ 登记 N 项」的成功回执（v19 步骤二十二、二十三共用），两维各占一行：
+ *  - `ok`：server 报成了几项、落到哪份档案（`registered` 为 0 时**不发绿句**——「已登记 0 项」借的是
+ *    成功的形状，而这一按什么都没起，与批量派发那条同一把尺）；
+ *  - `warn`：server 在同一发 200 里交代的「只披露不登记」项（check/workflow/worktree 没有档案字段可落）。
+ *    从前这一发一成功就关窗，`warnings` 只剩底部控制台一句——人看到「登记好了」而没起的项从屏幕上消失。
+ * 措辞住在这里，组件只渲；server 的原话（`warnings[]`）照抄不改写。
+ */
+export function scanRegisterOutcome(
+  r: { registered: number; warnings?: string[] | null },
+  space: string,
+): { ok: string | null; warn: string[] } {
+  return {
+    ok: r.registered ? `已登记 ${r.registered} 项进「${space}」档案` : null,
+    warn: (r.warnings ?? []).map((w) => w.trim()).filter(Boolean),
+  };
+}

@@ -24,7 +24,6 @@ import {
   refRows,
   rejectedSummary,
   registrableKinds,
-  scanRegisterOutcome,
   spaceDocCandidates,
   spaceRepoCandidates,
   toggleFailAction,
@@ -41,7 +40,7 @@ import {
   type RegistryProbeResponse,
   type SpaceDocCandidateSource,
 } from '../registry-view.js';
-import { readFailureNote, writeFailureNote } from '../write-outcome.js';
+import { readFailureNote, scanRegisterOutcome, writeFailureNote } from '../write-outcome.js';
 
 /** 行上四类写动作：在飞读数按这一枚点名（同一条目的四发不能共用一句话） */
 type RowOp = 'toggle' | 'delete' | 'probe' | 'probe-refresh';

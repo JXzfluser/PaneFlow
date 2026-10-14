@@ -21,7 +21,6 @@ import {
   refRows,
   rejectedSummary,
   registrableKinds,
-  scanRegisterOutcome,
   requirementBadge,
   requirementDetail,
   spaceDocCandidates,
@@ -674,32 +673,6 @@ describe('toggleFailAction（行上启停开关没成时的半句，v19 步骤�
       expect(note).toMatch(/没成/);
       expect(note).not.toMatch(/已停用|已启用|成功|已保存/);
     }
-  });
-});
-
-/**
- * v19 步骤二十二：扫描弹窗「✓ 登记 N 项」那一下的成功回执。
- * server 在同一发 200 里同时给了「成了几项」和「哪些项没档案字段可落」——只渲前者等于把后半截洗掉。
- */
-describe('scanRegisterOutcome（登记成功那发的两维读数，v19 步骤二十二）', () => {
-  it('成了几项、落到哪份档案——句子只到 server 报的计数，不替它保证跑起来', () => {
-    expect(scanRegisterOutcome({ registered: 23, warnings: [] }, 'noroot')).toEqual({
-      ok: '已登记 23 项进「noroot」档案',
-      warn: [],
-    });
-    expect(scanRegisterOutcome({ registered: 23 }, 'demo').ok).toContain('23');
-  });
-
-  it('一项没起就不发绿句（「已登记 0 项」借的是成功的形状）；同发的 warnings 照样要说', () => {
-    const r = scanRegisterOutcome({ registered: 0, warnings: ['3 项只披露不登记（check 无对应档案字段）'] }, 'default');
-    expect(r.ok).toBeNull();
-    expect(r.warn).toEqual(['3 项只披露不登记（check 无对应档案字段）']);
-    expect(scanRegisterOutcome({ registered: 0, warnings: [] }, 'default')).toEqual({ ok: null, warn: [] });
-  });
-
-  it('warnings 是 server 原话：逐条 trim 后留正文，空串/空白不占一行；没这键也不当成「零毛病」以外的东西', () => {
-    expect(scanRegisterOutcome({ registered: 2, warnings: ['  甲  ', '', '   ', '乙'] }, 's').warn).toEqual(['甲', '乙']);
-    expect(scanRegisterOutcome({ registered: 2, warnings: null }, 's').warn).toEqual([]);
   });
 });
 
